@@ -1096,8 +1096,19 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
   for (const b of blocks) {
     const poly = b.curb;
     // Least-squares plane h = a x + c z + d through curb samples.
-    let sxx = 0, sxz = 0, szz = 0, sx = 0, sz = 0, sh = 0, sxh = 0, szh = 0, cnt = 0;
-    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    let sxx = 0,
+      sxz = 0,
+      szz = 0,
+      sx = 0,
+      sz = 0,
+      sh = 0,
+      sxh = 0,
+      szh = 0,
+      cnt = 0;
+    let x0 = Infinity,
+      x1 = -Infinity,
+      z0 = Infinity,
+      z1 = -Infinity;
     for (let i = 0; i < poly.length; i++) {
       const p = poly[i];
       const q = poly[(i + 1) % poly.length];
@@ -1123,11 +1134,17 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
     }
     if (cnt < 3) continue;
     // Center the system for numerical stability.
-    const mx = sx / cnt, mz = sz / cnt, mh = sh / cnt;
-    const cxx = sxx / cnt - mx * mx, cxz = sxz / cnt - mx * mz, czz = szz / cnt - mz * mz;
-    const cxh = sxh / cnt - mx * mh, czh = szh / cnt - mz * mh;
+    const mx = sx / cnt,
+      mz = sz / cnt,
+      mh = sh / cnt;
+    const cxx = sxx / cnt - mx * mx,
+      cxz = sxz / cnt - mx * mz,
+      czz = szz / cnt - mz * mz;
+    const cxh = sxh / cnt - mx * mh,
+      czh = szh / cnt - mz * mh;
     const det = cxx * czz - cxz * cxz;
-    let a = 0, c = 0;
+    let a = 0,
+      c = 0;
     if (Math.abs(det) > 1e-6) {
       a = (cxh * czz - czh * cxz) / det;
       c = (czh * cxx - cxh * cxz) / det;
@@ -1154,7 +1171,9 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
     const iters = Math.min(160, 20 + 4 * Math.max(gx1 - gx0, gz1 - gz0));
     for (let it = 0; it < iters; it++) {
       for (const k of inside) {
-        hf.data[k] = (hf.data[k - 1] + hf.data[k + 1] + hf.data[k - n] + hf.data[k + n]) * 0.25;
+        hf.data[k] =
+          (hf.data[k - 1] + hf.data[k + 1] + hf.data[k - n] + hf.data[k + n]) *
+          0.25;
       }
     }
   }
