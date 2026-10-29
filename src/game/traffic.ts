@@ -238,7 +238,7 @@ export class Traffic {
       if (v.length) this.pools.push({variants: v, weight: w, cruise: c});
     }
     if (!this.pools.length) {
-      const any = vr.variants.map((_, i) => i).filter(i => !['helicopter', 'train'].includes(vr.variants[i].info.kind));
+      const any = vr.variants.map((_, i) => i).filter(i => !['helicopter', 'train', 'person'].includes(vr.variants[i].info.kind));
       if (any.length) this.pools.push({variants: any, weight: 1, cruise: 1});
     }
   }

@@ -191,7 +191,23 @@ export class CameraSystem {
     }
   }
 
+  private badEye(e: Vec3) {
+    if (e[1] < this.net.hf.sample(e[0], e[2]) + 0.25) return true;
+    const push = this.net.collideBuildings(e, 1.2);
+    return push[0] !== 0 || push[1] !== 0;
+  }
+
   private directed(dt: number, pl: Player): CamOut {
+    let out = this.directedRaw(dt, pl);
+    // Cut away from shots whose camera ends up inside or against geometry.
+    for (let tries = 0; tries < 4 && this.shot && this.shot.name !== 'interior' && this.badEye(out.eye); tries++) {
+      this.shot = this.newShot(pl);
+      out = this.directedRaw(0, pl);
+    }
+    return out;
+  }
+
+  private directedRaw(dt: number, pl: Player): CamOut {
     if (!this.shot || this.shot.t > this.shot.dur) this.shot = this.newShot(pl);
     const s = this.shot;
     s.t += dt;

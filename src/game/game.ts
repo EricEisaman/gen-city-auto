@@ -12,6 +12,7 @@ import {UI} from '../ui/ui.ts';
 import {City} from '../world/city.ts';
 import {CameraSystem, CAMERA_MODES, type CameraMode} from './camera.ts';
 import {Input} from './input.ts';
+import {Pedestrians} from './pedestrians.ts';
 import {Player} from './player.ts';
 import {RoadNet} from './roadnet.ts';
 import {Traffic} from './traffic.ts';
@@ -42,6 +43,7 @@ export class Game {
   traffic: Traffic | null = null;
   trains: Trains | null = null;
   helis: AmbientHelis | null = null;
+  peds: Pedestrians | null = null;
   player!: Player;
   camera!: CameraSystem;
   weather = new WeatherSystem();
@@ -122,6 +124,7 @@ export class Game {
     this.traffic.target = this.opts.traffic;
     this.trains = new Trains(city.summary.layout.elevated, this.vehicles);
     this.helis = new AmbientHelis(city.summary.layout.hubs, this.vehicles, (x, z) => city.groundHeight(x, z));
+    this.peds = new Pedestrians(net, this.vehicles, city.summary.layout.hubs.map(h => h.p));
     this.player = new Player(net, this.vehicles, city.summary.layout.hubs.map(h => h.p));
     this.camera = new CameraSystem(net);
     this.camera.trainFocus = () => {
@@ -163,7 +166,7 @@ export class Game {
     }
     const list = this.vehicles.variantsOf(kind);
     if (list.length) return list[0];
-    const any = v.findIndex(x => x.info.kind !== 'train' && x.info.kind !== 'helicopter');
+    const any = v.findIndex(x => !['train', 'helicopter', 'person'].includes(x.info.kind));
     return Math.max(0, any);
   }
 
@@ -251,6 +254,7 @@ export class Game {
     this.traffic.update(dt, this.time, focus, this.player.follower && this.player.autopilot ? [this.player.follower] : []);
     this.trains!.update(dt);
     this.helis!.update(dt);
+    this.peds!.update(dt, cam.eye);
     this.city.updateStreaming(cam.eye);
     const night = this.renderer.sky.night;
     const lightsOn = night > 0.3 || this.weather.state.rain > 0.3 ? 1 : 0;
@@ -276,6 +280,7 @@ export class Game {
     this.traffic.draw(lightsOn);
     this.trains!.draw(lightsOn);
     this.helis!.draw(this.time, lightsOn);
+    this.peds!.draw();
     this.vehicles.finish();
     this.rain.intensity = this.weather.state.rain;
     this.renderer.render({

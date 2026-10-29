@@ -68,7 +68,7 @@ export class UI {
     vehSel.onfocus = () => {
       vehSel.innerHTML = '';
       g.vehicles.variants.forEach((v, i) => {
-        if (v.info.kind !== 'train') vehSel.append(el('option', {value: String(i), textContent: `${v.info.name} #${v.info.seed}`}));
+        if (v.info.kind !== 'train' && v.info.kind !== 'person') vehSel.append(el('option', {value: String(i), textContent: `${v.info.name} #${v.info.seed}`}));
       });
       vehSel.value = String(g.player.variant);
     };

@@ -3,6 +3,7 @@
 
 import {setDetailScale, type Mesh} from '../nurbs/mesh.ts';
 import {designs} from '../vehicles/designs/index.ts';
+import {person} from '../vehicles/person.ts';
 import type {VehicleDesign} from '../vehicles/types.ts';
 
 export const VEHICLE_LODS = [1, 0.45, 0.2];
@@ -50,8 +51,8 @@ self.onmessage = () => {
   const out: VehicleVariant[] = [];
   const transfer: Transferable[] = [];
   const errors: string[] = [];
-  for (const [name, gen] of Object.entries(designs)) {
-    for (let v = 0; v < VARIANTS_PER_DESIGN; v++) {
+  for (const [name, gen] of [...Object.entries(designs), ['person', person] as const]) {
+    for (let v = 0; v < (name === 'person' ? 4 : VARIANTS_PER_DESIGN); v++) {
       const seed = v * 7919 + 1;
       try {
         let variant: VehicleVariant | null = null;

@@ -8,9 +8,9 @@ const only = process.argv[3];
 const SHOTS = [
   {name: 'day-chase', hour: 14, weather: 'sunny', shot: 'chase'},
   {name: 'day-flyby', hour: 11, weather: 'sunny', shot: 'flyby'},
-  {name: 'golden-aerial', hour: 18.3, weather: 'sunny', shot: 'aerial'},
-  {name: 'golden-telephoto', hour: 18.0, weather: 'cloudy', shot: 'telephoto'},
-  {name: 'dusk-train', hour: 19.0, weather: 'sunny', shot: 'train'},
+  {name: 'golden-aerial', hour: 17.2, weather: 'sunny', shot: 'aerial'},
+  {name: 'golden-telephoto', hour: 17.4, weather: 'cloudy', shot: 'telephoto'},
+  {name: 'dusk-train', hour: 18.4, weather: 'sunny', shot: 'train'},
   {name: 'night-chase', hour: 22, weather: 'sunny', shot: 'chase'},
   {name: 'night-side', hour: 23, weather: 'sunny', shot: 'side'},
   {name: 'night-rain-bumper', hour: 21.5, weather: 'rain', shot: 'bumper'},

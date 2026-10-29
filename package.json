@@ -10,7 +10,7 @@
     "lint": "gts lint",
     "fix": "gts fix",
     "typecheck": "tsc -p .",
-    "test:unit": "node --test --experimental-strip-types test/unit/",
+    "test:unit": "node --test test/unit/*.test.ts",
     "test:smoke": "node build.mjs && node test/puppeteer/smoke.mjs",
     "test:shots": "node build.mjs && node test/puppeteer/shots.mjs",
     "test:perf": "node build.mjs && node test/puppeteer/perf.mjs",

@@ -223,9 +223,17 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       inside = vec3f(0.8, 0.75, 0.65) * select(frame.skyAmbient.rgb * 0.3, vec3f(1.2, 0.95, 0.7), lit) * (0.85 + 0.15 * step(0.5, fract(ly * 30.0)));
     }
     let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
+    // Window reveal: the glass sits ~25cm inside the wall, so the frame casts a
+    // shadow band on the side away from the sun and the top edge.
+    let sunT = dot(frame.sunDir.xyz, T);
+    let reveal = 0.25 / max(frame.sunDir.y + 0.15, 0.2);
+    let shadowX = select(lx - wx0, wx1 - lx, sunT < 0.0) < abs(sunT) * 0.25 * 1.5;
+    let shadowY = (wy1 - ly) < reveal * 0.25;
+    let inShadow = (shadowX || shadowY) && frame.sunDir.w > 0.0 && dot(frame.sunDir.xyz, n) > 0.0;
     s.albedo = vec3f(0.03, 0.035, 0.04);
     s.rough = 0.05;
     s.emissive = inside * (1.0 - fres);
+    s.ao = select(1.0, 0.35, inShadow) * smoothstep(0.0, 0.12, min(fx, fy));
     s.cls = CLASS_GLASS;
     return s;
   }
@@ -410,8 +418,14 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     case M_ROOF: {
       let h = hashu(param * 31u + 5u);
       let g = hashuf(h) < 0.12;
-      s.albedo = select(vec3f(0.35, 0.34, 0.33), vec3f(0.18, 0.3, 0.12), g) * (0.75 + 0.25 * valueNoise(world.xz * 0.5));
-      s.albedo *= mix(0.7, 1.15, hashuf(h ^ 9u));
+      let gravel = 0.85 + 0.15 * hash21(floor(world.xz * 20.0));
+      let seams = 1.0 - 0.15 * step(0.96, fract(world.x * 0.5)) - 0.15 * step(0.96, fract(world.z * 0.5));
+      let stain = 1.0 - 0.3 * smoothstep(0.55, 0.8, fbm2(world.xz * 0.15));
+      let membrane = hashuf(h ^ 3u) < 0.4;
+      var base = select(vec3f(0.42, 0.41, 0.39), vec3f(0.2, 0.32, 0.12), g);
+      if (membrane) { base = vec3f(0.5, 0.52, 0.5); }
+      s.albedo = base * select(gravel, seams, membrane) * stain;
+      s.albedo *= mix(0.75, 1.1, hashuf(h ^ 9u));
       s.rough = 0.9;
       applyWetness(&s, world, n.y, 0.4);
     }
