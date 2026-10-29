@@ -24,6 +24,7 @@ const SHOTS = [
 ].filter(s => !only || s.name.includes(only));
 
 await ensureDir(outDir);
+const {writeFile} = await import('node:fs/promises');
 await withServer(async base => {
   const r = await withPage(`${base}/index.html?timespeed=0${process.env.Q ?? ''}`, async (page, logs) => {
     const results = [];
@@ -46,11 +47,14 @@ await withServer(async base => {
       const file = `${outDir}/${s.name}.png`;
       await page.screenshot({path: file});
       const st = await page.evaluate(() => window.__stats);
-      results.push({file, fps: st.fps, shot: st.shot});
+      // Link that reproduces this exact view with the free camera.
+      const url = await page.evaluate(() => window.__game.shareUrl());
+      results.push({file, fps: st.fps, shot: st.shot, url: url.replace(/^.*\?/, '')});
       console.log(file, JSON.stringify({fps: st.fps, shot: st.shot}));
     }
     return results;
   }, {timeout: 180000});
+  if (r.result) await writeFile(`${outDir}/views.json`, JSON.stringify(r.result, null, 1));
   const errs = r.logs.filter(l => /error|WebGPU|WGSL/i.test(l));
   if (errs.length) console.log(errs.join('\n'));
   if (r.errors.length) console.log('ERRORS:\n' + r.errors.join('\n'));

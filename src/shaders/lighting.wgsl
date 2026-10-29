@@ -62,29 +62,48 @@ fn skyVisibility(world: vec3f, n: vec3f) -> f32 {
 // Reflection of the city: march the reflected ray over the skyline height map.
 // A hit returns an approximate facade (wall + window grid, lit windows at
 // night) so glass, paint and wet streets reflect buildings beyond the screen.
+fn skylineAt(p: vec3f, N: f32, size: f32) -> f32 {
+  let g = vec2i((p.xz + size * 0.5) / size * N);
+  if (any(g < vec2i(0)) || any(g >= vec2i(i32(N)))) { return -1e9; }
+  return textureLoad(skyline, g, 0).r;
+}
+
 fn cityReflection(world: vec3f, r: vec3f) -> vec4f {
   let N = f32(textureDimensions(skyline).x);
   let size = frame.world.x;
   var t = 1.5;
+  var prevT = 0.0;
   for (var i = 0; i < 28; i++) {
     let p = world + r * t;
-    let g = vec2i((p.xz + size * 0.5) / size * N);
-    if (any(g < vec2i(0)) || any(g >= vec2i(i32(N)))) { break; }
-    let h = textureLoad(skyline, g, 0).r;
+    let h = skylineAt(p, N, size);
+    if (h < -1e8) { break; }
     if (p.y < h) {
+      // Refine onto the facade surface so the window pattern is coherent
+      // (an overshoot inside the building slices it into shards).
+      var lo = prevT;
+      var hi = t;
+      for (var k = 0; k < 6; k++) {
+        let m = (lo + hi) * 0.5;
+        let q = world + r * m;
+        if (q.y < skylineAt(q, N, size)) { hi = m; } else { lo = m; }
+      }
+      let tq = hi;
+      let q = world + r * tq;
       // Facade normal approximated as facing back along the ray.
       let fn_ = normalize(vec3f(-r.x, 0.0, -r.z));
-      let cell = vec2f(floor((p.x + p.z) / 3.0), floor(p.y / 3.4));
-      let win = step(0.35, fract((p.x + p.z) / 3.0)) * step(0.3, fract(p.y / 3.4));
+      let along = dot(q.xz, vec2f(-fn_.z, fn_.x));
+      let cell = vec2f(floor(along / 3.0), floor(q.y / 3.4));
+      let win = step(0.35, fract(along / 3.0)) * step(0.3, fract(q.y / 3.4));
       let wall = mix(vec3f(0.35, 0.34, 0.32), vec3f(0.05, 0.06, 0.07), win * 0.8);
       var c = wall * (frame.skyAmbient.rgb * 0.9 + frame.sunColor.rgb * max(dot(fn_, frame.sunDir.xyz), 0.0) * 0.25);
-      let lit = step(1.0 - mix(0.05, 0.4, frame.time.w), hash21(cell + floor(p.xz / 40.0)));
-      c += win * lit * vec3f(1.0, 0.75, 0.45) * mix(0.1, 1.0, frame.time.w);
+      let lit = step(1.0 - mix(0.05, 0.35, frame.time.w), hash21(cell + floor(q.xz / 40.0)));
+      c += win * lit * vec3f(1.0, 0.75, 0.45) * mix(0.1, 0.6, frame.time.w);
       // Haze with distance.
-      c = mix(c, frame.skyAmbient.rgb + frame.cityGlow.rgb, clamp(t / 1500.0, 0.0, 0.8));
+      c = mix(c, frame.skyAmbient.rgb + frame.cityGlow.rgb, clamp(tq / 1500.0, 0.0, 0.8));
       return vec4f(c, 1.0);
     }
     if (p.y > 260.0 && r.y > 0.0) { break; }
+    prevT = t;
     t *= 1.22;
   }
   return vec4f(0.0);
@@ -567,7 +586,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
   // Screen-space reflections only nearby: far away the depth tolerance grows
   // to kilometres and grazing rays report false hits.
-  if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0) {
+  if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0 && cls != CLASS_GLASS) {
     let r = ssr(world, n, v, pxf, rough, cls == CLASS_GROUND && frame.weather.z > 0.3);
     env = mix(env, r.rgb, r.a * smoothstep(1200.0, 700.0, dist));
   }
