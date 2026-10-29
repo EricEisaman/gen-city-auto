@@ -10,16 +10,44 @@ export class RainRenderer implements DrawHook {
   private pipeline: GPURenderPipeline;
   private bindGroup: GPUBindGroup;
 
-  constructor(device: GPUDevice, frameBuffer: GPUBuffer, format: GPUTextureFormat) {
-    const module = createShader(device, 'shader/rain', commonWgsl + '\n' + rainWgsl);
+  constructor(
+    device: GPUDevice,
+    frameBuffer: GPUBuffer,
+    format: GPUTextureFormat,
+  ) {
+    const module = createShader(
+      device,
+      'shader/rain',
+      commonWgsl + '\n' + rainWgsl,
+    );
     this.pipeline = device.createRenderPipeline({
       label: 'pipeline/rain',
       layout: 'auto',
       vertex: {module, entryPoint: 'vs'},
-      fragment: {module, entryPoint: 'fs', targets: [{format, blend: {color: {srcFactor: 'one', dstFactor: 'one'}, alpha: {srcFactor: 'zero', dstFactor: 'one'}}}]},
-      depthStencil: {format: 'depth32float', depthWriteEnabled: false, depthCompare: 'greater'},
+      fragment: {
+        module,
+        entryPoint: 'fs',
+        targets: [
+          {
+            format,
+            blend: {
+              color: {srcFactor: 'one', dstFactor: 'one'},
+              alpha: {srcFactor: 'zero', dstFactor: 'one'},
+            },
+          },
+        ],
+      },
+      depthStencil: {
+        format: 'depth32float',
+        depthWriteEnabled: false,
+        depthCompare: 'greater',
+      },
     });
-    this.bindGroup = device.createBindGroup({label: 'bg/rain', layout: this.pipeline.getBindGroupLayout(0), entries: [{binding: 0, resource: {buffer: frameBuffer}}]});
+    this.bindGroup = device.createBindGroup({
+      label: 'bg/rain',
+      layout: this.pipeline.getBindGroupLayout(0),
+      entries: [{binding: 0, resource: {buffer: frameBuffer}}],
+    });
   }
 
   forward(pass: GPURenderPassEncoder) {

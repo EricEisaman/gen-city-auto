@@ -44,13 +44,19 @@ export class Pedestrians {
 
   private density(x: number, z: number) {
     let d = 0.15;
-    for (const h of this.hubs) d = Math.max(d, Math.exp(-((x - h[0]) ** 2 + (z - h[1]) ** 2) / (700 * 700)));
+    for (const h of this.hubs)
+      d = Math.max(
+        d,
+        Math.exp(-((x - h[0]) ** 2 + (z - h[1]) ** 2) / (700 * 700)),
+      );
     return d;
   }
 
   private spawn(focus: Vec3) {
     const r = this.rng;
-    const loc = this.net.randomLaneNear(focus[0], focus[2], this.radius, () => r.next());
+    const loc = this.net.randomLaneNear(focus[0], focus[2], this.radius, () =>
+      r.next(),
+    );
     if (!loc) return;
     const c = this.net.chains[loc.chain];
     if (c.bridge.some(b => b)) return;
@@ -68,7 +74,12 @@ export class Pedestrians {
       lateral: r.range(0.25, 0.75),
       variant,
       color: r.pick(info.palette),
-      color2: r.pick([[0.05, 0.05, 0.07], [0.15, 0.17, 0.25], [0.35, 0.33, 0.3], [0.6, 0.58, 0.52]] as Vec3[]),
+      color2: r.pick([
+        [0.05, 0.05, 0.07],
+        [0.15, 0.17, 0.25],
+        [0.35, 0.33, 0.3],
+        [0.6, 0.58, 0.52],
+      ] as Vec3[]),
       model: mat4.create(),
       prev: mat4.create(),
       phase: r.range(0, 6),
@@ -79,9 +90,13 @@ export class Pedestrians {
     if (!this.variants.length) return;
     this.peds = this.peds.filter(p => {
       const m = p.model;
-      return Math.hypot(m[12] - focus[0], m[14] - focus[2]) < this.radius + 40 || m[15] === 0;
+      return (
+        Math.hypot(m[12] - focus[0], m[14] - focus[2]) < this.radius + 40 ||
+        m[15] === 0
+      );
     });
-    for (let k = 0; k < 12 && this.peds.length < this.target; k++) this.spawn(focus);
+    for (let k = 0; k < 12 && this.peds.length < this.target; k++)
+      this.spawn(focus);
     for (const p of this.peds) {
       const len = this.net.length(p.chain);
       p.s += p.dir * p.speed * dt;
@@ -91,7 +106,8 @@ export class Pedestrians {
       }
       const c = this.net.chains[p.chain];
       const q = chainAt(c, this.net.geom.arc[p.chain], p.s);
-      const off = (ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] * p.lateral + 0.3) * p.side;
+      const off =
+        (ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] * p.lateral + 0.3) * p.side;
       const l: Vec2 = [-q.d[1], q.d[0]];
       const x = q.p[0] + l[0] * off;
       const z = q.p[1] + l[1] * off;
@@ -107,7 +123,20 @@ export class Pedestrians {
 
   draw() {
     for (const p of this.peds) {
-      this.vr.add({variant: p.variant, model: p.model, prevModel: p.prev, color: p.color, metallic: 0, color2: p.color2, lights: 0, brake: 0, indicator: 0, wheelSpin: 0, steer: 0, rotor: 0});
+      this.vr.add({
+        variant: p.variant,
+        model: p.model,
+        prevModel: p.prev,
+        color: p.color,
+        metallic: 0,
+        color2: p.color2,
+        lights: 0,
+        brake: 0,
+        indicator: 0,
+        wheelSpin: 0,
+        steer: 0,
+        rotor: 0,
+      });
     }
   }
 }

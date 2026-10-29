@@ -20,14 +20,22 @@ export interface VehicleVariant {
   seed: number;
   size: VehicleDesign['size'];
   wheels: VehicleDesign['wheels'];
-  rotors: {position: VehicleDesign['driverEye']; axis: VehicleDesign['driverEye']}[];
+  rotors: {
+    position: VehicleDesign['driverEye'];
+    axis: VehicleDesign['driverEye'];
+  }[];
   steeringWheel?: {position: VehicleDesign['driverEye']; tilt: number};
   driverEye: VehicleDesign['driverEye'];
   headlights: VehicleDesign['headlights'];
   taillights: VehicleDesign['taillights'];
   palette: VehicleDesign['palette'];
   /** Per LOD: body, wheel, rotors[], steering. */
-  lods: {body: PackedMesh; wheel: PackedMesh | null; rotors: PackedMesh[]; steering: PackedMesh | null}[];
+  lods: {
+    body: PackedMesh;
+    wheel: PackedMesh | null;
+    rotors: PackedMesh[];
+    steering: PackedMesh | null;
+  }[];
 }
 
 function pack(m: Mesh): PackedMesh {
@@ -51,7 +59,10 @@ self.onmessage = () => {
   const out: VehicleVariant[] = [];
   const transfer: Transferable[] = [];
   const errors: string[] = [];
-  for (const [name, gen] of [...Object.entries(designs), ['person', person] as const]) {
+  for (const [name, gen] of [
+    ...Object.entries(designs),
+    ['person', person] as const,
+  ]) {
     for (let v = 0; v < (name === 'person' ? 4 : VARIANTS_PER_DESIGN); v++) {
       const seed = v * 7919 + 1;
       try {
@@ -67,7 +78,12 @@ self.onmessage = () => {
               size: d.size,
               wheels: d.wheels,
               rotors: d.rotors.map(r => ({position: r.position, axis: r.axis})),
-              steeringWheel: d.steeringWheel ? {position: d.steeringWheel.position, tilt: d.steeringWheel.tilt} : undefined,
+              steeringWheel: d.steeringWheel
+                ? {
+                    position: d.steeringWheel.position,
+                    tilt: d.steeringWheel.tilt,
+                  }
+                : undefined,
               driverEye: d.driverEye,
               headlights: d.headlights,
               taillights: d.taillights,

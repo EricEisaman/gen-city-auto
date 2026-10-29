@@ -52,14 +52,22 @@ export function computeRoadGeom(L: CityLayout): RoadGeom {
   const setbacks: [number, number][] = L.chains.map(() => [0, 0]);
   const arc = L.chains.map(c => {
     const a = [0];
-    for (let i = 1; i < c.pts.length; i++) a.push(a[i - 1] + dist2(c.pts[i - 1], c.pts[i]));
+    for (let i = 1; i < c.pts.length; i++)
+      a.push(a[i - 1] + dist2(c.pts[i - 1], c.pts[i]));
     return a;
   });
   const junctions: JunctionGeom[] = L.junctions.map(j => {
     const arms: Arm[] = j.arms.map(a => {
       const c = L.chains[a.chain];
       const dir = armDir(c, a.end);
-      return {chain: a.chain, end: a.end, dir, width: ROAD_WIDTH[c.kind], setback: 0, angle: Math.atan2(dir[1], dir[0])};
+      return {
+        chain: a.chain,
+        end: a.end,
+        dir,
+        width: ROAD_WIDTH[c.kind],
+        setback: 0,
+        angle: Math.atan2(dir[1], dir[0]),
+      };
     });
     arms.sort((a, b) => a.angle - b.angle);
     const k = arms.length;
@@ -86,7 +94,11 @@ export function computeRoadGeom(L: CityLayout): RoadGeom {
     }
     for (const a of arms) {
       const len = arc[a.chain][arc[a.chain].length - 1];
-      a.setback = Math.min(Math.max(a.setback, k > 2 ? 1 : 0) + (k > 2 ? 1.5 : 0), 30, len * 0.45);
+      a.setback = Math.min(
+        Math.max(a.setback, k > 2 ? 1 : 0) + (k > 2 ? 1.5 : 0),
+        30,
+        len * 0.45,
+      );
       setbacks[a.chain][a.end] = a.setback;
     }
     const outline: Vec2[] = [];
@@ -103,7 +115,11 @@ export function computeRoadGeom(L: CityLayout): RoadGeom {
 }
 
 /** Point and tangent at arc length s along a chain. */
-export function chainAt(c: RoadChain, arc: number[], s: number): {p: Vec2; d: Vec2; h: number} {
+export function chainAt(
+  c: RoadChain,
+  arc: number[],
+  s: number,
+): {p: Vec2; d: Vec2; h: number} {
   const n = c.pts.length;
   if (s <= 0) s = 0;
   const total = arc[n - 1];

@@ -75,8 +75,16 @@ export function basisFuns(span: number, u: number, p: number, knots: number[]) {
 }
 
 /** Basis functions and their first `nd` derivatives: ders[k][j]. */
-export function basisFunsDerivs(span: number, u: number, p: number, nd: number, knots: number[]) {
-  const ndu: number[][] = Array.from({length: p + 1}, () => new Array<number>(p + 1).fill(0));
+export function basisFunsDerivs(
+  span: number,
+  u: number,
+  p: number,
+  nd: number,
+  knots: number[],
+) {
+  const ndu: number[][] = Array.from({length: p + 1}, () =>
+    new Array<number>(p + 1).fill(0),
+  );
   const left = new Array<number>(p + 1).fill(0);
   const right = new Array<number>(p + 1).fill(0);
   ndu[0][0] = 1;
@@ -92,9 +100,14 @@ export function basisFunsDerivs(span: number, u: number, p: number, nd: number, 
     }
     ndu[j][j] = saved;
   }
-  const ders: number[][] = Array.from({length: nd + 1}, () => new Array<number>(p + 1).fill(0));
+  const ders: number[][] = Array.from({length: nd + 1}, () =>
+    new Array<number>(p + 1).fill(0),
+  );
   for (let j = 0; j <= p; j++) ders[0][j] = ndu[j][p];
-  const a = [new Array<number>(p + 1).fill(0), new Array<number>(p + 1).fill(0)];
+  const a = [
+    new Array<number>(p + 1).fill(0),
+    new Array<number>(p + 1).fill(0),
+  ];
   for (let r = 0; r <= p; r++) {
     let s1 = 0;
     let s2 = 1;
@@ -110,7 +123,10 @@ export function basisFunsDerivs(span: number, u: number, p: number, nd: number, 
       const j1 = rk >= -1 ? 1 : -rk;
       const j2 = r - 1 <= pk ? k - 1 : p - r;
       for (let j = j1; j <= j2; j++) {
-        a[s2][j] = ndu[pk + 1][rk + j] !== 0 ? (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][rk + j] : 0;
+        a[s2][j] =
+          ndu[pk + 1][rk + j] !== 0
+            ? (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][rk + j]
+            : 0;
         d += a[s2][j] * ndu[rk + j][pk];
       }
       if (r <= pk) {
@@ -132,7 +148,12 @@ export function basisFunsDerivs(span: number, u: number, p: number, nd: number, 
 // ---------------------------------------------------------------------------
 // Curves
 
-export function makeCurve(points: Vec3[], degree = 3, weights?: number[], knots?: number[]): NurbsCurve {
+export function makeCurve(
+  points: Vec3[],
+  degree = 3,
+  weights?: number[],
+  knots?: number[],
+): NurbsCurve {
   const p = Math.min(degree, points.length - 1);
   return {
     degree: p,
@@ -146,7 +167,10 @@ export function curvePoint(c: NurbsCurve, u: number): Vec3 {
   const n = c.points.length;
   const span = findSpan(n, c.degree, u, c.knots);
   const N = basisFuns(span, u, c.degree, c.knots);
-  let x = 0, y = 0, z = 0, w = 0;
+  let x = 0,
+    y = 0,
+    z = 0,
+    w = 0;
   for (let j = 0; j <= c.degree; j++) {
     const i = span - c.degree + j;
     const b = N[j] * c.weights[i];
@@ -164,8 +188,10 @@ export function curveTangent(c: NurbsCurve, u: number): Vec3 {
   const n = c.points.length;
   const span = findSpan(n, c.degree, u, c.knots);
   const D = basisFunsDerivs(span, u, c.degree, 1, c.knots);
-  const A = [0, 0, 0], dA = [0, 0, 0];
-  let w = 0, dw = 0;
+  const A = [0, 0, 0],
+    dA = [0, 0, 0];
+  let w = 0,
+    dw = 0;
   for (let j = 0; j <= c.degree; j++) {
     const i = span - c.degree + j;
     const wi = c.weights[i];
@@ -194,7 +220,8 @@ function solve(A: number[][], b: number[][]): number[][] {
   const cols = b[0].length;
   for (let c = 0; c < n; c++) {
     let piv = c;
-    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    for (let r = c + 1; r < n; r++)
+      if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
     [M[c], M[piv]] = [M[piv], M[c]];
     const d = M[c][c] || 1e-12;
     for (let r = 0; r < n; r++) {
@@ -207,14 +234,11 @@ function solve(A: number[][], b: number[][]): number[][] {
   return M.map((row, i) => row.slice(n).map(v => v / (M[i][i] || 1e-12)));
 }
 
-/** Global curve interpolation through points (chord-length parameterization). */
-export function interpolateCurve(points: Vec3[], degree = 3): NurbsCurve {
-  const n = points.length;
-  const p = Math.min(degree, n - 1);
-  if (n <= p + 1) return makeCurve(points, p);
+/** Chord-length parameters of a point list in [0, 1], or null if all points coincide. */
+function chordParams(points: Vec3[]): number[] | null {
   const d: number[] = [0];
   let total = 0;
-  for (let i = 1; i < n; i++) {
+  for (let i = 1; i < points.length; i++) {
     total += Math.hypot(
       points[i][0] - points[i - 1][0],
       points[i][1] - points[i - 1][1],
@@ -222,7 +246,23 @@ export function interpolateCurve(points: Vec3[], degree = 3): NurbsCurve {
     );
     d.push(total);
   }
-  const params = d.map(v => (total > 0 ? v / total : 0));
+  return total > 1e-12 ? d.map(v => v / total) : null;
+}
+
+/** Average several parameter lists (ignoring degenerate ones); uniform if none. */
+function averageParams(lists: (number[] | null)[], n: number): number[] {
+  const valid = lists.filter((l): l is number[] => l !== null);
+  if (!valid.length)
+    return Array.from({length: n}, (_, i) => (n > 1 ? i / (n - 1) : 0));
+  return Array.from(
+    {length: n},
+    (_, i) => valid.reduce((s, l) => s + l[i], 0) / valid.length,
+  );
+}
+
+/** Knot vector by averaging parameters (The NURBS Book eq. 9.8). */
+function knotsFromParams(params: number[], p: number): number[] {
+  const n = params.length;
   const knots: number[] = new Array(p + 1).fill(0);
   for (let j = 1; j < n - p; j++) {
     let s = 0;
@@ -230,6 +270,17 @@ export function interpolateCurve(points: Vec3[], degree = 3): NurbsCurve {
     knots.push(s / p);
   }
   for (let i = 0; i <= p; i++) knots.push(1);
+  return knots;
+}
+
+/** Control points of the degree-p curve through points at the given parameters. */
+function interpolateControl(
+  points: Vec3[],
+  params: number[],
+  knots: number[],
+  p: number,
+): Vec3[] {
+  const n = points.length;
   const A = params.map(u => {
     const row = new Array<number>(n).fill(0);
     const span = findSpan(n, p, u, knots);
@@ -237,12 +288,36 @@ export function interpolateCurve(points: Vec3[], degree = 3): NurbsCurve {
     for (let j = 0; j <= p; j++) row[span - p + j] = N[j];
     return row;
   });
-  const ctrl = solve(A, points.map(q => [q[0], q[1], q[2]]));
-  return makeCurve(ctrl as Vec3[], p, undefined, knots);
+  return solve(
+    A,
+    points.map(q => [q[0], q[1], q[2]]),
+  ) as Vec3[];
+}
+
+/** Global curve interpolation through points (chord-length parameterization). */
+export function interpolateCurve(points: Vec3[], degree = 3): NurbsCurve {
+  const n = points.length;
+  const p = Math.min(degree, n - 1);
+  if (p < 1) return makeCurve(points, p);
+  const params = averageParams([chordParams(points)], n);
+  const knots = knotsFromParams(params, p);
+  return makeCurve(
+    interpolateControl(points, params, knots, p),
+    p,
+    undefined,
+    knots,
+  );
 }
 
 /** Exact rational circular arc in the plane spanned by unit vectors x and y. */
-export function arc(center: Vec3, x: Vec3, y: Vec3, radius: number, start: number, end: number): NurbsCurve {
+export function arc(
+  center: Vec3,
+  x: Vec3,
+  y: Vec3,
+  radius: number,
+  start: number,
+  end: number,
+): NurbsCurve {
   let sweep = end - start;
   if (sweep <= 0) sweep += Math.PI * 2;
   const narcs = Math.max(1, Math.ceil(sweep / (Math.PI / 2) - 1e-9));
@@ -268,7 +343,12 @@ export function arc(center: Vec3, x: Vec3, y: Vec3, radius: number, start: numbe
   return {degree: 2, points, weights, knots};
 }
 
-export function circle(center: Vec3, x: Vec3, y: Vec3, radius: number): NurbsCurve {
+export function circle(
+  center: Vec3,
+  x: Vec3,
+  y: Vec3,
+  radius: number,
+): NurbsCurve {
   return arc(center, x, y, radius, 0, Math.PI * 2);
 }
 
@@ -277,7 +357,12 @@ export function insertKnot(c: NurbsCurve, u: number): NurbsCurve {
   const p = c.degree;
   const n = c.points.length;
   const k = findSpan(n, p, u, c.knots);
-  const Pw = c.points.map((P, i) => [P[0] * c.weights[i], P[1] * c.weights[i], P[2] * c.weights[i], c.weights[i]]);
+  const Pw = c.points.map((P, i) => [
+    P[0] * c.weights[i],
+    P[1] * c.weights[i],
+    P[2] * c.weights[i],
+    c.weights[i],
+  ]);
   const Q: number[][] = [];
   for (let i = 0; i <= k - p; i++) Q.push(Pw[i]);
   for (let i = k - p + 1; i <= k; i++) {
@@ -320,15 +405,23 @@ export function makeSurface(
 }
 
 /** Point, dS/du and dS/dv of a rational surface. */
-export function surfaceEval(s: NurbsSurface, u: number, v: number): [Vec3, Vec3, Vec3] {
+export function surfaceEval(
+  s: NurbsSurface,
+  u: number,
+  v: number,
+): [Vec3, Vec3, Vec3] {
   const nu = s.points.length;
   const nv = s.points[0].length;
   const su = findSpan(nu, s.degreeU, u, s.knotsU);
   const sv = findSpan(nv, s.degreeV, v, s.knotsV);
   const Du = basisFunsDerivs(su, u, s.degreeU, 1, s.knotsU);
   const Dv = basisFunsDerivs(sv, v, s.degreeV, 1, s.knotsV);
-  const A = [0, 0, 0], Au = [0, 0, 0], Av = [0, 0, 0];
-  let w = 0, wu = 0, wv = 0;
+  const A = [0, 0, 0],
+    Au = [0, 0, 0],
+    Av = [0, 0, 0];
+  let w = 0,
+    wu = 0,
+    wv = 0;
   for (let a = 0; a <= s.degreeU; a++) {
     const i = su - s.degreeU + a;
     for (let b = 0; b <= s.degreeV; b++) {
@@ -363,7 +456,10 @@ export function surfacePoint(s: NurbsSurface, u: number, v: number): Vec3 {
  * sampling each at `samples` points and interpolating; the result interpolates
  * every section (u runs along each section, v across sections).
  */
-export function loft(sections: NurbsCurve[], opts: {samples?: number; degreeV?: number} = {}): NurbsSurface {
+export function loft(
+  sections: NurbsCurve[],
+  opts: {samples?: number; degreeV?: number} = {},
+): NurbsSurface {
   const samples = opts.samples ?? 12;
   const rows: Vec3[][] = sections.map(c => sampleCurve(c, samples - 1));
   return loftPoints(rows, {degreeU: 3, degreeV: opts.degreeV ?? 3});
@@ -371,25 +467,44 @@ export function loft(sections: NurbsCurve[], opts: {samples?: number; degreeV?: 
 
 /**
  * Loft through rows of points. rows[k] is the k-th section; every row must have
- * the same length. Each section is interpolated, then each column is interpolated
- * across sections, giving a surface that passes through all the given points.
+ * the same length. All sections share one parameterization (chord lengths
+ * averaged over the rows) and the columns share another, so the surface passes
+ * through every given point. Degenerate rows (all points equal, e.g. a pole) are
+ * allowed.
  */
-export function loftPoints(rows: Vec3[][], opts: {degreeU?: number; degreeV?: number} = {}): NurbsSurface {
-  const degreeU = opts.degreeU ?? 3;
-  const degreeV = opts.degreeV ?? 3;
-  const sectionCurves = rows.map(r => interpolateCurve(r, degreeU));
-  const nu = sectionCurves[0].points.length;
-  const columns: NurbsCurve[] = [];
-  for (let i = 0; i < nu; i++) {
-    columns.push(interpolateCurve(sectionCurves.map(c => c.points[i]), degreeV));
-  }
+export function loftPoints(
+  rows: Vec3[][],
+  opts: {degreeU?: number; degreeV?: number} = {},
+): NurbsSurface {
+  const nr = rows.length;
+  const np = rows[0].length;
+  const pu = Math.min(opts.degreeU ?? 3, np - 1);
+  const pv = Math.min(opts.degreeV ?? 3, nr - 1);
+  const uParams = averageParams(rows.map(chordParams), np);
+  const knotsU = knotsFromParams(uParams, pu);
+  const ctrlRows = rows.map(r => interpolateControl(r, uParams, knotsU, pu));
+  const columns = Array.from({length: np}, (_, i) => rows.map(r => r[i]));
+  const vParams = averageParams(columns.map(chordParams), nr);
+  const knotsV = knotsFromParams(vParams, pv);
   // points[i][j]: i along the section (u), j across sections (v).
-  const points = columns.map(c => c.points);
-  return makeSurface(points, sectionCurves[0].degree, columns[0].degree, undefined, sectionCurves[0].knots, columns[0].knots);
+  const points = Array.from({length: np}, (_, i) =>
+    interpolateControl(
+      ctrlRows.map(r => r[i]),
+      vParams,
+      knotsV,
+      pv,
+    ),
+  );
+  return makeSurface(points, pu, pv, undefined, knotsU, knotsV);
 }
 
 /** Surface of revolution of a profile curve about an axis (angle in radians). */
-export function revolve(profile: NurbsCurve, origin: Vec3, axis: Vec3, angle = Math.PI * 2): NurbsSurface {
+export function revolve(
+  profile: NurbsCurve,
+  origin: Vec3,
+  axis: Vec3,
+  angle = Math.PI * 2,
+): NurbsSurface {
   const al = Math.hypot(axis[0], axis[1], axis[2]);
   const ax: Vec3 = [axis[0] / al, axis[1] / al, axis[2] / al];
   const points: Vec3[][] = [];
@@ -400,7 +515,11 @@ export function revolve(profile: NurbsCurve, origin: Vec3, axis: Vec3, angle = M
     const P = profile.points[i];
     const d: Vec3 = [P[0] - origin[0], P[1] - origin[1], P[2] - origin[2]];
     const t = d[0] * ax[0] + d[1] * ax[1] + d[2] * ax[2];
-    const center: Vec3 = [origin[0] + ax[0] * t, origin[1] + ax[1] * t, origin[2] + ax[2] * t];
+    const center: Vec3 = [
+      origin[0] + ax[0] * t,
+      origin[1] + ax[1] * t,
+      origin[2] + ax[2] * t,
+    ];
     const rv: Vec3 = [P[0] - center[0], P[1] - center[1], P[2] - center[2]];
     const r = Math.hypot(rv[0], rv[1], rv[2]);
     let x: Vec3;
@@ -410,7 +529,11 @@ export function revolve(profile: NurbsCurve, origin: Vec3, axis: Vec3, angle = M
       // Point on the axis: any perpendicular works; the circle degenerates.
       const tmp: Vec3 = Math.abs(ax[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
       const c = tmp[0] * ax[0] + tmp[1] * ax[1] + tmp[2] * ax[2];
-      const px: Vec3 = [tmp[0] - c * ax[0], tmp[1] - c * ax[1], tmp[2] - c * ax[2]];
+      const px: Vec3 = [
+        tmp[0] - c * ax[0],
+        tmp[1] - c * ax[1],
+        tmp[2] - c * ax[2],
+      ];
       const pl = Math.hypot(px[0], px[1], px[2]);
       x = [px[0] / pl, px[1] / pl, px[2] / pl];
     }
@@ -425,23 +548,51 @@ export function revolve(profile: NurbsCurve, origin: Vec3, axis: Vec3, angle = M
     knotsV = c.knots;
     degreeV = c.degree;
   }
-  return {degreeU: profile.degree, degreeV, knotsU: profile.knots, knotsV, points, weights};
+  return {
+    degreeU: profile.degree,
+    degreeV,
+    knotsU: profile.knots,
+    knotsV,
+    points,
+    weights,
+  };
 }
 
 /** Extrude a curve along a direction vector. */
 export function extrude(c: NurbsCurve, dir: Vec3): NurbsSurface {
-  const points = c.points.map(P => [P, [P[0] + dir[0], P[1] + dir[1], P[2] + dir[2]] as Vec3]);
+  const points = c.points.map(P => [
+    P,
+    [P[0] + dir[0], P[1] + dir[1], P[2] + dir[2]] as Vec3,
+  ]);
   const weights = c.weights.map(w => [w, w]);
-  return {degreeU: c.degree, degreeV: 1, knotsU: c.knots, knotsV: [0, 0, 1, 1], points, weights};
+  return {
+    degreeU: c.degree,
+    degreeV: 1,
+    knotsU: c.knots,
+    knotsV: [0, 0, 1, 1],
+    points,
+    weights,
+  };
 }
 
 /** Ruled surface between two curves (made compatible by sampling). */
-export function ruled(a: NurbsCurve, b: NurbsCurve, samples = 16): NurbsSurface {
-  return loftPoints([sampleCurve(a, samples - 1), sampleCurve(b, samples - 1)], {degreeV: 1});
+export function ruled(
+  a: NurbsCurve,
+  b: NurbsCurve,
+  samples = 16,
+): NurbsSurface {
+  return loftPoints(
+    [sampleCurve(a, samples - 1), sampleCurve(b, samples - 1)],
+    {degreeV: 1},
+  );
 }
 
 /** Sweep a planar profile (in its local XY plane) along a rail curve. */
-export function sweep(profile: Vec3[], rail: NurbsCurve, opts: {samples?: number; up?: Vec3; scale?: (t: number) => number} = {}): NurbsSurface {
+export function sweep(
+  profile: Vec3[],
+  rail: NurbsCurve,
+  opts: {samples?: number; up?: Vec3; scale?: (t: number) => number} = {},
+): NurbsSurface {
   const samples = opts.samples ?? 16;
   const up = opts.up ?? [0, 1, 0];
   const rows: Vec3[][] = [];
@@ -451,25 +602,64 @@ export function sweep(profile: Vec3[], rail: NurbsCurve, opts: {samples?: number
     let T = curveTangent(rail, t);
     const tl = Math.hypot(T[0], T[1], T[2]) || 1;
     T = [T[0] / tl, T[1] / tl, T[2] / tl];
-    let X: Vec3 = [up[1] * T[2] - up[2] * T[1], up[2] * T[0] - up[0] * T[2], up[0] * T[1] - up[1] * T[0]];
+    let X: Vec3 = [
+      up[1] * T[2] - up[2] * T[1],
+      up[2] * T[0] - up[0] * T[2],
+      up[0] * T[1] - up[1] * T[0],
+    ];
     const xl = Math.hypot(X[0], X[1], X[2]) || 1;
     X = [X[0] / xl, X[1] / xl, X[2] / xl];
-    const Y: Vec3 = [T[1] * X[2] - T[2] * X[1], T[2] * X[0] - T[0] * X[2], T[0] * X[1] - T[1] * X[0]];
+    const Y: Vec3 = [
+      T[1] * X[2] - T[2] * X[1],
+      T[2] * X[0] - T[0] * X[2],
+      T[0] * X[1] - T[1] * X[0],
+    ];
     const s = opts.scale ? opts.scale(t) : 1;
-    rows.push(profile.map(q => [P[0] + (X[0] * q[0] + Y[0] * q[1]) * s, P[1] + (X[1] * q[0] + Y[1] * q[1]) * s, P[2] + (X[2] * q[0] + Y[2] * q[1]) * s] as Vec3));
+    rows.push(
+      profile.map(
+        q =>
+          [
+            P[0] + (X[0] * q[0] + Y[0] * q[1]) * s,
+            P[1] + (X[1] * q[0] + Y[1] * q[1]) * s,
+            P[2] + (X[2] * q[0] + Y[2] * q[1]) * s,
+          ] as Vec3,
+      ),
+    );
   }
   // rows[k] are cross sections; transpose so u runs along the profile.
-  return loftPoints(rows, {degreeU: Math.min(3, profile.length - 1), degreeV: 3});
+  return loftPoints(rows, {
+    degreeU: Math.min(3, profile.length - 1),
+    degreeV: 3,
+  });
 }
 
 /** Bilinear patch from four corners (p00, p10, p01, p11). */
-export function bilinear(p00: Vec3, p10: Vec3, p01: Vec3, p11: Vec3): NurbsSurface {
-  return makeSurface([[p00, p01], [p10, p11]], 1, 1);
+export function bilinear(
+  p00: Vec3,
+  p10: Vec3,
+  p01: Vec3,
+  p11: Vec3,
+): NurbsSurface {
+  return makeSurface(
+    [
+      [p00, p01],
+      [p10, p11],
+    ],
+    1,
+    1,
+  );
 }
 
 /** Apply a point transform to every control point (affine transforms keep the surface exact). */
-export function transformSurface(s: NurbsSurface, f: (p: Vec3) => Vec3): NurbsSurface {
-  return {...s, points: s.points.map(row => row.map(f)), weights: s.weights.map(r => [...r])};
+export function transformSurface(
+  s: NurbsSurface,
+  f: (p: Vec3) => Vec3,
+): NurbsSurface {
+  return {
+    ...s,
+    points: s.points.map(row => row.map(f)),
+    weights: s.weights.map(r => [...r]),
+  };
 }
 
 /** Mirror across the plane x = 0 (vehicles are modeled with +x = right side). */

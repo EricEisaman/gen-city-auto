@@ -65,7 +65,10 @@ export class Rng {
 
   /** Roughly normal distribution (sum of uniforms). */
   gauss(mean = 0, sd = 1) {
-    return mean + sd * (this.next() + this.next() + this.next() + this.next() - 2) * 1.732;
+    return (
+      mean +
+      sd * (this.next() + this.next() + this.next() + this.next() - 2) * 1.732
+    );
   }
 
   fork(salt: number) {

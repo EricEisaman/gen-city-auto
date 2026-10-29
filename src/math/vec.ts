@@ -6,18 +6,36 @@ export type Vec3 = [number, number, number];
 export type Vec4 = [number, number, number, number];
 
 export const v3 = (x = 0, y = 0, z = 0): Vec3 => [x, y, z];
-export const add3 = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-export const sub3 = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-export const scale3 = (a: Vec3, s: number): Vec3 => [a[0] * s, a[1] * s, a[2] * s];
-export const mul3 = (a: Vec3, b: Vec3): Vec3 => [a[0] * b[0], a[1] * b[1], a[2] * b[2]];
-export const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+export const add3 = (a: Vec3, b: Vec3): Vec3 => [
+  a[0] + b[0],
+  a[1] + b[1],
+  a[2] + b[2],
+];
+export const sub3 = (a: Vec3, b: Vec3): Vec3 => [
+  a[0] - b[0],
+  a[1] - b[1],
+  a[2] - b[2],
+];
+export const scale3 = (a: Vec3, s: number): Vec3 => [
+  a[0] * s,
+  a[1] * s,
+  a[2] * s,
+];
+export const mul3 = (a: Vec3, b: Vec3): Vec3 => [
+  a[0] * b[0],
+  a[1] * b[1],
+  a[2] * b[2],
+];
+export const dot3 = (a: Vec3, b: Vec3) =>
+  a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 export const cross3 = (a: Vec3, b: Vec3): Vec3 => [
   a[1] * b[2] - a[2] * b[1],
   a[2] * b[0] - a[0] * b[2],
   a[0] * b[1] - a[1] * b[0],
 ];
 export const len3 = (a: Vec3) => Math.hypot(a[0], a[1], a[2]);
-export const dist3 = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+export const dist3 = (a: Vec3, b: Vec3) =>
+  Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 export const norm3 = (a: Vec3): Vec3 => {
   const l = len3(a) || 1;
   return [a[0] / l, a[1] / l, a[2] / l];
@@ -50,7 +68,8 @@ export const lerp2 = (a: Vec2, b: Vec2, t: number): Vec2 => [
   a[1] + (b[1] - a[1]) * t,
 ];
 
-export const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
+export const clamp = (v: number, lo: number, hi: number) =>
+  v < lo ? lo : v > hi ? hi : v;
 export const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 export const smoothstep = (e0: number, e1: number, x: number) => {
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
@@ -75,7 +94,10 @@ export function pointInPolygon(p: Vec2, poly: Vec2[]) {
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const a = poly[i];
     const b = poly[j];
-    if (a[1] > p[1] !== b[1] > p[1] && p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0]) {
+    if (
+      a[1] > p[1] !== b[1] > p[1] &&
+      p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0]
+    ) {
       inside = !inside;
     }
   }
@@ -83,7 +105,12 @@ export function pointInPolygon(p: Vec2, poly: Vec2[]) {
 }
 
 /** Intersect segments p0-p1 and q0-q1, returning parameters along each, or null. */
-export function segmentIntersect(p0: Vec2, p1: Vec2, q0: Vec2, q1: Vec2): [number, number] | null {
+export function segmentIntersect(
+  p0: Vec2,
+  p1: Vec2,
+  q0: Vec2,
+  q1: Vec2,
+): [number, number] | null {
   const r = sub2(p1, p0);
   const s = sub2(q1, q0);
   const d = cross2(r, s);

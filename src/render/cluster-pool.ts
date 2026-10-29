@@ -71,7 +71,12 @@ export class ClusterPool {
   readonly maxClusters: number;
   private device: GPUDevice;
 
-  constructor(device: GPUDevice, maxVerts: number, maxTris: number, maxClusters: number) {
+  constructor(
+    device: GPUDevice,
+    maxVerts: number,
+    maxTris: number,
+    maxClusters: number,
+  ) {
     this.device = device;
     this.maxClusters = maxClusters;
     this.vertexBuffer = device.createBuffer({
@@ -100,7 +105,11 @@ export class ClusterPool {
   }
 
   get stats() {
-    return {verts: this.verts.used, tris: this.tris.used, clusters: this.clusters.used};
+    return {
+      verts: this.verts.used,
+      tris: this.tris.used,
+      clusters: this.clusters.used,
+    };
   }
 
   upload(d: ClusterData): PoolHandle | null {
@@ -131,7 +140,11 @@ export class ClusterPool {
   free(h: PoolHandle) {
     if (h.cn === 0) return;
     // Zero the cluster records so culling skips them.
-    this.device.queue.writeBuffer(this.clusterBuffer, h.c * CLUSTER_WORDS * 4, new Uint32Array(h.cn * CLUSTER_WORDS));
+    this.device.queue.writeBuffer(
+      this.clusterBuffer,
+      h.c * CLUSTER_WORDS * 4,
+      new Uint32Array(h.cn * CLUSTER_WORDS),
+    );
     this.verts.release(h.v, h.vn);
     this.tris.release(h.t, h.tn);
     this.clusters.release(h.c, h.cn);

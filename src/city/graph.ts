@@ -1,7 +1,14 @@
 // Planar road graph: build from polylines, split at intersections, merge close
 // nodes, prune dead ends, and extract faces (city blocks).
 
-import {cross2, dist2, polygonArea, segmentIntersect, sub2, type Vec2} from '../math/vec.ts';
+import {
+  cross2,
+  dist2,
+  polygonArea,
+  segmentIntersect,
+  sub2,
+  type Vec2,
+} from '../math/vec.ts';
 
 export interface GNode {
   p: Vec2;
@@ -197,7 +204,10 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
     for (let k = 1; k < s.cuts.length; k++) {
       const t = s.cuts[k];
       if (t - s.cuts[k - 1] < 1e-6 && k < s.cuts.length - 1) continue;
-      const p: Vec2 = [s.a[0] + (s.b[0] - s.a[0]) * t, s.a[1] + (s.b[1] - s.a[1]) * t];
+      const p: Vec2 = [
+        s.a[0] + (s.b[0] - s.a[0]) * t,
+        s.a[1] + (s.b[1] - s.a[1]) * t,
+      ];
       const n = nodeAt(p);
       if (n !== prev) g.addEdge(prev, n, s.kind);
       prev = n;
@@ -209,7 +219,8 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
 /** Merge nodes closer than `dist` (keeps junctions clean). */
 export function mergeCloseNodes(g: Graph, dist: number): Graph {
   const parent = g.nodes.map((_, i) => i);
-  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const find = (i: number): number =>
+    parent[i] === i ? i : (parent[i] = find(parent[i]));
   for (const e of g.edges) {
     if (e.dead) continue;
     if (dist2(g.nodes[e.a].p, g.nodes[e.b].p) < dist) {
@@ -281,7 +292,14 @@ export function removeSlivers(g: Graph, minAngle: number) {
           const ej = g.edges[live[j]];
           const li = dist2(g.nodes[ei.a].p, g.nodes[ei.b].p);
           const lj = dist2(g.nodes[ej.a].p, g.nodes[ej.b].p);
-          const drop = ei.kind !== ej.kind ? (ei.kind < ej.kind ? live[i] : live[j]) : li < lj ? live[j] : live[i];
+          const drop =
+            ei.kind !== ej.kind
+              ? ei.kind < ej.kind
+                ? live[i]
+                : live[j]
+              : li < lj
+                ? live[j]
+                : live[i];
           g.removeEdge(drop);
         }
       }
@@ -409,8 +427,12 @@ export function insetPolygon(poly: Vec2[], dist: number[]): Vec2[] | null {
     lines.push({p: a, d: [e[0] / l, e[1] / l], off: dist[i]});
   }
   const meet = (A: Line, B: Line, offset: boolean): Vec2 => {
-    const pa: Vec2 = offset ? [A.p[0] - A.d[1] * A.off, A.p[1] + A.d[0] * A.off] : A.p;
-    const pb: Vec2 = offset ? [B.p[0] - B.d[1] * B.off, B.p[1] + B.d[0] * B.off] : B.p;
+    const pa: Vec2 = offset
+      ? [A.p[0] - A.d[1] * A.off, A.p[1] + A.d[0] * A.off]
+      : A.p;
+    const pb: Vec2 = offset
+      ? [B.p[0] - B.d[1] * B.off, B.p[1] + B.d[0] * B.off]
+      : B.p;
     const den = cross2(A.d, B.d);
     if (Math.abs(den) < 0.08) return pb;
     const t = cross2(sub2(pb, pa), B.d) / den;

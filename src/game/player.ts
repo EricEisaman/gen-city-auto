@@ -59,7 +59,8 @@ export class Player {
     const info = this.info;
     if (info) {
       this.color = info.palette[0];
-      this.color2 = info.kind === 'taxi' ? (info.palette[1] ?? this.color) : this.color;
+      this.color2 =
+        info.kind === 'taxi' ? (info.palette[1] ?? this.color) : this.color;
     }
     this.attachToLane(x, z);
     this.autopilot = true;
@@ -77,7 +78,11 @@ export class Player {
     this.variant = variant;
     const info = this.info;
     if (info) this.color = info.palette[0];
-    this.pos = [this.pos[0], this.net.hf.sample(this.pos[0], this.pos[2]) + 120, this.pos[2]];
+    this.pos = [
+      this.pos[0],
+      this.net.hf.sample(this.pos[0], this.pos[2]) + 120,
+      this.pos[2],
+    ];
     this.vel = [0, 0, 0];
     this.follower = null;
     this.autopilot = true;
@@ -94,12 +99,20 @@ export class Player {
     const fwd = this.forward;
     const dir: 1 | -1 = along[0] * fwd[0] + along[1] * fwd[1] >= 0 ? 1 : -1;
     const len = this.net.length(nr.chain);
-    const arcAt = this.net.geom.arc[nr.chain][nr.seg] + Math.hypot(along[0], along[1]) * nr.t;
+    const arcAt =
+      this.net.geom.arc[nr.chain][nr.seg] +
+      Math.hypot(along[0], along[1]) * nr.t;
     const s = dir === 1 ? arcAt : len - arcAt;
     const [s0, s1] = this.net.geom.setbacks[nr.chain];
     const sMin = dir === 1 ? s0 : s1;
     const sMax = len - (dir === 1 ? s1 : s0);
-    const f = new LaneFollower({chain: nr.chain, dir, lane: 0}, clamp(s, sMin, Math.max(sMin, sMax - 1)), this.info?.size[2] ?? 4.5, 1.05, this.rng.nextU32());
+    const f = new LaneFollower(
+      {chain: nr.chain, dir, lane: 0},
+      clamp(s, sMin, Math.max(sMin, sMax - 1)),
+      this.info?.size[2] ?? 4.5,
+      1.05,
+      this.rng.nextU32(),
+    );
     f.preferBig = true;
     f.speed = this.speed;
     this.follower = f;
@@ -108,7 +121,11 @@ export class Player {
   private pickHeliTarget() {
     const h = this.rng.pick(this.hubs);
     const ground = this.net.hf.sample(h[0], h[1]);
-    this.heliTarget = [h[0] + this.rng.range(-300, 300), Math.max(ground, 0) + this.rng.range(140, 260), h[1] + this.rng.range(-300, 300)];
+    this.heliTarget = [
+      h[0] + this.rng.range(-300, 300),
+      Math.max(ground, 0) + this.rng.range(140, 260),
+      h[1] + this.rng.range(-300, 300),
+    ];
   }
 
   update(dt: number, input: Input, time: number) {
@@ -150,11 +167,21 @@ export class Player {
       modelMatrix(this.model, this.pos, f.dir, f.slope);
     } else {
       // Arcade car physics with a bicycle steering model.
-      const throttle = input.axis('KeyW', 'ArrowUp') - input.axis('KeyS', 'ArrowDown') + input.gamepadThrottle();
-      const steerIn = input.axis('KeyA', 'ArrowLeft') - input.axis('KeyD', 'ArrowRight') + input.gamepadSteer();
+      const throttle =
+        input.axis('KeyW', 'ArrowUp') -
+        input.axis('KeyS', 'ArrowDown') +
+        input.gamepadThrottle();
+      const steerIn =
+        input.axis('KeyA', 'ArrowLeft') -
+        input.axis('KeyD', 'ArrowRight') +
+        input.gamepadSteer();
       const handbrake = input.down('Space');
       const maxSteer = 0.55 / (1 + Math.abs(this.speed) * 0.05);
-      this.steer = lerp(this.steer, clamp(steerIn, -1, 1) * maxSteer, 1 - Math.exp(-dt * 8));
+      this.steer = lerp(
+        this.steer,
+        clamp(steerIn, -1, 1) * maxSteer,
+        1 - Math.exp(-dt * 8),
+      );
       let acc = 0;
       if (throttle > 0) acc = this.speed < -0.5 ? 14 : 7.5 * throttle;
       else if (throttle < 0) acc = this.speed > 0.5 ? -14 : 4 * throttle;
@@ -162,8 +189,14 @@ export class Player {
       if (handbrake) acc -= Math.sign(this.speed) * 12;
       this.braking = throttle < 0 && this.speed > 0.5;
       this.speed = clamp(this.speed + acc * dt, -12, 62);
-      const wheelbase = info ? Math.abs(info.wheels[0]?.position[2] - info.wheels[2]?.position[2]) || 2.7 : 2.7;
-      this.yaw -= ((this.speed * Math.tan(this.steer)) / wheelbase) * dt * (handbrake ? 1.6 : 1);
+      const wheelbase = info
+        ? Math.abs(info.wheels[0]?.position[2] - info.wheels[2]?.position[2]) ||
+          2.7
+        : 2.7;
+      this.yaw -=
+        ((this.speed * Math.tan(this.steer)) / wheelbase) *
+        dt *
+        (handbrake ? 1.6 : 1);
       const f = this.forward;
       let nx = this.pos[0] + f[0] * this.speed * dt;
       let nz = this.pos[2] + f[1] * this.speed * dt;
@@ -181,7 +214,11 @@ export class Player {
       const hb = this.net.surfaceHeight(nx - f[0] * 1.5, nz - f[1] * 1.5, h);
       this.pos = [nx, h, nz];
       const slope = (hf - hb) / 3;
-      this.roll = lerp(this.roll, clamp(-this.steer * this.speed * 0.01, -0.06, 0.06), 0.1);
+      this.roll = lerp(
+        this.roll,
+        clamp(-this.steer * this.speed * 0.01, -0.06, 0.06),
+        0.1,
+      );
       modelMatrix(this.model, this.pos, f, slope, this.roll);
     }
     this.spin += (this.speed * dt) / wheelR;
@@ -191,7 +228,11 @@ export class Player {
     this.rotor += dt * 28;
     const f = this.forward;
     if (this.autopilot) {
-      const to: Vec3 = [this.heliTarget[0] - this.pos[0], this.heliTarget[1] - this.pos[1], this.heliTarget[2] - this.pos[2]];
+      const to: Vec3 = [
+        this.heliTarget[0] - this.pos[0],
+        this.heliTarget[1] - this.pos[1],
+        this.heliTarget[2] - this.pos[2],
+      ];
       const dist = Math.hypot(to[0], to[2]);
       if (dist < 80) this.pickHeliTarget();
       const want = Math.atan2(to[0], -to[2]);
@@ -200,22 +241,45 @@ export class Player {
       while (dy < -Math.PI) dy += 2 * Math.PI;
       this.yaw += clamp(dy, -0.4 * dt, 0.4 * dt);
       const sp = Math.min(38, dist * 0.3);
-      this.vel = [lerp(this.vel[0], f[0] * sp, dt * 0.5), lerp(this.vel[1], clamp(to[1] * 0.3, -6, 6), dt), lerp(this.vel[2], f[1] * sp, dt * 0.5)];
+      this.vel = [
+        lerp(this.vel[0], f[0] * sp, dt * 0.5),
+        lerp(this.vel[1], clamp(to[1] * 0.3, -6, 6), dt),
+        lerp(this.vel[2], f[1] * sp, dt * 0.5),
+      ];
       this.roll = lerp(this.roll, clamp(-dy * 0.8, -0.35, 0.35), dt * 2);
     } else {
-      const fwd = input.axis('KeyW', 'ArrowUp') - input.axis('KeyS', 'ArrowDown') + input.gamepadThrottle();
-      const side = input.axis('KeyD', 'ArrowRight') - input.axis('KeyA', 'ArrowLeft') - input.gamepadSteer();
+      const fwd =
+        input.axis('KeyW', 'ArrowUp') -
+        input.axis('KeyS', 'ArrowDown') +
+        input.gamepadThrottle();
+      const side =
+        input.axis('KeyD', 'ArrowRight') -
+        input.axis('KeyA', 'ArrowLeft') -
+        input.gamepadSteer();
       const lift = input.axis('Space') - input.axis('ShiftLeft', 'ControlLeft');
       const yawIn = input.axis('KeyE') - input.axis('KeyQ');
       this.yaw += (yawIn * 1.2 + side * 0.6) * dt;
       const r: Vec2 = [-f[1], f[0]];
-      const target: Vec3 = [f[0] * fwd * 45 + r[0] * side * 15, lift * 10, f[1] * fwd * 45 + r[1] * side * 15];
-      this.vel = [lerp(this.vel[0], target[0], dt * 0.8), lerp(this.vel[1], target[1], dt * 1.5), lerp(this.vel[2], target[2], dt * 0.8)];
+      const target: Vec3 = [
+        f[0] * fwd * 45 + r[0] * side * 15,
+        lift * 10,
+        f[1] * fwd * 45 + r[1] * side * 15,
+      ];
+      this.vel = [
+        lerp(this.vel[0], target[0], dt * 0.8),
+        lerp(this.vel[1], target[1], dt * 1.5),
+        lerp(this.vel[2], target[2], dt * 0.8),
+      ];
       this.roll = lerp(this.roll, side * 0.3, dt * 3);
     }
-    this.pos = [this.pos[0] + this.vel[0] * dt, this.pos[1] + this.vel[1] * dt, this.pos[2] + this.vel[2] * dt];
+    this.pos = [
+      this.pos[0] + this.vel[0] * dt,
+      this.pos[1] + this.vel[1] * dt,
+      this.pos[2] + this.vel[2] * dt,
+    ];
     // Stay above terrain and rooftops.
-    const ground = Math.max(this.net.hf.sample(this.pos[0], this.pos[2]), 0) + 2;
+    const ground =
+      Math.max(this.net.hf.sample(this.pos[0], this.pos[2]), 0) + 2;
     if (this.pos[1] < ground) {
       this.pos[1] = ground;
       this.vel[1] = Math.max(0, this.vel[1]);
@@ -228,7 +292,11 @@ export class Player {
     this.pos[2] = clamp(this.pos[2], -lim, lim);
     this.speed = Math.hypot(this.vel[0], this.vel[2]);
     const fwdSpeed = this.vel[0] * f[0] + this.vel[2] * f[1];
-    this.pitch = lerp(this.pitch, clamp(-fwdSpeed * 0.006, -0.25, 0.15), dt * 2);
+    this.pitch = lerp(
+      this.pitch,
+      clamp(-fwdSpeed * 0.006, -0.25, 0.15),
+      dt * 2,
+    );
     modelMatrix(this.model, this.pos, f, this.pitch, this.roll);
   }
 

@@ -1,7 +1,14 @@
 // Road network queries for gameplay: lanes, junction lookup, nearest road,
 // driving surface height and building collision.
 
-import {Road, LANES, ROAD_WIDTH, type RoadChain, type Junction, type Building} from '../city/layout.ts';
+import {
+  Road,
+  LANES,
+  ROAD_WIDTH,
+  type RoadChain,
+  type Junction,
+  type Building,
+} from '../city/layout.ts';
 import {chainAt, type RoadGeom} from '../city/roadgeom.ts';
 import type {Heightfield} from '../city/terrain.ts';
 import {hash2} from '../math/random.ts';
@@ -59,7 +66,11 @@ export class RoadNet {
       for (let i = 0; i + 1 < c.pts.length; i++) {
         const a = c.pts[i];
         const b = c.pts[i + 1];
-        const keys = new Set([this.key(a[0], a[1]), this.key(b[0], b[1]), this.key((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)]);
+        const keys = new Set([
+          this.key(a[0], a[1]),
+          this.key(b[0], b[1]),
+          this.key((a[0] + b[0]) / 2, (a[1] + b[1]) / 2),
+        ]);
         for (const k of keys) {
           let l = this.segGrid.get(k);
           if (!l) this.segGrid.set(k, (l = []));
@@ -68,15 +79,26 @@ export class RoadNet {
       }
     });
     L.buildings.forEach((b, bi) => {
-      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      let x0 = Infinity,
+        x1 = -Infinity,
+        z0 = Infinity,
+        z1 = -Infinity;
       for (const q of b.footprint) {
         x0 = Math.min(x0, q[0]);
         x1 = Math.max(x1, q[0]);
         z0 = Math.min(z0, q[1]);
         z1 = Math.max(z1, q[1]);
       }
-      for (let z = Math.floor(z0 / this.cell); z <= Math.floor(z1 / this.cell); z++) {
-        for (let x = Math.floor(x0 / this.cell); x <= Math.floor(x1 / this.cell); x++) {
+      for (
+        let z = Math.floor(z0 / this.cell);
+        z <= Math.floor(z1 / this.cell);
+        z++
+      ) {
+        for (
+          let x = Math.floor(x0 / this.cell);
+          x <= Math.floor(x1 / this.cell);
+          x++
+        ) {
           const k = (z + 1000) * 4096 + (x + 1000);
           let l = this.bldGrid.get(k);
           if (!l) this.bldGrid.set(k, (l = []));
@@ -87,7 +109,10 @@ export class RoadNet {
   }
 
   private key(x: number, z: number) {
-    return (Math.floor(z / this.cell) + 1000) * 4096 + (Math.floor(x / this.cell) + 1000);
+    return (
+      (Math.floor(z / this.cell) + 1000) * 4096 +
+      (Math.floor(x / this.cell) + 1000)
+    );
   }
 
   junctionAt(chain: number, end: 0 | 1) {
@@ -126,7 +151,11 @@ export class RoadNet {
     const left: Vec2 = [d[1], -d[0]];
     const q2 = chainAt(c, arc, a + dir * 2);
     const slope = (q2.h - q.h) / 2;
-    return {p: [q.p[0] + left[0] * off, q.h + 0.03, q.p[1] + left[1] * off], d, slope};
+    return {
+      p: [q.p[0] + left[0] * off, q.h + 0.03, q.p[1] + left[1] * off],
+      d,
+      slope,
+    };
   }
 
   /** Arms leaving a junction (excluding the one we arrived on). */
@@ -135,7 +164,12 @@ export class RoadNet {
     return j.arms.filter(a => !(a.chain === fromChain && a.end === fromEnd));
   }
 
-  signalFor(junction: number, chain: number, end: number, time: number): number {
+  signalFor(
+    junction: number,
+    chain: number,
+    end: number,
+    time: number,
+  ): number {
     const j = this.junctions[junction];
     if (!j?.signal) return 0;
     const jg = this.geom.junctions[junction];
@@ -147,13 +181,24 @@ export class RoadNet {
   }
 
   /** Nearest point on any road centerline. */
-  nearestRoad(x: number, z: number, maxCells = 3): {chain: number; seg: number; t: number; dist: number} | null {
-    let best = null as {chain: number; seg: number; t: number; dist: number} | null;
+  nearestRoad(
+    x: number,
+    z: number,
+    maxCells = 3,
+  ): {chain: number; seg: number; t: number; dist: number} | null {
+    let best = null as {
+      chain: number;
+      seg: number;
+      t: number;
+      dist: number;
+    } | null;
     for (let r = 0; r <= maxCells; r++) {
       for (let dz = -r; dz <= r; dz++) {
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
-          for (const v of this.segGrid.get(this.key(x + dx * this.cell, z + dz * this.cell)) ?? []) {
+          for (const v of this.segGrid.get(
+            this.key(x + dx * this.cell, z + dz * this.cell),
+          ) ?? []) {
             const ci = Math.floor(v / 65536);
             const si = v % 65536;
             const c = this.chains[ci];
@@ -175,8 +220,16 @@ export class RoadNet {
       const c = this.chains[nr.chain];
       const half = ROAD_WIDTH[c.kind] / 2;
       if (nr.dist < half + 0.3) {
-        const h = c.heights[nr.seg] + (c.heights[nr.seg + 1] - c.heights[nr.seg]) * nr.t + 0.02;
-        if (nearHint === undefined || Math.abs(h - nearHint) < 4 || h > ground + 3) return h;
+        const h =
+          c.heights[nr.seg] +
+          (c.heights[nr.seg + 1] - c.heights[nr.seg]) * nr.t +
+          0.02;
+        if (
+          nearHint === undefined ||
+          Math.abs(h - nearHint) < 4 ||
+          h > ground + 3
+        )
+          return h;
       }
     }
     return ground + 0.16;
@@ -195,7 +248,11 @@ export class RoadNet {
       for (let i = 0, j = fp.length - 1; i < fp.length; j = i++) {
         const a = fp[i];
         const c = fp[j];
-        if (a[1] > p[2] !== c[1] > p[2] && p[0] < ((c[0] - a[0]) * (p[2] - a[1])) / (c[1] - a[1]) + a[0]) inside = !inside;
+        if (
+          a[1] > p[2] !== c[1] > p[2] &&
+          p[0] < ((c[0] - a[0]) * (p[2] - a[1])) / (c[1] - a[1]) + a[0]
+        )
+          inside = !inside;
         const [d, t] = pointSegment([p[0], p[2]], c, a);
         if (d < best) {
           best = d;
@@ -205,8 +262,16 @@ export class RoadNet {
           bn = [(p[0] - qx) / l, (p[2] - qz) / l];
         }
       }
-      if (inside) push = [push[0] - bn[0] * (best + radius), push[1] - bn[1] * (best + radius)];
-      else if (best < radius) push = [push[0] + bn[0] * (radius - best), push[1] + bn[1] * (radius - best)];
+      if (inside)
+        push = [
+          push[0] - bn[0] * (best + radius),
+          push[1] - bn[1] * (best + radius),
+        ];
+      else if (best < radius)
+        push = [
+          push[0] + bn[0] * (radius - best),
+          push[1] + bn[1] * (radius - best),
+        ];
     }
     return push;
   }

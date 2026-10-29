@@ -50,7 +50,10 @@ export class City {
   }
 
   async load(progress: Progress, focus: () => Vec3) {
-    const n = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
+    const n = Math.max(
+      2,
+      Math.min(6, (navigator.hardwareConcurrency || 4) - 1),
+    );
     let readyCount = 0;
     let resolveBase!: () => void;
     let rejectAll!: (e: Error) => void;
@@ -61,7 +64,10 @@ export class City {
     let resolveReady!: () => void;
     const allReady = new Promise<void>(res => (resolveReady = res));
     for (let i = 0; i < n; i++) {
-      const w = new Worker(new URL('./city-worker.js', import.meta.url), {type: 'module', name: `city-worker-${i}`});
+      const w = new Worker(new URL('./city-worker.js', import.meta.url), {
+        type: 'module',
+        name: `city-worker-${i}`,
+      });
       this.workers.push(w);
       this.busy.push(0);
       w.onmessage = (e: MessageEvent) => {
@@ -88,7 +94,12 @@ export class City {
         }
       };
       w.onerror = e => rejectAll(new Error(`[city worker ${i}] ${e.message}`));
-      const req: WorkerRequest = {type: 'init', cityType: this.type, seed: this.seed, primary: i === 0};
+      const req: WorkerRequest = {
+        type: 'init',
+        cityType: this.type,
+        seed: this.seed,
+        primary: i === 0,
+      };
       w.postMessage(req);
     }
     await baseDone;
@@ -103,7 +114,13 @@ export class City {
         const done1 = this.tiles.filter(s => !s.pending1).length;
         const near = this.nearTiles(focus(), this.lod0Radius);
         const done0 = near.filter(t => this.tiles[t].lod0).length;
-        progress('Building streets', 0.8 + 0.2 * ((done1 / total) * 0.6 + (done0 / Math.max(1, near.length)) * 0.4));
+        progress(
+          'Building streets',
+          0.8 +
+            0.2 *
+              ((done1 / total) * 0.6 +
+                (done0 / Math.max(1, near.length)) * 0.4),
+        );
         if (done1 === total && done0 === near.length) res();
         else setTimeout(check, 100);
       };
@@ -111,15 +128,34 @@ export class City {
     });
   }
 
-  private onBase(summary: LayoutSummary, base: ClusterData, piers: ClusterData, lights: Float32Array, landUse: Uint8Array) {
+  private onBase(
+    summary: LayoutSummary,
+    base: ClusterData,
+    piers: ClusterData,
+    lights: Float32Array,
+    landUse: Uint8Array,
+  ) {
     this.summary = summary;
     const L = summary.layout;
     this.heights = new Heightfield(L.params.size, L.cell, L.heights);
     this.tilesPerSide = Math.ceil(L.params.size / TILE_SIZE);
     const total = this.tilesPerSide * this.tilesPerSide;
     this.tileLods = new Uint32Array(total).fill(1);
-    this.tiles = Array.from({length: total}, () => ({lod1: null, lod0: null, lights1: new Float32Array(0), lights0: new Float32Array(0), pending0: false, pending1: true}));
-    this.renderer.setTerrain(L.heights, L.heightN, L.cell, L.params.size, landUse);
+    this.tiles = Array.from({length: total}, () => ({
+      lod1: null,
+      lod0: null,
+      lights1: new Float32Array(0),
+      lights0: new Float32Array(0),
+      pending0: false,
+      pending1: true,
+    }));
+    this.renderer.setTerrain(
+      L.heights,
+      L.heightN,
+      L.cell,
+      L.params.size,
+      landUse,
+    );
     for (const c of [base, piers]) {
       const h = this.renderer.uploadClusters(c);
       if (h) this.baseHandles.push(h);
@@ -127,15 +163,23 @@ export class City {
     this.baseLights = lights;
     this.baseLightTiles = Array.from({length: total}, () => []);
     for (let i = 0; i < lights.length / LIGHT_FLOATS; i++) {
-      this.baseLightTiles[this.tileAt(lights[i * 8], lights[i * 8 + 2])].push(i);
+      this.baseLightTiles[this.tileAt(lights[i * 8], lights[i * 8 + 2])].push(
+        i,
+      );
     }
     this.renderer.setTileLods(this.tileLods);
   }
 
   tileAt(x: number, z: number) {
     const s = this.summary.layout.params.size;
-    const tx = Math.min(this.tilesPerSide - 1, Math.max(0, Math.floor((x + s / 2) / TILE_SIZE)));
-    const tz = Math.min(this.tilesPerSide - 1, Math.max(0, Math.floor((z + s / 2) / TILE_SIZE)));
+    const tx = Math.min(
+      this.tilesPerSide - 1,
+      Math.max(0, Math.floor((x + s / 2) / TILE_SIZE)),
+    );
+    const tz = Math.min(
+      this.tilesPerSide - 1,
+      Math.max(0, Math.floor((z + s / 2) / TILE_SIZE)),
+    );
     return tz * this.tilesPerSide + tx;
   }
 
@@ -150,11 +194,17 @@ export class City {
 
   private nearTiles(p: Vec3, r: number) {
     const out: number[] = [];
-    for (let t = 0; t < this.tiles.length; t++) if (this.tileDist(t, p) < r) out.push(t);
+    for (let t = 0; t < this.tiles.length; t++)
+      if (this.tileDist(t, p) < r) out.push(t);
     return out;
   }
 
-  private onTile(tile: number, lod: number, clusters: ClusterData, lights: Float32Array) {
+  private onTile(
+    tile: number,
+    lod: number,
+    clusters: ClusterData,
+    lights: Float32Array,
+  ) {
     const s = this.tiles[tile];
     const h = this.renderer.uploadClusters(clusters);
     if (lod === 1) {
@@ -174,7 +224,12 @@ export class City {
       while (this.busy[i] < 2 && this.queue.length) {
         const job = this.queue.shift()!;
         this.busy[i]++;
-        const req: WorkerRequest = {type: 'tile', tile: job.tile, lod: job.lod, id: this.nextId++};
+        const req: WorkerRequest = {
+          type: 'tile',
+          tile: job.tile,
+          lod: job.lod,
+          id: this.nextId++,
+        };
         this.workers[i].postMessage(req);
       }
     }
@@ -217,7 +272,12 @@ export class City {
   }
 
   /** Pick the nearest lights to the camera and upload them. */
-  updateLights(eye: Vec3, night: number, flicker: number, extra: Float32Array = new Float32Array(0)) {
+  updateLights(
+    eye: Vec3,
+    night: number,
+    flicker: number,
+    extra: Float32Array = new Float32Array(0),
+  ) {
     if (!this.tiles.length) return;
     const ne = Math.min(extra.length / 8, 128);
     if (night < 0.05) {
@@ -247,7 +307,14 @@ export class City {
     for (let k = 0; k < n; k++) {
       const {src, i} = cand[k];
       const kind = src[i * 8 + 7];
-      const scale = (kind === LightKind.street ? 3.5 : kind === LightKind.sign ? 0.55 * flicker : kind === LightKind.vending ? 0.35 : 0.8) * night;
+      const scale =
+        (kind === LightKind.street
+          ? 3.5
+          : kind === LightKind.sign
+            ? 0.55 * flicker
+            : kind === LightKind.vending
+              ? 0.35
+              : 0.8) * night;
       const o = (k + ne) * 8;
       out[o] = src[i * 8];
       out[o + 1] = src[i * 8 + 1];

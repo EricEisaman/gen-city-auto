@@ -37,7 +37,12 @@ export const mat4 = {
   },
 
   /** Reverse-Z infinite perspective: near maps to 1, infinity to 0. */
-  perspectiveReverseZ(out: Mat4, fovY: number, aspect: number, near: number): Mat4 {
+  perspectiveReverseZ(
+    out: Mat4,
+    fovY: number,
+    aspect: number,
+    near: number,
+  ): Mat4 {
     const f = 1 / Math.tan(fovY / 2);
     out.fill(0);
     out[0] = f / aspect;
@@ -48,7 +53,15 @@ export const mat4 = {
   },
 
   /** Orthographic projection with z in 0..1 (near -> 0, far -> 1). */
-  ortho(out: Mat4, l: number, r: number, b: number, t: number, n: number, f: number): Mat4 {
+  ortho(
+    out: Mat4,
+    l: number,
+    r: number,
+    b: number,
+    t: number,
+    n: number,
+    f: number,
+  ): Mat4 {
     out.fill(0);
     out[0] = 2 / (r - l);
     out[5] = 2 / (t - b);
@@ -98,10 +111,22 @@ export const mat4 = {
   },
 
   invert(out: Mat4, m: Mat4): Mat4 {
-    const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
-    const a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
-    const a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
-    const a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+    const a00 = m[0],
+      a01 = m[1],
+      a02 = m[2],
+      a03 = m[3];
+    const a10 = m[4],
+      a11 = m[5],
+      a12 = m[6],
+      a13 = m[7];
+    const a20 = m[8],
+      a21 = m[9],
+      a22 = m[10],
+      a23 = m[11];
+    const a30 = m[12],
+      a31 = m[13],
+      a32 = m[14],
+      a33 = m[15];
     const b00 = a00 * a11 - a01 * a10;
     const b01 = a00 * a12 - a02 * a10;
     const b02 = a00 * a13 - a03 * a10;
@@ -114,7 +139,8 @@ export const mat4 = {
     const b09 = a21 * a32 - a22 * a31;
     const b10 = a21 * a33 - a23 * a31;
     const b11 = a22 * a33 - a23 * a32;
-    let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    let det =
+      b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
     if (!det) return mat4.identity(out);
     det = 1 / det;
     out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
@@ -158,7 +184,9 @@ export const mat4 = {
   },
 
   transformPoint(m: Mat4, p: Vec3): Vec3 {
-    const x = p[0], y = p[1], z = p[2];
+    const x = p[0],
+      y = p[1],
+      z = p[2];
     const w = m[3] * x + m[7] * y + m[11] * z + m[15] || 1;
     return [
       (m[0] * x + m[4] * y + m[8] * z + m[12]) / w,
@@ -171,7 +199,10 @@ export const mat4 = {
 /** Extract 6 frustum planes (normal.xyz, d) from a view-projection matrix, reverse-Z aware. */
 export function frustumPlanes(vp: Mat4, out = new Float32Array(24)) {
   const row = (r: number) => [vp[r], vp[4 + r], vp[8 + r], vp[12 + r]];
-  const r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+  const r0 = row(0),
+    r1 = row(1),
+    r2 = row(2),
+    r3 = row(3);
   const planes = [
     r3.map((v, i) => v + r0[i]),
     r3.map((v, i) => v - r0[i]),

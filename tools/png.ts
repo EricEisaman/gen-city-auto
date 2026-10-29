@@ -24,7 +24,10 @@ export function writePng(path: string, w: number, h: number, rgba: Uint8Array) {
   const raw = Buffer.alloc((w * 4 + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (w * 4 + 1)] = 0;
-    Buffer.from(rgba.buffer, rgba.byteOffset + y * w * 4, w * 4).copy(raw, y * (w * 4 + 1) + 1);
+    Buffer.from(rgba.buffer, rgba.byteOffset + y * w * 4, w * 4).copy(
+      raw,
+      y * (w * 4 + 1) + 1,
+    );
   }
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0);
@@ -32,5 +35,13 @@ export function writePng(path: string, w: number, h: number, rgba: Uint8Array) {
   ihdr[8] = 8;
   ihdr[9] = 6;
   const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  fs.writeFileSync(path, Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', new Uint8Array())]));
+  fs.writeFileSync(
+    path,
+    Buffer.concat([
+      sig,
+      chunk('IHDR', ihdr),
+      chunk('IDAT', zlib.deflateSync(raw)),
+      chunk('IEND', new Uint8Array()),
+    ]),
+  );
 }

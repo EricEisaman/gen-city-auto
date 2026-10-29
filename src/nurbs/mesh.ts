@@ -11,7 +11,12 @@ export interface Mesh {
   indices: number[];
 }
 
-export const emptyMesh = (): Mesh => ({positions: [], normals: [], materials: [], indices: []});
+export const emptyMesh = (): Mesh => ({
+  positions: [],
+  normals: [],
+  materials: [],
+  indices: [],
+});
 
 export interface TessOptions {
   /** Segments along u / v. Default: chosen from surface size and curvature. */
@@ -23,6 +28,17 @@ export interface TessOptions {
   doubleSided?: boolean;
   /** Flip the normal direction (S_u x S_v is the default front). */
   flip?: boolean;
+}
+
+let detailScale = 1;
+
+/**
+ * Global level-of-detail scale applied to every tessellate() call: 1 = full
+ * detail, 0.5 = half the segments in each direction, and so on. The renderer
+ * builds vehicle LODs by regenerating the same design at lower scales.
+ */
+export function setDetailScale(s: number) {
+  detailScale = s;
 }
 
 /** Estimate segments for one parameter direction from the control net. */
@@ -47,7 +63,8 @@ function autoSegments(s: NurbsSurface, dirU: boolean, edge: number) {
           const a = Math.hypot(prev[0], prev[1], prev[2]);
           const b = Math.hypot(d[0], d[1], d[2]);
           if (a > 1e-9 && b > 1e-9) {
-            const c = (prev[0] * d[0] + prev[1] * d[1] + prev[2] * d[2]) / (a * b);
+            const c =
+              (prev[0] * d[0] + prev[1] * d[1] + prev[2] * d[2]) / (a * b);
             turn += Math.acos(Math.max(-1, Math.min(1, c)));
           }
         }
@@ -65,10 +82,17 @@ function autoSegments(s: NurbsSurface, dirU: boolean, edge: number) {
 }
 
 /** Tessellate a NURBS surface into `mesh` with material id `material`. */
-export function tessellate(mesh: Mesh, s: NurbsSurface, material: number, opts: TessOptions = {}) {
+export function tessellate(
+  mesh: Mesh,
+  s: NurbsSurface,
+  material: number,
+  opts: TessOptions = {},
+) {
   const edge = opts.edge ?? 0.15;
-  const segU = opts.segU ?? autoSegments(s, true, edge);
-  const segV = opts.segV ?? autoSegments(s, false, edge);
+  const scaleSeg = (n: number) =>
+    n <= 1 ? n : Math.max(2, Math.round(n * detailScale));
+  const segU = scaleSeg(opts.segU ?? autoSegments(s, true, edge));
+  const segV = scaleSeg(opts.segV ?? autoSegments(s, false, edge));
   const base = mesh.positions.length / 3;
   const sign = opts.flip ? -1 : 1;
   const grid: Vec3[] = [];
@@ -78,12 +102,24 @@ export function tessellate(mesh: Mesh, s: NurbsSurface, material: number, opts: 
       const u = i / segU;
       const v = j / segV;
       const [P, Su, Sv] = surfaceEval(s, u, v);
-      let n: Vec3 = [Su[1] * Sv[2] - Su[2] * Sv[1], Su[2] * Sv[0] - Su[0] * Sv[2], Su[0] * Sv[1] - Su[1] * Sv[0]];
+      let n: Vec3 = [
+        Su[1] * Sv[2] - Su[2] * Sv[1],
+        Su[2] * Sv[0] - Su[0] * Sv[2],
+        Su[0] * Sv[1] - Su[1] * Sv[0],
+      ];
       let l = Math.hypot(n[0], n[1], n[2]);
       if (l < 1e-10) {
         // Degenerate (e.g. a pole): nudge inward to find a usable normal.
-        const [, Su2, Sv2] = surfaceEval(s, Math.min(Math.max(u, 1e-3), 1 - 1e-3), Math.min(Math.max(v, 1e-3), 1 - 1e-3));
-        n = [Su2[1] * Sv2[2] - Su2[2] * Sv2[1], Su2[2] * Sv2[0] - Su2[0] * Sv2[2], Su2[0] * Sv2[1] - Su2[1] * Sv2[0]];
+        const [, Su2, Sv2] = surfaceEval(
+          s,
+          Math.min(Math.max(u, 1e-3), 1 - 1e-3),
+          Math.min(Math.max(v, 1e-3), 1 - 1e-3),
+        );
+        n = [
+          Su2[1] * Sv2[2] - Su2[2] * Sv2[1],
+          Su2[2] * Sv2[0] - Su2[0] * Sv2[2],
+          Su2[0] * Sv2[1] - Su2[1] * Sv2[0],
+        ];
         l = Math.hypot(n[0], n[1], n[2]) || 1;
       }
       grid.push(P);
@@ -95,7 +131,11 @@ export function tessellate(mesh: Mesh, s: NurbsSurface, material: number, opts: 
     for (let k = 0; k < grid.length; k++) {
       mesh.positions.push(...grid[k]);
       const n = norms[k];
-      mesh.normals.push(flip ? -n[0] : n[0], flip ? -n[1] : n[1], flip ? -n[2] : n[2]);
+      mesh.normals.push(
+        flip ? -n[0] : n[0],
+        flip ? -n[1] : n[1],
+        flip ? -n[2] : n[2],
+      );
       mesh.materials.push(material);
     }
     const row = segV + 1;
@@ -104,7 +144,8 @@ export function tessellate(mesh: Mesh, s: NurbsSurface, material: number, opts: 
         const a = b + i * row + j;
         const c = a + row;
         // Counter-clockwise when viewed from the normal side.
-        if (flip !== !!opts.flip) mesh.indices.push(a, a + 1, c, c, a + 1, c + 1);
+        if (flip !== !!opts.flip)
+          mesh.indices.push(a, a + 1, c, c, a + 1, c + 1);
         else mesh.indices.push(a, c, a + 1, a + 1, c, c + 1);
       }
     }
@@ -119,20 +160,53 @@ export function addBox(mesh: Mesh, center: Vec3, half: Vec3, material: number) {
   const [cx, cy, cz] = center;
   const [hx, hy, hz] = half;
   const faces: [Vec3, Vec3, Vec3][] = [
-    [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-    [[-1, 0, 0], [0, 1, 0], [0, 0, -1]],
-    [[0, 1, 0], [0, 0, 1], [1, 0, 0]],
-    [[0, -1, 0], [0, 0, -1], [1, 0, 0]],
-    [[0, 0, 1], [1, 0, 0], [0, 1, 0]],
-    [[0, 0, -1], [-1, 0, 0], [0, 1, 0]],
+    [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ],
+    [
+      [-1, 0, 0],
+      [0, 1, 0],
+      [0, 0, -1],
+    ],
+    [
+      [0, 1, 0],
+      [0, 0, 1],
+      [1, 0, 0],
+    ],
+    [
+      [0, -1, 0],
+      [0, 0, -1],
+      [1, 0, 0],
+    ],
+    [
+      [0, 0, 1],
+      [1, 0, 0],
+      [0, 1, 0],
+    ],
+    [
+      [0, 0, -1],
+      [-1, 0, 0],
+      [0, 1, 0],
+    ],
   ];
   for (const [n, a, b] of faces) {
     // Pick tangents so a x b = n (counter-clockwise front faces).
-    const t = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const t = [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0],
+    ];
     const flip = t[0] * n[0] + t[1] * n[1] + t[2] * n[2] < 0;
     const B = flip ? ([-b[0], -b[1], -b[2]] as Vec3) : b;
     const base = mesh.positions.length / 3;
-    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    for (const [su, sv] of [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ]) {
       mesh.positions.push(
         cx + (n[0] + a[0] * su + B[0] * sv) * hx,
         cy + (n[1] + a[1] * su + B[1] * sv) * hy,
@@ -146,7 +220,12 @@ export function addBox(mesh: Mesh, center: Vec3, half: Vec3, material: number) {
 }
 
 /** Append mesh b (optionally transformed by a point/normal mapping) into a. */
-export function mergeMesh(a: Mesh, b: Mesh, xform?: (p: Vec3) => Vec3, nform?: (n: Vec3) => Vec3) {
+export function mergeMesh(
+  a: Mesh,
+  b: Mesh,
+  xform?: (p: Vec3) => Vec3,
+  nform?: (n: Vec3) => Vec3,
+) {
   const base = a.positions.length / 3;
   for (let i = 0; i < b.positions.length; i += 3) {
     const p: Vec3 = [b.positions[i], b.positions[i + 1], b.positions[i + 2]];
@@ -161,7 +240,12 @@ export function mergeMesh(a: Mesh, b: Mesh, xform?: (p: Vec3) => Vec3, nform?: (
 /** Mirror a mesh across x = 0, fixing winding so faces stay front-facing. */
 export function mirrorMeshX(m: Mesh): Mesh {
   const out = emptyMesh();
-  mergeMesh(out, m, p => [-p[0], p[1], p[2]], n => [-n[0], n[1], n[2]]);
+  mergeMesh(
+    out,
+    m,
+    p => [-p[0], p[1], p[2]],
+    n => [-n[0], n[1], n[2]],
+  );
   for (let i = 0; i < out.indices.length; i += 3) {
     const t = out.indices[i + 1];
     out.indices[i + 1] = out.indices[i + 2];

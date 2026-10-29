@@ -38,7 +38,8 @@ export const Mat = {
 } as const;
 export type MatId = (typeof Mat)[keyof typeof Mat];
 
-export type VehicleKind = 'car' | 'taxi' | 'van' | 'truck' | 'bus' | 'helicopter' | 'train' | 'person';
+export type VehicleKind =
+  'car' | 'taxi' | 'van' | 'truck' | 'bus' | 'helicopter' | 'train' | 'person';
 
 export interface Wheel {
   /** Wheel center in vehicle space. */

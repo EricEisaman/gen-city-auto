@@ -28,7 +28,12 @@ import {
   type Graph,
   type Polyline,
 } from './graph.ts';
-import {generateTerrain, Heightfield, SEA_LEVEL, type Terrain} from './terrain.ts';
+import {
+  generateTerrain,
+  Heightfield,
+  SEA_LEVEL,
+  type Terrain,
+} from './terrain.ts';
 
 /** Road classes. */
 export const Road = {lane: 0, street: 1, avenue: 2, boulevard: 3} as const;
@@ -69,7 +74,8 @@ export interface Lot {
   frontage: boolean[];
 }
 
-export type BuildingKind = 'tower' | 'glass' | 'midrise' | 'pencil' | 'house' | 'apartment' | 'station';
+export type BuildingKind =
+  'tower' | 'glass' | 'midrise' | 'pencil' | 'house' | 'apartment' | 'station';
 
 export interface Building {
   id: number;
@@ -136,17 +142,26 @@ export function densityAt(hubs: Hub[], noise: Noise2D, x: number, z: number) {
 function catmull(pts: Vec2[], closed: boolean, step: number): Vec2[] {
   const out: Vec2[] = [];
   const n = pts.length;
-  const get = (i: number) => (closed ? pts[(i + n) % n] : pts[clamp(i, 0, n - 1)]);
+  const get = (i: number) =>
+    closed ? pts[(i + n) % n] : pts[clamp(i, 0, n - 1)];
   const segs = closed ? n : n - 1;
   for (let i = 0; i < segs; i++) {
-    const p0 = get(i - 1), p1 = get(i), p2 = get(i + 1), p3 = get(i + 2);
+    const p0 = get(i - 1),
+      p1 = get(i),
+      p2 = get(i + 1),
+      p3 = get(i + 2);
     const len = dist2(p1, p2);
     const k = Math.max(1, Math.ceil(len / step));
     for (let s = 0; s < k; s++) {
       const t = s / k;
-      const t2 = t * t, t3 = t2 * t;
+      const t2 = t * t,
+        t3 = t2 * t;
       const f = (a: number, b: number, c: number, d: number) =>
-        0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+        0.5 *
+        (2 * b +
+          (-a + c) * t +
+          (2 * a - 5 * b + 4 * c - d) * t2 +
+          (-a + 3 * b - 3 * c + d) * t3);
       out.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
     }
   }
@@ -185,7 +200,13 @@ function clipToLand(pts: Vec2[], hf: Heightfield, maxBridge: number): Vec2[][] {
   return out;
 }
 
-function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: Hub[]): Polyline[] {
+function arterials(
+  p: CityParams,
+  rng: Rng,
+  noise: Noise2D,
+  center: Vec2,
+  hubs: Hub[],
+): Polyline[] {
   const S = p.size / 2;
   const lines: Polyline[] = [];
   if (p.arterials === 'radial') {
@@ -196,10 +217,16 @@ function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: 
       const m = 10 + k * 4;
       for (let i = 0; i < m; i++) {
         const a = (i / m) * Math.PI * 2;
-        const rr = r * (1 + 0.16 * noise.noise(Math.cos(a) * 1.3 + k * 7, Math.sin(a) * 1.3));
+        const rr =
+          r *
+          (1 +
+            0.16 * noise.noise(Math.cos(a) * 1.3 + k * 7, Math.sin(a) * 1.3));
         ctrl.push([center[0] + Math.cos(a) * rr, center[1] + Math.sin(a) * rr]);
       }
-      lines.push({pts: catmull(ctrl, true, 20), kind: k === p.ringCount ? Road.avenue : Road.boulevard});
+      lines.push({
+        pts: catmull(ctrl, true, 20),
+        kind: k === p.ringCount ? Road.avenue : Road.boulevard,
+      });
     }
     const a0 = rng.range(0, Math.PI * 2);
     for (let i = 0; i < p.radialCount; i++) {
@@ -209,14 +236,21 @@ function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: 
       for (let s = 0; s <= steps; s++) {
         const r = 40 + (S * 1.5 * s) / steps;
         const wob = noise.noise(i * 3.3, s * 0.5) * 0.18;
-        ctrl.push([center[0] + Math.cos(a + wob) * r, center[1] + Math.sin(a + wob) * r]);
+        ctrl.push([
+          center[0] + Math.cos(a + wob) * r,
+          center[1] + Math.sin(a + wob) * r,
+        ]);
       }
-      lines.push({pts: catmull(ctrl, false, 20), kind: i % 2 === 0 ? Road.boulevard : Road.avenue});
+      lines.push({
+        pts: catmull(ctrl, false, 20),
+        kind: i % 2 === 0 ? Road.boulevard : Road.avenue,
+      });
     }
   } else {
     // Manhattan-like: a rotated main grid of avenues.
     const ang = rng.range(0.35, 0.55);
-    const c = Math.cos(ang), s = Math.sin(ang);
+    const c = Math.cos(ang),
+      s = Math.sin(ang);
     const avenueGap = 260;
     for (let k = -14; k <= 14; k++) {
       const off = k * avenueGap;
@@ -230,7 +264,8 @@ function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: 
     for (let k = -8; k <= 8; k++) {
       const off = k * avenueGap * 3;
       const pts: Vec2[] = [];
-      for (let t = -S * 1.5; t <= S * 1.5; t += 40) pts.push([center[0] + t * c - off * s, center[1] + t * s + off * c]);
+      for (let t = -S * 1.5; t <= S * 1.5; t += 40)
+        pts.push([center[0] + t * c - off * s, center[1] + t * s + off * c]);
       lines.push({pts, kind: Road.avenue});
     }
   }
@@ -238,7 +273,8 @@ function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: 
     // A loose lattice of avenues covers land the rings and radials miss.
     const gap = 720;
     const ang = rng.range(-0.3, 0.3);
-    const c = Math.cos(ang), s = Math.sin(ang);
+    const c = Math.cos(ang),
+      s = Math.sin(ang);
     for (const axis of [0, 1]) {
       for (let k = -Math.ceil(S / gap) - 1; k <= Math.ceil(S / gap) + 1; k++) {
         const pts: Vec2[] = [];
@@ -249,7 +285,11 @@ function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: 
           pts.push([center[0] + x * c - z * s, center[1] + x * s + z * c]);
         }
         // The central north-south avenue may bridge wide water (harbour crossing).
-        lines.push({pts, kind: k === 0 && axis === 1 ? Road.boulevard : Road.avenue, maxBridge: k === 0 && axis === 1 ? 2600 : undefined});
+        lines.push({
+          pts,
+          kind: k === 0 && axis === 1 ? Road.boulevard : Road.avenue,
+          maxBridge: k === 0 && axis === 1 ? 2600 : undefined,
+        });
       }
     }
   }
@@ -268,7 +308,10 @@ function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: 
     }
     if (best >= 0 && best > i) {
       const b = hubs[best].p;
-      const mid: Vec2 = [(a[0] + b[0]) / 2 + rng.range(-150, 150), (a[1] + b[1]) / 2 + rng.range(-150, 150)];
+      const mid: Vec2 = [
+        (a[0] + b[0]) / 2 + rng.range(-150, 150),
+        (a[1] + b[1]) / 2 + rng.range(-150, 150),
+      ];
       lines.push({pts: catmull([a, mid, b], false, 20), kind: Road.avenue});
     }
   }
@@ -297,7 +340,13 @@ function clipLineToPolygon(o: Vec2, d: Vec2, poly: Vec2[]): [number, number][] {
   return out;
 }
 
-function minorStreets(p: CityParams, rng: Rng, noise: Noise2D, region: Vec2[], hubs: Hub[]): Polyline[] {
+function minorStreets(
+  p: CityParams,
+  rng: Rng,
+  noise: Noise2D,
+  region: Vec2[],
+  hubs: Hub[],
+): Polyline[] {
   const out: Polyline[] = [];
   // Orientation from the longest region edge.
   let best = 0;
@@ -312,7 +361,8 @@ function minorStreets(p: CityParams, rng: Rng, noise: Noise2D, region: Vec2[], h
     }
   }
   if (!rng.chance(p.gridRegularity)) ang += rng.range(-0.5, 0.5);
-  let cx = 0, cz = 0;
+  let cx = 0,
+    cz = 0;
   for (const q of region) {
     cx += q[0];
     cz += q[1];
@@ -333,8 +383,20 @@ function minorStreets(p: CityParams, rng: Rng, noise: Noise2D, region: Vec2[], h
   const dropP = 0.18 + (1 - p.gridRegularity) * 0.2;
   const bend = (1 - p.gridRegularity) * 10;
   // Lines along u (spaced by sy), split into pieces between crossings of v lines.
-  const emit = (dir: Vec2, side: Vec2, spacing: number, cross: number, off: number, crossOff: number, drop: number) => {
-    for (let k = -Math.ceil(R / spacing) - 1; k <= Math.ceil(R / spacing) + 1; k++) {
+  const emit = (
+    dir: Vec2,
+    side: Vec2,
+    spacing: number,
+    cross: number,
+    off: number,
+    crossOff: number,
+    drop: number,
+  ) => {
+    for (
+      let k = -Math.ceil(R / spacing) - 1;
+      k <= Math.ceil(R / spacing) + 1;
+      k++
+    ) {
       const s = k * spacing + off;
       const o: Vec2 = [cx + side[0] * s, cz + side[1] * s];
       for (const [t0, t1] of clipLineToPolygon(o, dir, region)) {
@@ -342,7 +404,8 @@ function minorStreets(p: CityParams, rng: Rng, noise: Noise2D, region: Vec2[], h
         // Break at crossing positions, dropping some pieces for irregularity.
         const first = Math.ceil((t0 - crossOff) / cross);
         const cuts = [t0];
-        for (let c = first; c * cross + crossOff < t1; c++) cuts.push(c * cross + crossOff);
+        for (let c = first; c * cross + crossOff < t1; c++)
+          cuts.push(c * cross + crossOff);
         cuts.push(t1);
         for (let c = 0; c + 1 < cuts.length; c++) {
           const a = cuts[c];
@@ -354,10 +417,22 @@ function minorStreets(p: CityParams, rng: Rng, noise: Noise2D, region: Vec2[], h
           const nseg = Math.max(1, Math.ceil((b - a) / 30));
           for (let q = 0; q <= nseg; q++) {
             const t = lerp(a, b, q / nseg);
-            const w = q === 0 || q === nseg ? 0 : noise.noise((o[0] + dir[0] * t) / 150, (o[1] + dir[1] * t) / 150) * bend;
-            pts.push([o[0] + dir[0] * t + side[0] * w, o[1] + dir[1] * t + side[1] * w]);
+            const w =
+              q === 0 || q === nseg
+                ? 0
+                : noise.noise(
+                    (o[0] + dir[0] * t) / 150,
+                    (o[1] + dir[1] * t) / 150,
+                  ) * bend;
+            pts.push([
+              o[0] + dir[0] * t + side[0] * w,
+              o[1] + dir[1] * t + side[1] * w,
+            ]);
           }
-          out.push({pts, kind: rng.chance(0.25 + dens * 0.3) ? Road.street : Road.lane});
+          out.push({
+            pts,
+            kind: rng.chance(0.25 + dens * 0.3) ? Road.street : Road.lane,
+          });
         }
       }
     }
@@ -388,7 +463,13 @@ function clipHalf(poly: Vec2[], p: Vec2, n: Vec2): Vec2[] {
 
 /** Oriented bounding box: [center, axis(unit), halfLen, halfWid]. */
 export function obb(poly: Vec2[]): {c: Vec2; u: Vec2; hu: number; hv: number} {
-  let best = {c: [0, 0] as Vec2, u: [1, 0] as Vec2, hu: 0, hv: 0, area: Infinity};
+  let best = {
+    c: [0, 0] as Vec2,
+    u: [1, 0] as Vec2,
+    hu: 0,
+    hv: 0,
+    area: Infinity,
+  };
   for (let i = 0; i < poly.length; i++) {
     const a = poly[i];
     const b = poly[(i + 1) % poly.length];
@@ -396,7 +477,10 @@ export function obb(poly: Vec2[]): {c: Vec2; u: Vec2; hu: number; hv: number} {
     if (l < 1e-6) continue;
     const u: Vec2 = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
     const v: Vec2 = [-u[1], u[0]];
-    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    let u0 = Infinity,
+      u1 = -Infinity,
+      v0 = Infinity,
+      v1 = -Infinity;
     for (const q of poly) {
       const pu = dot2(q, u);
       const pv = dot2(q, v);
@@ -409,7 +493,13 @@ export function obb(poly: Vec2[]): {c: Vec2; u: Vec2; hu: number; hv: number} {
     if (area < best.area) {
       const cu = (u0 + u1) / 2;
       const cv = (v0 + v1) / 2;
-      best = {c: [u[0] * cu + v[0] * cv, u[1] * cu + v[1] * cv], u, hu: (u1 - u0) / 2, hv: (v1 - v0) / 2, area};
+      best = {
+        c: [u[0] * cu + v[0] * cv, u[1] * cu + v[1] * cv],
+        u,
+        hu: (u1 - u0) / 2,
+        hv: (v1 - v0) / 2,
+        area,
+      };
     }
   }
   return best;
@@ -436,7 +526,15 @@ function cleanPolygon(poly: Vec2[], minEdge: number): Vec2[] {
   return out;
 }
 
-function splitLots(rng: Rng, poly: Vec2[], frontage: boolean[], maxArea: number, minArea: number, out: Lot[], depth = 0) {
+function splitLots(
+  rng: Rng,
+  poly: Vec2[],
+  frontage: boolean[],
+  maxArea: number,
+  minArea: number,
+  out: Lot[],
+  depth = 0,
+) {
   const area = polygonArea(poly);
   if (area < minArea * 0.5 || poly.length < 3) return;
   if (area <= maxArea || depth > 12) {
@@ -461,7 +559,8 @@ function splitLots(rng: Rng, poly: Vec2[], frontage: boolean[], maxArea: number,
       const mid: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
       if (Math.abs(dot2(sub2(mid, pp), n)) < 0.05) return false;
       for (let k = 0; k < poly.length; k++) {
-        if (pointSegment(mid, poly[k], poly[(k + 1) % poly.length])[0] < 0.05) return frontage[k];
+        if (pointSegment(mid, poly[k], poly[(k + 1) % poly.length])[0] < 0.05)
+          return frontage[k];
       }
       return false;
     });
@@ -472,18 +571,28 @@ function splitLots(rng: Rng, poly: Vec2[], frontage: boolean[], maxArea: number,
 // ---------------------------------------------------------------------------
 // Elevated lines
 
-function elevateProfile(pts: Vec2[], hf: Heightfield, clearance: number, grade: number): number[] {
+function elevateProfile(
+  pts: Vec2[],
+  hf: Heightfield,
+  clearance: number,
+  grade: number,
+): number[] {
   const n = pts.length;
-  const h = pts.map(q => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 2) + clearance);
+  const h = pts.map(
+    q => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 2) + clearance,
+  );
   // Limit grade both ways while staying above the clearance profile.
   for (let pass = 0; pass < 2; pass++) {
-    for (let i = 1; i < n; i++) h[i] = Math.max(h[i], h[i - 1] - grade * dist2(pts[i], pts[i - 1]));
-    for (let i = n - 2; i >= 0; i--) h[i] = Math.max(h[i], h[i + 1] - grade * dist2(pts[i], pts[i + 1]));
+    for (let i = 1; i < n; i++)
+      h[i] = Math.max(h[i], h[i - 1] - grade * dist2(pts[i], pts[i - 1]));
+    for (let i = n - 2; i >= 0; i--)
+      h[i] = Math.max(h[i], h[i + 1] - grade * dist2(pts[i], pts[i + 1]));
   }
   // Smooth.
   for (let it = 0; it < 4; it++) {
     const c = h.slice();
-    for (let i = 1; i + 1 < n; i++) h[i] = Math.max(c[i], (c[i - 1] + c[i] * 2 + c[i + 1]) / 4);
+    for (let i = 1; i + 1 < n; i++)
+      h[i] = Math.max(c[i], (c[i - 1] + c[i] * 2 + c[i + 1]) / 4);
   }
   return h;
 }
@@ -497,7 +606,10 @@ function resample(pts: Vec2[], step: number): Vec2[] {
     const l = dist2(a, b);
     let t = step - carry;
     while (t <= l) {
-      out.push([a[0] + ((b[0] - a[0]) * t) / l, a[1] + ((b[1] - a[1]) * t) / l]);
+      out.push([
+        a[0] + ((b[0] - a[0]) * t) / l,
+        a[1] + ((b[1] - a[1]) * t) / l,
+      ]);
       t += step;
     }
     carry = l - (t - step);
@@ -507,7 +619,14 @@ function resample(pts: Vec2[], step: number): Vec2[] {
   return out;
 }
 
-function railLines(p: CityParams, rng: Rng, noise: Noise2D, hubs: Hub[], center: Vec2, hf: Heightfield): Elevated[] {
+function railLines(
+  p: CityParams,
+  rng: Rng,
+  noise: Noise2D,
+  hubs: Hub[],
+  center: Vec2,
+  hf: Heightfield,
+): Elevated[] {
   const out: Elevated[] = [];
   if (p.railLines <= 0) return out;
   const S = p.size / 2;
@@ -521,11 +640,25 @@ function railLines(p: CityParams, rng: Rng, noise: Noise2D, hubs: Hub[], center:
     const pts = resample(catmull(loopHubs, true, 15), 12);
     const wet = pts.some(q => hf.sample(q[0], q[1]) < SEA_LEVEL + 0.5);
     if (!wet) {
-      out.push({pts, heights: elevateProfile(pts, hf, 9, 0.03), kind: 'rail', loop: true, stations: []});
+      out.push({
+        pts,
+        heights: elevateProfile(pts, hf, 9, 0.03),
+        kind: 'rail',
+        loop: true,
+        stations: [],
+      });
     } else {
       // The loop would cross open water: keep the longest stretch on land.
-      const piece = clipToLand(pts, hf, 350).sort((a, b) => b.length - a.length)[0] ?? [];
-      if (piece.length > 20) out.push({pts: piece, heights: elevateProfile(piece, hf, 9, 0.03), kind: 'rail', loop: false, stations: []});
+      const piece =
+        clipToLand(pts, hf, 350).sort((a, b) => b.length - a.length)[0] ?? [];
+      if (piece.length > 20)
+        out.push({
+          pts: piece,
+          heights: elevateProfile(piece, hf, 9, 0.03),
+          kind: 'rail',
+          loop: false,
+          stations: [],
+        });
     }
   }
   // Cross-town lines from edge to edge through the center.
@@ -535,12 +668,26 @@ function railLines(p: CityParams, rng: Rng, noise: Noise2D, hubs: Hub[], center:
     for (let s = -4; s <= 4; s++) {
       const r = (S * 1.3 * s) / 4;
       const wob = noise.noise(k * 5.1, s * 0.4) * 200;
-      ctrl.push([center[0] + Math.cos(a) * r - Math.sin(a) * wob, center[1] + Math.sin(a) * r + Math.cos(a) * wob]);
+      ctrl.push([
+        center[0] + Math.cos(a) * r - Math.sin(a) * wob,
+        center[1] + Math.sin(a) * r + Math.cos(a) * wob,
+      ]);
     }
-    const inBox = resample(catmull(ctrl, false, 15), 12).filter(q => Math.max(Math.abs(q[0]), Math.abs(q[1])) < S - 60);
-    const pieces = clipToLand(inBox, hf, 500).sort((x, y) => y.length - x.length);
+    const inBox = resample(catmull(ctrl, false, 15), 12).filter(
+      q => Math.max(Math.abs(q[0]), Math.abs(q[1])) < S - 60,
+    );
+    const pieces = clipToLand(inBox, hf, 500).sort(
+      (x, y) => y.length - x.length,
+    );
     const pts = pieces[0] ?? [];
-    if (pts.length > 10) out.push({pts, heights: elevateProfile(pts, hf, 9 + k * 3, 0.03), kind: 'rail', loop: false, stations: []});
+    if (pts.length > 10)
+      out.push({
+        pts,
+        heights: elevateProfile(pts, hf, 9 + k * 3, 0.03),
+        kind: 'rail',
+        loop: false,
+        stations: [],
+      });
   }
   // Stations near hubs.
   for (const line of out) {
@@ -562,7 +709,11 @@ function railLines(p: CityParams, rng: Rng, noise: Noise2D, hubs: Hub[], center:
 
 // ---------------------------------------------------------------------------
 
-export function generateLayout(params: CityParams, seed: number, progress?: (msg: string, f: number) => void): CityLayout {
+export function generateLayout(
+  params: CityParams,
+  seed: number,
+  progress?: (msg: string, f: number) => void,
+): CityLayout {
   const rng = new Rng(seed);
   const noise = new Noise2D(seed + 7);
   progress?.('Shaping terrain', 0.05);
@@ -575,16 +726,25 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
   // Hubs: the main center plus sub-centers on land.
   const hubs: Hub[] = [{p: center, weight: 1, radius: 900}];
   for (let tries = 0; hubs.length < 6 && tries < 200; tries++) {
-    const q: Vec2 = [rng.range(-S * 0.75, S * 0.75), rng.range(-S * 0.75, S * 0.75)];
+    const q: Vec2 = [
+      rng.range(-S * 0.75, S * 0.75),
+      rng.range(-S * 0.75, S * 0.75),
+    ];
     if (!isLand(q) || hubs.some(h => dist2(h.p, q) < 1300)) continue;
-    hubs.push({p: q, weight: rng.range(0.6, 0.95), radius: rng.range(450, 750)});
+    hubs.push({
+      p: q,
+      weight: rng.range(0.6, 0.95),
+      radius: rng.range(450, 750),
+    });
   }
 
   progress?.('Laying arterials', 0.15);
   const majorLines: Polyline[] = [];
   for (const l of arterials(params, rng, noise, center, hubs)) {
     for (const piece of clipToLand(l.pts, hf, l.maxBridge ?? 700)) {
-      const inside = piece.filter(q => Math.abs(q[0]) < S - 40 && Math.abs(q[1]) < S - 40);
+      const inside = piece.filter(
+        q => Math.abs(q[0]) < S - 40 && Math.abs(q[1]) < S - 40,
+      );
       // Never end a road over water (bridges must land on both shores).
       while (inside.length && !isLand(inside[inside.length - 1])) inside.pop();
       while (inside.length && !isLand(inside[0])) inside.shift();
@@ -608,12 +768,16 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
   const allLines: Polyline[] = [];
   for (const e of major.edges) {
     if (e.dead) continue;
-    allLines.push({pts: [major.nodes[e.a].p, major.nodes[e.b].p], kind: e.kind});
+    allLines.push({
+      pts: [major.nodes[e.a].p, major.nodes[e.b].p],
+      kind: e.kind,
+    });
   }
   for (const f of regions) {
     const poly = f.nodes.map(n => major.nodes[n].p);
     for (const l of minorStreets(params, rng, noise, poly, hubs)) {
-      for (const piece of clipToLand(l.pts, hf, 0)) allLines.push({pts: piece, kind: l.kind});
+      for (const piece of clipToLand(l.pts, hf, 0))
+        allLines.push({pts: piece, kind: l.kind});
     }
   }
   let g: Graph = planarize(allLines, 2.5);
@@ -634,7 +798,9 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
   progress?.('Grading roads', 0.35);
   // Smooth the road heights and carve the terrain so roads sit on it.
   const chainsG: Chain[] = buildChains(g);
-  const nodeH = g.nodes.map(n => Math.max(hf.sample(n.p[0], n.p[1]), SEA_LEVEL + 1.2));
+  const nodeH = g.nodes.map(n =>
+    Math.max(hf.sample(n.p[0], n.p[1]), SEA_LEVEL + 1.2),
+  );
   const chains: RoadChain[] = [];
   for (const c of chainsG) {
     const raw = c.nodes.map(n => g.nodes[n].p);
@@ -643,7 +809,8 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     pts[0] = raw[0];
     pts[pts.length - 1] = raw[raw.length - 1];
     const L: number[] = [0];
-    for (let i = 1; i < pts.length; i++) L.push(L[i - 1] + dist2(pts[i - 1], pts[i]));
+    for (let i = 1; i < pts.length; i++)
+      L.push(L[i - 1] + dist2(pts[i - 1], pts[i]));
     const total = L[L.length - 1];
     const h0 = nodeH[c.nodes[0]];
     const h1 = nodeH[c.nodes[c.nodes.length - 1]];
@@ -652,13 +819,19 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
       const t = total > 0 ? L[i] / total : 0;
       const terrainH = Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 1.2);
       // Bridges span between the banks with a gentle arch.
-      if (bridge[i]) return lerp(h0, h1, t) + Math.sin(Math.PI * t) * Math.min(12, total * 0.03) + 2;
+      if (bridge[i])
+        return (
+          lerp(h0, h1, t) +
+          Math.sin(Math.PI * t) * Math.min(12, total * 0.03) +
+          2
+        );
       const blend = smoothstep(0, 40, Math.min(L[i], total - L[i]));
       return lerp(lerp(h0, h1, t), terrainH, blend);
     });
     for (let it = 0; it < 6; it++) {
       const h = heights.slice();
-      for (let i = 1; i + 1 < pts.length; i++) heights[i] = (h[i - 1] + 2 * h[i] + h[i + 1]) / 4;
+      for (let i = 1; i + 1 < pts.length; i++)
+        heights[i] = (h[i - 1] + 2 * h[i] + h[i + 1]) / 4;
     }
     heights[0] = h0;
     heights[heights.length - 1] = h1;
@@ -666,13 +839,26 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
       // Raise the bridge deck clear of the water.
       const wetLen = bridge.filter(b => b).length * 8;
       const clearance = wetLen > 500 ? 28 : 7;
-      heights = heights.map((h, i) => (bridge[i] ? Math.max(h, SEA_LEVEL + clearance) : h));
+      heights = heights.map((h, i) =>
+        bridge[i] ? Math.max(h, SEA_LEVEL + clearance) : h,
+      );
       for (let it = 0; it < (wetLen > 500 ? 60 : 8); it++) {
         const h = heights.slice();
-        for (let i = 1; i + 1 < pts.length; i++) heights[i] = Math.max(h[i], (h[i - 1] + 2 * h[i] + h[i + 1]) / 4 - 0.02);
+        for (let i = 1; i + 1 < pts.length; i++)
+          heights[i] = Math.max(
+            h[i],
+            (h[i - 1] + 2 * h[i] + h[i + 1]) / 4 - 0.02,
+          );
       }
     }
-    chains.push({pts, heights, kind: c.kind, start: c.nodes[0], end: c.nodes[c.nodes.length - 1], bridge});
+    chains.push({
+      pts,
+      heights,
+      kind: c.kind,
+      start: c.nodes[0],
+      end: c.nodes[c.nodes.length - 1],
+      bridge,
+    });
   }
   carveRoads(hf, chains);
 
@@ -717,7 +903,8 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
   };
   // Road sample points for rejecting blocks that overlap roads.
   const roadGrid = new Map<number, Vec2[]>();
-  const rkey = (x: number, z: number) => (Math.floor(z / 50) + 500) * 1000 + Math.floor(x / 50) + 500;
+  const rkey = (x: number, z: number) =>
+    (Math.floor(z / 50) + 500) * 1000 + Math.floor(x / 50) + 500;
   for (const c of chains) {
     for (const q of c.pts) {
       const k = rkey(q[0], q[1]);
@@ -727,7 +914,10 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     }
   }
   const overlapsRoad = (poly: Vec2[]) => {
-    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    let x0 = Infinity,
+      x1 = -Infinity,
+      z0 = Infinity,
+      z1 = -Infinity;
     for (const q of poly) {
       x0 = Math.min(x0, q[0]);
       x1 = Math.max(x1, q[0]);
@@ -736,7 +926,8 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     }
     for (let z = Math.floor(z0 / 50); z <= Math.floor(z1 / 50); z++) {
       for (let x = Math.floor(x0 / 50); x <= Math.floor(x1 / 50); x++) {
-        for (const q of roadGrid.get((z + 500) * 1000 + x + 500) ?? []) if (pointInPolygon(q, poly)) return true;
+        for (const q of roadGrid.get((z + 500) * 1000 + x + 500) ?? [])
+          if (pointInPolygon(q, poly)) return true;
       }
     }
     return false;
@@ -744,11 +935,18 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
   for (const f of faces) {
     const kinds = f.edges.map(e => g.edges[e].kind);
     const poly = f.nodes.map(n => g.nodes[n].p);
-    const curb = insetPolygon(poly, kinds.map(k => ROAD_WIDTH[k] / 2));
+    const curb = insetPolygon(
+      poly,
+      kinds.map(k => ROAD_WIDTH[k] / 2),
+    );
     if (!curb) continue;
-    const inner = insetPolygon(poly, kinds.map(k => ROAD_WIDTH[k] / 2 + SIDEWALK[k]));
+    const inner = insetPolygon(
+      poly,
+      kinds.map(k => ROAD_WIDTH[k] / 2 + SIDEWALK[k]),
+    );
     if (!inner) continue;
-    let cx = 0, cz = 0;
+    let cx = 0,
+      cz = 0;
     for (const q of inner) {
       cx += q[0];
       cz += q[1];
@@ -760,14 +958,24 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     if (overlapsRoad(curb)) continue;
     const dens = densityAt(hubs, noise, cx, cz);
     const area = polygonArea(inner);
-    const park = area > 1500 && hash2(Math.round(cx), Math.round(cz)) % 1000 < params.parkFraction * 1000 * (1.4 - dens);
+    const park =
+      area > 1500 &&
+      hash2(Math.round(cx), Math.round(cz)) % 1000 <
+        params.parkFraction * 1000 * (1.4 - dens);
     blocks.push({curb, inner, park, kinds});
     if (park) continue;
     const clean = cleanPolygon(inner, 1.5);
     if (clean.length < 3) continue;
     const maxLot = lerp(320, 2600, dens * dens) * rng.range(0.8, 1.3);
     const lotsHere: Lot[] = [];
-    splitLots(rng, clean, clean.map(() => true), maxLot, 60, lotsHere);
+    splitLots(
+      rng,
+      clean,
+      clean.map(() => true),
+      maxLot,
+      60,
+      lotsHere,
+    );
     for (const lot of lotsHere) lots.push({lot, park: false});
   }
 
@@ -778,7 +986,8 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     if (fp.length < 3) continue;
     const area = polygonArea(fp);
     if (area < 40) continue;
-    let cx = 0, cz = 0;
+    let cx = 0,
+      cz = 0;
     for (const q of fp) {
       cx += q[0];
       cz += q[1];
@@ -787,9 +996,12 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     cz /= fp.length;
     if (nearRail([cx, cz], 14) || fp.some(q => nearRail(q, 7))) continue;
     if (fp.some(q => !isLand(q))) continue;
-    const brng = new Rng(hash2(Math.round(cx * 10), Math.round(cz * 10)) ^ seed);
+    const brng = new Rng(
+      hash2(Math.round(cx * 10), Math.round(cz * 10)) ^ seed,
+    );
     const dens = densityAt(hubs, noise, cx, cz);
-    let lo = Infinity, hi = -Infinity;
+    let lo = Infinity,
+      hi = -Infinity;
     for (const q of fp) {
       const h = hf.sample(q[0], q[1]);
       lo = Math.min(lo, h);
@@ -803,7 +1015,13 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     const r = brng.next();
     if (area > 900 && r < tall * params.modernity) {
       kind = brng.chance(0.6) ? 'glass' : 'tower';
-      floors = Math.round(lerp(params.suburbFloors * 2, params.downtownFloors * 2.2, tall * brng.range(0.5, 1.1)));
+      floors = Math.round(
+        lerp(
+          params.suburbFloors * 2,
+          params.downtownFloors * 2.2,
+          tall * brng.range(0.5, 1.1),
+        ),
+      );
     } else if (minSide < 9 && dens > 0.25) {
       kind = 'pencil';
       floors = Math.round(lerp(4, 11, brng.next()) + dens * 4);
@@ -815,10 +1033,14 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
       floors = brng.int(4, 12);
     } else {
       kind = 'midrise';
-      floors = Math.round(lerp(params.suburbFloors, params.downtownFloors * 0.6, dens) * brng.range(0.6, 1.4));
+      floors = Math.round(
+        lerp(params.suburbFloors, params.downtownFloors * 0.6, dens) *
+          brng.range(0.6, 1.4),
+      );
     }
     floors = clamp(floors, 1, 75);
-    const floorH = kind === 'house' ? 2.9 : kind === 'glass' || kind === 'tower' ? 3.9 : 3.3;
+    const floorH =
+      kind === 'house' ? 2.9 : kind === 'glass' || kind === 'tower' ? 3.9 : 3.3;
     const frontage = lot.frontage.slice(0, fp.length);
     while (frontage.length < fp.length) frontage.push(false);
     let front = -1;
@@ -847,12 +1069,25 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     });
   }
   progress?.('Layout done', 0.7);
-  return {params, seed, terrain, hubs, chains, junctions, blocks, buildings, elevated};
+  return {
+    params,
+    seed,
+    terrain,
+    hubs,
+    chains,
+    junctions,
+    blocks,
+    buildings,
+    elevated,
+  };
 }
 
 /** Fraction of sample points inside the polygon that are water. */
 function wetFraction(poly: Vec2[], hf: Heightfield) {
-  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  let x0 = Infinity,
+    x1 = -Infinity,
+    z0 = Infinity,
+    z1 = -Infinity;
   for (const q of poly) {
     x0 = Math.min(x0, q[0]);
     x1 = Math.max(x1, q[0]);
@@ -907,11 +1142,17 @@ function carveRoads(hf: Heightfield, chains: RoadChain[]) {
     }
   }
   for (let k = 0; k < n * n; k++) {
-    if (weight[k] > 0) hf.data[k] = lerp(hf.data[k], target[k] - 0.05, weight[k]);
+    if (weight[k] > 0)
+      hf.data[k] = lerp(hf.data[k], target[k] - 0.05, weight[k]);
   }
 }
 
-function expressways(p: CityParams, rng: Rng, chains: RoadChain[], hf: Heightfield): Elevated[] {
+function expressways(
+  p: CityParams,
+  rng: Rng,
+  chains: RoadChain[],
+  hf: Heightfield,
+): Elevated[] {
   const out: Elevated[] = [];
   // Follow the longest boulevard chains: elevated decks above the arterial.
   const candidates = chains
@@ -924,7 +1165,9 @@ function expressways(p: CityParams, rng: Rng, chains: RoadChain[], hf: Heightfie
     const pts = c.pts.slice(4, -4);
     if (pts.length < 20) continue;
     const base = pts.map((q, i) => c.heights[i + 4]);
-    const heights = elevateProfile(pts, hf, 0, 0.04).map((h, i) => Math.max(h, base[i] + 11));
+    const heights = elevateProfile(pts, hf, 0, 0.04).map((h, i) =>
+      Math.max(h, base[i] + 11),
+    );
     out.push({pts, heights, kind: 'expressway', loop: false, stations: []});
   }
   void rng;

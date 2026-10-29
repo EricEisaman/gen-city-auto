@@ -2,9 +2,17 @@
 // billboards) with Canvas 2D text, then uploads it as a texture.
 
 import {Rng} from '../math/random.ts';
-import {ATLAS_SIZE, BRAND_WORDS, SHOP_WORDS, STATION_NAMES, signColor, signRect} from '../city/signs.ts';
+import {
+  ATLAS_SIZE,
+  BRAND_WORDS,
+  SHOP_WORDS,
+  STATION_NAMES,
+  signColor,
+  signRect,
+} from '../city/signs.ts';
 
-const FONT = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", "Meiryo", sans-serif';
+const FONT =
+  '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", "Meiryo", sans-serif';
 
 function css(c: [number, number, number], k = 1) {
   return `rgb(${Math.round(Math.min(1, c[0] * k) * 255)}, ${Math.round(Math.min(1, c[1] * k) * 255)}, ${Math.round(Math.min(1, c[2] * k) * 255)})`;
@@ -32,8 +40,17 @@ function paintSign(g: OffscreenCanvasRenderingContext2D, id: number, rng: Rng) {
   // Border.
   g.strokeStyle = lightBox ? 'rgba(255,255,255,0.85)' : css(col);
   g.lineWidth = Math.max(4, Math.min(w, h) * 0.05);
-  g.strokeRect(x + g.lineWidth, y + g.lineWidth, w - g.lineWidth * 2, h - g.lineWidth * 2);
-  const textCol = lightBox ? (rng.chance(0.5) ? '#ffffff' : '#101010') : css(col);
+  g.strokeRect(
+    x + g.lineWidth,
+    y + g.lineWidth,
+    w - g.lineWidth * 2,
+    h - g.lineWidth * 2,
+  );
+  const textCol = lightBox
+    ? rng.chance(0.5)
+      ? '#ffffff'
+      : '#101010'
+    : css(col);
   g.fillStyle = textCol;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
@@ -58,7 +75,14 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
     const size = Math.min(w * 0.72, (h * 0.86) / chars.length);
     g.font = `bold ${size}px ${FONT}`;
     chars.forEach((ch, i) => {
-      g.fillText(ch, x + w / 2, y + h * 0.07 + size * (i + 0.5) * 1.02 + (h * 0.86 - size * chars.length) / 2);
+      g.fillText(
+        ch,
+        x + w / 2,
+        y +
+          h * 0.07 +
+          size * (i + 0.5) * 1.02 +
+          (h * 0.86 - size * chars.length) / 2,
+      );
     });
     g.restore();
   }
@@ -82,7 +106,11 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     g.font = `bold ${h * 0.45}px ${FONT}`;
-    g.fillText(STATION_NAMES[(k * 3) % STATION_NAMES.length], x + w / 2, y + h * 0.38);
+    g.fillText(
+      STATION_NAMES[(k * 3) % STATION_NAMES.length],
+      x + w / 2,
+      y + h * 0.38,
+    );
   }
   // Billboards: gradients, shapes and brand names.
   for (let k = 0; k < 8; k++) {
@@ -99,7 +127,13 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
     for (let s = 0; s < 6; s++) {
       g.fillStyle = s % 2 ? '#fff' : css(c2);
       g.beginPath();
-      g.arc(x + rng.range(0, w), y + rng.range(0, h), rng.range(20, 120), 0, Math.PI * 2);
+      g.arc(
+        x + rng.range(0, w),
+        y + rng.range(0, h),
+        rng.range(20, 120),
+        0,
+        Math.PI * 2,
+      );
       g.fill();
     }
     g.globalAlpha = 1;
@@ -109,7 +143,13 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
     g.font = `900 ${h * 0.3}px ${FONT}`;
     g.fillText(BRAND_WORDS[k % BRAND_WORDS.length], x + w * 0.06, y + h * 0.48);
     g.font = `bold ${h * 0.14}px ${FONT}`;
-    g.fillText(SHOP_WORDS[(k * 11) % SHOP_WORDS.length] + ' ' + SHOP_WORDS[(k * 13 + 2) % SHOP_WORDS.length], x + w * 0.06, y + h * 0.75);
+    g.fillText(
+      SHOP_WORDS[(k * 11) % SHOP_WORDS.length] +
+        ' ' +
+        SHOP_WORDS[(k * 13 + 2) % SHOP_WORDS.length],
+      x + w * 0.06,
+      y + h * 0.75,
+    );
   }
   return canvas;
 }
@@ -120,9 +160,15 @@ export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
     label: 'signs/atlas',
     size: [ATLAS_SIZE, ATLAS_SIZE],
     format: 'rgba8unorm-srgb',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.RENDER_ATTACHMENT,
   });
-  device.queue.copyExternalImageToTexture({source: canvas}, {texture: tex}, [ATLAS_SIZE, ATLAS_SIZE]);
+  device.queue.copyExternalImageToTexture({source: canvas}, {texture: tex}, [
+    ATLAS_SIZE,
+    ATLAS_SIZE,
+  ]);
   return tex;
 }
 
@@ -142,7 +188,15 @@ export function createLeafTexture(device: GPUDevice): GPUTexture {
     const v = Math.round(rng.range(90, 255));
     g.fillStyle = `rgb(${v},${v},${v})`;
     g.beginPath();
-    g.ellipse(x, y, rng.range(5, 11), rng.range(2.5, 5), rng.range(0, Math.PI), 0, Math.PI * 2);
+    g.ellipse(
+      x,
+      y,
+      rng.range(5, 11),
+      rng.range(2.5, 5),
+      rng.range(0, Math.PI),
+      0,
+      Math.PI * 2,
+    );
     g.fill();
     void r;
   }
@@ -150,8 +204,14 @@ export function createLeafTexture(device: GPUDevice): GPUTexture {
     label: 'trees/leaf cards',
     size: [size, size],
     format: 'rgba8unorm',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.RENDER_ATTACHMENT,
   });
-  device.queue.copyExternalImageToTexture({source: canvas}, {texture: tex}, [size, size]);
+  device.queue.copyExternalImageToTexture({source: canvas}, {texture: tex}, [
+    size,
+    size,
+  ]);
   return tex;
 }

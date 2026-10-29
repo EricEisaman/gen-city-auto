@@ -7,7 +7,12 @@ export interface Gpu {
   context: GPUCanvasContext;
   canvas: HTMLCanvasElement;
   format: GPUTextureFormat;
-  features: {timestamp: boolean; f16: boolean; float32Filterable: boolean; rg11b10: boolean};
+  features: {
+    timestamp: boolean;
+    f16: boolean;
+    float32Filterable: boolean;
+    rg11b10: boolean;
+  };
 }
 
 declare global {
@@ -33,8 +38,11 @@ export function reportError(msg: string) {
 }
 
 export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
-  if (!navigator.gpu) throw new Error('WebGPU is not supported in this browser');
-  const adapter = await navigator.gpu.requestAdapter({powerPreference: 'high-performance'});
+  if (!navigator.gpu)
+    throw new Error('WebGPU is not supported in this browser');
+  const adapter = await navigator.gpu.requestAdapter({
+    powerPreference: 'high-performance',
+  });
   if (!adapter) throw new Error('No WebGPU adapter available');
 
   const wanted: GPUFeatureName[] = [
@@ -50,11 +58,20 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
     label: 'gen-city-auto device',
     requiredFeatures,
     requiredLimits: {
-      maxStorageBufferBindingSize: Math.min(L.maxStorageBufferBindingSize, 1 << 30),
+      maxStorageBufferBindingSize: Math.min(
+        L.maxStorageBufferBindingSize,
+        1 << 30,
+      ),
       maxBufferSize: Math.min(L.maxBufferSize, 1 << 30),
-      maxStorageBuffersPerShaderStage: Math.min(L.maxStorageBuffersPerShaderStage, 10),
+      maxStorageBuffersPerShaderStage: Math.min(
+        L.maxStorageBuffersPerShaderStage,
+        10,
+      ),
       maxComputeWorkgroupStorageSize: L.maxComputeWorkgroupStorageSize,
-      maxColorAttachmentBytesPerSample: Math.min(L.maxColorAttachmentBytesPerSample, 64),
+      maxColorAttachmentBytesPerSample: Math.min(
+        L.maxColorAttachmentBytesPerSample,
+        64,
+      ),
     },
   });
 
@@ -62,7 +79,7 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
     const err = (e as GPUUncapturedErrorEvent).error;
     reportError(`[WebGPU] ${err.constructor.name}: ${err.message}`);
   });
-  device.lost.then(info => {
+  void device.lost.then(info => {
     reportError(`[WebGPU] device lost (${info.reason}): ${info.message}`);
   });
 
@@ -87,7 +104,11 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
 }
 
 /** Create a shader module and print its compilation messages with the label. */
-export function createShader(device: GPUDevice, label: string, code: string): GPUShaderModule {
+export function createShader(
+  device: GPUDevice,
+  label: string,
+  code: string,
+): GPUShaderModule {
   const module = device.createShaderModule({label, code});
   void module.getCompilationInfo().then(info => {
     for (const m of info.messages) {

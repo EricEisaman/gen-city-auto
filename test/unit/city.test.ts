@@ -7,40 +7,69 @@ import {Rng} from '../../src/math/random.ts';
 import {polygonArea} from '../../src/math/vec.ts';
 import {clusterize, CMesh, CLUSTER_WORDS} from '../../src/city/cmesh.ts';
 
-test('rng is deterministic', () => {
+void test('rng is deterministic', () => {
   const a = new Rng(42);
   const b = new Rng(42);
   for (let i = 0; i < 100; i++) assert.equal(a.nextU32(), b.nextU32());
 });
 
-test('planarize splits crossing segments into a 4-way junction', () => {
+void test('planarize splits crossing segments into a 4-way junction', () => {
   const g = planarize([
-    {pts: [[-10, 0], [10, 0]], kind: 1},
-    {pts: [[0, -10], [0, 10]], kind: 1},
+    {
+      pts: [
+        [-10, 0],
+        [10, 0],
+      ],
+      kind: 1,
+    },
+    {
+      pts: [
+        [0, -10],
+        [0, 10],
+      ],
+      kind: 1,
+    },
   ]);
   const center = g.nodes.findIndex(n => Math.hypot(n.p[0], n.p[1]) < 1e-6);
   assert.ok(center >= 0);
   assert.equal(g.degree(center), 4);
 });
 
-test('faces of a grid are its cells', () => {
+void test('faces of a grid are its cells', () => {
   const lines = [];
   for (let i = 0; i <= 2; i++) {
-    lines.push({pts: [[i * 10, 0], [i * 10, 20]] as [number, number][], kind: 1});
-    lines.push({pts: [[0, i * 10], [20, i * 10]] as [number, number][], kind: 1});
+    lines.push({
+      pts: [
+        [i * 10, 0],
+        [i * 10, 20],
+      ] as [number, number][],
+      kind: 1,
+    });
+    lines.push({
+      pts: [
+        [0, i * 10],
+        [20, i * 10],
+      ] as [number, number][],
+      kind: 1,
+    });
   }
   const faces = extractFaces(planarize(lines));
   assert.equal(faces.length, 4);
   for (const f of faces) assert.ok(Math.abs(f.area - 100) < 1e-6);
 });
 
-test('inset shrinks a square uniformly', () => {
-  const sq: [number, number][] = [[0, 0], [10, 0], [10, 10], [0, 10]];
+void test('inset shrinks a square uniformly', () => {
+  const sq: [number, number][] = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+  ];
   const r = insetPolygon(sq, [1, 1, 1, 1])!;
   assert.ok(Math.abs(polygonArea(r) - 64) < 1e-6);
 });
 
-test('clusterize keeps every triangle and respects limits', () => {
+void test('clusterize keeps every triangle and respects limits', () => {
   const m = new CMesh();
   for (let i = 0; i < 100; i++) m.box([i * 3, 0, 0], [1, 1, 1], 0);
   const c = clusterize(m, 0, 0);
@@ -53,7 +82,7 @@ test('clusterize keeps every triangle and respects limits', () => {
   assert.equal(tris, m.icount / 3);
 });
 
-test('city layout is deterministic and populated', () => {
+void test('city layout is deterministic and populated', () => {
   const p = {...PRESETS.neon, size: 2048};
   const a = generateLayout(p, 5);
   const b = generateLayout(p, 5);

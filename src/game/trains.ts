@@ -36,7 +36,8 @@ export class Trains {
     this.vr = vr;
     const variants = vr.variantsOf('train');
     const rng = new Rng(77);
-    if (variants.length) this.carLen = vr.variants[variants[0]].info.size[2] + 0.6;
+    if (variants.length)
+      this.carLen = vr.variants[variants[0]].info.size[2] + 0.6;
     const bands: Vec3[] = [
       [0.55, 0.8, 0.12],
       [0.9, 0.45, 0.05],
@@ -46,10 +47,22 @@ export class Trains {
     for (const e of elevated) {
       if (e.kind !== 'rail') continue;
       const arc = [0];
-      for (let i = 1; i < e.pts.length; i++) arc.push(arc[i - 1] + Math.hypot(e.pts[i][0] - e.pts[i - 1][0], e.pts[i][1] - e.pts[i - 1][1]));
+      for (let i = 1; i < e.pts.length; i++)
+        arc.push(
+          arc[i - 1] +
+            Math.hypot(
+              e.pts[i][0] - e.pts[i - 1][0],
+              e.pts[i][1] - e.pts[i - 1][1],
+            ),
+        );
       const total = arc[arc.length - 1];
       const li = this.lines.length;
-      this.lines.push({e, arc, total, stationArcs: e.stations.map(s => arc[s]).sort((a, b) => a - b)});
+      this.lines.push({
+        e,
+        arc,
+        total,
+        stationArcs: e.stations.map(s => arc[s]).sort((a, b) => a - b),
+      });
       if (!variants.length || total < 400) continue;
       const count = e.loop ? 4 : 2;
       for (let k = 0; k < count; k++) {
@@ -60,7 +73,10 @@ export class Trains {
           s: (total * (k + 0.3)) / count,
           speed: 15,
           dwell: 0,
-          cars: Array.from({length: ncars}, () => ({model: mat4.create(), prev: mat4.create()})),
+          cars: Array.from({length: ncars}, () => ({
+            model: mat4.create(),
+            prev: mat4.create(),
+          })),
           variant: rng.pick(variants),
           color2: bands[li % bands.length],
         });
@@ -84,7 +100,11 @@ export class Trains {
     const b = e.pts[hi];
     const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
     const h = e.heights[lo] + (e.heights[hi] - e.heights[lo]) * t;
-    return {p: [a[0] + (b[0] - a[0]) * t, h, a[1] + (b[1] - a[1]) * t], d: [(b[0] - a[0]) / l, (b[1] - a[1]) / l], slope: (e.heights[hi] - e.heights[lo]) / l};
+    return {
+      p: [a[0] + (b[0] - a[0]) * t, h, a[1] + (b[1] - a[1]) * t],
+      d: [(b[0] - a[0]) / l, (b[1] - a[1]) / l],
+      slope: (e.heights[hi] - e.heights[lo]) / l,
+    };
   }
 
   update(dt: number) {
@@ -99,7 +119,10 @@ export class Trains {
         if (d > 0.5 && d < distToStation) distToStation = d;
       }
       if (!line.e.loop) {
-        const endDist = tr.dir === 1 ? line.total - 30 - tr.s : tr.s - 30 - (this.carLen * tr.cars.length);
+        const endDist =
+          tr.dir === 1
+            ? line.total - 30 - tr.s
+            : tr.s - 30 - this.carLen * tr.cars.length;
         if (endDist < distToStation) distToStation = endDist;
       }
       if (tr.dwell > 0) {
@@ -107,7 +130,11 @@ export class Trains {
         tr.speed = 0;
         if (tr.dwell <= 0) {
           tr.s += tr.dir * 1.0;
-          if (!line.e.loop && (tr.s > line.total - 40 || tr.s < this.carLen * tr.cars.length + 40)) tr.dir = tr.dir === 1 ? -1 : 1;
+          if (
+            !line.e.loop &&
+            (tr.s > line.total - 40 || tr.s < this.carLen * tr.cars.length + 40)
+          )
+            tr.dir = tr.dir === 1 ? -1 : 1;
         }
       } else {
         const brake = Math.sqrt(Math.max(0, 2 * 0.9 * distToStation));
@@ -121,7 +148,11 @@ export class Trains {
         const d: Vec2 = tr.dir === 1 ? q.d : [-q.d[0], -q.d[1]];
         // Run on the left-hand track.
         const left: Vec2 = [d[1], -d[0]];
-        const p: Vec3 = [q.p[0] + left[0] * 2.1, q.p[1] + 0.25, q.p[2] + left[1] * 2.1];
+        const p: Vec3 = [
+          q.p[0] + left[0] * 2.1,
+          q.p[1] + 0.25,
+          q.p[2] + left[1] * 2.1,
+        ];
         c.prev.set(c.model);
         modelMatrix(c.model, p, d, q.slope * tr.dir);
       });
@@ -131,7 +162,20 @@ export class Trains {
   draw(lights: number) {
     for (const tr of this.trains) {
       for (const c of tr.cars) {
-        this.vr.add({variant: tr.variant, model: c.model, prevModel: c.prev, color: [0.72, 0.73, 0.75], metallic: 0.9, color2: tr.color2, lights: Math.max(lights, 0.3), brake: tr.speed < 2 ? 1 : 0, indicator: 0, wheelSpin: 0, steer: 0, rotor: 0});
+        this.vr.add({
+          variant: tr.variant,
+          model: c.model,
+          prevModel: c.prev,
+          color: [0.72, 0.73, 0.75],
+          metallic: 0.9,
+          color2: tr.color2,
+          lights: Math.max(lights, 0.3),
+          brake: tr.speed < 2 ? 1 : 0,
+          indicator: 0,
+          wheelSpin: 0,
+          steer: 0,
+          rotor: 0,
+        });
       }
     }
   }
@@ -146,10 +190,23 @@ export class Trains {
 }
 
 export class AmbientHelis {
-  helis: {center: Vec3; radius: number; speed: number; a: number; model: Mat4; prev: Mat4; variant: number; color: Vec3}[] = [];
+  helis: {
+    center: Vec3;
+    radius: number;
+    speed: number;
+    a: number;
+    model: Mat4;
+    prev: Mat4;
+    variant: number;
+    color: Vec3;
+  }[] = [];
   private vr: VehicleRenderer;
 
-  constructor(hubs: {p: Vec2}[], vr: VehicleRenderer, groundAt: (x: number, z: number) => number) {
+  constructor(
+    hubs: {p: Vec2}[],
+    vr: VehicleRenderer,
+    groundAt: (x: number, z: number) => number,
+  ) {
     this.vr = vr;
     const v = vr.variantsOf('helicopter');
     const rng = new Rng(9);
@@ -157,7 +214,11 @@ export class AmbientHelis {
     for (let i = 0; i < Math.min(4, hubs.length); i++) {
       const h = hubs[i];
       this.helis.push({
-        center: [h.p[0], groundAt(h.p[0], h.p[1]) + rng.range(180, 280), h.p[1]],
+        center: [
+          h.p[0],
+          groundAt(h.p[0], h.p[1]) + rng.range(180, 280),
+          h.p[1],
+        ],
         radius: rng.range(250, 500),
         speed: rng.range(25, 40) * (rng.chance(0.5) ? 1 : -1),
         a: rng.range(0, 6.28),
@@ -172,7 +233,11 @@ export class AmbientHelis {
   update(dt: number) {
     for (const h of this.helis) {
       h.a += (h.speed / h.radius) * dt;
-      const p: Vec3 = [h.center[0] + Math.cos(h.a) * h.radius, h.center[1] + Math.sin(h.a * 0.5) * 15, h.center[2] + Math.sin(h.a) * h.radius];
+      const p: Vec3 = [
+        h.center[0] + Math.cos(h.a) * h.radius,
+        h.center[1] + Math.sin(h.a * 0.5) * 15,
+        h.center[2] + Math.sin(h.a) * h.radius,
+      ];
       const s = Math.sign(h.speed);
       const d: Vec2 = [-Math.sin(h.a) * s, Math.cos(h.a) * s];
       h.prev.set(h.model);
@@ -182,7 +247,20 @@ export class AmbientHelis {
 
   draw(time: number, lights: number) {
     for (const h of this.helis) {
-      this.vr.add({variant: h.variant, model: h.model, prevModel: h.prev, color: h.color, metallic: 0.3, color2: [0.9, 0.9, 0.9], lights: Math.max(lights, 0.4), brake: 0, indicator: 0, wheelSpin: 0, steer: 0, rotor: time * 30});
+      this.vr.add({
+        variant: h.variant,
+        model: h.model,
+        prevModel: h.prev,
+        color: h.color,
+        metallic: 0.3,
+        color2: [0.9, 0.9, 0.9],
+        lights: Math.max(lights, 0.4),
+        brake: 0,
+        indicator: 0,
+        wheelSpin: 0,
+        steer: 0,
+        rotor: time * 30,
+      });
     }
   }
 }

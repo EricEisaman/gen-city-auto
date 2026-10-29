@@ -5,13 +5,15 @@ import type {WeatherKind} from './game/weather.ts';
 import {initGpu, reportError, resizeToCss} from './gpu/device.ts';
 
 const params = new URLSearchParams(location.search);
-const num = (k: string, d: number) => (params.has(k) ? Number(params.get(k)) : d);
+const num = (k: string, d: number) =>
+  params.has(k) ? Number(params.get(k)) : d;
 
 async function main() {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   resizeToCss(canvas);
   const gpu = await initGpu(canvas);
-  const spawn = params.get('spawn')?.split(',').map(Number) as [number, number] | undefined;
+  const spawn = params.get('spawn')?.split(',').map(Number) as
+    [number, number] | undefined;
   const game = new Game(gpu, {
     cityType: (params.get('city') ?? 'neon') as CityType,
     seed: num('seed', 1),

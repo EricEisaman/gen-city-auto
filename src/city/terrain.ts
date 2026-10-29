@@ -67,7 +67,8 @@ export interface Terrain {
 /** Signed "landness" for the sea layout: < 0 is sea. */
 function seaField(p: CityParams, noise: Noise2D, x: number, z: number) {
   const S = p.size / 2;
-  const wob = noise.fbm(x / 900, z / 900, 4) * 260 + noise.fbm(x / 230, z / 230, 3) * 60;
+  const wob =
+    noise.fbm(x / 900, z / 900, 4) * 260 + noise.fbm(x / 230, z / 230, 3) * 60;
   switch (p.sea.side) {
     case 'south':
       return S * (1 - 2 * p.sea.extent) - z + wob;
@@ -146,7 +147,8 @@ export function generateTerrain(p: CityParams, seed: number): Terrain {
       for (const r of rivers) {
         for (let s = 0; s + 1 < r.length; s++) {
           const a = r[s];
-          if (Math.abs(a[0] - q[0]) > 900 || Math.abs(a[1] - q[1]) > 900) continue;
+          if (Math.abs(a[0] - q[0]) > 900 || Math.abs(a[1] - q[1]) > 900)
+            continue;
           best = Math.min(best, pointSegment(q, a, r[s + 1])[0]);
         }
       }
@@ -161,7 +163,11 @@ export function generateTerrain(p: CityParams, seed: number): Terrain {
     const fx = gx - i;
     const fz = gz - j;
     const r = (a: number, b: number) => riverDist[b * cn + a];
-    return lerp(lerp(r(i, j), r(i + 1, j), fx), lerp(r(i, j + 1), r(i + 1, j + 1), fx), fz);
+    return lerp(
+      lerp(r(i, j), r(i + 1, j), fx),
+      lerp(r(i, j + 1), r(i + 1, j + 1), fx),
+      fz,
+    );
   };
 
   for (let j = 0; j < n; j++) {
@@ -170,9 +176,20 @@ export function generateTerrain(p: CityParams, seed: number): Terrain {
       const z = -S + j * p.cell;
       // Uplands: broad plateaus with rounded hills and some sharper ridges.
       const broad = noise.fbm(x / p.hillScale, z / p.hillScale, 5, 2, 0.5);
-      const hills = noise.fbm(x / (p.hillScale * 0.35), z / (p.hillScale * 0.35), 4, 2, 0.5);
-      const ridges = noise.ridge(x / (p.hillScale * 0.8) + 3.3, z / (p.hillScale * 0.8) - 1.7, 4);
-      let h = p.relief * (0.45 + 0.4 * broad + 0.25 * hills + 0.35 * (ridges - 0.35));
+      const hills = noise.fbm(
+        x / (p.hillScale * 0.35),
+        z / (p.hillScale * 0.35),
+        4,
+        2,
+        0.5,
+      );
+      const ridges = noise.ridge(
+        x / (p.hillScale * 0.8) + 3.3,
+        z / (p.hillScale * 0.8) - 1.7,
+        4,
+      );
+      let h =
+        p.relief * (0.45 + 0.4 * broad + 0.25 * hills + 0.35 * (ridges - 0.35));
       // Terrace the uplands a little (plateau look).
       const terr = Math.floor(h / 12) * 12;
       h = lerp(h, terr + smoothstep(0, 1, (h - terr) / 12) * 12, 0.35);
@@ -196,7 +213,6 @@ export function generateTerrain(p: CityParams, seed: number): Terrain {
       if (land < 0) h = Math.max(-18, -2 + land * 0.05);
       else if (land < 30) h = Math.min(h, lerp(-2, 2.5, land / 30));
 
-
       hf.data[j * n + i] = h;
     }
   }
@@ -204,4 +220,5 @@ export function generateTerrain(p: CityParams, seed: number): Terrain {
 }
 
 /** True when the point is under water. */
-export const isWater = (hf: Heightfield, x: number, z: number) => hf.sample(x, z) < SEA_LEVEL + 0.3;
+export const isWater = (hf: Heightfield, x: number, z: number) =>
+  hf.sample(x, z) < SEA_LEVEL + 0.3;

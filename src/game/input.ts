@@ -1,6 +1,20 @@
 // Keyboard, mouse and gamepad input.
 
-const DRIVE_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyQ', 'KeyE', 'ShiftLeft', 'ControlLeft'];
+const DRIVE_KEYS = [
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Space',
+  'KeyQ',
+  'KeyE',
+  'ShiftLeft',
+  'ControlLeft',
+];
 
 export class Input {
   private keys = new Set<string>();
@@ -12,7 +26,11 @@ export class Input {
 
   constructor(target: HTMLElement) {
     addEventListener('keydown', e => {
-      if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'SELECT') return;
+      if (
+        (e.target as HTMLElement)?.tagName === 'INPUT' ||
+        (e.target as HTMLElement)?.tagName === 'SELECT'
+      )
+        return;
       if (!this.keys.has(e.code)) this.pressed.add(e.code);
       this.keys.add(e.code);
       if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
@@ -67,7 +85,11 @@ export class Input {
   }
 
   driveActive() {
-    return DRIVE_KEYS.some(k => this.keys.has(k)) || Math.abs(this.gamepadSteer()) > 0 || Math.abs(this.gamepadThrottle()) > 0.05;
+    return (
+      DRIVE_KEYS.some(k => this.keys.has(k)) ||
+      Math.abs(this.gamepadSteer()) > 0 ||
+      Math.abs(this.gamepadThrottle()) > 0.05
+    );
   }
 
   endFrame() {

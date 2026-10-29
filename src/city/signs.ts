@@ -25,15 +25,71 @@ export function signRect(id: number): [number, number, number, number] {
 }
 
 export const SHOP_WORDS = [
-  'ラーメン', '居酒屋', 'カラオケ', '焼肉', '寿司', '薬局', '不動産', 'ホテル', '歯科', 'カフェ',
-  'パチンコ', '銀行', '書店', '美容室', '中華料理', '牛丼', '質屋', 'ゲーム', 'うどん', 'そば',
-  '眼科', '整骨院', '英会話', '麻雀', '天ぷら', '焼鳥', 'バー', 'スナック', '古着', '花屋',
-  '時計', '電器', 'ネットカフェ', 'landry', 'BAR', 'CAFE', 'HOTEL', '24H', 'カレー', 'ダイニング',
+  'ラーメン',
+  '居酒屋',
+  'カラオケ',
+  '焼肉',
+  '寿司',
+  '薬局',
+  '不動産',
+  'ホテル',
+  '歯科',
+  'カフェ',
+  'パチンコ',
+  '銀行',
+  '書店',
+  '美容室',
+  '中華料理',
+  '牛丼',
+  '質屋',
+  'ゲーム',
+  'うどん',
+  'そば',
+  '眼科',
+  '整骨院',
+  '英会話',
+  '麻雀',
+  '天ぷら',
+  '焼鳥',
+  'バー',
+  'スナック',
+  '古着',
+  '花屋',
+  '時計',
+  '電器',
+  'ネットカフェ',
+  'landry',
+  'BAR',
+  'CAFE',
+  'HOTEL',
+  '24H',
+  'カレー',
+  'ダイニング',
 ];
 
-export const STATION_NAMES = ['新宿', '渋谷', '池袋', '上野', '品川', '秋葉原', '有楽町', '代々木'];
+export const STATION_NAMES = [
+  '新宿',
+  '渋谷',
+  '池袋',
+  '上野',
+  '品川',
+  '秋葉原',
+  '有楽町',
+  '代々木',
+];
 
-export const BRAND_WORDS = ['NEO', 'KIRA', 'SORA', 'HIKARI', 'ZEN', 'TOKI', 'MIRAI', 'AOI', 'GEN CITY', 'NOVA'];
+export const BRAND_WORDS = [
+  'NEO',
+  'KIRA',
+  'SORA',
+  'HIKARI',
+  'ZEN',
+  'TOKI',
+  'MIRAI',
+  'AOI',
+  'GEN CITY',
+  'NOVA',
+];
 
 /** Dominant color of a sign (linear RGB), shared by the atlas painter and sign lights. */
 export function signColor(id: number): [number, number, number] {

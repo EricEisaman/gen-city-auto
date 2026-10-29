@@ -5,7 +5,12 @@
 //   views: front, rear, side, three-quarter, top, interior, orbit
 // Back faces render magenta so inverted normals are obvious.
 
-import {createShader, initGpu, reportError, resizeToCss} from '../gpu/device.ts';
+import {
+  createShader,
+  initGpu,
+  reportError,
+  resizeToCss,
+} from '../gpu/device.ts';
 import {mat4} from '../math/mat4.ts';
 import type {Vec3} from '../math/vec.ts';
 import type {Mesh} from '../nurbs/mesh.ts';
@@ -133,16 +138,30 @@ async function main() {
   const {device} = gpu;
 
   const gen = designs[name];
-  if (!gen) throw new Error(`unknown design "${name}". Known: ${Object.keys(designs).join(', ')}`);
+  if (!gen)
+    throw new Error(
+      `unknown design "${name}". Known: ${Object.keys(designs).join(', ')}`,
+    );
   const design: VehicleDesign = gen(seed);
-  const color = design.palette[Number(params.get('color') ?? 0) % design.palette.length] ?? [0.6, 0.05, 0.05];
+  const color = design.palette[
+    Number(params.get('color') ?? 0) % design.palette.length
+  ] ?? [0.6, 0.05, 0.05];
 
   const module = createShader(device, 'turntable/shader', shader);
   const bgl = device.createBindGroupLayout({
     label: 'turntable/bgl',
-    entries: [{binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {}}],
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: {},
+      },
+    ],
   });
-  const layout = device.createPipelineLayout({label: 'turntable/layout', bindGroupLayouts: [bgl]});
+  const layout = device.createPipelineLayout({
+    label: 'turntable/layout',
+    bindGroupLayouts: [bgl],
+  });
   const depthFormat: GPUTextureFormat = 'depth24plus';
   const pipeline = device.createRenderPipeline({
     label: 'turntable/mesh pipeline',
@@ -163,18 +182,30 @@ async function main() {
     },
     fragment: {module, entryPoint: 'fs', targets: [{format: gpu.format}]},
     primitive: {topology: 'triangle-list', cullMode: 'none'},
-    depthStencil: {format: depthFormat, depthWriteEnabled: true, depthCompare: 'less'},
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: true,
+      depthCompare: 'less',
+    },
   });
   const groundPipeline = device.createRenderPipeline({
     label: 'turntable/ground pipeline',
     layout,
     vertex: {module, entryPoint: 'vsGround'},
     fragment: {module, entryPoint: 'fsGround', targets: [{format: gpu.format}]},
-    depthStencil: {format: depthFormat, depthWriteEnabled: true, depthCompare: 'less'},
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: true,
+      depthCompare: 'less',
+    },
   });
 
   let triangles = 0;
-  const makeDraw = (label: string, mesh: Mesh, model: () => Float32Array): Draw => {
+  const makeDraw = (
+    label: string,
+    mesh: Mesh,
+    model: () => Float32Array,
+  ): Draw => {
     const nv = mesh.positions.length / 3;
     const data = new ArrayBuffer(nv * 28);
     const f = new Float32Array(data);
@@ -184,13 +215,29 @@ async function main() {
       f.set(mesh.normals.slice(i * 3, i * 3 + 3), i * 7 + 3);
       u32[i * 7 + 6] = mesh.materials[i];
     }
-    const vb = device.createBuffer({label: `turntable/${label}/vertices`, size: Math.max(28, data.byteLength), usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST});
+    const vb = device.createBuffer({
+      label: `turntable/${label}/vertices`,
+      size: Math.max(28, data.byteLength),
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
     device.queue.writeBuffer(vb, 0, data);
     const idx = new Uint32Array(mesh.indices);
-    const ib = device.createBuffer({label: `turntable/${label}/indices`, size: Math.max(4, idx.byteLength), usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST});
+    const ib = device.createBuffer({
+      label: `turntable/${label}/indices`,
+      size: Math.max(4, idx.byteLength),
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
     device.queue.writeBuffer(ib, 0, idx);
-    const ub = device.createBuffer({label: `turntable/${label}/uniforms`, size: 192, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
-    const bg = device.createBindGroup({label: `turntable/${label}/bind group`, layout: bgl, entries: [{binding: 0, resource: {buffer: ub}}]});
+    const ub = device.createBuffer({
+      label: `turntable/${label}/uniforms`,
+      size: 192,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const bg = device.createBindGroup({
+      label: `turntable/${label}/bind group`,
+      layout: bgl,
+      entries: [{binding: 0, resource: {buffer: ub}}],
+    });
     triangles += mesh.indices.length / 3;
     return {vb, ib, count: mesh.indices.length, ub, bg, model};
   };
@@ -205,7 +252,8 @@ async function main() {
         makeDraw(`wheel${i}`, design.wheelMesh!, () => {
           const flip = w.position[0] < 0 ? -1 : 1;
           const spin = time * 2;
-          const c = Math.cos(spin), s = Math.sin(spin);
+          const c = Math.cos(spin),
+            s = Math.sin(spin);
           // Rotate about x (spin) then mirror left side by rotating 180 about y.
           mat4.identity(m);
           m[0] = flip;
@@ -232,8 +280,27 @@ async function main() {
         const a = time * 20;
         // Rodrigues rotation about r.axis.
         const [x, y, z] = r.axis;
-        const c = Math.cos(a), s = Math.sin(a), t = 1 - c;
-        m.set([t * x * x + c, t * x * y + s * z, t * x * z - s * y, 0, t * x * y - s * z, t * y * y + c, t * y * z + s * x, 0, t * x * z + s * y, t * y * z - s * x, t * z * z + c, 0, r.position[0], r.position[1], r.position[2], 1]);
+        const c = Math.cos(a),
+          s = Math.sin(a),
+          t = 1 - c;
+        m.set([
+          t * x * x + c,
+          t * x * y + s * z,
+          t * x * z - s * y,
+          0,
+          t * x * y - s * z,
+          t * y * y + c,
+          t * y * z + s * x,
+          0,
+          t * x * z + s * y,
+          t * y * z - s * x,
+          t * z * z + c,
+          0,
+          r.position[0],
+          r.position[1],
+          r.position[2],
+          1,
+        ]);
         return m;
       }),
     );
@@ -243,18 +310,49 @@ async function main() {
     const m = mat4.create();
     draws.push(
       makeDraw('steering', sw.mesh, () => {
-        const c = Math.cos(sw.tilt), s = Math.sin(sw.tilt);
-        m.set([1, 0, 0, 0, 0, c, -s, 0, 0, s, c, 0, sw.position[0], sw.position[1], sw.position[2], 1]);
+        const c = Math.cos(sw.tilt),
+          s = Math.sin(sw.tilt);
+        m.set([
+          1,
+          0,
+          0,
+          0,
+          0,
+          c,
+          -s,
+          0,
+          0,
+          s,
+          c,
+          0,
+          sw.position[0],
+          sw.position[1],
+          sw.position[2],
+          1,
+        ]);
         return m;
       }),
     );
   }
-  const groundUb = device.createBuffer({label: 'turntable/ground/uniforms', size: 192, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
-  const groundBg = device.createBindGroup({label: 'turntable/ground/bind group', layout: bgl, entries: [{binding: 0, resource: {buffer: groundUb}}]});
+  const groundUb = device.createBuffer({
+    label: 'turntable/ground/uniforms',
+    size: 192,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const groundBg = device.createBindGroup({
+    label: 'turntable/ground/bind group',
+    layout: bgl,
+    entries: [{binding: 0, resource: {buffer: groundUb}}],
+  });
 
   const hud = document.getElementById('hud')!;
   hud.textContent = `${design.name} (${design.kind}) ${design.size.map(v => v.toFixed(2)).join(' x ')} m, ${triangles} tris`;
-  window.__stats = {name: design.name, kind: design.kind, triangles, size: design.size};
+  window.__stats = {
+    name: design.name,
+    kind: design.kind,
+    triangles,
+    size: design.size,
+  };
 
   let depth: GPUTexture | null = null;
   const viewProj = mat4.create();
@@ -266,20 +364,43 @@ async function main() {
   const frame = (t: number) => {
     time = t / 1000;
     resizeToCss(canvas);
-    if (!depth || depth.width !== canvas.width || depth.height !== canvas.height) {
+    if (
+      !depth ||
+      depth.width !== canvas.width ||
+      depth.height !== canvas.height
+    ) {
       depth?.destroy();
-      depth = device.createTexture({label: 'turntable/depth', size: [canvas.width, canvas.height], format: depthFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT});
+      depth = device.createTexture({
+        label: 'turntable/depth',
+        size: [canvas.width, canvas.height],
+        format: depthFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
     }
-    const L = Math.max(design.size[2], design.size[0] * 2, design.size[1] * 1.5);
+    const L = Math.max(
+      design.size[2],
+      design.size[0] * 2,
+      design.size[1] * 1.5,
+    );
     const target: Vec3 = [0, design.size[1] * 0.45, 0];
     let eye: Vec3;
     const d = L * 1.25;
     switch (view) {
-      case 'front': eye = [0, design.size[1] * 0.6, d]; break;
-      case 'rear': eye = [0, design.size[1] * 0.6, -d]; break;
-      case 'side': eye = [d, design.size[1] * 0.5, 0]; break;
-      case 'top': eye = [0.01, d * 1.3, 0]; break;
-      case 'three-quarter': eye = [d * 0.7, design.size[1] * 0.9 + 1, d * 0.75]; break;
+      case 'front':
+        eye = [0, design.size[1] * 0.6, d];
+        break;
+      case 'rear':
+        eye = [0, design.size[1] * 0.6, -d];
+        break;
+      case 'side':
+        eye = [d, design.size[1] * 0.5, 0];
+        break;
+      case 'top':
+        eye = [0.01, d * 1.3, 0];
+        break;
+      case 'three-quarter':
+        eye = [d * 0.7, design.size[1] * 0.9 + 1, d * 0.75];
+        break;
       case 'interior': {
         eye = [...design.driverEye];
         target[0] = design.driverEye[0] * 0.3;
@@ -296,7 +417,8 @@ async function main() {
     mat4.perspectiveReverseZ(proj, fov, canvas.width / canvas.height, 0.05);
     // Turntable uses a regular depth range: swap to standard perspective.
     const f = 1 / Math.tan(fov / 2);
-    const near = 0.05, far = 200;
+    const near = 0.05,
+      far = 200;
     proj.fill(0);
     proj[0] = f / (canvas.width / canvas.height);
     proj[5] = f;
@@ -321,8 +443,22 @@ async function main() {
     const encoder = device.createCommandEncoder({label: 'turntable/frame'});
     const pass = encoder.beginRenderPass({
       label: 'turntable/pass',
-      colorAttachments: [{view: gpu.context.getCurrentTexture().createView({label: 'turntable/swapchain view'}), loadOp: 'clear', storeOp: 'store', clearValue: [0.55, 0.65, 0.8, 1]}],
-      depthStencilAttachment: {view: depth.createView({label: 'turntable/depth view'}), depthLoadOp: 'clear', depthStoreOp: 'store', depthClearValue: 1},
+      colorAttachments: [
+        {
+          view: gpu.context
+            .getCurrentTexture()
+            .createView({label: 'turntable/swapchain view'}),
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: [0.55, 0.65, 0.8, 1],
+        },
+      ],
+      depthStencilAttachment: {
+        view: depth.createView({label: 'turntable/depth view'}),
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+        depthClearValue: 1,
+      },
     });
     if (view !== 'interior') {
       pass.setPipeline(groundPipeline);
@@ -344,4 +480,6 @@ async function main() {
   requestAnimationFrame(frame);
 }
 
-main().catch(e => reportError(`[turntable] ${e instanceof Error ? e.stack : e}`));
+main().catch(e =>
+  reportError(`[turntable] ${e instanceof Error ? e.stack : e}`),
+);

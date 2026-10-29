@@ -125,10 +125,18 @@ export class CMesh {
 
   /** Triangle whose winding is chosen so its front faces along `n`. */
   triFacing(a: number, b: number, c: number, n: Vec3) {
-    const A = this.pos(a), B = this.pos(b), C = this.pos(c);
-    const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2];
-    const vx = C[0] - A[0], vy = C[1] - A[1], vz = C[2] - A[2];
-    const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+    const A = this.pos(a),
+      B = this.pos(b),
+      C = this.pos(c);
+    const ux = B[0] - A[0],
+      uy = B[1] - A[1],
+      uz = B[2] - A[2];
+    const vx = C[0] - A[0],
+      vy = C[1] - A[1],
+      vz = C[2] - A[2];
+    const cx = uy * vz - uz * vy,
+      cy = uz * vx - ux * vz,
+      cz = ux * vy - uy * vx;
     if (cx * n[0] + cy * n[1] + cz * n[2] >= 0) this.tri(a, b, c);
     else this.tri(a, c, b);
   }
@@ -145,7 +153,9 @@ export class CMesh {
 
   /** Quad with an explicit (possibly non-planar) normal per corner. */
   quadN(p: Vec3[], ns: Vec3[], uv: Vec2[], mat: number, face: Vec3, aux = 0) {
-    const ids = p.map((q, i) => this.vertex(q, ns[i], uv[i][0], uv[i][1], mat, aux));
+    const ids = p.map((q, i) =>
+      this.vertex(q, ns[i], uv[i][0], uv[i][1], mat, aux),
+    );
     this.triFacing(ids[0], ids[1], ids[2], face);
     this.triFacing(ids[0], ids[2], ids[3], face);
   }
@@ -167,13 +177,79 @@ export class CMesh {
     ];
     const neg = (v: Vec3): Vec3 => [-v[0], -v[1], -v[2]];
     // +x face
-    this.quad([P(1, -1, 1), P(1, -1, -1), P(1, 1, -1), P(1, 1, 1)], R, [[0, 0], [2 * h[2], 0], [2 * h[2], 2 * h[1]], [0, 2 * h[1]]], mat, aux);
-    this.quad([P(-1, -1, -1), P(-1, -1, 1), P(-1, 1, 1), P(-1, 1, -1)], neg(R), [[0, 0], [2 * h[2], 0], [2 * h[2], 2 * h[1]], [0, 2 * h[1]]], mat, aux);
-    this.quad([P(-1, -1, 1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1)], F, [[0, 0], [2 * h[0], 0], [2 * h[0], 2 * h[1]], [0, 2 * h[1]]], mat, aux);
-    this.quad([P(1, -1, -1), P(-1, -1, -1), P(-1, 1, -1), P(1, 1, -1)], neg(F), [[0, 0], [2 * h[0], 0], [2 * h[0], 2 * h[1]], [0, 2 * h[1]]], mat, aux);
-    this.quad([P(-1, 1, 1), P(1, 1, 1), P(1, 1, -1), P(-1, 1, -1)], U, [[0, 0], [2 * h[0], 0], [2 * h[0], 2 * h[2]], [0, 2 * h[2]]], mat, aux);
+    this.quad(
+      [P(1, -1, 1), P(1, -1, -1), P(1, 1, -1), P(1, 1, 1)],
+      R,
+      [
+        [0, 0],
+        [2 * h[2], 0],
+        [2 * h[2], 2 * h[1]],
+        [0, 2 * h[1]],
+      ],
+      mat,
+      aux,
+    );
+    this.quad(
+      [P(-1, -1, -1), P(-1, -1, 1), P(-1, 1, 1), P(-1, 1, -1)],
+      neg(R),
+      [
+        [0, 0],
+        [2 * h[2], 0],
+        [2 * h[2], 2 * h[1]],
+        [0, 2 * h[1]],
+      ],
+      mat,
+      aux,
+    );
+    this.quad(
+      [P(-1, -1, 1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1)],
+      F,
+      [
+        [0, 0],
+        [2 * h[0], 0],
+        [2 * h[0], 2 * h[1]],
+        [0, 2 * h[1]],
+      ],
+      mat,
+      aux,
+    );
+    this.quad(
+      [P(1, -1, -1), P(-1, -1, -1), P(-1, 1, -1), P(1, 1, -1)],
+      neg(F),
+      [
+        [0, 0],
+        [2 * h[0], 0],
+        [2 * h[0], 2 * h[1]],
+        [0, 2 * h[1]],
+      ],
+      mat,
+      aux,
+    );
+    this.quad(
+      [P(-1, 1, 1), P(1, 1, 1), P(1, 1, -1), P(-1, 1, -1)],
+      U,
+      [
+        [0, 0],
+        [2 * h[0], 0],
+        [2 * h[0], 2 * h[2]],
+        [0, 2 * h[2]],
+      ],
+      mat,
+      aux,
+    );
     if (!skipBottom) {
-      this.quad([P(-1, -1, -1), P(1, -1, -1), P(1, -1, 1), P(-1, -1, 1)], neg(U), [[0, 0], [2 * h[0], 0], [2 * h[0], 2 * h[2]], [0, 2 * h[2]]], mat, aux);
+      this.quad(
+        [P(-1, -1, -1), P(1, -1, -1), P(1, -1, 1), P(-1, -1, 1)],
+        neg(U),
+        [
+          [0, 0],
+          [2 * h[0], 0],
+          [2 * h[0], 2 * h[2]],
+          [0, 2 * h[2]],
+        ],
+        mat,
+        aux,
+      );
     }
   }
 
@@ -188,7 +264,11 @@ export class CMesh {
     let r: Vec3 = [f[2], 0, -f[0]];
     const rl = Math.hypot(r[0], r[2]);
     r = rl > 1e-4 ? [r[0] / rl, 0, r[2] / rl] : [1, 0, 0];
-    const u: Vec3 = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+    const u: Vec3 = [
+      r[1] * f[2] - r[2] * f[1],
+      r[2] * f[0] - r[0] * f[2],
+      r[0] * f[1] - r[1] * f[0],
+    ];
     const P = (p: Vec3, sx: number, sy: number): Vec3 => [
       p[0] + r[0] * sx * w + u[0] * sy * hgt,
       p[1] + r[1] * sx * w + u[1] * sy * hgt,
@@ -201,35 +281,96 @@ export class CMesh {
       [-1, -1, 1, -1, [-u[0], -u[1], -u[2]]],
     ];
     for (const [x0, y0, x1, y1, n] of sides) {
-      this.quad([P(a, x0, y0), P(b, x0, y0), P(b, x1, y1), P(a, x1, y1)], n, [[0, 0], [len, 0], [len, 1], [0, 1]], mat, aux);
+      this.quad(
+        [P(a, x0, y0), P(b, x0, y0), P(b, x1, y1), P(a, x1, y1)],
+        n,
+        [
+          [0, 0],
+          [len, 0],
+          [len, 1],
+          [0, 1],
+        ],
+        mat,
+        aux,
+      );
     }
   }
 
   /** Vertical cylinder (n sides) from y0 to y1. */
-  cylinder(c: Vec3, radius: number, height: number, sides: number, mat: number, cap = true, aux = 0) {
+  cylinder(
+    c: Vec3,
+    radius: number,
+    height: number,
+    sides: number,
+    mat: number,
+    cap = true,
+    aux = 0,
+  ) {
     const ring: number[] = [];
     for (let i = 0; i <= sides; i++) {
       const a = (i / sides) * Math.PI * 2;
       const n: Vec3 = [Math.cos(a), 0, Math.sin(a)];
       const u = (i / sides) * Math.PI * 2 * radius;
-      ring.push(this.vertex([c[0] + n[0] * radius, c[1], c[2] + n[2] * radius], n, u, 0, mat, aux));
-      ring.push(this.vertex([c[0] + n[0] * radius, c[1] + height, c[2] + n[2] * radius], n, u, height, mat, aux));
+      ring.push(
+        this.vertex(
+          [c[0] + n[0] * radius, c[1], c[2] + n[2] * radius],
+          n,
+          u,
+          0,
+          mat,
+          aux,
+        ),
+      );
+      ring.push(
+        this.vertex(
+          [c[0] + n[0] * radius, c[1] + height, c[2] + n[2] * radius],
+          n,
+          u,
+          height,
+          mat,
+          aux,
+        ),
+      );
     }
     for (let i = 0; i < sides; i++) {
-      const a = ring[i * 2], b = ring[i * 2 + 1], cc = ring[i * 2 + 2], d = ring[i * 2 + 3];
+      const a = ring[i * 2],
+        b = ring[i * 2 + 1],
+        cc = ring[i * 2 + 2],
+        d = ring[i * 2 + 3];
       const ang = ((i + 0.5) / sides) * Math.PI * 2;
       const n: Vec3 = [Math.cos(ang), 0, Math.sin(ang)];
       this.triFacing(a, b, d, n);
       this.triFacing(a, d, cc, n);
     }
     if (cap) {
-      const center = this.vertex([c[0], c[1] + height, c[2]], [0, 1, 0], 0, 0, mat, aux);
+      const center = this.vertex(
+        [c[0], c[1] + height, c[2]],
+        [0, 1, 0],
+        0,
+        0,
+        mat,
+        aux,
+      );
       const top: number[] = [];
       for (let i = 0; i <= sides; i++) {
         const a = (i / sides) * Math.PI * 2;
-        top.push(this.vertex([c[0] + Math.cos(a) * radius, c[1] + height, c[2] + Math.sin(a) * radius], [0, 1, 0], Math.cos(a) * radius, Math.sin(a) * radius, mat, aux));
+        top.push(
+          this.vertex(
+            [
+              c[0] + Math.cos(a) * radius,
+              c[1] + height,
+              c[2] + Math.sin(a) * radius,
+            ],
+            [0, 1, 0],
+            Math.cos(a) * radius,
+            Math.sin(a) * radius,
+            mat,
+            aux,
+          ),
+        );
       }
-      for (let i = 0; i < sides; i++) this.triFacing(center, top[i + 1], top[i], [0, 1, 0]);
+      for (let i = 0; i < sides; i++)
+        this.triFacing(center, top[i + 1], top[i], [0, 1, 0]);
     }
   }
 }
@@ -240,7 +381,8 @@ export function triangulate(poly: Vec2[]): number[] {
   const out: number[] = [];
   if (n < 3) return out;
   const V = Array.from({length: n}, (_, i) => i);
-  const area2 = (a: Vec2, b: Vec2, c: Vec2) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const area2 = (a: Vec2, b: Vec2, c: Vec2) =>
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
   const inTri = (p: Vec2, a: Vec2, b: Vec2, c: Vec2) =>
     area2(a, b, p) >= 0 && area2(b, c, p) >= 0 && area2(c, a, p) >= 0;
   let guard = 0;
@@ -250,7 +392,9 @@ export function triangulate(poly: Vec2[]): number[] {
       const i0 = V[(i - 1 + V.length) % V.length];
       const i1 = V[i];
       const i2 = V[(i + 1) % V.length];
-      const a = poly[i0], b = poly[i1], c = poly[i2];
+      const a = poly[i0],
+        b = poly[i1],
+        c = poly[i2];
       if (area2(a, b, c) <= 1e-9) continue;
       let ok = true;
       for (const j of V) {
@@ -292,7 +436,12 @@ export interface ClusterData {
 }
 
 /** Split a mesh into clusters (in index order, which is spatially coherent). */
-export function clusterize(m: CMesh, lod: number, tile: number, flags = 0): ClusterData {
+export function clusterize(
+  m: CMesh,
+  lod: number,
+  tile: number,
+  flags = 0,
+): ClusterData {
   const triCount = m.icount / 3;
   const verts: number[] = [];
   const tris: number[] = [];
@@ -324,8 +473,11 @@ export function clusterize(m: CMesh, lod: number, tile: number, flags = 0): Clus
         if (l === undefined) {
           l = local.size;
           local.set(g, l);
-          for (let w = 0; w < VERTEX_WORDS; w++) verts.push(vertexWords[g * VERTEX_WORDS + w]);
-          const x = vertexF[g * VERTEX_WORDS], y = vertexF[g * VERTEX_WORDS + 1], z = vertexF[g * VERTEX_WORDS + 2];
+          for (let w = 0; w < VERTEX_WORDS; w++)
+            verts.push(vertexWords[g * VERTEX_WORDS + w]);
+          const x = vertexF[g * VERTEX_WORDS],
+            y = vertexF[g * VERTEX_WORDS + 1],
+            z = vertexF[g * VERTEX_WORDS + 2];
           cl = [Math.min(cl[0], x), Math.min(cl[1], y), Math.min(cl[2], z)];
           ch = [Math.max(ch[0], x), Math.max(ch[1], y), Math.max(ch[2], z)];
         }
@@ -334,13 +486,26 @@ export function clusterize(m: CMesh, lod: number, tile: number, flags = 0): Clus
       tris.push(packed >>> 0);
       t++;
     }
-    const c: Vec3 = [(cl[0] + ch[0]) / 2, (cl[1] + ch[1]) / 2, (cl[2] + ch[2]) / 2];
+    const c: Vec3 = [
+      (cl[0] + ch[0]) / 2,
+      (cl[1] + ch[1]) / 2,
+      (cl[2] + ch[2]) / 2,
+    ];
     const r = Math.hypot(ch[0] - cl[0], ch[1] - cl[1], ch[2] - cl[2]) / 2;
     for (let k = 0; k < 3; k++) {
       lo[k] = Math.min(lo[k], cl[k]);
       hi[k] = Math.max(hi[k], ch[k]);
     }
-    clusters.push(f2u(c[0]), f2u(c[1]), f2u(c[2]), f2u(r), vstart, tstart, (tris.length - tstart) | (lod << 8) | (flags << 12), tile);
+    clusters.push(
+      f2u(c[0]),
+      f2u(c[1]),
+      f2u(c[2]),
+      f2u(r),
+      vstart,
+      tstart,
+      (tris.length - tstart) | (lod << 8) | (flags << 12),
+      tile,
+    );
   }
   return {
     vertices: new Uint32Array(verts),
