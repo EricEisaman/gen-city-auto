@@ -314,6 +314,49 @@ export function building(b: Building, m: CMesh, lod: number, lights: LightList, 
     }
   }
 
+  // Facade clutter: AC condensers under windows and external fire escapes.
+  if (lod === 0) {
+    const floors = Math.floor((mainTop - base) / b.floorH);
+    for (let i = 0; i < fp.length; i++) {
+      if (i === b.front) continue;
+      const a = fp[i], c = fp[(i + 1) % fp.length];
+      const len = dist2(a, c);
+      if (len < 5) continue;
+      const n = edgeNormal(fp, i);
+      const yaw = Math.atan2(n[0], n[2]);
+      const units = Math.min(8, Math.floor(len / 4) * Math.min(floors, 6));
+      for (let k = 0; k < units; k++) {
+        if (!rng.chance(0.35)) continue;
+        const t = rng.range(0.1, 0.9);
+        const f = rng.int(1, Math.max(2, floors));
+        const y = base + f * b.floorH + 0.35;
+        m.box([lerp(a[0], c[0], t) + n[0] * 0.3, y, lerp(a[1], c[1], t) + n[2] * 0.3], [0.4, 0.3, 0.15], packMat(CM.paint, 0xe0), yaw);
+      }
+    }
+    if ((b.kind === 'pencil' || (b.kind === 'midrise' && rng.chance(0.25))) && floors >= 3) {
+      // Exterior staircase on a side wall: landings per floor with railings.
+      const i = (b.front + 1) % fp.length;
+      const a = fp[i], c = fp[(i + 1) % fp.length];
+      const len = dist2(a, c);
+      if (len > 4) {
+        const n = edgeNormal(fp, i);
+        const along: Vec3 = [(c[0] - a[0]) / len, 0, (c[1] - a[1]) / len];
+        const yaw = Math.atan2(n[0], n[2]);
+        const mid: Vec2 = [lerp(a[0], c[0], 0.7), lerp(a[1], c[1], 0.7)];
+        for (let f = 1; f < floors; f++) {
+          const y = base + f * b.floorH;
+          const p: Vec3 = [mid[0] + n[0] * 0.75, y, mid[1] + n[2] * 0.75];
+          m.box(p, [1.3, 0.06, 0.7], packMat(CM.metal), yaw);
+          m.beam([p[0] - along[0] * 1.3 + n[0] * 0.7, y + 0.55, p[2] - along[2] * 1.3 + n[2] * 0.7], [p[0] + along[0] * 1.3 + n[0] * 0.7, y + 0.55, p[2] + along[2] * 1.3 + n[2] * 0.7], 0.03, 0.5, packMat(CM.paint, 0x80));
+          // Stair flight to the next landing.
+          const s0: Vec3 = [p[0] - along[0] * 1.1, y, p[2] - along[2] * 1.1];
+          const s1: Vec3 = [p[0] + along[0] * 1.1, y + b.floorH, p[2] + along[2] * 1.1];
+          m.beam(s0, s1, 0.45, 0.05, packMat(CM.metal));
+        }
+      }
+    }
+  }
+
   // Roof clutter.
   if (lod === 0) {
     const c = centroid(roof);
