@@ -2,6 +2,7 @@
 
 @group(2) @binding(0) var signAtlas: texture_2d<f32>;
 @group(2) @binding(1) var linearSampler: sampler;
+@group(2) @binding(2) var leafTex: texture_2d<f32>;
 
 const M_ROAD = 0u;
 const M_SIDEWALK = 1u;
@@ -26,6 +27,7 @@ const M_WIRE = 20u;
 const M_VENDING = 21u;
 const M_LED = 22u;
 const M_ASPHALT = 24u;
+const M_LEAVES = 25u;
 
 fn nightLight() -> f32 {
   return smoothstep(0.15, 0.7, frame.time.w);
@@ -104,13 +106,13 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   }
   // Lighting: lit rooms glow at night, everything gets some daylight.
   let night = nightLight();
-  let litChance = select(mix(0.05, 0.5, night), mix(0.1, 0.62, night), office);
+  let litChance = select(mix(0.04, 0.36, night), mix(0.06, 0.42, night), office);
   let lit = hashuf(seed ^ 0x1234567u) < litChance;
   let warm = select(vec3f(1.0, 0.72, 0.42), vec3f(0.92, 0.96, 1.0), office && r0 > 0.25);
   var light = frame.skyAmbient.rgb * 0.35;
   if (lit) {
     let flicker = 1.0;
-    light += warm * mix(0.9, 2.2, r2) * flicker;
+    light += warm * mix(0.35, 1.5, r2 * r2) * flicker;
   }
   return c * light;
 }
@@ -186,7 +188,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
       s.albedo = vec3f(0.02);
       s.rough = 0.04;
-      s.emissive = inside * 1.6 * (1.0 - fres) + vec3f(1.0, 0.85, 0.6) * 0.6 * mix(0.3, 1.0, nightLight());
+      s.emissive = inside * 1.2 * (1.0 - fres) + vec3f(1.0, 0.85, 0.6) * 0.2 * mix(0.3, 1.0, nightLight());
       s.cls = CLASS_GLASS;
       return s;
     }
@@ -420,6 +422,15 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.albedo = mix(vec3f(0.08, 0.16, 0.04), vec3f(0.16, 0.24, 0.06), h) * (0.7 + 0.5 * valueNoise(world.xz * 2.0 + world.y));
       s.rough = 0.85;
       s.ao = clamp(0.55 + 0.45 * n.y, 0.0, 1.0);
+      s.cls = CLASS_FOLIAGE;
+    }
+    case M_LEAVES: {
+      let l = textureSampleLevel(leafTex, linearSampler, uv, 0.0);
+      let h = hashuf(aux);
+      let tint = mix(vec3f(0.07, 0.15, 0.035), vec3f(0.17, 0.24, 0.06), h);
+      s.albedo = tint * (0.6 + 0.8 * l.r);
+      s.rough = 0.8;
+      s.ao = clamp(0.5 + 0.5 * n.y, 0.3, 1.0);
       s.cls = CLASS_FOLIAGE;
     }
     case M_BARK: { s.albedo = vec3f(0.16, 0.11, 0.08); s.rough = 0.95; }

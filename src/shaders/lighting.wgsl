@@ -94,6 +94,9 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
     c += T * vec3f(1.0, 0.97, 0.9) * mix(0.03, 1.2, lit) * smoothstep(0.99985, 0.9999, cm);
   }
   c += stars(d) * night * T * (1.0 - frame.weather.x);
+  // Night sky: deep blue plus orange light pollution near the horizon.
+  let horizon = exp(-max(d.y, 0.0) * 6.0);
+  c += (vec3f(0.0012, 0.0018, 0.004) + frame.cityGlow.rgb * (0.1 + 0.9 * horizon) * (0.6 + frame.weather.x * 1.5)) * night;
   // Clouds.
   if (d.y > -0.02) {
     let cl = textureSampleLevel(cloudTex, linearSampler, uv, 0.0);
@@ -266,6 +269,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let uv = pxf * frame.resolution.zw;
   let world = worldFromDepth(pxf, max(depth, 1e-7));
   let rd = normalize(world - frame.camPos.xyz);
+  if (u32(frame.misc.x) == 7u) {
+    let cl = textureSampleLevel(cloudTex, linearSampler, uv, 0.0);
+    textureStore(outColor, px, vec4f(cl.rgb + vec3f(0.0, 0.0, 1.0 - cl.a), 1.0));
+    return;
+  }
   if (depth <= 0.0) {
     let sky = skyPixel(rd, uv);
     textureStore(outColor, px, vec4f(sky, 1.0));
@@ -286,6 +294,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let ao = a.a * textureSampleLevel(aoTex, linearSampler, uv, 0.0).r;
   let dist = length(world - frame.camPos.xyz);
 
+  let dbg = u32(frame.misc.x);
   var color = vec3f(0.0);
   // Sun.
   if (frame.sunDir.w > 0.0) {
@@ -337,10 +346,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   }
   var specOcc = mix(ao, 1.0, 0.5);
   color += env * Fa * specOcc;
+  if (cls == CLASS_VEHICLE && metal < 0.95) {
+    // Clear coat: a sharp dielectric layer over the paint.
+    let fc = 0.04 + 0.96 * pow(1.0 - nv, 5.0);
+    let envSharp = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
+    var coatEnv = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, envSharp, smoothstep(-0.05, 0.15, refl.y));
+    if (frame.misc.y > 0.5) {
+      let r2 = ssr(world, n, v, pxf, 0.02);
+      coatEnv = mix(coatEnv, r2.rgb, r2.a);
+    }
+    color += coatEnv * fc * specOcc;
+    if (frame.sunDir.w > 0.0) {
+      let hc = normalize(v + frame.sunDir.xyz);
+      color += frame.sunColor.rgb * D_GGX(max(dot(n, hc), 0.0), 0.05 * 0.05) * 0.25 * fc * max(dot(n, frame.sunDir.xyz), 0.0) * shadow(world, n, vd);
+    }
+  }
+  if (dbg == 8u) { color = vec3f(ao); }
   color += em.rgb;
   color = applyFog(color, world, uv, dist, rd);
   // Debug views.
-  let dbg = u32(frame.misc.x);
   if (dbg == 1u) { color = albedo; }
   if (dbg == 2u) { color = n * 0.5 + 0.5; }
   if (dbg == 3u) { color = vec3f(rough); }

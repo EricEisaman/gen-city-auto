@@ -39,19 +39,19 @@ struct VOut {
 fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
   let I = instances[i.inst];
   var s = defaultSurf(n);
-  s.cls = CLASS_VEHICLE;
+  if (i.mat <= 1u) { s.cls = CLASS_VEHICLE; }
   let lightsOn = I.params.x;
   switch (i.mat) {
     case 0u: {
       s.albedo = I.color.rgb;
-      s.rough = 0.18;
-      s.metal = I.color.a;
+      s.rough = 0.4;
+      s.metal = I.color.a * 0.5;
       // Subtle metallic flake.
       let flake = hash31(floor(i.local * 300.0));
       s.rough += (flake - 0.5) * 0.06 * I.color.a;
       s.albedo *= 1.0 - I.params.w * 0.3 * smoothstep(0.6, 0.0, i.local.y);
     }
-    case 1u: { s.albedo = I.color2.rgb; s.rough = 0.25; s.metal = I.color2.a; }
+    case 1u: { s.albedo = I.color2.rgb; s.rough = 0.4; s.metal = I.color2.a * 0.5; }
     case 3u: { s.albedo = vec3f(0.95); s.rough = 0.08; s.metal = 1.0; }
     case 4u: { s.albedo = vec3f(0.025); s.rough = 0.85; }
     case 5u: { s.albedo = vec3f(0.045); s.rough = 0.55; }

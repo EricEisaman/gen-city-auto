@@ -247,7 +247,7 @@ export class City {
     for (let k = 0; k < n; k++) {
       const {src, i} = cand[k];
       const kind = src[i * 8 + 7];
-      const scale = (kind === LightKind.street ? 1.0 : kind === LightKind.sign ? 0.55 * flicker : kind === LightKind.vending ? 0.35 : 0.8) * night;
+      const scale = (kind === LightKind.street ? 3.5 : kind === LightKind.sign ? 0.55 * flicker : kind === LightKind.vending ? 0.35 : 0.8) * night;
       const o = (k + ne) * 8;
       out[o] = src[i * 8];
       out[o + 1] = src[i * 8 + 1];

@@ -38,7 +38,8 @@ export class UI {
     const citySel = el('select');
     for (const [k, p] of Object.entries(PRESETS)) citySel.append(el('option', {value: k, textContent: p.name}));
     citySel.value = g.cityType;
-    const seed = el('input', {type: 'number', value: String(g.seed), style: 'width:80px'} as Partial<HTMLInputElement>);
+    const seed = el('input', {type: 'number', value: String(g.seed)} as Partial<HTMLInputElement>);
+    seed.style.width = '80px';
     const gen = el('button', {textContent: 'Generate'});
     gen.onclick = () => void g.regenerate(citySel.value as CityType, Number(seed.value) || 1);
     const rnd = el('button', {textContent: 'Random city'});
@@ -75,7 +76,7 @@ export class UI {
     vehSel.append(el('option', {textContent: 'choose…'}));
     const row = (label: string, ...c: Node[]) => el('label', {}, label, el('span', {}, ...c));
     this.menu.append(
-      el('div', {style: 'font-weight:700;letter-spacing:0.1em'}, 'GEN CITY AUTO'),
+      el('div', {className: 'menu-title'}, 'GEN CITY AUTO'),
       row('City', citySel),
       row('Seed', seed, gen),
       row('', rnd),

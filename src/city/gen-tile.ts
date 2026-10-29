@@ -346,7 +346,40 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
   for (let k = 0; k < blobs; k++) {
     const r = h * (lod === 0 ? rng.range(0.22, 0.32) : 0.33);
     const c: Vec3 = [p[0] + rng.range(-0.25, 0.25) * h * 0.3, p[1] + trunkH + r * (0.6 + k * 0.5), p[2] + rng.range(-0.25, 0.25) * h * 0.3];
-    blob(m, c, r, lod === 0 ? 1 : 0, aux, rng);
+    blob(m, c, r * 0.62, 0, aux, rng);
+    leafCards(m, c, r, lod === 0 ? 9 : 4, aux, rng);
+  }
+}
+
+/** Alpha-tested leaf cards around a crown center with spherical normals. */
+function leafCards(m: CMesh, c: Vec3, r: number, count: number, aux: number, rng: Rng) {
+  const mat = packMat(CM.leaves);
+  for (let k = 0; k < count; k++) {
+    // Random point in the crown and a random card orientation.
+    const u = rng.range(-1, 1);
+    const th = rng.range(0, Math.PI * 2);
+    const s = Math.sqrt(1 - u * u);
+    const off: Vec3 = [s * Math.cos(th), u * 0.8, s * Math.sin(th)];
+    const d = rng.range(0.25, 0.7) * r;
+    const q: Vec3 = [c[0] + off[0] * d, c[1] + off[1] * d, c[2] + off[2] * d];
+    const yaw = rng.range(0, Math.PI);
+    const tilt = rng.range(-0.6, 0.6);
+    const ax: Vec3 = [Math.cos(yaw), 0, Math.sin(yaw)];
+    const ay: Vec3 = [-Math.sin(yaw) * Math.sin(tilt), Math.cos(tilt), Math.cos(yaw) * Math.sin(tilt)];
+    const sz = r * rng.range(0.75, 1.05);
+    const corners: [number, number][] = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    const ids = corners.map(([a, b]) => {
+      const pp: Vec3 = [q[0] + (ax[0] * a + ay[0] * b) * sz, q[1] + (ax[1] * a + ay[1] * b) * sz, q[2] + (ax[2] * a + ay[2] * b) * sz];
+      let nn: Vec3 = [pp[0] - c[0], (pp[1] - c[1]) * 1.3 + r * 0.3, pp[2] - c[2]];
+      const l = Math.hypot(nn[0], nn[1], nn[2]) || 1;
+      nn = [nn[0] / l, nn[1] / l, nn[2] / l];
+      return m.vertex(pp, nn, (a + 1) / 2, (1 - b) / 2, mat, aux);
+    });
+    // Double-sided: emit both windings.
+    m.tri(ids[0], ids[1], ids[2]);
+    m.tri(ids[0], ids[2], ids[3]);
+    m.tri(ids[0], ids[2], ids[1]);
+    m.tri(ids[0], ids[3], ids[2]);
   }
 }
 

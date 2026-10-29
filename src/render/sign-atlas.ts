@@ -125,3 +125,33 @@ export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
   device.queue.copyExternalImageToTexture({source: canvas}, {texture: tex}, [ATLAS_SIZE, ATLAS_SIZE]);
   return tex;
 }
+
+/** Leaf cluster texture for tree cards: grey leaves (tinted in the shader) with alpha. */
+export function createLeafTexture(device: GPUDevice): GPUTexture {
+  const size = 256;
+  const canvas = new OffscreenCanvas(size, size);
+  const g = canvas.getContext('2d')!;
+  const rng = new Rng(99);
+  g.clearRect(0, 0, size, size);
+  for (let i = 0; i < 260; i++) {
+    const r = Math.hypot(rng.range(-1, 1), rng.range(-1, 1));
+    const a = rng.range(0, Math.PI * 2);
+    const d = Math.sqrt(rng.next()) * size * 0.46;
+    const x = size / 2 + Math.cos(a) * d;
+    const y = size / 2 + Math.sin(a) * d;
+    const v = Math.round(rng.range(90, 255));
+    g.fillStyle = `rgb(${v},${v},${v})`;
+    g.beginPath();
+    g.ellipse(x, y, rng.range(5, 11), rng.range(2.5, 5), rng.range(0, Math.PI), 0, Math.PI * 2);
+    g.fill();
+    void r;
+  }
+  const tex = device.createTexture({
+    label: 'trees/leaf cards',
+    size: [size, size],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  device.queue.copyExternalImageToTexture({source: canvas}, {texture: tex}, [size, size]);
+  return tex;
+}

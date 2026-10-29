@@ -86,27 +86,26 @@ fn remap(v: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
 
 fn weatherAt(xz: vec2f) -> f32 {
   let w = frame.wind.xy * frame.time.x * 6.0;
-  let n = fbm2((xz + w) * 0.00009) * 0.65 + fbm2((xz - w * 0.5) * 0.00035) * 0.35;
-  let cover = frame.weather.x;
-  return clamp(remap(n, 1.0 - cover * 0.95 - 0.12, 1.0, 0.0, 1.0), 0.0, 1.0);
+  let n = fbm2((xz + w) * 0.00011) * 0.7 + fbm2((xz - w * 0.5) * 0.0004) * 0.3;
+  return clamp(frame.weather.x * 1.15 + (n - 0.47) * 1.6 - 0.12, 0.0, 1.0);
 }
 
 fn cloudDensity(p: vec3f, cheap: bool) -> f32 {
   let h = (p.y - CLOUD_BOTTOM) / (CLOUD_TOP - CLOUD_BOTTOM);
   if (h < 0.0 || h > 1.0) { return 0.0; }
   let cov = weatherAt(p.xz);
-  if (cov <= 0.0) { return 0.0; }
-  // Cumulus-ish height profile; stormy weather towers higher.
-  let topH = mix(0.45, 1.0, clamp(frame.weather.x * 1.2 - 0.2, 0.0, 1.0));
-  let grad = smoothstep(0.0, 0.08, h) * smoothstep(topH, topH * 0.5, h);
+  if (cov <= 0.02) { return 0.0; }
+  // Cumulus height profile; stormy weather towers higher, overcast is a thick deck.
+  let topH = mix(0.45, 1.0, clamp(frame.weather.x * 1.4 - 0.4, 0.0, 1.0));
+  let grad = smoothstep(0.0, 0.1, h) * smoothstep(topH, topH * 0.45, h);
   let wind = vec3f(frame.wind.x, 0.0, frame.wind.y) * frame.time.x * 12.0;
-  let s = textureSampleLevel(noiseTex, linearRepeat, (p + wind) * 0.00018, 0.0);
-  let shape = remap(s.r, s.g * 0.3 - 0.3, 1.0, 0.0, 1.0);
+  let s = textureSampleLevel(noiseTex, linearRepeat, (p + wind) * 0.00016, 0.0);
+  let shape = remap(s.r, s.g * 0.35 - 0.35, 1.0, 0.0, 1.0);
   var d = clamp(remap(shape * grad, 1.0 - cov, 1.0, 0.0, 1.0), 0.0, 1.0);
-  if (d <= 0.0 || cheap) { return d * cov; }
-  let dt = textureSampleLevel(noiseTex, linearRepeat, (p + wind * 1.6) * 0.0011, 0.0).b;
-  d = clamp(remap(d, dt * 0.35, 1.0, 0.0, 1.0), 0.0, 1.0);
-  return d * cov;
+  if (d <= 0.0 || cheap) { return d; }
+  let dt = textureSampleLevel(noiseTex, linearRepeat, (p + wind * 1.6) * 0.001, 0.0).b;
+  d = clamp(remap(d, dt * 0.3, 1.0, 0.0, 1.0), 0.0, 1.0);
+  return d;
 }
 
 fn hg(c: f32, g: f32) -> f32 {

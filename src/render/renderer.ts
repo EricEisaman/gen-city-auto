@@ -9,6 +9,7 @@ import cityMaterialsWgsl from '../shaders/city-materials.wgsl';
 import cityWgsl from '../shaders/city.wgsl';
 import cloudsWgsl from '../shaders/clouds.wgsl';
 import commonWgsl from '../shaders/common.wgsl';
+import aoWgsl from '../shaders/ao.wgsl';
 import cullWgsl from '../shaders/cull.wgsl';
 import lightingWgsl from '../shaders/lighting.wgsl';
 import postWgsl from '../shaders/post.wgsl';
@@ -17,7 +18,7 @@ import terrainWgsl from '../shaders/terrain.wgsl';
 import {computeSky, type SkyState} from '../world/sky.ts';
 import {ClusterPool, type PoolHandle} from './cluster-pool.ts';
 import {F, FrameData} from './frame.ts';
-import {createSignAtlasTexture} from './sign-atlas.ts';
+import {createLeafTexture, createSignAtlasTexture} from './sign-atlas.ts';
 import type {ClusterData} from '../city/cmesh.ts';
 
 export interface Weather {
@@ -80,6 +81,7 @@ interface Targets {
   bloomDown: GPUTexture[];
   bloomUp: GPUTexture[];
   clouds: GPUTexture[];
+  ao: GPUTexture;
 }
 
 export class Renderer {
@@ -97,6 +99,7 @@ export class Renderer {
   private linearRepeat: GPUSampler;
   private shadowSampler: GPUSampler;
   private signAtlas: GPUTexture;
+  private leafTex: GPUTexture;
   private whiteTex: GPUTexture;
   private shadowMap: GPUTexture;
   private transmittance: GPUTexture;
@@ -148,6 +151,7 @@ export class Renderer {
     this.linearRepeat = device.createSampler({label: 'sampler/linear repeat', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat'});
     this.shadowSampler = device.createSampler({label: 'sampler/shadow compare', compare: 'less-equal', magFilter: 'linear', minFilter: 'linear'});
     this.signAtlas = createSignAtlasTexture(device);
+    this.leafTex = createLeafTexture(device);
     this.whiteTex = device.createTexture({label: 'texture/white', size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST});
     device.queue.writeTexture({texture: this.whiteTex}, new Uint8Array([255, 255, 255, 255]), {}, [1, 1]);
     this.shadowMap = device.createTexture({label: 'shadow/cascades', size: [SHADOW_SIZE, SHADOW_SIZE, CASCADES], format: DEPTH_FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING});
@@ -200,12 +204,13 @@ export class Renderer {
     const lightMod = mod('shader/lighting', commonWgsl, surfaceWgsl.replace(/struct GOut[\s\S]*$/, ''), lightingWgsl);
     const postMod = mod('shader/post', commonWgsl, postWgsl);
     const cloudMod = mod('shader/clouds', commonWgsl, cloudsWgsl);
+    const aoMod = mod('shader/ao', commonWgsl, aoWgsl);
     const gTargets: GPUColorTargetState[] = GBUFFER_FORMATS.map(format => ({format}));
     const gDepth: GPUDepthStencilState = {format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'greater'};
     const compute = (label: string, module: GPUShaderModule, entryPoint: string) => d.createComputePipelineAsync({label, layout: 'auto', compute: {module, entryPoint}});
     const entries: [string, Promise<GPURenderPipeline | GPUComputePipeline>][] = [
       ['city', d.createRenderPipelineAsync({label: 'pipeline/city gbuffer', layout: 'auto', vertex: {module: cityMod, entryPoint: 'vs'}, fragment: {module: cityMod, entryPoint: 'fs', targets: gTargets}, primitive: {cullMode: 'back'}, depthStencil: gDepth})],
-      ['cityShadow', d.createRenderPipelineAsync({label: 'pipeline/city shadow', layout: 'auto', vertex: {module: cityMod, entryPoint: 'vsShadow'}, primitive: {cullMode: 'none'}, depthStencil: {format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2.5}})],
+      ['cityShadow', d.createRenderPipelineAsync({label: 'pipeline/city shadow', layout: 'auto', vertex: {module: cityMod, entryPoint: 'vsShadow'}, fragment: {module: cityMod, entryPoint: 'fsShadow', targets: []}, primitive: {cullMode: 'none'}, depthStencil: {format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2.5}})],
       ['terrain', d.createRenderPipelineAsync({label: 'pipeline/terrain gbuffer', layout: 'auto', vertex: {module: terrainMod, entryPoint: 'vs'}, fragment: {module: terrainMod, entryPoint: 'fs', targets: gTargets}, primitive: {cullMode: 'back'}, depthStencil: gDepth})],
       ['water', d.createRenderPipelineAsync({label: 'pipeline/water gbuffer', layout: 'auto', vertex: {module: terrainMod, entryPoint: 'vsWater'}, fragment: {module: terrainMod, entryPoint: 'fsWater', targets: gTargets}, primitive: {cullMode: 'none'}, depthStencil: gDepth})],
       ['cull', compute('pipeline/cull', cullMod, 'main')],
@@ -223,6 +228,7 @@ export class Renderer {
       ['tonemap', d.createRenderPipelineAsync({label: 'pipeline/tonemap', layout: 'auto', vertex: {module: postMod, entryPoint: 'vsFull'}, fragment: {module: postMod, entryPoint: 'fsTonemap', targets: [{format: this.gpu.format}]}})],
       ['cloudNoise', compute('pipeline/cloud noise', cloudMod, 'genNoise')],
       ['clouds', compute('pipeline/clouds', cloudMod, 'march')],
+      ['ao', compute('pipeline/ssao', aoMod, 'main')],
     ];
     const done = await Promise.all(entries.map(([, p]) => p));
     this.p = Object.fromEntries(entries.map(([k], i) => [k, done[i]]));
@@ -291,7 +297,7 @@ export class Renderer {
     if (this.targets && this.targets.w === w && this.targets.h === h) return this.targets;
     const t = this.targets;
     if (t) {
-      for (const x of [...t.gbuf, t.depth, t.lit, ...t.history, t.hiz, ...t.bloomDown, ...t.bloomUp, ...t.clouds]) x.destroy();
+      for (const x of [...t.gbuf, t.depth, t.lit, ...t.history, t.hiz, ...t.bloomDown, ...t.bloomUp, ...t.clouds, t.ao]) x.destroy();
     }
     const d = this.device;
     const tex = (label: string, format: GPUTextureFormat, tw: number, th: number, usage: number, mips = 1) =>
@@ -322,6 +328,7 @@ export class Renderer {
       bloomDown,
       bloomUp,
       clouds: [0, 1].map(i => tex(`clouds/accum${i}`, 'rgba16float', Math.ceil(w / 4), Math.ceil(h / 4), ST)),
+      ao: tex('ssao/half res', 'rgba16float', hw, hh, ST),
     };
     this.frameIndex = 0;
     this.useOcclusion = false;
@@ -555,6 +562,7 @@ export class Renderer {
         pass.setPipeline(this.p.cityShadow as GPURenderPipeline);
         pass.setBindGroup(0, this.bg('cityShadow', 0, [null, this.ubuf(this.shadowViewBuffers[c])], `bg/city shadow/cascade${c}`));
         pass.setBindGroup(1, cityShadowG1(1 + c));
+        pass.setBindGroup(2, this.bg('cityShadow', 2, [null, this.linear, this.leafTex.createView()], `bg/city shadow/leaves${c}`));
         pass.drawIndirect(this.argsBuffers[1 + c], 0);
         for (const hk of this.hooks) hk.shadow?.(pass, c);
       }
@@ -572,7 +580,7 @@ export class Renderer {
       pass.setPipeline(this.p.city as GPURenderPipeline);
       pass.setBindGroup(0, frameG0('city'));
       pass.setBindGroup(1, this.bg('city', 1, [this.ubuf(this.pool.vertexBuffer), this.ubuf(this.pool.triBuffer), this.ubuf(this.pool.clusterBuffer), this.ubuf(this.visibleBuffers[0])], 'bg/city/main'));
-      pass.setBindGroup(2, this.bg('city', 2, [this.signAtlas.createView(), this.linear], 'bg/city/textures'));
+      pass.setBindGroup(2, this.bg('city', 2, [this.signAtlas.createView(), this.linear, this.leafTex.createView()], 'bg/city/textures'));
       pass.drawIndirect(this.argsBuffers[0], 0);
       if (this.heightTex && this.landTex) {
         pass.setPipeline(this.p.terrain as GPURenderPipeline);
@@ -603,6 +611,10 @@ export class Renderer {
         pass.setBindGroup(1, this.bg('hizDown', 1, [null, t.hiz.createView({baseMipLevel: m - 1, mipLevelCount: 1}), t.hiz.createView({baseMipLevel: m, mipLevelCount: 1})], `bg/hiz/mip${m}`));
         pass.dispatchWorkgroups(Math.ceil(Math.max(1, t.hiz.width >> m) / 8), Math.ceil(Math.max(1, t.hiz.height >> m) / 8));
       }
+      pass.setPipeline(this.p.ao as GPUComputePipeline);
+      pass.setBindGroup(0, this.bg('ao', 0, [this.ubuf(this.frameBuffer)], 'bg/ssao/frame'));
+      pass.setBindGroup(1, this.bg('ao', 1, [t.depth.createView(), t.gbuf[1].createView(), t.ao.createView()], 'bg/ssao'));
+      pass.dispatchWorkgroups(Math.ceil(t.ao.width / 8), Math.ceil(t.ao.height / 8));
       pass.end();
       this.useOcclusion = true;
     }
@@ -634,7 +646,7 @@ export class Renderer {
             histPrev.createView(),
             t.lit.createView(),
             this.ubuf(this.lightBuffer),
-            this.whiteTex.createView(),
+            t.ao.createView(),
           ],
           'bg/lighting/inputs',
         ),

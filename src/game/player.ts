@@ -59,7 +59,7 @@ export class Player {
     const info = this.info;
     if (info) {
       this.color = info.palette[0];
-      this.color2 = info.palette[1] ?? [0.9, 0.9, 0.9];
+      this.color2 = info.kind === 'taxi' ? (info.palette[1] ?? this.color) : this.color;
     }
     this.attachToLane(x, z);
     this.autopilot = true;
@@ -137,7 +137,7 @@ export class Player {
     const wheelR = info?.wheels[0]?.radius ?? 0.33;
     if (this.autopilot && this.follower) {
       const f = this.follower;
-      f.update(dt, this.net, time, Infinity, 0);
+      f.update(dt, this.net, time, f.leaderGap, f.leaderSpeed);
       this.pos = [...f.pos];
       const targetYaw = Math.atan2(f.dir[0], -f.dir[1]);
       let dy = targetYaw - this.yaw;
@@ -238,7 +238,7 @@ export class Player {
       model: this.model,
       prevModel: this.prev,
       color: this.color,
-      metallic: 0.5,
+      metallic: 0.2,
       color2: this.color2,
       lights,
       brake: this.braking ? 1 : 0,

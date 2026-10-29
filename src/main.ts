@@ -24,9 +24,10 @@ async function main() {
     spawn,
     shot: params.get('shot') ?? undefined,
     debug: num('debug', 0),
-    traffic: num('traffic', 240),
+    traffic: num('traffic', 380),
   });
   await game.init();
+  (window as unknown as {__game: Game}).__game = game;
   let last = performance.now();
   const frame = (now: number) => {
     const dt = Math.min(0.1, Math.max(0.001, (now - last) / 1000));

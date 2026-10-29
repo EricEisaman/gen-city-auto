@@ -226,7 +226,7 @@ fn exposure(@builtin(local_invocation_index) li: u32, @builtin(local_invocation_
   if (li == 0u) {
     let avg = exp2(lumSum[0] / 256.0);
     // Darker key at night keeps the city moody instead of washed out.
-    let key = mix(0.16, 0.085, frame.time.w);
+    let key = mix(0.16, 0.06, frame.time.w);
     let tgt = clamp(key / max(avg, 1e-4), 0.08, 40.0);
     var cur = expo.value;
     if (cur <= 0.0 || frame.time.z < 2.0) { cur = tgt; }

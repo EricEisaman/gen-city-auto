@@ -148,7 +148,7 @@ export class RoadNet {
 
   /** Nearest point on any road centerline. */
   nearestRoad(x: number, z: number, maxCells = 3): {chain: number; seg: number; t: number; dist: number} | null {
-    let best: {chain: number; seg: number; t: number; dist: number} | null = null;
+    let best = null as {chain: number; seg: number; t: number; dist: number} | null;
     for (let r = 0; r <= maxCells; r++) {
       for (let dz = -r; dz <= r; dz++) {
         for (let dx = -r; dx <= r; dx++) {

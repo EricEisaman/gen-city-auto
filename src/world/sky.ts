@@ -22,7 +22,7 @@ export interface SkyState {
 }
 
 /** Tokyo latitude-ish sun path. hour in [0, 24). */
-export function sunDirection(hour: number, dayOfYear = 172): Vec3 {
+export function sunDirection(hour: number, dayOfYear = 245): Vec3 {
   const lat = (35.7 * Math.PI) / 180;
   const decl = ((23.44 * Math.PI) / 180) * Math.sin(((2 * Math.PI) / 365) * (dayOfYear - 81));
   const ha = ((hour - 12) / 24) * 2 * Math.PI;
@@ -52,7 +52,7 @@ export function computeSky(hour: number, cloudCover: number, rain: number, haze:
   const sunColor: Vec3 = [T[0] * sunScale, T[1] * sunScale, T[2] * sunScale];
 
   // Moon roughly opposite the sun, offset so it is not exactly antipodal.
-  const moonDir = sunDirection((hour + 12.6) % 24, 172 + 10);
+  const moonDir = sunDirection((hour + 12.6) % 24, 245 + 10);
   const moonPhase = 0.7;
   const moonLight = smoothstep(-0.02, 0.1, moonDir[1]) * (1 - overcast * 0.8);
 

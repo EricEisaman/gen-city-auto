@@ -53,6 +53,8 @@ export class LaneFollower {
   length: number;
   /** Prefer big roads (player autopilot sightseeing). */
   preferBig = false;
+  leaderGap = Infinity;
+  leaderSpeed = 0;
   private rng: Rng;
 
   constructor(ref: LaneRef, s: number, length: number, cruiseFactor: number, seed: number) {
@@ -215,7 +217,7 @@ interface Car {
 export class Traffic {
   cars: Car[] = [];
   target = 240;
-  radius = 420;
+  radius = 360;
   private rng = new Rng(4242);
   private net: RoadNet;
   private vr: VehicleRenderer;
@@ -257,7 +259,7 @@ export class Traffic {
     f.speed = SPEED_LIMIT[this.net.chains[loc.chain].kind] * 0.6;
     const color = r.pick(info.palette);
     const model = modelMatrix(mat4.create(), f.pos, f.dir, f.slope);
-    this.cars.push({f, variant, color, metallic: r.chance(0.5) ? 0.6 : 0.1, color2: info.palette[(info.palette.indexOf(color) + 1) % info.palette.length], model, prev: mat4.copy(mat4.create(), model), spin: 0, radius: info.wheels[0]?.radius ?? 0.33});
+    this.cars.push({f, variant, color, metallic: r.chance(0.5) ? 0.25 : 0.0, color2: info.kind === 'taxi' || info.kind === 'bus' ? info.palette[(info.palette.indexOf(color) + 1) % info.palette.length] : color, model, prev: mat4.copy(mat4.create(), model), spin: 0, radius: info.wheels[0]?.radius ?? 0.33});
   }
 
   update(dt: number, time: number, focus: Vec3, extra: LaneFollower[] = []) {
@@ -275,8 +277,7 @@ export class Traffic {
       l.push(f);
     }
     for (const l of lanes.values()) l.sort((a, b) => a.s - b.s);
-    for (const c of this.cars) {
-      const f = c.f;
+    const leaderOf = (f: LaneFollower): [number, number] => {
       let gap = Infinity;
       let lv = 0;
       const k = f.laneKey();
@@ -288,22 +289,28 @@ export class Traffic {
           gap = ld.s - f.s - (ld.length + f.length) / 2;
           lv = ld.speed;
         }
-      } else {
-        // In a junction: check cars directly ahead.
-        for (const o of all) {
-          if (o === f) continue;
-          const dx = o.pos[0] - f.pos[0];
-          const dz = o.pos[2] - f.pos[2];
-          const ahead = dx * f.dir[0] + dz * f.dir[1];
-          if (ahead > 0 && ahead < 25 && Math.abs(dx * f.dir[1] - dz * f.dir[0]) < 1.6) {
-            const g = ahead - (o.length + f.length) / 2;
-            if (g < gap) {
-              gap = g;
-              lv = o.speed;
-            }
+      }
+      // Anything directly ahead (junctions, merging cars, the player).
+      for (const o of all) {
+        if (o === f) continue;
+        const dx = o.pos[0] - f.pos[0];
+        const dz = o.pos[2] - f.pos[2];
+        if (Math.abs(dx) > 30 || Math.abs(dz) > 30) continue;
+        const ahead = dx * f.dir[0] + dz * f.dir[1];
+        if (ahead > 0 && ahead < 25 && Math.abs(dx * f.dir[1] - dz * f.dir[0]) < 1.7 && o.dir[0] * f.dir[0] + o.dir[1] * f.dir[1] > 0.3) {
+          const g = ahead - (o.length + f.length) / 2;
+          if (g < gap) {
+            gap = g;
+            lv = o.speed;
           }
         }
       }
+      return [gap, lv];
+    };
+    for (const f of extra) [f.leaderGap, f.leaderSpeed] = leaderOf(f);
+    for (const c of this.cars) {
+      const f = c.f;
+      const [gap, lv] = leaderOf(f);
       f.update(dt, this.net, time, gap, lv);
       c.prev.set(c.model);
       modelMatrix(c.model, f.pos, f.dir, f.slope);
