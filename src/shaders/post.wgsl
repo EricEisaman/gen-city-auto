@@ -166,6 +166,45 @@ fn motionDof(@builtin(global_invocation_id) id: vec3u) {
   textureStore(mbOut, id.xy, vec4f(c, 1.0));
 }
 
+// --- God rays (screen-space radial blur of visible sky around the sun) -----------
+
+@group(1) @binding(0) var grDepth: texture_depth_2d;
+@group(1) @binding(1) var grOut: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(8, 8)
+fn godRays(@builtin(global_invocation_id) id: vec3u) {
+  _ = linearSampler;
+  let size = textureDimensions(grOut);
+  if (any(id.xy >= size)) { return; }
+  let full = vec2f(textureDimensions(grDepth));
+  let uv = (vec2f(id.xy) + 0.5) / vec2f(size);
+  let sun = frame.sunDir.xyz;
+  let clip = frame.viewProj * vec4f(frame.camPos.xyz + sun * 10000.0, 1.0);
+  var acc = vec3f(0.0);
+  if (clip.w > 0.0 && frame.sunDir.w > 0.0) {
+    let sp = vec2f(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+    let delta = (sp - uv) / 40.0;
+    var p = uv;
+    var decay = 1.0;
+    var sum = 0.0;
+    let jitter = hash21(vec2f(id.xy) + frame.time.z);
+    p += delta * jitter;
+    for (var i = 0; i < 40; i++) {
+      if (all(p > vec2f(0.0)) && all(p < vec2f(1.0))) {
+        let d = textureLoad(grDepth, vec2i(p * full), 0);
+        // Sky pixels near the sun emit.
+        let dist = length((p - sp) * vec2f(full.x / full.y, 1.0));
+        sum += select(0.0, 1.0, d <= 0.0) * decay * exp(-dist * 3.0);
+      }
+      decay *= 0.965;
+      p += delta;
+    }
+    let lowSun = 1.0 - smoothstep(0.05, 0.6, sun.y);
+    acc = frame.sunColor.rgb * sum / 40.0 * mix(0.08, 0.35, lowSun) * (1.0 - frame.weather.x * 0.6);
+  }
+  textureStore(grOut, id.xy, vec4f(acc, 1.0));
+}
+
 // --- Hi-Z pyramid (farthest reverse-Z depth = minimum) -----------------------
 
 @group(1) @binding(0) var hizSrcDepth: texture_depth_2d;
@@ -319,6 +358,7 @@ fn exposure(@builtin(local_invocation_index) li: u32, @builtin(local_invocation_
 @group(1) @binding(0) var tmColor: texture_2d<f32>;
 @group(1) @binding(1) var tmBloom: texture_2d<f32>;
 @group(1) @binding(2) var<storage, read> tmExpo: Exposure;
+@group(1) @binding(3) var tmRays: texture_2d<f32>;
 
 struct FsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
@@ -374,6 +414,7 @@ fn lensDrops(uv: vec2f) -> vec2f {
   let bloom = textureSampleLevel(tmBloom, linearSampler, uv, 0.0).rgb;
   let night = frame.time.w;
   c = mix(c, bloom, mix(0.03, 0.1, night) + frame.weather.y * 0.06);
+  c += textureSampleLevel(tmRays, linearSampler, uv, 0.0).rgb;
   c *= tmExpo.value;
   // White balance + split tone by time of day and weather (before tonemapping).
   let golden = clamp(1.0 - abs(frame.exposure.z - 0.12) / 0.12, 0.0, 1.0) * (1.0 - night);

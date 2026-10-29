@@ -455,6 +455,17 @@ export function building(
     }
     roof = crownFp;
     roofY = top;
+    // Aviation obstruction lights on the corners of tall roofs.
+    if (b.height > 60) {
+      for (
+        let k = 0;
+        k < crownFp.length;
+        k += Math.max(1, Math.floor(crownFp.length / 4))
+      ) {
+        const q = crownFp[k];
+        m.box([q[0], top + 0.9, q[1]], [0.22, 0.22, 0.22], packMat(CM.lamp, 2));
+      }
+    }
     // LED crown line (lit at night).
     for (let i = 0; i < roof.length; i++) {
       const a = roof[i],

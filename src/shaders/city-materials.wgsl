@@ -588,6 +588,12 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.albedo = vec3f(0.8);
       s.rough = 0.2;
       s.emissive = col * night * 40.0 * select(0.0, 1.0, n.y < -0.5) + col * night * 4.0;
+      if (param == 2u) {
+        // Aviation obstruction light: slow red blink.
+        let blink = step(0.55, fract(frame.time.x * 0.6 + hash21(floor(world.xz))));
+        s.albedo = vec3f(0.5, 0.05, 0.05);
+        s.emissive = vec3f(1.0, 0.05, 0.02) * blink * mix(3.0, 30.0, night);
+      }
     }
     case M_CONCRETE: {
       s.albedo = vec3f(0.55, 0.54, 0.51) * (0.75 + 0.25 * fbm2(world.xz * 0.3 + world.y * 0.2));

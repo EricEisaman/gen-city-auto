@@ -95,6 +95,7 @@ interface Targets {
   bloomUp: GPUTexture[];
   clouds: GPUTexture[];
   ao: GPUTexture;
+  rays: GPUTexture;
 }
 
 export class Renderer {
@@ -451,6 +452,7 @@ export class Renderer {
           'motionDof',
           compute('pipeline/motion blur + dof', postMod, 'motionDof'),
         ],
+        ['godRays', compute('pipeline/god rays', postMod, 'godRays')],
         [
           'hizFromDepth',
           compute('pipeline/hiz from depth', postMod, 'hizFromDepth'),
@@ -618,6 +620,7 @@ export class Renderer {
         ...t.bloomUp,
         ...t.clouds,
         t.ao,
+        t.rays,
       ])
         x.destroy();
     }
@@ -682,6 +685,7 @@ export class Renderer {
         ),
       ),
       ao: tex('ssao/half res', 'rgba16float', hw, hh, ST),
+      rays: tex('post/god rays', 'rgba16float', hw, hh, ST),
     };
     this.frameIndex = 0;
     this.useOcclusion = false;
@@ -1442,6 +1446,21 @@ export class Renderer {
       );
       pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
       // Motion blur + DOF into the (now free) lit texture; history stays clean.
+      pass.setPipeline(this.p.godRays as GPUComputePipeline);
+      pass.setBindGroup(0, pg0('godRays'));
+      pass.setBindGroup(
+        1,
+        this.bg(
+          'godRays',
+          1,
+          [t.depth.createView(), t.rays.createView()],
+          'bg/god rays',
+        ),
+      );
+      pass.dispatchWorkgroups(
+        Math.ceil(t.rays.width / 8),
+        Math.ceil(t.rays.height / 8),
+      );
       pass.setPipeline(this.p.motionDof as GPUComputePipeline);
       pass.setBindGroup(0, pg0('motionDof'));
       pass.setBindGroup(
@@ -1549,6 +1568,7 @@ export class Renderer {
             t.lit.createView(),
             t.bloomUp[0].createView(),
             this.ubuf(this.exposureBuffer),
+            t.rays.createView(),
           ],
           'bg/tonemap',
         ),
