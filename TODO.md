@@ -127,7 +127,11 @@
 
     freecam=133.83,34.41,-585.14,-2.41,0.09&city=neon&seed=1&time=22.05&timespeed=0&weather=sunny
 
-[ ] guard posts at intersections float in the air
+[x] guard posts at intersections float in the air
+    -> street furniture was placed at road/junction height while the sidewalk follows the terrain.
+       Bollards, signal poles, street lights, utility poles, trees, guardrails, bus stops, vending
+       machines and bicycles now sit on the sidewalk surface and sink 0.3 m into it; corner bollards
+       that landed in the carriageway are dropped.
 
     freecam=461.06,26.74,118.35,-1.13,-0.07&city=neon&seed=1&time=13.99&timespeed=0&weather=sunny
 
@@ -159,7 +163,10 @@
 
     freecam=512.36,25.62,116.49,-2.47,-0.06&city=neon&seed=1&time=17.03&timespeed=0&weather=sunny
 
-[ ] highway fence has no detail, looks PS1
+[x] highway fence has no detail, looks PS1
+    -> Shuto-style edge: concrete parapet with coping and drip groove, ribbed metal lower panels and
+       pale translucent-looking upper panels inset between steel posts with mid and top rails,
+       delineator lamps, expansion joints over piers, downpipes on piers.
 
     freecam=540.09,44.72,50.72,1.46,-0.16&city=neon&seed=1&time=17.46&timespeed=0&weather=sunny
 
