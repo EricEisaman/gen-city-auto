@@ -69,7 +69,7 @@ fn paintColor(p: u32) -> vec3f {
 }
 
 // Fake room behind a window (interior mapping). Returns radiance.
-fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f, seed: u32, office: bool) -> vec3f {
+fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f, seed: u32, office: bool, section: u32) -> vec3f {
   let rd = vec3f(dot(V, T), V.y, -dot(V, N));
   let ro = vec3f(local, 0.0);
   let inv = 1.0 / select(rd, vec3f(1e-4), abs(rd) < vec3f(1e-4));
@@ -110,8 +110,15 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   }
   // Lighting: lit rooms glow at night, everything gets some daylight.
   let night = nightLight();
-  let litChance = select(mix(0.04, 0.36, night), mix(0.06, 0.42, night), office);
-  let lit = hashuf(seed ^ 0x1234567u) < litChance;
+  // Offices light up in sections (a few floors x part of a facade: one
+  // tenant working late); homes are lit room by room in the evening.
+  var lit: bool;
+  if (office) {
+    let sectionLit = hashuf(section ^ 0xbeefu) < mix(0.1, 0.45, night);
+    lit = hashuf(seed ^ 0x1234567u) < select(0.04, 0.88, sectionLit);
+  } else {
+    lit = hashuf(seed ^ 0x1234567u) < mix(0.03, 0.34, night);
+  }
   let warm = select(vec3f(1.0, 0.72, 0.42), vec3f(0.92, 0.96, 1.0), office && r0 > 0.25);
   var light = frame.skyAmbient.rgb * 0.35;
   if (lit) {
@@ -235,7 +242,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       let shopType = shopSeed % 4u;
       let night = nightLight();
       let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
-      var inside = interior(vec2f(lx, ly), vec2f(st.bay, st.floorH), 6.0, n, T, V, cellSeed, false);
+      var inside = interior(vec2f(lx, ly), vec2f(st.bay, st.floorH), 6.0, n, T, V, cellSeed, false, 0u);
       var glow = vec3f(1.0, 0.85, 0.6) * 0.2;
       if (shopType == 0u) {
         // Konbini: bright cool interior, colored band across the top.
@@ -305,7 +312,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     }
     let office = kind <= 2u && !(kind == 2u && hashuf(style) < 0.4);
     let roomSize = vec2f(wx1 - wx0, wy1 - sill);
-    var inside = interior(vec2f(lxg - wx0, lyg - sill), roomSize, mix(3.5, 7.0, hashuf(cellSeed)), n, T, V, cellSeed, office);
+    let section = hashu(aux ^ (u32(floor(floorIdx / 3.0) + 500.0) * 7919u) ^ (u32(floor(uv.x / 18.0)) * 104729u));
+    var inside = interior(vec2f(lxg - wx0, lyg - sill), roomSize, mix(3.5, 7.0, hashuf(cellSeed)), n, T, V, cellSeed, office, section);
     // Curtains / blinds.
     let blinds = hashuf(cellSeed ^ 0xabcu);
     let cover = select(0.0, mix(0.2, 1.0, hashuf(cellSeed ^ 0xdefu)), blinds < 0.35);
@@ -362,7 +370,8 @@ fn curtainWall(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   let roomW = bay * 4.0;
   let rx = uv.x - floor(uv.x / roomW) * roomW;
   let roomSeed = hashu(aux ^ hashu((u32(floor(uv.x / roomW) + 2000.0) * 83492791u) ^ (u32(floorIdx) * 2971215073u)));
-  let inside = interior(vec2f(rx, ly - 0.95), vec2f(roomW, floorH - 0.95), 9.0, n, T, V, roomSeed, true);
+  let section = hashu(aux ^ (u32(floor(floorIdx / 3.0) + 500.0) * 7919u) ^ (u32(floor(uv.x / 24.0)) * 104729u));
+  let inside = interior(vec2f(rx, ly - 0.95), vec2f(roomW, floorH - 0.95), 9.0, n, T, V, roomSeed, true, section);
   s.albedo = tint * 0.18;
   s.rough = 0.04;
   s.emissive = inside * (1.0 - fres) * 0.8 * (1.0 - 0.6 * tint.b);

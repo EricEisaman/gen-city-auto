@@ -11,6 +11,7 @@ import {
   pointInPolygon,
   pointSegment,
   polygonArea,
+  segmentIntersect,
   smoothstep,
   sub2,
   type Vec2,
@@ -664,6 +665,7 @@ export function generateLayout(
   progress?.('Elevated rail and expressways', 0.45);
   const elevated = railLines(params, rng, noise, hubs, center, hf);
   elevated.push(...expressways(params, rng, chains, hf));
+  separateCrossings(elevated);
 
   progress?.('Subdividing blocks', 0.5);
   const faces = extractFaces(g, 400000);
@@ -968,6 +970,45 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
         hf.data[k] =
           (hf.data[k - 1] + hf.data[k + 1] + hf.data[k - n] + hf.data[k + n]) *
           0.25;
+      }
+    }
+  }
+}
+
+/**
+ * Where two elevated lines cross, lift the later one so it clears the other's
+ * deck (train + overhead wires) with a gentle approach grade.
+ */
+function separateCrossings(lines: Elevated[]) {
+  const clearance = 8.5;
+  const grade = 0.03;
+  for (let b = 1; b < lines.length; b++) {
+    for (let a = 0; a < b; a++) {
+      const A = lines[a];
+      const B = lines[b];
+      for (let i = 0; i + 1 < A.pts.length; i++) {
+        for (let j = 0; j + 1 < B.pts.length; j++) {
+          const r = segmentIntersect(
+            A.pts[i],
+            A.pts[i + 1],
+            B.pts[j],
+            B.pts[j + 1],
+          );
+          if (!r) continue;
+          const ha = lerp(A.heights[i], A.heights[i + 1], r[0]);
+          const need = ha + clearance;
+          const at: Vec2 = [
+            lerp(B.pts[j][0], B.pts[j + 1][0], r[1]),
+            lerp(B.pts[j][1], B.pts[j + 1][1], r[1]),
+          ];
+          for (let k = 0; k < B.pts.length; k++) {
+            const d = dist2(B.pts[k], at);
+            B.heights[k] = Math.max(
+              B.heights[k],
+              need - grade * Math.max(0, d - 30),
+            );
+          }
+        }
       }
     }
   }

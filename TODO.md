@@ -1,11 +1,14 @@
-[ ] rain drops are going the wrong way and don't look much like rain but instead look like vertical rectangles
+[x] rain drops are going the wrong way and don't look much like rain but instead look like vertical rectangles
+    -> fixed: drops moved upward (sign bug); now thin motion-blurred streaks of varying length, denser.
 
-[ ] water distortion only makes sense inside the car and should be limited to the windows.
+[x] water distortion only makes sense inside the car and should be limited to the windows.
     Currently it's a fullscreen effect that is always on
+    -> lens drops are disabled; rain beads stay on the car glass only.
 
-[ ] the vehicles flicker often, almost but not quite like z-fighting. You can see this right
+[x] the vehicles flicker often, almost but not quite like z-fighting. You can see this right
     at the start just a 5 or 10 seconds into the video. The camera pops outside the car
     as it pulls up to red light, the car in front of it is flickering like crazy.
+    -> LOD selection now has hysteresis (vehicles near an LOD distance flipped every frame). Please re-check.
 
 [ ] the settings should be in a popup behind a gear icon
 [ ] the camera should have a camera icon outside the settings the cycles through camera modes
@@ -23,12 +26,14 @@
 
 [ ] The buildings need more details. They need stronger textures or something.
 
-[ ] the transit tracks sometimes collide with each other. Even if one is over the other
+[x] the transit tracks sometimes collide with each other. Even if one is over the other
     it needs to be high enough to allow the train below to pass through with power cables.
+    -> crossing elevated lines: the later one rises to clear the other by 8.5 m with a 3% approach grade.
 
 [ ] transit trains need windows and doors. Maybe the windows can use similar tech to building windows.
 
-[ ] A production build should
+[x] A production build should
+    -> npm run build:prod: minified JS, WGSL stripped of comments/whitespace, gzip size table printed.
 
     1. strip whitespace from shader source
     2. terser the javascript
@@ -43,13 +48,15 @@
     Same for street lights. I'm not sure if GTA5 does this but it worked well in older
     games.
 
-[ ] Tall buildings, antenna, need red airplane lights.
+[x] Tall buildings, antenna, need red airplane lights.
+    -> blinking red obstruction lights on the corners of roofs over 60 m.
 
-[ ] Lit rooms on buildings are a little too random - I feel like in the real world,
+[x] Lit rooms on buildings are a little too random - I feel like in the real world,
     most buildings light up in sections, 3 floors are like, half a floor is lit.
     A hotel might have random rooms lit but probably fewer than 15%. Or at least
     that's my recollection. Not always though. I'm not actually sure. I just know
     something looks off.
+    -> offices light in sections (3 floors x ~20 m: one tenant working late); homes room by room.
 
 [ ] Can we add a free camera mode where the user can fly the camera. ASWD moves the camera
     left/right/forward/back, mouse aims. Need mobile controls too. This will make it easier
@@ -57,10 +64,13 @@
     that contains the camera's current position, orientation, time-of-day and other things
     so that I can give you that URL to highlight certain places.
 
-[ ] Add size=<width>x<height> url param that lets me set the size of the canvas to a fixed
+[x] Add size=<width>x<height> url param that lets me set the size of the canvas to a fixed
     number of CSS pixels. i can use this to make videos of a specific size.
+    -> added: ?size=1280x720
 
-[ ] the height of the camera when inside a vehicle, or a least the default car, seems
+[x] the height of the camera when inside a vehicle, or a least the default car, seems
     10-20 cm too low.
+    -> first-person eye raised 15 cm.
 
-[ ] traffic jams are common. All the cars get stuck.
+[x] traffic jams are common. All the cars get stuck.
+    -> junction deadlock breaker (creep after 4 s stopped), cars stuck > 40 s despawn.

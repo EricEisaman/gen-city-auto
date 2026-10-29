@@ -142,6 +142,7 @@ export class VehicleRenderer implements DrawHook {
   > = new Map();
   eye: Vec3 = [0, 0, 0];
   private contacts: {d: number; v: number[]}[] = [];
+  private lodMemory = new WeakMap<Float32Array, number>();
   instanceCount = 0;
 
   constructor(
@@ -375,8 +376,14 @@ export class VehicleRenderer implements DrawHook {
     );
     const size = Math.max(...v.info.size);
     if (dist > 900 + size * 10) return;
-    const lod =
-      inst.lod ?? (dist < 18 + size * 2 ? 0 : dist < 70 + size * 6 ? 1 : 2);
+    // LOD with hysteresis so vehicles near a threshold don't pop every frame.
+    const prevLod = this.lodMemory.get(inst.model);
+    const b0 = 18 + size * 2;
+    const b1 = 70 + size * 6;
+    const k = (l: number) =>
+      prevLod === undefined ? 1 : prevLod <= l ? 1.12 : 0.9;
+    const lod = inst.lod ?? (dist < b0 * k(0) ? 0 : dist < b1 * k(1) ? 1 : 2);
+    this.lodMemory.set(inst.model, lod);
     const L = v.lods[lod];
     const key = `${inst.variant}|${lod}`;
     this.push(`${key}|body`, L.body, lod, true, m, inst.prevModel, inst);

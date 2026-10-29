@@ -10,6 +10,12 @@ const num = (k: string, d: number) =>
 
 async function main() {
   const canvas = document.getElementById('view') as HTMLCanvasElement;
+  // size=WIDTHxHEIGHT fixes the canvas size in CSS pixels (e.g. for videos).
+  const size = params.get('size')?.match(/^(\d+)x(\d+)$/);
+  if (size) {
+    canvas.style.width = `${size[1]}px`;
+    canvas.style.height = `${size[2]}px`;
+  }
   resizeToCss(canvas);
   const gpu = await initGpu(canvas);
   const spawn = params.get('spawn')?.split(',').map(Number) as

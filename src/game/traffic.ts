@@ -86,6 +86,8 @@ export class LaneFollower {
   /** Prefer big roads (player autopilot sightseeing). */
   preferBig = false;
   leaderGap = Infinity;
+  /** Seconds spent stopped (for breaking junction deadlocks). */
+  stuck = 0;
   leaderSpeed = 0;
   private rng: Rng;
 
@@ -392,11 +394,13 @@ export class Traffic {
 
   update(dt: number, time: number, focus: Vec3, extra: LaneFollower[] = []) {
     // Despawn far cars, spawn new ones (out of the camera's immediate area).
-    this.cars = this.cars.filter(
-      c =>
-        Math.hypot(c.f.pos[0] - focus[0], c.f.pos[2] - focus[2]) <
-        this.radius + 100,
-    );
+    this.cars = this.cars
+      .filter(c => c.f.stuck < 1e8)
+      .filter(
+        c =>
+          Math.hypot(c.f.pos[0] - focus[0], c.f.pos[2] - focus[2]) <
+          this.radius + 100,
+      );
     for (let k = 0; k < 6 && this.cars.length < this.target; k++)
       this.spawn(focus, this.cars.length < this.target * 0.5 ? 30 : 120);
     // Group by lane for leader lookup.
@@ -448,7 +452,22 @@ export class Traffic {
     for (const f of extra) [f.leaderGap, f.leaderSpeed] = leaderOf(f);
     for (const c of this.cars) {
       const f = c.f;
-      const [gap, lv] = leaderOf(f);
+      let [gap, lv] = leaderOf(f);
+      // Deadlock breaker: after waiting a while at a junction, creep forward
+      // ignoring crossing traffic (lane leaders and signals still apply).
+      f.stuck = f.speed < 0.3 ? f.stuck + dt : 0;
+      if (f.stuck > 4 && (f.turn || gap < 6)) {
+        const k = f.laneKey();
+        if (f.turn || k < 0) {
+          gap = Infinity;
+          lv = 0;
+        }
+      }
+      if (f.stuck > 40) {
+        // Hopelessly stuck: despawn next frame.
+        f.stuck = 1e9;
+        continue;
+      }
       f.update(dt, this.net, time, gap, lv);
       c.prev.set(c.model);
       modelMatrix(c.model, f.pos, f.dir, f.slope);

@@ -303,7 +303,7 @@ export class CameraSystem {
     switch (this.mode) {
       case 'first': {
         const e = info?.driverEye ?? [0, 1.2, 0];
-        const eye = pl.toWorld(e);
+        const eye = pl.toWorld([e[0], e[1] + 0.15, e[2]]);
         const look = pl.toWorld([
           e[0] + Math.sin(this.yawOff) * 10,
           e[1] - 0.6 + this.pitchOff * -5,

@@ -17,12 +17,13 @@ const BOX = 36.0;
   let vel = vec3f(wind.x, -speed, wind.z);
   let cam = frame.camPos.xyz;
   // Drops wrap inside a box that follows the camera.
-  var p = h * BOX - vel * frame.time.x;
+  var p = h * BOX + vel * frame.time.x;
   p = p - floor((p - cam + BOX * 0.5) / BOX) * BOX;
-  let len = speed * 0.045;
+  // Motion-blurred streak (~1/50 s exposure), thin, varying per drop.
+  let len = speed * mix(0.02, 0.04, h.y);
   let dir = normalize(vel);
   let toCam = normalize(cam - p);
-  let side = normalize(cross(dir, toCam)) * 0.012;
+  let side = normalize(cross(dir, toCam)) * mix(0.003, 0.006, h.z);
   let corner = array<vec2f, 6>(vec2f(-1, 0), vec2f(1, 0), vec2f(1, 1), vec2f(-1, 0), vec2f(1, 1), vec2f(-1, 1))[vi];
   let w = p + side * corner.x + dir * len * corner.y;
   var o: ROut;
@@ -33,7 +34,7 @@ const BOX = 36.0;
 }
 
 @fragment fn fs(i: ROut) -> @location(0) vec4f {
-  let a = (1.0 - abs(i.uv.x)) * sin(i.uv.y * PI) * i.fade * 0.3;
+  let a = (1.0 - abs(i.uv.x)) * pow(sin(i.uv.y * PI), 0.7) * i.fade * 0.35;
   let c = frame.skyAmbient.rgb * 0.8 + frame.cityGlow.rgb * 4.0 + frame.sunColor.rgb * 0.03 + vec3f(1.5) * frame.wind.w;
   return vec4f(c * a, a);
 }

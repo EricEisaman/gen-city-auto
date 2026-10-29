@@ -51,7 +51,7 @@ export class RainRenderer implements DrawHook {
   }
 
   forward(pass: GPURenderPassEncoder) {
-    const n = Math.floor(this.intensity * 14000);
+    const n = Math.floor(this.intensity * 26000);
     if (n <= 0) return;
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.bindGroup);
