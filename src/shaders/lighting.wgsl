@@ -344,6 +344,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (dbg == 1u) { color = albedo; }
   if (dbg == 2u) { color = n * 0.5 + 0.5; }
   if (dbg == 3u) { color = vec3f(rough); }
+  if (dbg == 5u) { color = vec3f(shadow(world, n, vd)); }
+  if (dbg == 6u) { color = vec3f(f32(min(u32(max(0.0, 0.0)), 3u))); }
   if (dbg == 4u) { color = vec3f(f32(count) / 32.0, 0.0, 0.0) + albedo * 0.2; }
   textureStore(outColor, px, vec4f(color, 1.0));
 }

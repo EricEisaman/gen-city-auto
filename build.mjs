@@ -19,6 +19,7 @@ const options = {
     main: 'src/main.ts',
     'city-worker': 'src/workers/city-worker.ts',
     turntable: 'src/tools/turntable.ts',
+    'vehicle-worker': 'src/workers/vehicle-worker.ts',
   },
   bundle: true,
   format: 'esm',

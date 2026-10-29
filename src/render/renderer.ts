@@ -49,7 +49,7 @@ export interface DrawHook {
   prepare?(encoder: GPUCommandEncoder): void;
 }
 
-const GBUFFER_FORMATS: GPUTextureFormat[] = ['rgba8unorm', 'rgba16float', 'rgba16float', 'rg16float'];
+export const GBUFFER_FORMATS: GPUTextureFormat[] = ['rgba8unorm', 'rgba16float', 'rgba16float', 'rg16float'];
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 const SHADOW_SIZE = 2048;
 const CASCADES = 4;
@@ -91,7 +91,7 @@ export class Renderer {
   hooks: DrawHook[] = [];
   readonly stats: Record<string, number | string> = {};
 
-  private frameBuffer: GPUBuffer;
+  readonly frameBuffer: GPUBuffer;
   private atmoBuffer: GPUBuffer;
   private linear: GPUSampler;
   private linearRepeat: GPUSampler;
@@ -119,7 +119,7 @@ export class Renderer {
   private cullViewBuffers: GPUBuffer[] = [];
   private visibleBuffers: GPUBuffer[] = [];
   private argsBuffers: GPUBuffer[] = [];
-  private shadowViewBuffers: GPUBuffer[] = [];
+  readonly shadowViewBuffers: GPUBuffer[] = [];
 
   private p!: Record<string, GPURenderPipeline | GPUComputePipeline>;
   private targets: Targets | null = null;

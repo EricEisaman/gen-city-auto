@@ -63,7 +63,7 @@ export function computeSky(hour: number, cloudCover: number, rain: number, haze:
   const grey: Vec3 = [0.62, 0.66, 0.72];
   const amb = (k: number) => {
     const base = clear[k] * (1 - overcast) + grey[k] * overcast;
-    return base * (day * 1.6 * (1 - rain * 0.35)) + [0.32, 0.18, 0.2][k] * twilight * 0.6;
+    return base * (day * 0.85 * (1 - rain * 0.35)) + [0.32, 0.18, 0.2][k] * twilight * 0.6;
   };
   const night = 1 - smoothstep(-0.16, 0.02, sunDir[1]);
   const moonAmb = 0.012 * moonLight;

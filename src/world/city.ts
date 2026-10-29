@@ -217,10 +217,12 @@ export class City {
   }
 
   /** Pick the nearest lights to the camera and upload them. */
-  updateLights(eye: Vec3, night: number, flicker: number) {
+  updateLights(eye: Vec3, night: number, flicker: number, extra: Float32Array = new Float32Array(0)) {
     if (!this.tiles.length) return;
+    const ne = Math.min(extra.length / 8, 128);
     if (night < 0.05) {
-      this.renderer.setLights(this.lightScratch, 0);
+      this.lightScratch.set(extra.subarray(0, ne * 8));
+      this.renderer.setLights(this.lightScratch, ne);
       return;
     }
     const near = this.nearTiles(eye, 650);
@@ -239,22 +241,24 @@ export class City {
       for (let i = 0; i < tl.length / 8; i++) consider(tl, i);
     }
     cand.sort((a, b) => a.d - b.d);
-    const n = Math.min(cand.length, 1024);
     const out = this.lightScratch;
+    out.set(extra.subarray(0, ne * 8));
+    const n = Math.min(cand.length, 1024 - ne);
     for (let k = 0; k < n; k++) {
       const {src, i} = cand[k];
       const kind = src[i * 8 + 7];
       const scale = (kind === LightKind.street ? 1.0 : kind === LightKind.sign ? 0.55 * flicker : kind === LightKind.vending ? 0.35 : 0.8) * night;
-      out[k * 8] = src[i * 8];
-      out[k * 8 + 1] = src[i * 8 + 1];
-      out[k * 8 + 2] = src[i * 8 + 2];
-      out[k * 8 + 3] = src[i * 8 + 3];
-      out[k * 8 + 4] = src[i * 8 + 4] * scale;
-      out[k * 8 + 5] = src[i * 8 + 5] * scale;
-      out[k * 8 + 6] = src[i * 8 + 6] * scale;
-      out[k * 8 + 7] = kind;
+      const o = (k + ne) * 8;
+      out[o] = src[i * 8];
+      out[o + 1] = src[i * 8 + 1];
+      out[o + 2] = src[i * 8 + 2];
+      out[o + 3] = src[i * 8 + 3];
+      out[o + 4] = src[i * 8 + 4] * scale;
+      out[o + 5] = src[i * 8 + 5] * scale;
+      out[o + 6] = src[i * 8 + 6] * scale;
+      out[o + 7] = kind;
     }
-    this.renderer.setLights(out, n);
+    this.renderer.setLights(out, n + ne);
   }
 
   dispose() {
