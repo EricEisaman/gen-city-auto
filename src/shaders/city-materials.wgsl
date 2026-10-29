@@ -281,7 +281,13 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       var glow = vec3f(1.0, 0.85, 0.6) * 0.2;
       if (shopType == 0u) {
         // Konbini: bright cool interior, colored band across the top.
-        inside = inside * 0.4 + vec3f(1.6, 1.7, 1.8) * mix(0.22, 1.0, night);
+        // Rows of shelves stocked with colourful packaging under bright tubes.
+        var shelf = vec3f(0.85, 0.88, 0.9);
+        if (ly > 0.25 && ly < 1.75 && fract(ly / 0.5) > 0.12) {
+          let ph = hash21(vec2f(floor(lx * 5.0), floor(ly / 0.5)) + f32(shopSeed % 97u));
+          shelf = mix(vec3f(0.9, 0.85, 0.75), 0.5 + 0.5 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), 0.7) * (0.6 + 0.4 * fract(lx * 5.0 + ph));
+        }
+        inside = inside * 0.3 + shelf * vec3f(1.05, 1.1, 1.15) * mix(0.2, 0.85, night);
         if (ly > st.floorH * 0.66) {
           let bandC = array<vec3f, 3>(vec3f(0.1, 0.5, 0.25), vec3f(0.9, 0.3, 0.05), vec3f(0.1, 0.3, 0.8))[shopSeed % 3u];
           s.albedo = bandC;

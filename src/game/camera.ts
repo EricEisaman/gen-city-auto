@@ -140,7 +140,8 @@ export class CameraSystem {
           const z = p[2] + f[1] * ahead + r[2] * s.side * this.rng.range(4, 7);
           s.eye = [
             x,
-            (isHeli ? p[1] - 20 : ground(x, z)) + this.rng.range(0.8, 2.5),
+            // Helicopters are filmed from above so the city fills the frame.
+            (isHeli ? p[1] + 12 : ground(x, z)) + this.rng.range(0.8, 2.5),
             z,
           ];
           s.fov = 0.75;
@@ -458,15 +459,18 @@ export class CameraSystem {
       }
       case 'orbit': {
         s.a += dt * 0.35 * s.side;
-        const rad = pl.kind === 'heli' ? 22 : 8;
+        const heli = pl.kind === 'heli';
+        const rad = heli ? 26 : 8;
         const eye: Vec3 = [
           p[0] + Math.cos(s.a) * rad,
-          p[1] + (pl.kind === 'heli' ? 4 : 1.8),
+          p[1] + (heli ? 13 : 1.8),
           p[2] + Math.sin(s.a) * rad,
         ];
         const g = this.net.surfaceHeight(eye[0], eye[2], eye[1]);
         eye[1] = Math.max(eye[1], g + 0.8);
-        return {eye, target: focus, fov: 0.9, near: 0.1, interior: false};
+        // Aim a little below a helicopter: it sits against the city, not the sky.
+        const tgt: Vec3 = heli ? [focus[0], focus[1] - 6, focus[2]] : focus;
+        return {eye, target: tgt, fov: 0.9, near: 0.1, interior: false};
       }
       case 'side': {
         const eye: Vec3 = [

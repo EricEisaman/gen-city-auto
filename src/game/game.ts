@@ -399,12 +399,11 @@ export class Game {
       orbit: 0.6,
     };
     const dof: Record<string, number> = {
-      telephoto: 1.2,
-      side: 0.35,
-      bumper: 0.3,
+      // Shallow focus only where it reads as a lens choice (long lens,
+      // close-ups); everyday angles stay sharp.
+      telephoto: 0.8,
+      side: 0.15,
       wheel: 0.5,
-      flyby: 0.4,
-      train: 0.3,
     };
     if (this.freeMode) return {motionBlur: 0, dofAperture: 0, focus};
     const moving = Math.min(1, Math.abs(this.player.speed) / 3);
