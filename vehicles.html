@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>Vehicle Turntable</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      canvas { width: 100%; height: 100%; display: block; }
+      #hud { position: absolute; left: 8px; top: 8px; color: #fff; font: 14px monospace; text-shadow: 0 0 3px #000; }
+      #errors { position: absolute; left: 8px; bottom: 8px; color: #f66; font: 12px monospace; white-space: pre; display: none; }
+    </style>
+  </head>
+  <body>
+    <canvas></canvas>
+    <div id="hud"></div>
+    <div id="errors"></div>
+    <script type="module" src="turntable.js"></script>
+  </body>
+</html>

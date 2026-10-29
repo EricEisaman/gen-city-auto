@@ -1,0 +1,17 @@
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; }
+canvas { width: 100%; height: 100%; display: block; outline: none; }
+#loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: radial-gradient(#1a1d2b, #050507); color: #eee; gap: 14px; }
+#loading .title { font-size: 42px; font-weight: 800; letter-spacing: 0.25em; background: linear-gradient(90deg, #ff5fa2, #ffd36e, #5fe4ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+#loading .bar { width: 320px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; }
+#loadbar { height: 100%; width: 0; background: #ffd36e; transition: width 0.2s; }
+#hud { position: absolute; right: 24px; bottom: 20px; color: #fff; text-align: right; text-shadow: 0 1px 4px #000; pointer-events: none; }
+#hud .speed { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; }
+#hud .unit { font-size: 14px; opacity: 0.8; }
+#hud .info { font-size: 13px; opacity: 0.85; margin-top: 4px; }
+#stats { position: absolute; left: 8px; top: 8px; color: #8f8; font: 11px monospace; white-space: pre; text-shadow: 0 0 2px #000; pointer-events: none; }
+#help { position: absolute; left: 12px; bottom: 12px; color: #ddd; font-size: 12px; line-height: 1.5; text-shadow: 0 1px 3px #000; pointer-events: none; }
+#menu { position: absolute; right: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px; background: rgba(10, 12, 20, 0.7); padding: 10px; border-radius: 8px; color: #eee; font-size: 12px; }
+#menu.hidden { display: none; }
+#menu label { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+#menu select, #menu input, #menu button { font-size: 12px; }
+#errors { position: absolute; left: 8px; bottom: 8px; right: 8px; color: #f66; font: 12px monospace; white-space: pre-wrap; display: none; background: rgba(0, 0, 0, 0.8); max-height: 40%; overflow: auto; }

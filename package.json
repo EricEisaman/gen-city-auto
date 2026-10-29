@@ -1,0 +1,38 @@
+{
+  "name": "gen-city-auto",
+  "version": "1.0.0",
+  "description": "Procedurally generated metropolis you can drive and fly around, rendered with WebGPU and no libraries.",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:prod": "node build.mjs --prod",
+    "dev": "node build.mjs --watch --serve",
+    "serve": "node server.mjs",
+    "lint": "gts lint",
+    "fix": "gts fix",
+    "typecheck": "tsc -p .",
+    "test:unit": "node --test --experimental-strip-types test/unit/",
+    "test:smoke": "node build.mjs && node test/puppeteer/smoke.mjs",
+    "test:shots": "node build.mjs && node test/puppeteer/shots.mjs",
+    "test:perf": "node build.mjs && node test/puppeteer/perf.mjs",
+    "test": "npm run typecheck && npm run test:unit && npm run test:smoke"
+  },
+  "keywords": [],
+  "author": "Gregg Tavares",
+  "license": "MIT",
+  "type": "module",
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@webgpu/types": "^0.1.74",
+    "esbuild": "^0.28.2",
+    "express": "^5.3.0",
+    "gts": "^7.0.0",
+    "puppeteer": "^25.16.0",
+    "typescript": "~6.0.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "puppeteer@25.16.0": true
+  },
+  "private": true
+}
