@@ -38,7 +38,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   var occ = 0.0;
   var total = 0.0;
   for (var scale = 0; scale < 2; scale++) {
-    let R = select(1.0, 7.0, scale == 1) * clamp(dist / 30.0, 1.0, 4.0);
+    // Shrinks for close-up pixels (car interiors): a metre-scale radius at
+    // arm's length covers half the screen and turns into flickering noise.
+    let R = select(1.0, 7.0, scale == 1) * clamp(dist / 30.0, 1.0, 4.0) * min(1.0, dist / select(12.0, 28.0, scale == 1));
     let count = select(8, 6, scale == 1);
     for (var i = 0; i < count; i++) {
       let fi = f32(i);

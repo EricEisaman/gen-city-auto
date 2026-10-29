@@ -9,6 +9,11 @@
     at the start just a 5 or 10 seconds into the video. The camera pops outside the car
     as it pulls up to red light, the car in front of it is flickering like crazy.
     -> LOD selection now has hysteresis (vehicles near an LOD distance flipped every frame). Please re-check.
+    -> follow-up (dashboard/doors flickering inside the car): it was SSAO, not shadows. Its sample
+       radius never went below 1 m / 7 m, so at arm's length it sampled half the screen with a
+       per-frame rotation that TAA couldn't hide. The radius now shrinks with view distance under
+       12 m / 28 m; consecutive-frame diffs of the interior now match AO-off (only edge jitter left).
+       This also calms AO on nearby cars, e.g. the car ahead at a red light.
 
 [x] the settings should be in a popup behind a gear icon
 [x] the camera should have a camera icon outside the settings the cycles through camera modes
@@ -105,3 +110,15 @@
 
 [x] traffic jams are common. All the cars get stuck.
     -> junction deadlock breaker (creep after 4 s stopped), cars stuck > 40 s despawn.
+
+[ ] trains station platforms are missing bottoms
+
+    freecam=12.79,24.31,-453.23,-2.69,0.55&city=neon&seed=1&time=7.02&timespeed=0&weather=sunny
+
+[ ] These train tracks are impossible. They are stacked on top of each other
+    Further a tree is poking through the tracks.
+
+    freecam=133.83,34.41,-585.14,-2.41,0.09&city=neon&seed=1&time=22.05&timespeed=0&weather=sunny
+
+[ ] Car lights on highways/streets at night are going too fast, unrealistic speeds
+
