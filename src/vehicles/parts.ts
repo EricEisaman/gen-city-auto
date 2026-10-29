@@ -84,7 +84,7 @@ export function wheelMesh(
     bk,
     [hw * 0.05, rimR * 0.55, -rimR * 0.45],
     [0.035, 0.07, 0.05],
-    Mat.taillight,
+    Mat.caliper,
     {n: 4, segU: 8, segV: 3},
   );
   mergeMesh(m, bk.mesh);

@@ -152,6 +152,14 @@ export class CameraSystem {
           const z = p[2] + Math.sin(s.a) * d;
           s.eye = [x, ground(x, z) + this.rng.range(15, 50), z];
           s.fov = this.rng.range(0.22, 0.35);
+          // Reject eyes perched just above a roof (parapets fill the frame).
+          {
+            const pr = this.net.collideBuildings(
+              [s.eye[0], s.eye[1] - 7, s.eye[2]],
+              12,
+            );
+            if (pr[0] !== 0 || pr[1] !== 0) continue;
+          }
           break;
         }
         case 'aerial': {
@@ -239,6 +247,18 @@ export class CameraSystem {
       lerp(this.eye[1], want[1], k),
       lerp(this.eye[2], want[2], k),
     ];
+    // Never closer than ~4 m to the vehicle (no clipping into the body).
+    {
+      const dx = this.eye[0] - pl.pos[0];
+      const dz = this.eye[2] - pl.pos[2];
+      const dd = Math.hypot(dx, dz);
+      const minD = isHeli ? 9 : 4;
+      if (dd < minD) {
+        const ux = dd > 1e-3 ? dx / dd : -f[0];
+        const uz = dd > 1e-3 ? dz / dd : -f[1];
+        this.eye = [pl.pos[0] + ux * minD, this.eye[1], pl.pos[2] + uz * minD];
+      }
+    }
     // Keep the camera out of the ground.
     const g = this.net.surfaceHeight(this.eye[0], this.eye[2], this.eye[1]);
     this.eye[1] = Math.max(this.eye[1], g + 0.6);

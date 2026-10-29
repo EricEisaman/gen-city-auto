@@ -239,7 +239,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       var glow = vec3f(1.0, 0.85, 0.6) * 0.2;
       if (shopType == 0u) {
         // Konbini: bright cool interior, colored band across the top.
-        inside = inside * 0.4 + vec3f(1.6, 1.7, 1.8) * mix(0.5, 1.0, night);
+        inside = inside * 0.4 + vec3f(1.6, 1.7, 1.8) * mix(0.22, 1.0, night);
         if (ly > st.floorH * 0.66) {
           let bandC = array<vec3f, 3>(vec3f(0.1, 0.5, 0.25), vec3f(0.9, 0.3, 0.05), vec3f(0.1, 0.3, 0.8))[shopSeed % 3u];
           s.albedo = bandC;
@@ -630,7 +630,13 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       }
     }
     case M_CONCRETE: {
-      s.albedo = vec3f(0.55, 0.54, 0.51) * (0.75 + 0.25 * fbm2(world.xz * 0.3 + world.y * 0.2));
+      s.albedo = vec3f(0.5, 0.49, 0.46) * (0.75 + 0.25 * fbm2(world.xz * 0.3 + world.y * 0.2));
+      // Formwork joints, water stains and darker undersides.
+      let fw = fract((world.x + world.z) / 1.8);
+      let fv = fract(world.y / 0.9);
+      if (min(fw, 1.0 - fw) < 0.006 || min(fv, 1.0 - fv) < 0.01) { s.albedo *= 0.8; }
+      s.albedo *= 1.0 - 0.25 * smoothstep(0.55, 0.8, valueNoise(vec2f((world.x + world.z) * 0.4, world.y * 0.08)));
+      if (n.y < -0.5) { s.albedo *= 0.6; }
       s.rough = 0.85;
       applyWetness(&s, world, max(n.y, 0.0), 0.5);
     }

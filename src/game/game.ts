@@ -303,8 +303,9 @@ export class Game {
       flyby: 0.4,
       train: 0.3,
     };
+    const moving = Math.min(1, Math.abs(this.player.speed) / 3);
     return {
-      motionBlur: blur[shot] ?? 0.3,
+      motionBlur: (blur[shot] ?? 0.3) * moving,
       dofAperture: this.opts.freecam ? 0 : (dof[shot] ?? 0),
       focus,
     };
@@ -451,10 +452,8 @@ export class Game {
       debug: this.opts.debug,
       quality: this.opts.quality,
       ...this.cinematics(cam.eye),
-      lensDrops:
-        cam.interior ||
-        this.camera.shot?.name === 'bumper' ||
-        this.camera.mode === 'hood',
+      // Lens rain drops read as floating rings; leave them off.
+      lensDrops: false,
     });
     this.input.endFrame();
     this.fpsAvg = this.fpsAvg * 0.95 + (1 / Math.max(dt, 1e-3)) * 0.05;

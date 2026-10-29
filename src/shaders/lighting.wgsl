@@ -512,10 +512,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     let fc = min(0.04 + 0.96 * pow(1.0 - nv, 5.0), 0.45);
     let envSharp = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
     var coatEnv = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, envSharp, smoothstep(-0.05, 0.15, refl.y));
-    if (frame.misc.y > 0.5 && nv > 0.25) {
-      let r2 = ssr(world, n, v, pxf, 0.02, false);
-      coatEnv = mix(coatEnv, r2.rgb, r2.a);
-    }
     color += coatEnv * fc * specOcc;
     if (frame.sunDir.w > 0.0) {
       let hc = normalize(v + frame.sunDir.xyz);

@@ -122,7 +122,7 @@ fn motionDof(@builtin(global_invocation_id) id: vec3u) {
   let aperture = frame.wind.z;
   let focus = frame.exposure.w;
   if (aperture > 0.0 && focus > 0.0) {
-    let coc = clamp(aperture * abs(z - focus) / max(z, 0.1) * 14.0, 0.0, 12.0);
+    let coc = clamp(aperture * abs(z - focus) / max(z, 0.1) * 10.0, 0.0, 5.0);
     if (coc > 0.7) {
       var sum = c;
       var wsum = 1.0;
@@ -132,7 +132,7 @@ fn motionDof(@builtin(global_invocation_id) id: vec3u) {
         let q = clamp(p + vec2i(vec2f(cos(a), sin(a)) * r), vec2i(0), vec2i(size) - 1);
         let qd = textureLoad(mbDepth, q, 0);
         let qz = frame.camPos.w / max(qd, 1e-7);
-        let qcoc = clamp(aperture * abs(qz - focus) / max(qz, 0.1) * 14.0, 0.0, 12.0);
+        let qcoc = clamp(aperture * abs(qz - focus) / max(qz, 0.1) * 10.0, 0.0, 5.0);
         // Sharp foreground must not bleed onto a blurred background.
         let w = select(1.0, smoothstep(0.0, 1.0, qcoc / max(r, 0.5)), qz < z);
         sum += textureLoad(mbSrc, q, 0).rgb * w;
@@ -147,7 +147,7 @@ fn motionDof(@builtin(global_invocation_id) id: vec3u) {
     var v = textureLoad(mbMotion, p, 0).xy * vec2f(size) * 0.5 * amount;
     let l = length(v);
     if (l > 1.0) {
-      v = v * min(l, 24.0) / l;
+      v = v * min(l, 8.0) / l;
       var sum = c;
       var wsum = 1.0;
       for (var k = 1; k <= 10; k++) {

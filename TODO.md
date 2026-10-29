@@ -59,3 +59,6 @@
 
 [ ] Add size=<width>x<height> url param that lets me set the size of the canvas to a fixed
     number of CSS pixels. i can use this to make videos of a specific size.
+
+[ ] the height of the camera when inside a vehicle, or a least the default car, seems
+    10-20 cm too low.

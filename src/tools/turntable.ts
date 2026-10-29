@@ -67,6 +67,7 @@ fn material(id: u32) -> Surf {
     case 12u: { s.albedo = vec3f(0.7); s.rough = 0.25; s.metal = 1.0; }
     case 13u: { s.albedo = vec3f(1.0, 0.45, 0.0); s.rough = 0.2; s.emissive = vec3f(2.0, 0.8, 0.0) * lights; }
     case 14u: { s.albedo = vec3f(0.02); s.rough = 0.2; s.emissive = vec3f(1.5, 0.8, 0.1); }
+    case 18u: { s.albedo = vec3f(0.5, 0.04, 0.03); s.rough = 0.4; }
     case 15u: { s.albedo = vec3f(0.62, 0.46, 0.36); s.rough = 0.6; }
     case 16u: { s.albedo = u.color.rgb; s.rough = 0.9; }
     case 17u: { s.albedo = vec3f(0.12, 0.13, 0.16); s.rough = 0.9; }

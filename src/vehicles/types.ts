@@ -35,6 +35,8 @@ export const Mat = {
   indicator: 13,
   /** Emissive destination/route screens on buses and trains. */
   screen: 14,
+  /** Painted brake calliper (non-emissive red). */
+  caliper: 18,
 } as const;
 export type MatId = (typeof Mat)[keyof typeof Mat];
 
