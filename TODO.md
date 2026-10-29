@@ -60,10 +60,13 @@
 
 [ ] Cities usually have some major roads and highways
 
-[ ] When viewing from high up or when the view distance is far, consider showing
+[x] When viewing from high up or when the view distance is far, consider showing
     headlight and brake lights as single sprites with no car, especially on highways?
     Same for street lights. I'm not sure if GTA5 does this but it worked well in older
     games.
+    -> render/sprites.ts: every lane of every road and expressway carries a stream of head/tail light
+       sprites beyond the 360 m simulated traffic radius (white toward the viewer, red away, ~1 car
+       per 28 m), and every street lamp head gets a sodium/LED sprite past 180 m. Night and rain only.
 
 [x] Tall buildings, antenna, need red airplane lights.
     -> blinking red obstruction lights on the corners of roofs over 60 m.

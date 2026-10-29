@@ -6,6 +6,9 @@ import {reportError, resizeToCss, type Gpu} from '../gpu/device.ts';
 import {Rng} from '../math/random.ts';
 import type {Vec3} from '../math/vec.ts';
 import {RainRenderer} from '../render/rain.ts';
+import {LightSprites} from '../render/sprites.ts';
+import {streetLightSpots} from '../city/gen-base.ts';
+import type {CityLayout} from '../city/layout.ts';
 import {GBUFFER_FORMATS, Renderer} from '../render/renderer.ts';
 import {VehicleRenderer} from '../render/vehicles.ts';
 import {UI} from '../ui/ui.ts';
@@ -46,6 +49,7 @@ export class Game {
   renderer!: Renderer;
   vehicles!: VehicleRenderer;
   rain!: RainRenderer;
+  sprites!: LightSprites;
   city: City | null = null;
   net: RoadNet | null = null;
   traffic: Traffic | null = null;
@@ -110,7 +114,12 @@ export class Game {
       this.renderer.frameBuffer,
       'rgba16float',
     );
-    this.renderer.hooks.push(this.vehicles, this.rain);
+    this.sprites = new LightSprites(
+      this.renderer.device,
+      this.renderer.frameBuffer,
+      'rgba16float',
+    );
+    this.renderer.hooks.push(this.vehicles, this.rain, this.sprites);
     const progress = this.progress.bind(this);
     progress('Building vehicles from NURBS', 0.02);
     await Promise.all([
@@ -159,6 +168,7 @@ export class Game {
     const city = this.city!;
     const net = this.net!;
     this.traffic = new Traffic(net, this.vehicles);
+    this.buildLightSprites();
     this.traffic.target = this.opts.traffic;
     this.trains = new Trains(city.summary.layout.elevated, this.vehicles);
     this.helis = new AmbientHelis(
@@ -302,6 +312,65 @@ export class Game {
     } catch (e) {
       reportError(`[regenerate] ${e instanceof Error ? e.stack : e}`);
     }
+  }
+
+  /** Lane segments and lamp heads for the distant night light sprites. */
+  private buildLightSprites() {
+    const net = this.net!;
+    const L = this.city!.summary.layout;
+    const segs: number[] = [];
+    let seed = 0;
+    const lane = (a: Vec3, b: Vec3, off: number) =>
+      segs.push(
+        a[0],
+        a[1],
+        a[2],
+        off,
+        b[0],
+        b[1],
+        b[2],
+        (seed++ * 0.6180339) % 1000,
+      );
+    net.chains.forEach((c, ci) => {
+      if (c.kind < 1) return;
+      const n = net.lanesPerDir(ci);
+      for (let i = 0; i + 1 < c.pts.length; i++) {
+        const a: Vec3 = [c.pts[i][0], c.heights[i], c.pts[i][1]];
+        const b: Vec3 = [c.pts[i + 1][0], c.heights[i + 1], c.pts[i + 1][1]];
+        for (let k = 0; k < n; k++) {
+          const off = net.laneOffset(ci, k);
+          lane(a, b, off);
+          lane(b, a, off);
+        }
+      }
+    });
+    for (const e of L.elevated) {
+      if (e.kind !== 'expressway') continue;
+      for (let i = 0; i + 1 < e.pts.length; i++) {
+        const a: Vec3 = [e.pts[i][0], e.heights[i], e.pts[i][1]];
+        const b: Vec3 = [e.pts[i + 1][0], e.heights[i + 1], e.pts[i + 1][1]];
+        for (const off of [2.2, 5.6]) {
+          lane(a, b, off);
+          lane(b, a, off);
+        }
+      }
+    }
+    const lamps: number[] = [];
+    streetLightSpots(
+      L as unknown as CityLayout,
+      net.geom,
+      (p, dir, kind, sodium) => {
+        const reach = kind >= 2 ? 2.2 : 1.2;
+        const h = kind >= 2 ? 9 : 6.5;
+        lamps.push(
+          p[0] + dir[0] * reach,
+          p[1] + h - 0.4,
+          p[2] + dir[1] * reach,
+          sodium ? 1 : 0,
+        );
+      },
+    );
+    this.sprites.setData(new Float32Array(segs), new Float32Array(lamps));
   }
 
   /** Motion blur and depth of field per camera shot. */
