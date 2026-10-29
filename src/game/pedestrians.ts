@@ -112,11 +112,11 @@ export class Pedestrians {
       const x = q.p[0] + l[0] * off;
       const z = q.p[1] + l[1] * off;
       const y = this.net.hf.sample(x, z) + 0.16;
-      p.phase += dt * p.speed * 5.5;
-      const bob = Math.abs(Math.sin(p.phase)) * 0.03;
+      p.phase += dt * p.speed * 4.2;
+      const bob = Math.abs(Math.cos(p.phase)) * 0.03;
       const d: Vec2 = [q.d[0] * p.dir, q.d[1] * p.dir];
       p.prev.set(p.model);
-      modelMatrix(p.model, [x, y + bob, z], d, 0, Math.sin(p.phase) * 0.04);
+      modelMatrix(p.model, [x, y + bob, z], d, 0, Math.sin(p.phase) * 0.02);
       if (p.prev[15] === 0) p.prev.set(p.model);
     }
   }
@@ -135,7 +135,7 @@ export class Pedestrians {
         indicator: 0,
         wheelSpin: 0,
         steer: 0,
-        rotor: 0,
+        rotor: p.phase,
       });
     }
   }

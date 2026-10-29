@@ -382,7 +382,14 @@ export class VehicleRenderer implements DrawHook {
     v.info.rotors.forEach((r, k) => {
       const local = mul(
         translate(r.position),
-        rotAxis(r.axis, inst.rotor * (k === 0 ? 1 : 4.3)),
+        rotAxis(
+          r.axis,
+          v.info.kind === 'person'
+            ? // Limbs swing: legs opposite each other, arms opposite their leg.
+              Math.sin(inst.rotor + (k === 1 || k === 2 ? Math.PI : 0)) *
+                (k < 2 ? 0.45 : 0.35)
+            : inst.rotor * (k === 0 ? 1 : 4.3),
+        ),
       );
       this.push(
         `${key}|rotor${k}`,
