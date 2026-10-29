@@ -169,25 +169,28 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
       }
     }
   });
-  const tested = new Set<number>();
-  for (const c of grid.values()) {
-    for (let i = 0; i < c.length; i++) {
-      for (let j = i + 1; j < c.length; j++) {
-        const si = c[i];
-        const sj = c[j];
-        const key = si < sj ? si * segs.length + sj : sj * segs.length + si;
-        if (tested.has(key)) continue;
-        tested.add(key);
-        const A = segs[si];
-        const B = segs[sj];
-        const r = segmentIntersect(A.a, A.b, B.a, B.b);
-        if (r) {
-          A.cuts.push(r[0]);
-          B.cuts.push(r[1]);
+  // For each segment, test the later segments sharing any of its cells.
+  segs.forEach((A, si) => {
+    const x0 = Math.floor(Math.min(A.a[0], A.b[0]) / cell);
+    const x1 = Math.floor(Math.max(A.a[0], A.b[0]) / cell);
+    const y0 = Math.floor(Math.min(A.a[1], A.b[1]) / cell);
+    const y1 = Math.floor(Math.max(A.a[1], A.b[1]) / cell);
+    const seen = new Set<number>();
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        for (const sj of grid.get(`${x},${y}`) ?? []) {
+          if (sj <= si || seen.has(sj)) continue;
+          seen.add(sj);
+          const B = segs[sj];
+          const r = segmentIntersect(A.a, A.b, B.a, B.b);
+          if (r) {
+            A.cuts.push(r[0]);
+            B.cuts.push(r[1]);
+          }
         }
       }
     }
-  }
+  });
   const g = new Graph();
   const index = new PointIndex(g.nodes, snap);
   const nodeAt = (p: Vec2) => {

@@ -28,6 +28,7 @@ import {
   type Graph,
   type Polyline,
 } from './graph.ts';
+import {traceStreets, type Basis} from './streets.ts';
 import {
   generateTerrain,
   Heightfield,
@@ -197,248 +198,6 @@ function clipToLand(pts: Vec2[], hf: Heightfield, maxBridge: number): Vec2[][] {
     }
   }
   if (cur.length > 1) out.push(cur);
-  return out;
-}
-
-function arterials(
-  p: CityParams,
-  rng: Rng,
-  noise: Noise2D,
-  center: Vec2,
-  hubs: Hub[],
-): Polyline[] {
-  const S = p.size / 2;
-  const lines: Polyline[] = [];
-  if (p.arterials === 'radial') {
-    const R = S * 1.05;
-    for (let k = 1; k <= p.ringCount; k++) {
-      const r = (R * k) / (p.ringCount + 0.6);
-      const ctrl: Vec2[] = [];
-      const m = 10 + k * 4;
-      for (let i = 0; i < m; i++) {
-        const a = (i / m) * Math.PI * 2;
-        const rr =
-          r *
-          (1 +
-            0.16 * noise.noise(Math.cos(a) * 1.3 + k * 7, Math.sin(a) * 1.3));
-        ctrl.push([center[0] + Math.cos(a) * rr, center[1] + Math.sin(a) * rr]);
-      }
-      lines.push({
-        pts: catmull(ctrl, true, 20),
-        kind: k === p.ringCount ? Road.avenue : Road.boulevard,
-      });
-    }
-    const a0 = rng.range(0, Math.PI * 2);
-    for (let i = 0; i < p.radialCount; i++) {
-      const a = a0 + (i / p.radialCount) * Math.PI * 2 + rng.range(-0.15, 0.15);
-      const ctrl: Vec2[] = [];
-      const steps = 8;
-      for (let s = 0; s <= steps; s++) {
-        const r = 40 + (S * 1.5 * s) / steps;
-        const wob = noise.noise(i * 3.3, s * 0.5) * 0.18;
-        ctrl.push([
-          center[0] + Math.cos(a + wob) * r,
-          center[1] + Math.sin(a + wob) * r,
-        ]);
-      }
-      lines.push({
-        pts: catmull(ctrl, false, 20),
-        kind: i % 2 === 0 ? Road.boulevard : Road.avenue,
-      });
-    }
-  } else {
-    // Manhattan-like: a rotated main grid of avenues.
-    const ang = rng.range(0.35, 0.55);
-    const c = Math.cos(ang),
-      s = Math.sin(ang);
-    const avenueGap = 260;
-    for (let k = -14; k <= 14; k++) {
-      const off = k * avenueGap;
-      const pts: Vec2[] = [];
-      for (let t = -S * 1.5; t <= S * 1.5; t += 40) {
-        const x = off + noise.noise(k, t / 2000) * 30;
-        pts.push([center[0] + x * c - t * s, center[1] + x * s + t * c]);
-      }
-      lines.push({pts, kind: k % 3 === 0 ? Road.boulevard : Road.avenue});
-    }
-    for (let k = -8; k <= 8; k++) {
-      const off = k * avenueGap * 3;
-      const pts: Vec2[] = [];
-      for (let t = -S * 1.5; t <= S * 1.5; t += 40)
-        pts.push([center[0] + t * c - off * s, center[1] + t * s + off * c]);
-      lines.push({pts, kind: Road.avenue});
-    }
-  }
-  if (p.arterials === 'radial') {
-    // A loose lattice of avenues covers land the rings and radials miss.
-    const gap = 720;
-    const ang = rng.range(-0.3, 0.3);
-    const c = Math.cos(ang),
-      s = Math.sin(ang);
-    for (const axis of [0, 1]) {
-      for (let k = -Math.ceil(S / gap) - 1; k <= Math.ceil(S / gap) + 1; k++) {
-        const pts: Vec2[] = [];
-        for (let t = -S * 1.5; t <= S * 1.5; t += 40) {
-          const off = k * gap + noise.noise(k * 1.7 + axis * 9, t / 900) * 120;
-          const x = axis ? off : t;
-          const z = axis ? t : off;
-          pts.push([center[0] + x * c - z * s, center[1] + x * s + z * c]);
-        }
-        // The central north-south avenue may bridge wide water (harbour crossing).
-        lines.push({
-          pts,
-          kind: k === 0 && axis === 1 ? Road.boulevard : Road.avenue,
-          maxBridge: k === 0 && axis === 1 ? 2600 : undefined,
-        });
-      }
-    }
-  }
-  // Connect hubs to their nearest neighbors with avenues (sub-center links).
-  for (let i = 0; i < hubs.length; i++) {
-    const a = hubs[i].p;
-    let best = -1;
-    let bd = Infinity;
-    for (let j = 0; j < hubs.length; j++) {
-      if (j === i) continue;
-      const d = dist2(a, hubs[j].p);
-      if (d < bd) {
-        bd = d;
-        best = j;
-      }
-    }
-    if (best >= 0 && best > i) {
-      const b = hubs[best].p;
-      const mid: Vec2 = [
-        (a[0] + b[0]) / 2 + rng.range(-150, 150),
-        (a[1] + b[1]) / 2 + rng.range(-150, 150),
-      ];
-      lines.push({pts: catmull([a, mid, b], false, 20), kind: Road.avenue});
-    }
-  }
-  return lines;
-}
-
-// ---------------------------------------------------------------------------
-// Minor streets: each arterial region gets its own rotated, irregular grid.
-
-function clipLineToPolygon(o: Vec2, d: Vec2, poly: Vec2[]): [number, number][] {
-  const ts: number[] = [];
-  for (let i = 0; i < poly.length; i++) {
-    const a = poly[i];
-    const b = poly[(i + 1) % poly.length];
-    const e = sub2(b, a);
-    const den = d[0] * e[1] - d[1] * e[0];
-    if (Math.abs(den) < 1e-9) continue;
-    const ao = sub2(a, o);
-    const t = (ao[0] * e[1] - ao[1] * e[0]) / den;
-    const u = (ao[0] * d[1] - ao[1] * d[0]) / den;
-    if (u >= 0 && u < 1) ts.push(t);
-  }
-  ts.sort((x, y) => x - y);
-  const out: [number, number][] = [];
-  for (let i = 0; i + 1 < ts.length; i += 2) out.push([ts[i], ts[i + 1]]);
-  return out;
-}
-
-function minorStreets(
-  p: CityParams,
-  rng: Rng,
-  noise: Noise2D,
-  region: Vec2[],
-  hubs: Hub[],
-): Polyline[] {
-  const out: Polyline[] = [];
-  // Orientation from the longest region edge.
-  let best = 0;
-  let ang = 0;
-  for (let i = 0; i < region.length; i++) {
-    const a = region[i];
-    const b = region[(i + 1) % region.length];
-    const l = dist2(a, b);
-    if (l > best) {
-      best = l;
-      ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
-    }
-  }
-  if (!rng.chance(p.gridRegularity)) ang += rng.range(-0.5, 0.5);
-  let cx = 0,
-    cz = 0;
-  for (const q of region) {
-    cx += q[0];
-    cz += q[1];
-  }
-  cx /= region.length;
-  cz /= region.length;
-  const dens = densityAt(hubs, noise, cx, cz);
-  const [lo, hi] = p.blockSize;
-  // Dense areas get smaller blocks (Tokyo backstreets) except at the very core.
-  const sx = lerp(hi, lo, dens * 0.8) * rng.range(0.85, 1.2);
-  const sy = sx * rng.range(0.55, 0.95);
-  const u: Vec2 = [Math.cos(ang), Math.sin(ang)];
-  const v: Vec2 = [-u[1], u[0]];
-  let R = 0;
-  for (const q of region) R = Math.max(R, Math.hypot(q[0] - cx, q[1] - cz));
-  const ox = rng.range(0, sx);
-  const oy = rng.range(0, sy);
-  const dropP = 0.18 + (1 - p.gridRegularity) * 0.2;
-  const bend = (1 - p.gridRegularity) * 10;
-  // Lines along u (spaced by sy), split into pieces between crossings of v lines.
-  const emit = (
-    dir: Vec2,
-    side: Vec2,
-    spacing: number,
-    cross: number,
-    off: number,
-    crossOff: number,
-    drop: number,
-  ) => {
-    for (
-      let k = -Math.ceil(R / spacing) - 1;
-      k <= Math.ceil(R / spacing) + 1;
-      k++
-    ) {
-      const s = k * spacing + off;
-      const o: Vec2 = [cx + side[0] * s, cz + side[1] * s];
-      for (const [t0, t1] of clipLineToPolygon(o, dir, region)) {
-        if (t1 - t0 < 20) continue;
-        // Break at crossing positions, dropping some pieces for irregularity.
-        const first = Math.ceil((t0 - crossOff) / cross);
-        const cuts = [t0];
-        for (let c = first; c * cross + crossOff < t1; c++)
-          cuts.push(c * cross + crossOff);
-        cuts.push(t1);
-        for (let c = 0; c + 1 < cuts.length; c++) {
-          const a = cuts[c];
-          const b = cuts[c + 1];
-          if (b - a < 6) continue;
-          const isEdge = c === 0 || c === cuts.length - 2;
-          if (!isEdge && rng.chance(drop)) continue;
-          const pts: Vec2[] = [];
-          const nseg = Math.max(1, Math.ceil((b - a) / 30));
-          for (let q = 0; q <= nseg; q++) {
-            const t = lerp(a, b, q / nseg);
-            const w =
-              q === 0 || q === nseg
-                ? 0
-                : noise.noise(
-                    (o[0] + dir[0] * t) / 150,
-                    (o[1] + dir[1] * t) / 150,
-                  ) * bend;
-            pts.push([
-              o[0] + dir[0] * t + side[0] * w,
-              o[1] + dir[1] * t + side[1] * w,
-            ]);
-          }
-          out.push({
-            pts,
-            kind: rng.chance(0.25 + dens * 0.3) ? Road.street : Road.lane,
-          });
-        }
-      }
-    }
-  };
-  emit(u, v, sy, sx, oy, ox, dropP);
-  emit(v, u, sx, sy, ox, oy, dropP * 1.6);
   return out;
 }
 
@@ -738,50 +497,70 @@ export function generateLayout(
     });
   }
 
-  progress?.('Laying arterials', 0.15);
-  const majorLines: Polyline[] = [];
-  for (const l of arterials(params, rng, noise, center, hubs)) {
-    for (const piece of clipToLand(l.pts, hf, l.maxBridge ?? 700)) {
-      const inside = piece.filter(
-        q => Math.abs(q[0]) < S - 40 && Math.abs(q[1]) < S - 40,
-      );
-      // Never end a road over water (bridges must land on both shores).
-      while (inside.length && !isLand(inside[inside.length - 1])) inside.pop();
-      while (inside.length && !isLand(inside[0])) inside.shift();
-      if (inside.length > 1) majorLines.push({pts: inside, kind: l.kind});
-    }
-  }
-  // A frame road around the map keeps regions closed.
-  const frame: Vec2[] = [
-    [-S + 60, -S + 60],
-    [S - 60, -S + 60],
-    [S - 60, S - 60],
-    [-S + 60, S - 60],
-    [-S + 60, -S + 60],
-  ];
-  majorLines.push({pts: resample(frame, 40), kind: Road.avenue});
-  let major = planarize(majorLines, 3);
-  major = mergeCloseNodes(major, 20);
-
-  progress?.('Filling streets', 0.25);
-  const regions = extractFaces(major, params.size * params.size * 0.5);
-  const allLines: Polyline[] = [];
-  for (const e of major.edges) {
-    if (e.dead) continue;
-    allLines.push({
-      pts: [major.nodes[e.a].p, major.nodes[e.b].p],
-      kind: e.kind,
+  progress?.('Tracing streets', 0.15);
+  // Tensor field street network: grids around each hub, a radial pattern at
+  // the center (rings and radials), and terrain contours on slopes.
+  const bases: Basis[] = [];
+  if (params.arterials === 'grid') {
+    bases.push({
+      kind: 'grid',
+      center,
+      radius: params.size * 4,
+      weight: 1,
+      theta: rng.range(0.35, 0.55),
     });
-  }
-  for (const f of regions) {
-    const poly = f.nodes.map(n => major.nodes[n].p);
-    for (const l of minorStreets(params, rng, noise, poly, hubs)) {
-      for (const piece of clipToLand(l.pts, hf, 0))
-        allLines.push({pts: piece, kind: l.kind});
+  } else {
+    bases.push({kind: 'radial', center, radius: 1500, weight: 1.3, theta: 0});
+    for (const h of hubs.slice(1)) {
+      bases.push({
+        kind: 'grid',
+        center: h.p,
+        radius: rng.range(900, 1300),
+        weight: 1.2,
+        theta: rng.range(0, Math.PI),
+      });
+    }
+    // Background grids so every part of the map has a coherent orientation.
+    for (let k = 0; k < 10; k++) {
+      bases.push({
+        kind: 'grid',
+        center: [rng.range(-S, S), rng.range(-S, S)],
+        radius: rng.range(1600, 2400),
+        weight: 0.9,
+        theta: rng.range(0, Math.PI),
+      });
     }
   }
+  const [sepLo, sepHi] = params.blockSize;
+  const allLines: Polyline[] = traceStreets(
+    {
+      size: params.size,
+      bases,
+      terrainWeight:
+        params.arterials === 'grid' ? 0.4 : 0.8 + params.relief / 200,
+      majorSep: params.arterials === 'grid' ? 270 : 400,
+      minorSep: d => lerp(sepHi * 1.15, sepLo * 1.1, d),
+      density: (x, z) => densityAt(hubs, noise, x, z),
+      maxBridge: 2600,
+      majorKind: i => (i % 3 === 0 ? Road.boulevard : Road.avenue),
+      minorKind: (d, r) => (r.chance(0.2 + d * 0.35) ? Road.street : Road.lane),
+      holes: params.arterials === 'grid' ? [] : [{c: center, r: 230}],
+    },
+    hf,
+    seed,
+  );
+  if (params.arterials !== 'grid') {
+    // Ring road around the central park.
+    const ring: Vec2[] = [];
+    for (let i = 0; i <= 64; i++) {
+      const a = (i / 64) * Math.PI * 2;
+      ring.push([center[0] + Math.cos(a) * 236, center[1] + Math.sin(a) * 236]);
+    }
+    allLines.push({pts: ring, kind: Road.boulevard});
+  }
+  progress?.('Connecting streets', 0.25);
   let g: Graph = planarize(allLines, 2.5);
-  g = mergeCloseNodes(g, 9);
+  g = mergeCloseNodes(g, 5);
   removeSlivers(g, 0.35);
   // Drop edges that cross open water for long stretches unless they are arterials.
   for (const e of g.edges) {
@@ -958,10 +737,14 @@ export function generateLayout(
     if (overlapsRoad(curb)) continue;
     const dens = densityAt(hubs, noise, cx, cz);
     const area = polygonArea(inner);
+    const centralPark =
+      params.arterials !== 'grid' &&
+      Math.hypot(cx - center[0], cz - center[1]) < 230;
     const park =
-      area > 1500 &&
-      hash2(Math.round(cx), Math.round(cz)) % 1000 <
-        params.parkFraction * 1000 * (1.4 - dens);
+      centralPark ||
+      (area > 1500 &&
+        hash2(Math.round(cx), Math.round(cz)) % 1000 <
+          params.parkFraction * 1000 * (1.4 - dens));
     blocks.push({curb, inner, park, kinds});
     if (park) continue;
     const clean = cleanPolygon(inner, 1.5);
