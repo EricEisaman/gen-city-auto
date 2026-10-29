@@ -460,7 +460,7 @@ export function buildBody(
   const paint = o.paint ?? Mat.paint;
   kit.sheet(wall.sheet, paint, {
     mirror: true,
-    segU: o.wallSegU ?? 10,
+    segU: o.wallSegU ?? 9,
     segV: Math.min(64, wall.stations.length * 2),
     doubleSided: o.wallBack !== undefined,
     backMat: o.wallBack,
@@ -488,7 +488,7 @@ export function buildBody(
       kit.sheet(hood, paint, {
         mirror: true,
         segU: 6,
-        segV: Math.min(48, edges.length * 2),
+        segV: Math.min(32, edges.length * 2),
       });
     }
   }
@@ -500,7 +500,7 @@ export function buildBody(
       kit.sheet(deck, paint, {
         mirror: true,
         segU: 6,
-        segV: Math.min(48, edges.length * 2),
+        segV: Math.min(28, edges.length * 2),
       });
     }
   }
@@ -536,8 +536,8 @@ export function buildBody(
   const belly = new Sheet(bRows, -1, {u: 1});
   kit.sheet(belly, Mat.metal, {
     mirror: true,
-    segU: 3,
-    segV: Math.min(64, bRows.length * 2),
+    segU: 2,
+    segV: Math.min(64, bRows.length),
   });
   // Arch lips: a rolled edge (closed tube) along each wheel opening hides the
   // panel edge and the gap to the wheel-well liner.
@@ -729,7 +729,7 @@ export function buildGreenhouse(
     mirror: true,
     doubleSided: true,
     segU: 4,
-    segV: o.glassSeg ?? 40,
+    segV: o.glassSeg ?? 32,
   });
   // Roof: z-loft from the roof edge (rear segment end .. front corner end) to center.
   const edges = top.slice(iRearSeg, iFrontCorner + 1);
@@ -755,7 +755,7 @@ export function buildGreenhouse(
   kit.sheet(roof, o.roofMat ?? Mat.paint, {
     mirror: true,
     segU: 6,
-    segV: 24,
+    segV: 18,
     doubleSided: true,
     backMat: Mat.seat,
   });

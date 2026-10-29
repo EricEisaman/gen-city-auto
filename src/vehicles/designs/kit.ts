@@ -24,6 +24,36 @@ import {
   type NurbsSurface,
 } from '../../nurbs/nurbs.ts';
 
+/**
+ * The global tessellation detail scale (set by the renderer for LODs), measured
+ * by tessellating a probe patch: mesh.ts does not export it.
+ */
+export function detailScale(): number {
+  const m = emptyMesh();
+  const S = loftPoints(
+    [
+      [
+        [0, 0, 0],
+        [1, 0, 0],
+      ],
+      [
+        [0, 0, 1],
+        [1, 0, 1],
+      ],
+    ],
+    {degreeU: 1, degreeV: 1},
+  );
+  tessellate(m, S, 0, {segU: 1000, segV: 1});
+  return (m.positions.length / 3 / 2 - 1) / 1000;
+}
+
+/**
+ * Segment count that never drops below `min` after LOD scaling (small round
+ * parts would otherwise collapse into triangular fins at low detail).
+ */
+export const segAtLeast = (seg: number, min: number) =>
+  Math.max(seg, Math.ceil(min / detailScale()));
+
 /** A projection axis: world axis index (0 = x, 1 = y, 2 = z) or a unit direction. */
 export type Axis = number | Vec3;
 const axisVec = (a: Axis): Vec3 =>
@@ -600,7 +630,11 @@ export function blob(
   o: BlobOpts & {mirror?: boolean} = {},
 ) {
   const S = blobSurface(center, half, o);
-  kit.surf(S, mat, {segU: o.segU ?? 12, segV: o.segV ?? 6, mirror: o.mirror});
+  kit.surf(S, mat, {
+    segU: segAtLeast(o.segU ?? 12, 8),
+    segV: segAtLeast(o.segV ?? 6, 3),
+    mirror: o.mirror,
+  });
 }
 
 /** A flat-ish quad patch from four corners (p00, p10 along u; p01, p11 along v), two-sided optional. */
@@ -671,7 +705,7 @@ export function tube(
     degreeV: Math.min(3, pts.length - 1),
   });
   kit.surf(S, mat, {
-    segU: o.seg ?? 6,
+    segU: segAtLeast(o.seg ?? 6, 5),
     segV: o.along ?? Math.max(1, (pts.length - 1) * 2),
     mirror: o.mirror,
   });

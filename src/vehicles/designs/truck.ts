@@ -217,6 +217,7 @@ export function truck(seed: number): VehicleDesign {
     zFire: cowl - 0.1,
     zBulk: zrCab + 0.12,
     dualRear: true,
+    wallSegU: 7,
     palette: TRUCK_PALETTE,
     extras: (kit, ctx) => {
       // Ladder frame, cross members, fuel tank, battery box.
@@ -257,8 +258,8 @@ export function truck(seed: number): VehicleDesign {
       );
       cargoBox(kit, boxW, boxFloor, boxTop, boxRear, boxFront, Mat.paint2);
       // Side marker lamps along the box bottom and top.
-      for (let i = 0; i < 4; i++) {
-        const z = boxFront - 0.4 - i * ((boxL - 0.8) / 3);
+      for (let i = 0; i < 3; i++) {
+        const z = boxFront - 0.4 - i * ((boxL - 0.8) / 2);
         blob(
           kit,
           [boxW + 0.008, boxFloor + 0.08, z],
@@ -367,14 +368,6 @@ export function truck(seed: number): VehicleDesign {
           0.03,
           Mat.metal,
           {along: 1, seg: 5},
-        );
-      for (const yy of [boxFloor + 0.55, boxTop - 0.55])
-        blob(
-          kit,
-          [boxW - 0.06, yy, boxRear - 0.004],
-          [0.035, 0.02, 0.012],
-          Mat.chrome,
-          {mirror: true, segU: 8, segV: 2},
         );
       // Big truck mirrors on stalks and the cab step.
       const zm = cowl - 0.15;

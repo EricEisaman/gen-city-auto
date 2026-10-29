@@ -4,7 +4,7 @@
 
 import type {Vec3} from '../../math/vec.ts';
 import {Mat, type VehicleDesign, type VehicleKind} from '../types.ts';
-import {steeringWheelMesh, wheelMesh} from '../parts.ts';
+import {dial, steeringWheelMesh, wheelMesh} from '../parts.ts';
 import {
   archY,
   buildBody,
@@ -535,7 +535,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       g,
       projected(g, [2, 1], shape, p => p[0]),
       paintMat,
-      {ns: 6, nt: 4, offset: 0.005, mirror: true, segS: 6, segT: 4},
+      {ns: 6, nt: 4, offset: 0.01, mirror: true, segS: 6, segT: 4},
     );
     kit.decal(
       g,
@@ -617,7 +617,16 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
           ),
         ),
         Mat.headlight,
-        {ns: 7, nt: 5, offset: 0.007, mirror: true},
+        // Domed lens standing out of the dark housing.
+        {
+          ns: 7,
+          nt: 5,
+          offset: 0.006,
+          mirror: true,
+          segS: 10,
+          segT: 6,
+          bump: (u, t) => 0.014 * Math.sin(Math.PI * u) * Math.sin(Math.PI * t),
+        },
       );
       // Projector lens and indicator at the outer end.
       blob(
@@ -645,7 +654,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
           ),
         ),
         Mat.indicator,
-        {ns: 5, nt: 5, offset: 0.009, mirror: true},
+        {ns: 5, nt: 5, offset: 0.02, mirror: true},
       );
     }
     const gy = hl.y - hl.hy * 0.5;
@@ -753,9 +762,23 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       const n = tl.n ?? 6;
       kit.decal(
         sh,
+        c.proj(superellipse(ac, tl.y, tl.hx + 0.012, tl.hy + 0.012, n)),
+        Mat.plastic,
+        {ns: 8, nt: 5, offset: 0.003, mirror: true},
+      );
+      kit.decal(
+        sh,
         c.proj(superellipse(ac, tl.y, tl.hx, tl.hy, n)),
         Mat.taillight,
-        {ns: 8, nt: 5, offset: 0.005, mirror: true},
+        {
+          ns: 8,
+          nt: 5,
+          offset: 0.006,
+          mirror: true,
+          segS: 10,
+          segT: 5,
+          bump: (u, t) => 0.01 * Math.sin(Math.PI * u) * Math.sin(Math.PI * t),
+        },
       );
       kit.decal(
         sh,
@@ -769,7 +792,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
           ),
         ),
         Mat.indicator,
-        {ns: 5, nt: 5, offset: 0.008, mirror: true},
+        {ns: 5, nt: 5, offset: 0.017, mirror: true},
       );
       kit.decal(
         sh,
@@ -783,7 +806,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
           ),
         ),
         Mat.headlight,
-        {ns: 5, nt: 5, offset: 0.008, mirror: true},
+        {ns: 5, nt: 5, offset: 0.017, mirror: true},
       );
       kit.decal(
         sh,
@@ -797,7 +820,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
           ),
         ),
         Mat.taillight,
-        {ns: 5, nt: 5, offset: 0.008, mirror: true},
+        {ns: 5, nt: 5, offset: 0.017, mirror: true},
       );
       if (tl.bar)
         kit.decal(
@@ -1016,11 +1039,27 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         segU: 10,
         segV: 2,
       });
-      blob(kit, [xm - 0.12, ym - 0.03, zm], [0.05, 0.02, 0.03], Mat.plastic, {
-        mirror: true,
-        segU: 8,
-        segV: 3,
-      });
+      // Mirror base on the door top and an arm out to the housing.
+      const xd = xEdge(zm);
+      const yd = edgeY(zm);
+      blob(
+        kit,
+        [xd + 0.005, yd - 0.02, zm + 0.01],
+        [0.03, 0.035, 0.06],
+        Mat.plastic,
+        {mirror: true, n: 4, segU: 10, segV: 4},
+      );
+      tube(
+        kit,
+        [
+          [xd + 0.01, yd - 0.01, zm + 0.01],
+          [xd + 0.05, ym - 0.025, zm + 0.005],
+          [xm - 0.07, ym - 0.02, zm],
+        ],
+        0.016,
+        Mat.plastic,
+        {mirror: true, along: 4, seg: 6},
+      );
       blob(
         kit,
         [xm + 0.04, ym - 0.04, zm + 0.02],
@@ -1084,6 +1123,49 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         {segU: 6, segV: 3},
       );
   }
+  if (cfg.carDetails !== false) {
+    const bodyMat = cfg.roofMat === Mat.paint2 ? Mat.paint : Mat.paint;
+    // Shoulder crease: a raised rib following the belt line along the flank.
+    const z0 = zr + cfg.rearDepth + 0.05,
+      z1 = zf - cfg.frontDepth - 0.05;
+    const crease = (t: number): [number, number] => {
+      const z = lerp(z0, z1, t);
+      return [z, edgeY(z) - 0.11];
+    };
+    kit.decal(sh, side(band(crease, 0.05)), bodyMat, {
+      ns: 3,
+      nt: 20,
+      offset: 0.002,
+      mirror: true,
+      segS: 3,
+      segT: 20,
+      bump: u => 0.006 * Math.sin(Math.PI * u),
+    });
+    // Wheel-arch flares: a swelling lip around each opening that blends out.
+    if (!cfg.archFlare) {
+      for (const a of axles) {
+        const c = (t: number): [number, number] => {
+          const th = lerp(-Math.PI * 0.4, Math.PI * 0.4, t);
+          return [
+            a.z + Math.sin(th) * (archR + 0.04),
+            a.wheelR + Math.cos(th) * (archR + 0.04),
+          ];
+        };
+        kit.decal(sh, side(band(c, 0.08)), bodyMat, {
+          ns: 4,
+          nt: 14,
+          offset: 0.001,
+          mirror: true,
+          segS: 3,
+          segT: 12,
+          bump: u =>
+            0.012 *
+            Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.6)), 2) *
+            (1 - u * 0.5),
+        });
+      }
+    }
+  }
   if (cfg.archFlare) {
     for (const a of axles) {
       const c = (t: number): [number, number] => {
@@ -1133,7 +1215,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
   const seatY = (x: number, z: number) =>
     Math.max(
       floorY + 0.12,
-      Math.min(floorY + 0.25, roofY(Math.abs(x), z - 0.3) - 0.95),
+      Math.min(floorY + 0.25, roofY(Math.abs(x), z - 0.35) - 1.03),
     );
   const eyeY = seatY(driverX, eyeZ + 0.12) + 0.62;
   if (cfg.interior !== 'none') {
@@ -1233,37 +1315,47 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         ] as Vec3[];
       });
       kit.sheet(new Sheet(rows, 1, {v: 2}), Mat.interior, {segU: 8, segV: 14});
-      // Gauge binnacle and gauges (driver on the right: Japan is RHD).
+      // Instrument binnacle (driver on the right: Japan is RHD): a hooded
+      // recess with a dark back panel holding two round dials, plus a centre
+      // touch screen and rectangular vents.
+      const bz = zDashRear + 0.02;
+      const by = yTop + 0.05;
       blob(
         kit,
-        [driverX, yTop + 0.02, zDashRear + 0.1],
-        [0.2, 0.06, 0.1],
+        [driverX, by + 0.075, bz + 0.04],
+        [0.23, 0.025, 0.09],
         Mat.plastic,
-        {n: 4, segU: 12, segV: 4},
+        {n: 4, m: 3, segU: 16, segV: 4},
       );
-      for (const dx of [-0.08, 0.08])
-        blob(
-          kit,
-          [driverX + dx, yTop - 0.005, zDashRear + 0.0],
-          [0.055, 0.055, 0.004],
-          Mat.dash,
-          {n: 2, m: 6, segU: 12, segV: 3},
-        );
-      // Center screen + vents.
+      blob(kit, [driverX, by, bz + 0.05], [0.21, 0.075, 0.03], Mat.rubber, {
+        n: 6,
+        m: 6,
+        segU: 14,
+        segV: 3,
+      });
+      for (const dx of [-0.09, 0.09])
+        dial(kit, [driverX + dx, by, bz + 0.012], 0.055, -0.2);
       blob(
         kit,
-        [0, yTop - 0.08, zDashRear + 0.0],
-        [0.12, 0.07, 0.01],
-        Mat.dash,
-        {n: 8, m: 6, segU: 8, segV: 3},
+        [0, yTop - 0.1, zDashRear + 0.01],
+        [0.13, 0.08, 0.018],
+        Mat.plastic,
+        {n: 6, m: 8, segU: 12, segV: 3},
       );
-      for (const vx of [-0.55, -0.12, 0.12, 0.55])
+      blob(
+        kit,
+        [0, yTop - 0.1, zDashRear - 0.005],
+        [0.115, 0.067, 0.004],
+        Mat.dash,
+        {n: 10, m: 8, segU: 12, segV: 3},
+      );
+      for (const vx of [-0.62, -0.2, 0.2, 0.62])
         blob(
           kit,
-          [vx * W, yTop - 0.06, zDashRear - 0.005],
-          [0.06, 0.025, 0.008],
+          [vx * W, yTop - 0.05, zDashRear - 0.004],
+          [0.055, 0.022, 0.006],
           Mat.rubber,
-          {n: 6, m: 6, segU: 8, segV: 3},
+          {n: 3, m: 8, segU: 8, segV: 3},
         );
       // Steering column.
       const sy = cfg.beltF - 0.1,
@@ -1293,23 +1385,51 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       blob(kit, [x, cy, z + 0.05], [w, 0.07, 0.26], Mat.seat, {
         n: 5,
         m: 4,
-        segU: 10,
-        segV: 5,
+        segU: 8,
+        segV: 4,
       });
       if (back) {
         blob(kit, [x, cy + 0.33, z - 0.24], [w * 0.95, 0.32, 0.07], Mat.seat, {
           n: 5,
           m: 4,
-          segU: 10,
-          segV: 5,
+          segU: 8,
+          segV: 4,
           xf: p => [p[0], p[1], p[2] - 0.2 * (p[1] / 0.32)],
         });
-        if (head)
-          blob(kit, [x, cy + 0.73, z - 0.33], [w * 0.5, 0.09, 0.05], Mat.seat, {
-            n: 4,
-            segU: 8,
-            segV: 4,
-          });
+        if (head) {
+          // Headrest on two chrome stems, clear of the backrest top.
+          blob(
+            kit,
+            [
+              x,
+              Math.min(cy + 0.8, roofY(Math.abs(x), z - 0.35) - 0.15),
+              z - 0.35,
+            ],
+            [w * 0.55, 0.1, 0.06],
+            Mat.seat,
+            {
+              n: 4,
+              m: 4,
+              segU: 10,
+              segV: 3,
+            },
+          );
+          for (const dx of [-0.06, 0.06])
+            tube(
+              kit,
+              [
+                [x + dx, cy + 0.62, z - 0.33],
+                [
+                  x + dx,
+                  Math.min(cy + 0.72, roofY(Math.abs(x), z - 0.35) - 0.2),
+                  z - 0.35,
+                ],
+              ],
+              0.006,
+              Mat.chrome,
+              {along: 1, seg: 5},
+            );
+        }
       }
     };
     seat(driverX, eyeZ + 0.12, 0.25);
