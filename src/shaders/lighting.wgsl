@@ -106,7 +106,8 @@ fn skyIrradiance(n: vec3f) -> vec3f {
     sum += skyRadiance(normalize(vec3f(d.x, max(d.y, 0.03), d.z)));
   }
   var clear = sum / 5.0 * smoothstep(-0.6, 0.4, n.y);
-  clear = mix(vec3f(luminance(clear)), clear, 0.7);
+  // Skylight saturation tamed: a camera white-balances most of the blue cast away.
+  clear = mix(vec3f(luminance(clear)), clear, mix(0.7, 0.45, smoothstep(0.35, 0.05, frame.sunDir.y)));
   return mix(clear * 0.8, frame.skyAmbient.rgb, clamp(frame.weather.x * 1.2 - 0.2, 0.0, 1.0)) + frame.cityGlow.rgb * 0.25;
 }
 
@@ -359,7 +360,7 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool) -> 
   if (aniso) {
     let side = normalize(cross(n, v));
     let fwd = cross(side, n);
-    r = normalize(r + side * j.x * rough * 0.15 + fwd * j.y * rough * 1.4);
+    r = normalize(r + side * j.x * rough * 0.08 + fwd * j.y * rough * 0.7);
   } else {
     r = normalize(r + vec3f(j.x, 0.0, j.y) * rough * 0.6);
   }
@@ -531,7 +532,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       lc *= mix(0.03, 1.0, smoothstep(0.45, 0.85, l.y)) * (140.0 / 60.0);
     }
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
-    color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK;
+    // Point lights cast no shadows: the vehicle contact term stands in under cars.
+    color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
   }
   // Ambient: hemisphere sky + ground bounce.
   var skyVis = 1.0;

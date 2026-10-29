@@ -793,7 +793,7 @@ function railViaduct(
             [12, 4],
             [0, 4],
           ],
-          packMat(CM.paint, 0x30),
+          packMat(CM.paint, 0xd0) /* light grey steel canopy */,
         );
         m.quad(
           [r0, r1, r2, r3],

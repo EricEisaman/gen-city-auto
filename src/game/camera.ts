@@ -335,7 +335,8 @@ export class CameraSystem {
     const push = this.net.collideBuildings(e, 1.2);
     if (push[0] !== 0 || push[1] !== 0) return true;
     for (const o of this.obstacles()) {
-      if (Math.hypot(o[0] - e[0], o[2] - e[2]) < 1.8 && e[1] - o[1] < 2.2)
+      // Radius-aware: buses and trucks are long, poles thin.
+      if (Math.hypot(o[0] - e[0], o[2] - e[2]) < o[3] + 0.8 && e[1] - o[1] < 3.6)
         return true;
     }
     return false;

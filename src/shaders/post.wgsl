@@ -411,6 +411,23 @@ fn lensDrops(uv: vec2f) -> vec2f {
   var uv = i.uv;
   uv += lensDrops(uv);
   var c = textureSampleLevel(tmColor, linearSampler, uv, 0.0).rgb;
+  // Contrast-adaptive sharpening: restores the detail TAA softens, limited to
+  // the local min/max so edges don't ring. Weaker on bright highlights.
+  {
+    let px = frame.resolution.zw;
+    let n = textureSampleLevel(tmColor, linearSampler, uv + vec2f(0.0, -px.y), 0.0).rgb;
+    let s = textureSampleLevel(tmColor, linearSampler, uv + vec2f(0.0, px.y), 0.0).rgb;
+    let e = textureSampleLevel(tmColor, linearSampler, uv + vec2f(px.x, 0.0), 0.0).rgb;
+    let w = textureSampleLevel(tmColor, linearSampler, uv + vec2f(-px.x, 0.0), 0.0).rgb;
+    let mn = min(c, min(min(n, s), min(e, w)));
+    let mx = max(c, max(max(n, s), max(e, w)));
+    // Headroom measured on HDR-compressed values (x / (1 + x)).
+    let cmn = mn / (1.0 + mn);
+    let cmx = mx / (1.0 + mx);
+    let amp = sqrt(clamp(min(cmn, 1.0 - cmx) / max(cmx, vec3f(1e-4)), vec3f(0.0), vec3f(1.0)));
+    let k = amp * 0.22 * (1.0 - frame.exposure.x * 0.5);
+    c = clamp(c + (4.0 * c - (n + s + e + w)) * k / (1.0 + 4.0 * k), mn, mx);
+  }
   let bloom = textureSampleLevel(tmBloom, linearSampler, uv, 0.0).rgb;
   let night = frame.time.w;
   c = mix(c, bloom, mix(0.03, 0.1, night) + frame.weather.y * 0.06);
@@ -420,7 +437,7 @@ fn lensDrops(uv: vec2f) -> vec2f {
   let golden = clamp(1.0 - abs(frame.exposure.z - 0.12) / 0.12, 0.0, 1.0) * (1.0 - night);
   var sh = vec3f(0.97, 1.0, 1.04);
   var hi = vec3f(1.02, 1.0, 0.97);
-  sh = mix(sh, vec3f(0.88, 0.95, 1.12), golden);
+  sh = mix(sh, vec3f(0.94, 0.97, 1.05), golden);
   hi = mix(hi, vec3f(1.1, 1.0, 0.85), golden);
   sh = mix(sh, vec3f(0.85, 0.98, 1.1), night);
   hi = mix(hi, vec3f(1.0), night);

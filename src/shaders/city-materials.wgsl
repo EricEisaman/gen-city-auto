@@ -91,9 +91,9 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
     if (rd.y < 0.0) {
       c = select(vec3f(0.35, 0.25, 0.18), vec3f(0.4, 0.42, 0.45), office);
     } else {
-      c = vec3f(0.85);
+      c = vec3f(0.62);
       // Ceiling light panels.
-      if (office && fract(hit.z * 0.4) < 0.25 && abs(hit.x - size.x * 0.5) < 0.4) { c = vec3f(3.0); }
+      if (office && fract(hit.z * 0.4) < 0.25 && abs(hit.x - size.x * 0.5) < 0.4) { c = vec3f(1.3); }
     }
   } else {
     c = wallC * 0.75;
@@ -107,6 +107,22 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
     if (pF.y < deskH && abs(pF.x - size.x * (0.3 + 0.4 * r0)) < size.x * 0.3) { c = select(vec3f(0.2, 0.14, 0.1), vec3f(0.25), office); }
     // A person, occasionally.
     if (r1 > 0.85 && abs(pF.x - size.x * 0.6) < 0.22 && pF.y < 1.65 - abs(pF.x - size.x * 0.6) * 0.6) { c = vec3f(0.12, 0.1, 0.1); }
+  }
+  // Rooms darken away from the window; at grazing angles the room collapses
+  // to its average colour instead of slivers of ceiling and wall.
+  c *= mix(1.0, 0.6, clamp(hit.z / depth, 0.0, 1.0));
+  let avg = wallC * 0.62;
+  c = mix(c, avg, smoothstep(0.4, 0.12, abs(rd.z)));
+  // Blinds (offices) and curtains (homes) at the glass, lit from behind.
+  let blindDrop = select(0.0, size.y * mix(0.15, 0.85, r1), hashuf(seed ^ 0x77u) < select(0.35, 0.55, office) && size.x < 3.5);
+  var screen = local.y > size.y - blindDrop;
+  if (!office && size.x < 3.5) {
+    let cw = size.x * mix(0.1, 0.3, r2);
+    screen = screen || local.x < cw || local.x > size.x - cw;
+  }
+  if (screen) {
+    let slat = select(1.0, 0.85 + 0.15 * step(0.5, fract(local.y * 12.0)), office);
+    c = select(vec3f(0.78, 0.62, 0.48), vec3f(0.8, 0.8, 0.78), office) * slat * 0.45;
   }
   // Lighting: lit rooms glow at night, everything gets some daylight.
   let night = nightLight();
@@ -123,7 +139,7 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   var light = frame.skyAmbient.rgb * 0.35;
   if (lit) {
     let flicker = 1.0;
-    light += warm * mix(0.25, 1.1, r2 * r2) * flicker * mix(0.12, 1.0, night);
+    light += warm * mix(0.6, 1.2, r2) * flicker * mix(0.12, 1.0, night);
   }
   return c * light;
 }
@@ -231,9 +247,10 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let fr = min(lx, st.bay - lx);
     if (ly > 0.15 && ly < st.floorH * 0.78 && fr > 0.08) {
       if (shutter) {
-        s.albedo = vec3f(0.5, 0.52, 0.55) * (0.8 + 0.2 * step(0.5, fract(ly * 12.0)));
-        s.metal = 0.6;
-        s.rough = 0.45;
+        // Painted, slightly grimy corrugated steel shutter.
+        s.albedo = vec3f(0.36, 0.37, 0.38) * (0.75 + 0.25 * step(0.5, fract(ly * 12.0))) * mix(1.0, 0.7, smoothstep(1.2, 0.2, ly));
+        s.metal = 0.25;
+        s.rough = 0.65;
         return s;
       }
       // Shop type per pair of bays: convenience store, restaurant (noren),
