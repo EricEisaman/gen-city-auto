@@ -843,7 +843,18 @@ export function generateLayout(
       id: buildings.length,
       kind,
       footprint: fp,
-      base: hi,
+      // Ground floor at the street frontage; downhill sides show lower floors.
+      base:
+        front >= 0
+          ? clamp(
+              hf.sample(
+                (fp[front][0] + fp[(front + 1) % fp.length][0]) / 2,
+                (fp[front][1] + fp[(front + 1) % fp.length][1]) / 2,
+              ),
+              lo,
+              hi,
+            )
+          : hi,
       low: lo - 1,
       height: floors * floorH + (kind === 'house' ? 1.5 : 0),
       floorH,

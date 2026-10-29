@@ -316,6 +316,11 @@ export class CameraSystem {
 
   private directed(dt: number, pl: Player): CamOut {
     let out = this.directedRaw(dt, pl);
+    // Never below the local ground or sidewalk, even for locked shots.
+    if (!out.interior) {
+      const g = Math.max(this.net.hf.sample(out.eye[0], out.eye[2]), this.net.surfaceHeight(out.eye[0], out.eye[2], out.eye[1]));
+      if (out.eye[1] < g + 0.6) out.eye = [out.eye[0], g + 0.6, out.eye[2]];
+    }
     if (this.locked) return out;
     // Periodically verify the subject is visible; cut if blocked for a while.
     this.losTimer += dt;

@@ -618,14 +618,17 @@ export function building(
     const along: Vec3 = [(c[0] - a[0]) / len, 0, (c[1] - a[1]) / len];
     const floors = Math.floor((mainTop - base) / b.floorH);
     const vertical = Math.round(
-      b.density * 3 * signDensity * rng.range(0.4, 1.4) +
-        (b.kind === 'pencil' ? 1 : 0),
+      b.density * 5 * signDensity * rng.range(0.5, 1.4) +
+        (b.kind === 'pencil' ? 2 : 0),
     );
-    for (let k = 0; k < Math.min(vertical, 3); k++) {
-      const t = k === 0 ? 0.12 : k === 1 ? 0.88 : 0.5;
-      const span = Math.min(floors - 1, rng.int(2, 7));
+    // Tokyo stacks: several tenant signs per facade at different floors.
+    const slots = [0.1, 0.9, 0.5, 0.3, 0.7];
+    for (let k = 0; k < Math.min(vertical, 6); k++) {
+      const t = slots[k % slots.length] + (k >= 5 ? 0.05 : 0);
+      const span = Math.min(floors - 1, rng.int(2, 6));
       if (span < 1) continue;
-      const y0 = base + b.floorH * 1.2;
+      const startFloor = k < 2 ? 1 : rng.int(1, Math.max(2, floors - span));
+      const y0 = base + b.floorH * (startFloor + 0.2);
       const hgt = span * b.floorH * 0.9;
       const p: Vec3 = [
         lerp(a[0], c[0], t) + n[0] * 0.75,
@@ -642,6 +645,34 @@ export function building(
           signColor(id),
           LightKind.sign,
         );
+    }
+    // Signs on the side walls near the street corner.
+    if (b.density > 0.3 && floors > 2) {
+      for (const di of [-1, 1]) {
+        const j = (i + (di > 0 ? 1 : fp.length - 1)) % fp.length;
+        if (!rng.chance(0.5 * signDensity)) continue;
+        const a2 = fp[j];
+        const c2 = fp[(j + 1) % fp.length];
+        const n2 = edgeNormal(fp, j);
+        const t = di > 0 ? 0.12 : 0.88;
+        const span = Math.min(floors - 1, rng.int(2, 5));
+        const y0 = base + b.floorH * 1.2;
+        const hgt = span * b.floorH * 0.9;
+        const id = SIGN.vertical.first + rng.int(0, SIGN.vertical.count);
+        signPanel(
+          m,
+          [
+            lerp(a2[0], c2[0], t) + n2[0] * 0.7,
+            y0 + hgt / 2,
+            lerp(a2[1], c2[1], t) + n2[2] * 0.7,
+          ],
+          n2,
+          0.5,
+          hgt / 2,
+          0.12,
+          id,
+        );
+      }
     }
     if (shop && len > 4) {
       const id = SIGN.horizontal.first + rng.int(0, SIGN.horizontal.count);

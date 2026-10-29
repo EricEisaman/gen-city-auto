@@ -156,18 +156,13 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let st = facadeStyle(style, kind, podium);
   let V = normalize(world - frame.camPos.xyz);
   let T = vec3f(-n.z, 0.0, n.x);
-  // Foundation below the ground floor.
-  if (uv.y < 0.0) {
-    s.albedo = vec3f(0.42, 0.41, 0.39) * (0.8 + 0.2 * valueNoise(uv * 2.0));
-    s.rough = 0.9;
-    s.cls = CLASS_DEFAULT;
-    return s;
-  }
+  // Below the street-level ground floor (downhill sides) the window grid
+  // simply continues with lower floors.
   let floorIdx = floor(uv.y / st.floorH);
   let ly = uv.y - floorIdx * st.floorH;
   let bayIdx = floor(uv.x / st.bay);
   let lx = uv.x - bayIdx * st.bay;
-  let cellSeed = hashu(aux ^ hashu((u32(bayIdx + 1000.0) * 73856093u) ^ (u32(floorIdx) * 19349663u)));
+  let cellSeed = hashu(aux ^ hashu((u32(bayIdx + 1000.0) * 73856093u) ^ (u32(floorIdx + 1000.0) * 19349663u)));
   // Wall: small tiles with grime streaks.
   let tileLine = step(0.92, fract(uv.x * 10.0)) + step(0.9, fract(uv.y * 20.0));
   let streak = valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25;
@@ -190,7 +185,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   if (ly < 0.18) { s.albedo = wall * 0.8; }
 
   // Ground floor shopfront.
-  if (shop && floorIdx < 1.0) {
+  if (shop && abs(floorIdx) < 0.5) {
     let shutter = hashuf(cellSeed ^ 77u) < 0.12;
     let fr = min(lx, st.bay - lx);
     if (ly > 0.15 && ly < st.floorH * 0.78 && fr > 0.08) {
@@ -200,11 +195,42 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         s.rough = 0.45;
         return s;
       }
-      let inside = interior(vec2f(lx, ly), vec2f(st.bay, st.floorH), 6.0, n, T, V, cellSeed, false);
+      // Shop type per pair of bays: convenience store, restaurant (noren),
+      // boutique, or dark office lobby.
+      let shopSeed = hashu(aux ^ u32(floor(bayIdx / 2.0) + 3000.0));
+      let shopType = shopSeed % 4u;
+      let night = nightLight();
       let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
+      var inside = interior(vec2f(lx, ly), vec2f(st.bay, st.floorH), 6.0, n, T, V, cellSeed, false);
+      var glow = vec3f(1.0, 0.85, 0.6) * 0.2;
+      if (shopType == 0u) {
+        // Konbini: bright cool interior, colored band across the top.
+        inside = inside * 0.4 + vec3f(1.6, 1.7, 1.8) * mix(0.5, 1.0, night);
+        if (ly > st.floorH * 0.66) {
+          let bandC = array<vec3f, 3>(vec3f(0.1, 0.5, 0.25), vec3f(0.9, 0.3, 0.05), vec3f(0.1, 0.3, 0.8))[shopSeed % 3u];
+          s.albedo = bandC;
+          s.rough = 0.3;
+          s.emissive = bandC * mix(0.8, 4.0, night);
+          return s;
+        }
+      } else if (shopType == 1u) {
+        // Restaurant: warm light, noren curtain over the top of the door.
+        inside *= 1.4;
+        glow = vec3f(1.0, 0.6, 0.3) * 0.5;
+        if (ly > st.floorH * 0.5 && ly < st.floorH * 0.7 && fract(lx * 2.2) > 0.06) {
+          let norenC = array<vec3f, 3>(vec3f(0.08, 0.1, 0.25), vec3f(0.5, 0.08, 0.06), vec3f(0.85, 0.8, 0.7))[shopSeed % 3u];
+          s.albedo = norenC;
+          s.rough = 0.9;
+          s.emissive = norenC * 0.4 * night;
+          return s;
+        }
+      } else if (shopType == 3u) {
+        inside *= 0.3;
+        glow = vec3f(0.0);
+      }
       s.albedo = vec3f(0.02);
       s.rough = 0.04;
-      s.emissive = inside * 1.2 * (1.0 - fres) + vec3f(1.0, 0.85, 0.6) * 0.2 * mix(0.3, 1.0, nightLight());
+      s.emissive = inside * 1.2 * (1.0 - fres) + glow * mix(0.3, 1.0, night);
       s.cls = CLASS_GLASS;
       return s;
     }
@@ -297,7 +323,7 @@ fn curtainWall(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
     s.cls = CLASS_GLASS;
     return s;
   }
-  let seed = hashu(aux ^ hashu((u32(bayIdx + 1000.0) * 73856093u) ^ (u32(floorIdx) * 19349663u)));
+  let seed = hashu(aux ^ hashu((u32(bayIdx + 1000.0) * 73856093u) ^ (u32(floorIdx + 1000.0) * 19349663u)));
   // Offices: rooms span four bays.
   let roomW = bay * 4.0;
   let rx = uv.x - floor(uv.x / roomW) * roomW;
@@ -324,9 +350,14 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   s.albedo = vec3f(0.075, 0.075, 0.08) * (0.75 + 0.5 * grain);
   s.rough = 0.88;
   s.cls = CLASS_GROUND;
-  // Patches and cracks.
-  let patchN = valueNoise(world.xz * 0.08);
-  if (patchN > 0.72) { s.albedo *= 0.75; }
+  // Patches (rectangular repairs), oil stains and manholes.
+  let pc = floor(world.xz / 9.0);
+  let ph = hash21(pc);
+  let pf = fract(world.xz / 9.0);
+  if (ph > 0.82 && all(pf > vec2f(0.15)) && all(pf < vec2f(0.15 + ph * 0.7))) { s.albedo *= 0.72; s.rough -= 0.05; }
+  let oil = smoothstep(0.75, 0.9, valueNoise(world.xz * 0.6)) * valueNoise(world.xz * 3.0);
+  s.albedo *= 1.0 - oil * 0.35;
+  s.rough -= oil * 0.25;
   let kind = param & 3u;
   let crossStart = (param & 4u) != 0u;
   let crossEnd = (param & 8u) != 0u;
@@ -364,10 +395,23 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
     s.albedo = mix(s.albedo, c, 0.3 + 0.7 * wear * (0.6 + 0.4 * valueNoise(world.xz * 1.5)));
     s.rough = 0.7;
   }
-  // Tyre tracks: slightly polished lanes.
+  // Manhole covers along the lane centers.
+  if (kind >= 1u) {
+    let laneW2 = 3.3;
+    let lc = (fract(ax / laneW2) - 0.5) * laneW2;
+    let mh = vec2f(lc, fract(along / 37.0) * 37.0 - 18.5);
+    if (length(mh) < 0.32) {
+      s.albedo = vec3f(0.09, 0.09, 0.09) * (0.8 + 0.4 * step(0.5, fract((mh.x + mh.y) * 9.0)));
+      s.metal = 0.7;
+      s.rough = 0.45;
+    }
+  }
+  // Tyre tracks: slightly polished, darker wheel paths.
   if (kind >= 1u) {
     let laneCenter = fract(ax / 3.3) - 0.5;
-    s.rough -= 0.08 * exp(-laneCenter * laneCenter * 30.0);
+    let track = exp(-pow((abs(laneCenter) - 0.27) * 9.0, 2.0));
+    s.rough -= 0.1 * track;
+    s.albedo *= 1.0 - 0.18 * track;
   }
   // Aggregate micro-relief, patches and cracks.
   let fade = bumpFade(world);

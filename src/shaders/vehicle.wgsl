@@ -48,7 +48,7 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
       s.rough = select(0.55, 0.32, metallic);
       s.metal = select(0.0, 0.45, metallic);
       if (metallic) {
-        s.normal = normalize(n + (hash33(floor(i.local * 2500.0)) - 0.5) * 0.06);
+        s.normal = normalize(n + (hash33(floor(i.local * 600.0)) - 0.5) * 0.02);
       }
       s.albedo *= 1.0 - I.params.w * 0.3 * smoothstep(0.6, 0.0, i.local.y);
     }
