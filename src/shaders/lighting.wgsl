@@ -171,19 +171,55 @@ fn transmittanceUv(r: f32, mu: f32) -> vec2f {
   return vec2f((d - (R_TOP - r)) / (rho + H - (R_TOP - r)), rho / H);
 }
 
-fn stars(d: vec3f) -> vec3f {
-  let p = d * 300.0;
+fn starLayer(d: vec3f, scale: f32, density: f32, gain: f32) -> vec3f {
+  let p = d * scale;
   let c = floor(p);
   let h = hash31(c);
-  if (h < 0.996) { return vec3f(0.0); }
-  let f = fract(p) - 0.5;
-  let s = exp(-dot(f, f) * 40.0) * (h - 0.996) * 250.0;
-  let tw = 0.7 + 0.3 * sin(frame.time.x * 3.0 + h * 100.0);
-  return vec3f(s * tw) * mix(vec3f(1.0, 0.85, 0.7), vec3f(0.7, 0.8, 1.0), hash31(c + 3.0));
+  if (h < 1.0 - density) { return vec3f(0.0); }
+  // Jittered position inside the cell, magnitude from a steep power law.
+  let o = hash33(c + 7.0) * 0.6 + 0.2;
+  let f = fract(p) - o;
+  let mag = pow((h - (1.0 - density)) / density, 6.0);
+  let s = exp(-dot(f, f) * scale * 0.5) * mag * gain;
+  let tw = 0.75 + 0.25 * sin(frame.time.x * (2.0 + h * 5.0) + h * 100.0);
+  let temp = hash31(c + 3.0);
+  return vec3f(s * tw) * mix(vec3f(1.0, 0.8, 0.6), vec3f(0.75, 0.85, 1.0), temp);
+}
+
+fn stars(d: vec3f) -> vec3f {
+  // A few bright stars plus a field of faint ones, fading out in the
+  // thick air near the horizon where the city glow drowns them.
+  let alt = smoothstep(0.02, 0.35, d.y);
+  return (starLayer(d, 220.0, 0.012, 60.0) + starLayer(d, 520.0, 0.02, 8.0)) * alt;
+}
+
+// Thin high-altitude cirrus on a plane at ~9 km: streaky fbm stretched along the wind.
+fn cirrus(d: vec3f) -> f32 {
+  if (d.y < 0.01) { return 0.0; }
+  let p = d.xz / d.y * 9.0 + vec2f(frame.wind.x, frame.wind.y) * frame.time.x * 0.004;
+  let w = normalize(vec2f(frame.wind.x, frame.wind.y) + vec2f(0.3, 0.1));
+  let q = vec2f(dot(p, w), dot(p, vec2f(-w.y, w.x)) * 4.0);
+  let n = fbm2(q * 0.35 + fbm2(q * 0.9) * 1.5);
+  let amount = mix(0.18, 0.5, clamp(frame.weather.x * 2.0, 0.0, 1.0));
+  // Large-scale patches so cirrus comes in bands rather than covering the sky.
+  let bands = smoothstep(0.42, 0.7, fbm2(p * 0.05 + vec2f(3.1, 7.7)) + frame.weather.x * 0.3);
+  return smoothstep(1.0 - amount, 1.05 - amount * 0.5, n) * bands * smoothstep(0.01, 0.12, d.y) * 0.55;
+}
+
+const CLOUD_BASE = 1500.0;
+
+// The colour everything converges to at the horizon: clear-sky haze, greyed by
+// cloud cover, plus night light pollution. Distant clouds, the far edge of the
+// world and the sky below the horizon all blend to this so they meet seamlessly.
+fn horizonColor(d: vec3f) -> vec3f {
+  let s = skyRadiance(normalize(vec3f(d.x, max(d.y, 0.012), d.z)));
+  let grey = vec3f(luminance(s)) * vec3f(0.93, 0.96, 1.0) * mix(1.0, 0.75, frame.weather.y);
+  var c = mix(s, grey, clamp(frame.weather.x * 1.1 - 0.15, 0.0, 0.9));
+  c += (vec3f(0.0012, 0.0018, 0.004) + frame.cityGlow.rgb * (0.6 + frame.weather.x * 1.5)) * frame.time.w;
+  return c;
 }
 
 fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
-  // Below the horizon (beyond the world) continue the horizon haze.
   var c = skyRadiance(normalize(vec3f(d.x, max(d.y, 0.012), d.z)));
   let night = frame.time.w;
   let r = R_GROUND + frame.camPos.y * 0.001;
@@ -201,15 +237,28 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
     c += T * vec3f(1.0, 0.97, 0.9) * mix(0.03, 1.2, lit) * smoothstep(0.99985, 0.9999, cm);
   }
   c += stars(d) * night * T * (1.0 - frame.weather.x);
+  // Cirrus: lit by the sun (forward scattering) or by moon and city glow at night.
+  {
+    let ci = cirrus(d);
+    let fwd = 1.0 + 2.5 * pow(max(dot(d, frame.sunDir.xyz), 0.0), 6.0);
+    let lit = frame.sunColor.rgb * 0.06 * fwd + frame.skyAmbient.rgb * 0.35 + frame.cityGlow.rgb * 1.2 * night;
+    c = mix(c, lit + c * 0.4, ci);
+  }
   // Night sky: deep blue plus orange light pollution near the horizon.
   let horizon = exp(-max(d.y, 0.0) * 6.0);
   c += (vec3f(0.0012, 0.0018, 0.004) + frame.cityGlow.rgb * (0.1 + 0.9 * horizon) * (0.6 + frame.weather.x * 1.5)) * night;
-  // Clouds.
+  // Under cloud cover the low sky turns to grey haze.
+  let hz = horizonColor(d);
+  c = mix(c, hz, frame.weather.x * smoothstep(0.25, 0.0, d.y));
+  // Clouds; distant ones take on the horizon colour (aerial perspective).
   {
     let cl = textureSampleLevel(cloudTex, linearSampler, uv, 0.0);
-    let k = smoothstep(-0.03, 0.01, d.y);
-    c = mix(c, c * cl.a + cl.rgb, k);
+    let tc = max(CLOUD_BASE - frame.camPos.y, 100.0) / max(d.y, 0.003);
+    let haze = 1.0 - exp(-tc / 14000.0);
+    c = c * cl.a + mix(cl.rgb, hz * (1.0 - cl.a), haze);
   }
+  // Below the horizon (beyond the world) continue the horizon haze.
+  c = mix(c, hz, smoothstep(0.004, -0.004, d.y));
   // Lightning flash lights the whole sky.
   c += vec3f(0.6, 0.65, 0.9) * frame.wind.w * 3.0 * frame.weather.x;
   return c;
@@ -493,19 +542,26 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let nv = max(dot(n, v), 1e-3);
   let Fa = f0 + (max(vec3f(1.0 - rough), f0) - f0) * pow(1.0 - nv, 5.0);
   var refl = reflect(-v, n);
+  // Wave facets tilted past the horizon still see the sky (the far shore is
+  // handled by the city reflection), never the dark ground term.
+  if (cls == CLASS_WATER) { refl = normalize(vec3f(refl.x, max(refl.y, 0.015), refl.z)); }
   var env = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
   // Overcast skies reflect grey cloud, not the clear-sky LUT.
   env = mix(env, frame.skyAmbient.rgb * 1.3 + frame.cityGlow.rgb, clamp(frame.weather.x * 1.3 - 0.3, 0.0, 1.0));
   // Below the horizon reflections see the city: darken toward ground ambient.
-  env = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, env, smoothstep(-0.05, 0.15, refl.y));
+  // Open water reflects the sky down to the horizon.
+  let reflLo = select(0.15, 0.01, cls == CLASS_WATER);
+  env = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, env, smoothstep(-0.05, reflLo, refl.y));
   if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE) {
     let cr = cityReflection(world + n * 0.3, refl);
     env = mix(env, cr.rgb, cr.a);
   }
   env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
-  if (rough < 0.35 && frame.misc.y > 0.5) {
+  // Screen-space reflections only nearby: far away the depth tolerance grows
+  // to kilometres and grazing rays report false hits.
+  if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0) {
     let r = ssr(world, n, v, pxf, rough, cls == CLASS_GROUND && frame.weather.z > 0.3);
-    env = mix(env, r.rgb, r.a);
+    env = mix(env, r.rgb, r.a * smoothstep(1200.0, 700.0, dist));
   }
   var specOcc = ao * ao;
   color += min(env * Fa * specOcc * (1.0 - contactOcc), vec3f(6.0));
@@ -523,8 +579,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (dbg == 8u) { color = vec3f(ao); }
   color += em.rgb;
   color = applyFog(color, world, uv, dist, rd);
-  // Distant geometry and the sea dissolve into the horizon sky.
-  color = mix(color, skyRadiance(normalize(vec3f(rd.x, max(rd.y, 0.0), rd.z))), smoothstep(9000.0, 38000.0, dist));
+  // Distant geometry and the sea dissolve into the horizon colour, fully by
+  // the far edge of the outskirts so the world never ends in a hard line.
+  let beyond = max(abs(world.x), abs(world.z)) - frame.world.x * 0.5;
+  let far = max(smoothstep(9000.0, 30000.0, dist), smoothstep(800.0, 3600.0, beyond) * smoothstep(1500.0, 5000.0, dist));
+  color = mix(color, horizonColor(rd), far);
   // Debug views.
   if (dbg == 1u) { color = albedo; }
   if (dbg == 2u) { color = n * 0.5 + 0.5; }

@@ -124,7 +124,8 @@ struct WOut {
 
 fn waveNormal(p: vec2f, t: f32, dist: f32) -> vec3f {
   var g = vec2f(0.0);
-  let fade = clamp(1.0 - dist / 3000.0, 0.15, 1.0);
+  // Waves shrink below a pixel far away: flatten so the sea mirrors the horizon.
+  let fade = clamp(1.0 - dist / 3000.0, 0.15, 1.0) * mix(1.0, 0.15, smoothstep(2000.0, 8000.0, dist));
   for (var k = 0; k < 6; k++) {
     let fk = f32(k);
     let ang = fk * 1.7 + 0.3;

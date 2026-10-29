@@ -17,14 +17,20 @@
     -> toolbar top-right: 📷 cycles director -> chase -> first -> hood -> orbit -> free, 🚗 next vehicle,
        ⚙ opens the settings (hidden by default). Camera select in settings includes "free".
 
-[ ] the sky looks really boring for some reason - colors too solid? no stars at night? not sure why.
+[x] the sky looks really boring for some reason - colors too solid? no stars at night? not sure why.
     Ask the art director?
+    -> added patchy high cirrus (sun forward-scattering, lit by city glow at night), a two-layer star
+       field with a power-law magnitude spread and colour temperatures, fading near the hazy horizon.
 
 [ ] Car collisions are poor. Cars z-clip into hills - this happens in the current demo
     right at the start. The car is half under the ground.
 
-[ ] Horizon colors do that match fog colors so when you can see the horizon, like from the helicopter,
+[x] Horizon colors do that match fog colors so when you can see the horizon, like from the helicopter,
     there is a sharp contrast between the horizon/sky-box and the buildings/ground
+    -> one horizonColor() now drives the sky below the horizon, distant clouds (exponential haze),
+       the overcast grey band and the edge of the world/outskirts, so they all meet seamlessly.
+       The sea was black far out (screen-space reflections returned false hits at km range): SSR
+       now stops at 1.2 km and far waves flatten so the sea mirrors the horizon.
 
 [ ] The buildings need more details. They need stronger textures or something.
 

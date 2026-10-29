@@ -163,11 +163,8 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
         }
         t += dt;
       }
-      // Distant clouds dissolve into the horizon haze (keep their opacity so
-      // an overcast deck reaches the horizon instead of ending in an edge).
-      let haze = smoothstep(6000.0, 45000.0, t0);
-      let hazeCol = (frame.skyAmbient.rgb * 1.6 + frame.cityGlow.rgb * 2.0) * (1.0 - T);
-      result = vec4f(mix(L, hazeCol, haze), T);
+      // Aerial perspective toward the horizon is applied when compositing.
+      result = vec4f(L, T);
     }
   }
   // Temporal accumulation (clouds are far: reproject by direction).
