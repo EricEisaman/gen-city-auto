@@ -53,7 +53,7 @@ const WEIGHTS: Record<string, number> = {
   side: 1.5,
   interior: 0.8,
   train: 1.5,
-  wheel: 0.6,
+  wheel: 0,
 };
 
 export class CameraSystem {

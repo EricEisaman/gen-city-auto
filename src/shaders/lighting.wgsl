@@ -494,6 +494,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let Fa = f0 + (max(vec3f(1.0 - rough), f0) - f0) * pow(1.0 - nv, 5.0);
   var refl = reflect(-v, n);
   var env = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
+  // Overcast skies reflect grey cloud, not the clear-sky LUT.
+  env = mix(env, frame.skyAmbient.rgb * 1.3 + frame.cityGlow.rgb, clamp(frame.weather.x * 1.3 - 0.3, 0.0, 1.0));
   // Below the horizon reflections see the city: darken toward ground ambient.
   env = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, env, smoothstep(-0.05, 0.15, refl.y));
   if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE) {

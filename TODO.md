@@ -62,3 +62,5 @@
 
 [ ] the height of the camera when inside a vehicle, or a least the default car, seems
     10-20 cm too low.
+
+[ ] traffic jams are common. All the cars get stuck.
