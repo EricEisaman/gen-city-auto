@@ -74,7 +74,8 @@ fn skyIrradiance(n: vec3f) -> vec3f {
     }
     sum += skyRadiance(normalize(vec3f(d.x, max(d.y, 0.03), d.z)));
   }
-  let clear = sum / 5.0 * smoothstep(-0.6, 0.4, n.y);
+  var clear = sum / 5.0 * smoothstep(-0.6, 0.4, n.y);
+  clear = mix(vec3f(luminance(clear)), clear, 0.7);
   return mix(clear, frame.skyAmbient.rgb, clamp(frame.weather.x * 1.2 - 0.2, 0.0, 1.0)) + frame.cityGlow.rgb * 0.25;
 }
 
@@ -448,7 +449,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var skyVis = 1.0;
   if (dist < 1500.0 && frame.misc.y > 0.5) { skyVis = mix(skyVisibility(world, n), 1.0, smoothstep(900.0, 1500.0, dist)); }
   let hemi = n.y * 0.5 + 0.5;
-  let skyAmb = frame.groundAmbient.rgb * (1.0 - hemi) + skyIrradiance(n) * hemi * skyVis;
+  // Bounce light from sunlit facades and pavement, stronger deep in canyons.
+  let bounce = frame.sunColor.rgb * vec3f(1.0, 0.92, 0.82) * max(frame.sunDir.y, 0.0) * 0.06 * (1.3 - skyVis * 0.6);
+  let skyAmb = frame.groundAmbient.rgb * (1.0 - hemi) + skyIrradiance(n) * hemi * skyVis + bounce;
   let diffAmb = albedo * (1.0 - metal) * skyAmb * ao;
   color += diffAmb;
   // Specular ambient: sky reflection, replaced by SSR where available.
@@ -467,10 +470,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   color += min(env * Fa * specOcc * (1.0 - contactOcc), vec3f(6.0));
   if (cls == CLASS_VEHICLE && metal < 0.95) {
     // Clear coat: a sharp dielectric layer over the paint.
-    let fc = 0.04 + 0.96 * pow(1.0 - nv, 5.0);
+    let fc = min(0.04 + 0.96 * pow(1.0 - nv, 5.0), 0.45);
     let envSharp = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
     var coatEnv = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, envSharp, smoothstep(-0.05, 0.15, refl.y));
-    if (frame.misc.y > 0.5) {
+    if (frame.misc.y > 0.5 && nv > 0.25) {
       let r2 = ssr(world, n, v, pxf, 0.02, false);
       coatEnv = mix(coatEnv, r2.rgb, r2.a);
     }

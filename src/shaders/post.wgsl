@@ -101,6 +101,71 @@ fn taa(@builtin(global_invocation_id) id: vec3u) {
   textureStore(taaOut, id.xy, vec4f(max(outC, vec3f(0.0)), 1.0));
 }
 
+// --- Motion blur + depth of field (cinematic cameras) -------------------------
+
+@group(1) @binding(0) var mbSrc: texture_2d<f32>;
+@group(1) @binding(1) var mbMotion: texture_2d<f32>;
+@group(1) @binding(2) var mbDepth: texture_depth_2d;
+@group(1) @binding(3) var mbOut: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(8, 8)
+fn motionDof(@builtin(global_invocation_id) id: vec3u) {
+  _ = linearSampler;
+  let size = vec2u(textureDimensions(mbSrc));
+  if (any(id.xy >= size)) { return; }
+  let p = vec2i(id.xy);
+  let uv = (vec2f(id.xy) + 0.5) / vec2f(size);
+  var c = textureLoad(mbSrc, p, 0).rgb;
+  let d = textureLoad(mbDepth, p, 0);
+  let z = frame.camPos.w / max(d, 1e-7);
+  // Depth of field: gather on a golden-angle disc, radius from circle of confusion.
+  let aperture = frame.wind.z;
+  let focus = frame.exposure.w;
+  if (aperture > 0.0 && focus > 0.0) {
+    let coc = clamp(aperture * abs(z - focus) / max(z, 0.1) * 14.0, 0.0, 12.0);
+    if (coc > 0.7) {
+      var sum = c;
+      var wsum = 1.0;
+      for (var k = 1; k < 20; k++) {
+        let r = sqrt(f32(k) / 20.0) * coc;
+        let a = f32(k) * 2.39996;
+        let q = clamp(p + vec2i(vec2f(cos(a), sin(a)) * r), vec2i(0), vec2i(size) - 1);
+        let qd = textureLoad(mbDepth, q, 0);
+        let qz = frame.camPos.w / max(qd, 1e-7);
+        let qcoc = clamp(aperture * abs(qz - focus) / max(qz, 0.1) * 14.0, 0.0, 12.0);
+        // Sharp foreground must not bleed onto a blurred background.
+        let w = select(1.0, smoothstep(0.0, 1.0, qcoc / max(r, 0.5)), qz < z);
+        sum += textureLoad(mbSrc, q, 0).rgb * w;
+        wsum += w;
+      }
+      c = sum / wsum;
+    }
+  }
+  // Motion blur along this pixel's velocity (180-degree shutter).
+  let amount = frame.exposure.x;
+  if (amount > 0.0) {
+    var v = textureLoad(mbMotion, p, 0).xy * vec2f(size) * 0.5 * amount;
+    let l = length(v);
+    if (l > 1.0) {
+      v = v * min(l, 24.0) / l;
+      var sum = c;
+      var wsum = 1.0;
+      for (var k = 1; k <= 10; k++) {
+        let t = f32(k) / 10.0 - 0.55;
+        let q = clamp(vec2i(vec2f(p) + v * t), vec2i(0), vec2i(size) - 1);
+        let qd = textureLoad(mbDepth, q, 0);
+        // Don't smear a static background over a sharp foreground object.
+        let w = select(1.0, 0.2, qd > d * 1.05);
+        sum += textureLoad(mbSrc, q, 0).rgb * w;
+        wsum += w;
+      }
+      c = sum / wsum;
+    }
+  }
+  _ = uv;
+  textureStore(mbOut, id.xy, vec4f(c, 1.0));
+}
+
 // --- Hi-Z pyramid (farthest reverse-Z depth = minimum) -----------------------
 
 @group(1) @binding(0) var hizSrcDepth: texture_depth_2d;
@@ -236,7 +301,7 @@ fn exposure(@builtin(local_invocation_index) li: u32, @builtin(local_invocation_
       acc += n;
     }
     let avg = exp2(sum / max(cnt, 1.0));
-    let key = mix(0.12, 0.045, frame.time.w);
+    let key = mix(0.17, 0.05, frame.time.w);
     let base = max(frame.exposure.y, 1e-4);
     let spread = mix(2.0, 3.0, frame.time.w);
     let tgt = clamp(key / max(avg, 1e-5), base / spread, base * spread);

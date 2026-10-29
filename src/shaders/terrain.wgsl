@@ -92,7 +92,11 @@ struct VOut {
   if (h < frame.world.w) {
     s.albedo = mix(vec3f(0.18, 0.17, 0.14), vec3f(0.08, 0.1, 0.09), clamp(-h / 8.0, 0.0, 1.0));
   }
-  applyWetness(&s, i.world, n.y, 0.5);
+  if (land == 2u || land == 0u) {
+    s.albedo *= 1.0 - frame.weather.z * 0.35;
+  } else {
+    applyWetness(&s, i.world, n.y, 0.5);
+  }
   return writeG(s, i.world, i.pos);
 }
 

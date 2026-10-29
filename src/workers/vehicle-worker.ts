@@ -63,7 +63,7 @@ self.onmessage = () => {
     ...Object.entries(designs),
     ['person', person] as const,
   ]) {
-    for (let v = 0; v < (name === 'person' ? 4 : VARIANTS_PER_DESIGN); v++) {
+    for (let v = 0; v < (name === 'person' ? 8 : VARIANTS_PER_DESIGN); v++) {
       const seed = v * 7919 + 1;
       try {
         let variant: VehicleVariant | null = null;

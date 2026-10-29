@@ -90,7 +90,7 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
     }
     case 16u: { s.albedo = I.color.rgb; s.rough = 0.9; }
     case 17u: { s.albedo = I.color2.rgb; s.rough = 0.85; }
-    case 15u: { s.albedo = vec3f(0.62, 0.46, 0.36); s.rough = 0.6; }
+    case 15u: { s.albedo = mix(vec3f(0.62, 0.46, 0.36), vec3f(0.42, 0.28, 0.2), hashuf(u32(I.color.r * 1000.0 + I.color2.g * 7777.0)) * 0.6); s.rough = 0.55; }
     default: { s.albedo = vec3f(1.0, 0.0, 1.0); }
   }
   // Wet bodywork gets glossier.

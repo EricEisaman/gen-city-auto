@@ -44,6 +44,10 @@ export interface ViewParams {
   quality?: number;
   /** Rain drops on the lens (bumper / first-person cameras). */
   lensDrops?: boolean;
+  /** Motion blur amount 0..1, depth of field aperture (0 = off) and focus distance (m). */
+  motionBlur?: number;
+  dofAperture?: number;
+  focus?: number;
 }
 
 /** Hook for other systems (vehicles, rain) to add draws into renderer passes. */
@@ -443,6 +447,10 @@ export class Renderer {
         ],
         ['lighting', compute('pipeline/lighting', lightMod, 'main')],
         ['taa', compute('pipeline/taa', postMod, 'taa')],
+        [
+          'motionDof',
+          compute('pipeline/motion blur + dof', postMod, 'motionDof'),
+        ],
         [
           'hizFromDepth',
           compute('pipeline/hiz from depth', postMod, 'hizFromDepth'),
@@ -905,7 +913,7 @@ export class Renderer {
     fd.set(F.wind, [
       v.weather.wind[0],
       v.weather.wind[1],
-      1,
+      v.dofAperture ?? 0,
       v.weather.lightning,
     ]);
     fd.set(F.world, [this.worldSize, this.heightCell, this.heightN, 0]);
@@ -914,13 +922,18 @@ export class Renderer {
     // Physical exposure baseline: an 18% grey card lit by sun + sky maps to
     // the key value. The histogram meter may only deviate a stop or two.
     const lum = (c: number[]) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    const key = 0.12 + (0.045 - 0.12) * sky.night;
+    const key = 0.17 + (0.05 - 0.17) * sky.night;
     const lit =
       (lum(sky.sunColor) * Math.max(sky.sunDir[1], 0.15)) / Math.PI +
       lum(sky.skyAmbient) +
       lum(sky.cityGlow) * 2;
     const eBase = key / (0.18 * Math.max(lit, 1e-4));
-    fd.set(F.exposure, [1, eBase, Math.max(-0.2, sky.sunDir[1]), 0]);
+    fd.set(F.exposure, [
+      v.motionBlur ?? 0,
+      eBase,
+      Math.max(-0.2, sky.sunDir[1]),
+      v.focus ?? 0,
+    ]);
     fd.set(F.skyAmbient, [...sky.skyAmbient, 0]);
     fd.set(F.groundAmbient, [...sky.groundAmbient, 0]);
     fd.set(F.cityGlow, [...sky.cityGlow, 0]);
@@ -1428,6 +1441,24 @@ export class Renderer {
         ),
       );
       pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
+      // Motion blur + DOF into the (now free) lit texture; history stays clean.
+      pass.setPipeline(this.p.motionDof as GPUComputePipeline);
+      pass.setBindGroup(0, pg0('motionDof'));
+      pass.setBindGroup(
+        1,
+        this.bg(
+          'motionDof',
+          1,
+          [
+            histNext.createView(),
+            t.gbuf[3].createView(),
+            t.depth.createView(),
+            t.lit.createView(),
+          ],
+          'bg/motion blur + dof',
+        ),
+      );
+      pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
       pass.setPipeline(this.p.bloomDown as GPUComputePipeline);
       pass.setBindGroup(0, pg0('bloomDown'));
       for (let i = 0; i < t.bloomDown.length; i++) {
@@ -1515,7 +1546,7 @@ export class Renderer {
           'tonemap',
           1,
           [
-            histNext.createView(),
+            t.lit.createView(),
             t.bloomUp[0].createView(),
             this.ubuf(this.exposureBuffer),
           ],

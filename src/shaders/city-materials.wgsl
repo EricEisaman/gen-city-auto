@@ -116,7 +116,7 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   var light = frame.skyAmbient.rgb * 0.35;
   if (lit) {
     let flicker = 1.0;
-    light += warm * mix(0.35, 1.5, r2 * r2) * flicker;
+    light += warm * mix(0.35, 1.5, r2 * r2) * flicker * mix(0.12, 1.0, night);
   }
   return c * light;
 }
@@ -532,7 +532,8 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       // Gravel paths through parks.
       let path = abs(sin(world.x * 0.05 + sin(world.z * 0.04) * 2.0));
       if (path < 0.05) { s.albedo = vec3f(0.42, 0.38, 0.32); }
-      applyWetness(&s, world, n.y, 0.3);
+      s.albedo *= 1.0 - frame.weather.z * 0.35;
+      s.rough = max(s.rough - frame.weather.z * 0.2, 0.6);
     }
     case M_LAMP: {
       let sodium = param == 0u;
@@ -563,7 +564,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       let cols = array<vec3f, 3>(vec3f(0.1, 1.0, 0.75), vec3f(1.0, 0.75, 0.05), vec3f(1.0, 0.08, 0.04));
       s.albedo = vec3f(0.05);
       s.rough = 0.2;
-      if (state == lamp) { s.emissive = cols[lamp] * 30.0; } else { s.emissive = cols[lamp] * 0.03; }
+      if (state == lamp) { s.emissive = cols[lamp] * mix(6.0, 14.0, night); } else { s.emissive = cols[lamp] * 0.03; }
     }
     case M_FRAME: { s.albedo = vec3f(0.08); s.metal = 0.6; s.rough = 0.4; }
     case M_PAINT: { s.albedo = paintColor(param); s.rough = 0.5; s.metal = 0.1; applyWetness(&s, world, max(n.y, 0.0), 0.0); }

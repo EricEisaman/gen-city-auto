@@ -42,6 +42,8 @@ export interface VehicleInstance {
   wheelSpin: number;
   steer: number;
   rotor: number;
+  /** Previous frame's rotor/animation phase (for correct motion vectors). */
+  prevRotor?: number;
   /** Force a LOD (e.g. the player's car in first person). */
   lod?: number;
   /** Skip drawing (still casts shadows when shadowOnly). */
@@ -407,16 +409,19 @@ export class VehicleRenderer implements DrawHook {
       });
     }
     v.info.rotors.forEach((r, k) => {
+      const angle = (phase: number) =>
+        v.info.kind === 'person'
+          ? // Limbs swing: legs opposite each other, arms opposite their leg.
+            Math.sin(phase + (k === 1 || k === 2 ? Math.PI : 0)) *
+            (k < 2 ? 0.45 : 0.35)
+          : phase * (k === 0 ? 1 : 4.3);
       const local = mul(
         translate(r.position),
-        rotAxis(
-          r.axis,
-          v.info.kind === 'person'
-            ? // Limbs swing: legs opposite each other, arms opposite their leg.
-              Math.sin(inst.rotor + (k === 1 || k === 2 ? Math.PI : 0)) *
-                (k < 2 ? 0.45 : 0.35)
-            : inst.rotor * (k === 0 ? 1 : 4.3),
-        ),
+        rotAxis(r.axis, angle(inst.rotor)),
+      );
+      const prevLocal = mul(
+        translate(r.position),
+        rotAxis(r.axis, angle(inst.prevRotor ?? inst.rotor)),
       );
       this.push(
         `${key}|rotor${k}`,
@@ -424,7 +429,7 @@ export class VehicleRenderer implements DrawHook {
         lod,
         false,
         mat4.multiply(mat4.create(), m, local),
-        mat4.multiply(mat4.create(), inst.prevModel, local),
+        mat4.multiply(mat4.create(), inst.prevModel, prevLocal),
         inst,
       );
     });

@@ -288,7 +288,7 @@ fn aerialPerspective(@builtin(global_invocation_id) id: vec3u) {
       var S = ((m.ray * prS + vec3f(m.mie * pmS)) * sunT + m.scat * msS) * SUN_ILLUMINANCE;
       S += ((m.ray * prM + vec3f(m.mie * pmM)) * moonT + m.scat * msM) * MOON_ILLUMINANCE * frame.moonDir.w;
       // City light pollution scattering at night.
-      S += m.scat * frame.cityGlow.rgb * exp(-max(h - R_GROUND, 0.0) / 0.6) * 4.0;
+      S += m.scat * frame.cityGlow.rgb * exp(-max(h - R_GROUND, 0.0) / 0.6) * 1.0;
       let stepT = exp(-m.ext * dt);
       L += T * (S - S * stepT) / max(m.ext, vec3f(1e-6));
       T *= stepT;

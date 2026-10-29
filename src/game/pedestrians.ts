@@ -23,6 +23,7 @@ interface Ped {
   model: Mat4;
   prev: Mat4;
   phase: number;
+  prevPhase: number;
 }
 
 export class Pedestrians {
@@ -83,6 +84,7 @@ export class Pedestrians {
       model: mat4.create(),
       prev: mat4.create(),
       phase: r.range(0, 6),
+      prevPhase: 0,
     });
   }
 
@@ -112,6 +114,7 @@ export class Pedestrians {
       const x = q.p[0] + l[0] * off;
       const z = q.p[1] + l[1] * off;
       const y = this.net.hf.sample(x, z) + 0.16;
+      p.prevPhase = p.phase;
       p.phase += dt * p.speed * 4.2;
       const bob = Math.abs(Math.cos(p.phase)) * 0.03;
       const d: Vec2 = [q.d[0] * p.dir, q.d[1] * p.dir];
@@ -136,6 +139,7 @@ export class Pedestrians {
         wheelSpin: 0,
         steer: 0,
         rotor: p.phase,
+        prevRotor: p.prevPhase,
       });
     }
   }

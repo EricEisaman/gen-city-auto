@@ -260,6 +260,38 @@ export class Game {
     }
   }
 
+  /** Motion blur and depth of field per camera shot. */
+  private cinematics(eye: Vec3) {
+    const shot =
+      this.camera.shot?.name ?? (this.camera.mode === 'chase' ? 'chase' : '');
+    const focus = Math.hypot(
+      this.player.pos[0] - eye[0],
+      this.player.pos[1] - eye[1],
+      this.player.pos[2] - eye[2],
+    );
+    const blur: Record<string, number> = {
+      chase: 0.8,
+      bumper: 1,
+      side: 1,
+      wheel: 1,
+      flyby: 0.9,
+      orbit: 0.6,
+    };
+    const dof: Record<string, number> = {
+      telephoto: 1.2,
+      side: 0.35,
+      bumper: 0.3,
+      wheel: 0.5,
+      flyby: 0.4,
+      train: 0.3,
+    };
+    return {
+      motionBlur: blur[shot] ?? 0.3,
+      dofAperture: this.opts.freecam ? 0 : (dof[shot] ?? 0),
+      focus,
+    };
+  }
+
   private handleKeys() {
     const i = this.input;
     if (i.hit('KeyC')) {
@@ -400,6 +432,7 @@ export class Game {
       weather: this.weather.state,
       debug: this.opts.debug,
       quality: this.opts.quality,
+      ...this.cinematics(cam.eye),
       lensDrops:
         cam.interior ||
         this.camera.shot?.name === 'bumper' ||

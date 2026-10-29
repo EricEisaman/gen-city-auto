@@ -18,4 +18,19 @@
 
 [ ] The buildings need more details. They need stronger textures or something.
 
-[ ] the transit tracks need trains sometimes.
+[ ] the transit tracks sometimes collide with each other. Even if one is over the other
+    it needs to be high enough to allow the train below to pass through with power cables.
+
+[ ] transit trains need windows and doors. Maybe the windows can use similar tech to building windows.
+
+[ ] A production build should
+
+    1. strip whitespace from shader source
+    2. terser the javascript
+    3. print a total for the html/css/js gzipped
+
+    A development build can do none of that.
+
+[ ] the vehicles flicker often, almost but not quite like z-fighting.
+
+[ ]
