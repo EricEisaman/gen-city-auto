@@ -7,6 +7,7 @@ import type {Vec3} from '../math/vec.ts';
 import commonWgsl from '../shaders/common.wgsl';
 import surfaceWgsl from '../shaders/surface.wgsl';
 import vehicleWgsl from '../shaders/vehicle.wgsl';
+import {designs} from '../vehicles/designs/index.ts';
 import type {VehicleVariant} from '../workers/vehicle-worker.ts';
 import type {DrawHook, Renderer} from './renderer.ts';
 
@@ -234,19 +235,45 @@ export class VehicleRenderer implements DrawHook {
         },
       }),
     ]);
-    const variants = await new Promise<VehicleVariant[]>((resolve, reject) => {
-      const w = new Worker(new URL('./vehicle-worker.js', import.meta.url), {
-        type: 'module',
-        name: 'vehicle-worker',
-      });
-      w.onmessage = e => {
-        this.errors = e.data.errors;
-        resolve(e.data.variants);
-        w.terminate();
-      };
-      w.onerror = e => reject(new Error(`[vehicle worker] ${e.message}`));
-      w.postMessage('go');
-    });
+    // Tessellate designs in parallel across several workers.
+    const names = [...Object.keys(designs), 'person'];
+    const nWorkers = Math.max(
+      2,
+      Math.min(names.length, (navigator.hardwareConcurrency || 4) - 1),
+    );
+    const groups: string[][] = Array.from({length: nWorkers}, () => []);
+    names.forEach((n, i) => groups[i % nWorkers].push(n));
+    const results = await Promise.all(
+      groups.map(
+        (group, gi) =>
+          new Promise<{variants: VehicleVariant[]; errors: string[]}>(
+            (resolve, reject) => {
+              const w = new Worker(
+                new URL('./vehicle-worker.js', import.meta.url),
+                {
+                  type: 'module',
+                  name: `vehicle-worker-${gi}`,
+                },
+              );
+              w.onmessage = e => {
+                resolve(e.data);
+                w.terminate();
+              };
+              w.onerror = e =>
+                reject(new Error(`[vehicle worker] ${e.message}`));
+              w.postMessage({names: group});
+            },
+          ),
+      ),
+    );
+    // Keep a stable order (registry order) regardless of worker grouping.
+    const variants = results
+      .flatMap(r => r.variants)
+      .sort(
+        (a, b) =>
+          names.indexOf(a.name) - names.indexOf(b.name) || a.seed - b.seed,
+      );
+    this.errors = results.flatMap(r => r.errors);
     for (const e of this.errors) console.warn('[vehicles]', e);
     // Pack every mesh into one vertex and one index buffer.
     let vBytes = 0;

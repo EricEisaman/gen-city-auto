@@ -55,7 +55,8 @@ function pack(m: Mesh): PackedMesh {
   return {vertices: buf, indices: new Uint32Array(m.indices)};
 }
 
-self.onmessage = () => {
+self.onmessage = (e: MessageEvent<{names?: string[]}>) => {
+  const only = e.data?.names;
   const out: VehicleVariant[] = [];
   const transfer: Transferable[] = [];
   const errors: string[] = [];
@@ -63,6 +64,7 @@ self.onmessage = () => {
     ...Object.entries(designs),
     ['person', person] as const,
   ]) {
+    if (only && !only.includes(name)) continue;
     for (let v = 0; v < (name === 'person' ? 8 : VARIANTS_PER_DESIGN); v++) {
       const seed = v * 7919 + 1;
       try {
