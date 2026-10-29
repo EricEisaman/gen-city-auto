@@ -15,6 +15,8 @@ import {
   LANES,
   ROAD_WIDTH,
   SIDEWALK,
+  closestOnPolyline,
+  elevatedHalfWidth,
   type CityLayout,
   type Elevated,
 } from './layout.ts';
@@ -563,11 +565,58 @@ function elevatedStructures(
         if (mask[(gz + dz) * hf.n + gx + dx]) return true;
     return false;
   };
+  // A pier that would stand on a lower elevated deck becomes a portal frame
+  // straddling that deck.
+  const pier: Pier = (self, q, top, width, fallback) => {
+    for (const o of L.elevated) {
+      if (o === self) continue;
+      const c = closestOnPolyline(o.pts, q);
+      const hw = elevatedHalfWidth(o);
+      if (c.d > hw + width + 0.5) continue;
+      const a = o.pts[c.i];
+      const b = o.pts[c.i + 1];
+      if (lerp(o.heights[c.i], o.heights[c.i + 1], c.t) > top) continue;
+      const len = dist2(a, b) || 1;
+      const nx = -(b[1] - a[1]) / len;
+      const nz = (b[0] - a[0]) / len;
+      const mid: Vec2 = [lerp(a[0], b[0], c.t), lerp(a[1], b[1], c.t)];
+      const span = hw + 1.6;
+      const legs = [-1, 1].map(
+        s => [mid[0] + nx * span * s, mid[1] + nz * span * s] as Vec2,
+      );
+      for (const g of legs) {
+        const ground = hf.sample(g[0], g[1]);
+        m.box(
+          [g[0], (ground - 1 + top) / 2, g[1]],
+          [0.9, (top - ground + 1) / 2, 0.9],
+          packMat(CM.concrete),
+          Math.atan2(nx, nz),
+        );
+      }
+      const yaw = Math.atan2(legs[1][0] - legs[0][0], legs[1][1] - legs[0][1]);
+      m.box(
+        [mid[0], top - 0.8, mid[1]],
+        [1.1, 0.8, span + 0.9],
+        packMat(CM.concrete),
+        yaw,
+      );
+      return;
+    }
+    fallback();
+  };
   for (const e of L.elevated) {
-    if (e.kind === 'rail') railViaduct(e, hf, onRoad, m, lights);
-    else expressway(e, hf, m, lights);
+    if (e.kind === 'rail') railViaduct(e, hf, onRoad, pier, m, lights);
+    else expressway(e, hf, pier, m, lights);
   }
 }
+
+type Pier = (
+  self: Elevated,
+  q: Vec2,
+  top: number,
+  width: number,
+  fallback: () => void,
+) => void;
 
 function deckBox(
   m: CMesh,
@@ -660,6 +709,7 @@ function railViaduct(
   e: Elevated,
   hf: Heightfield,
   onRoad: (q: Vec2) => boolean,
+  pier: Pier,
   m: CMesh,
   lights: LightList,
 ) {
@@ -733,18 +783,20 @@ function railViaduct(
       const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
       const h = top - (ground - 1);
       if (h > 0.5) {
-        m.box(
-          [q[0], ground - 1 + h / 2, q[1]],
-          [1.1, h / 2, 1.1],
-          packMat(CM.concrete),
-          yaw,
-        );
-        m.box(
-          [q[0], top - 0.6, q[1]],
-          [halfW * 0.9, 0.6, 1.3],
-          packMat(CM.concrete),
-          yaw,
-        );
+        pier(e, q, top, 1.1, () => {
+          m.box(
+            [q[0], ground - 1 + h / 2, q[1]],
+            [1.1, h / 2, 1.1],
+            packMat(CM.concrete),
+            yaw,
+          );
+          m.box(
+            [q[0], top - 0.6, q[1]],
+            [halfW * 0.9, 0.6, 1.3],
+            packMat(CM.concrete),
+            yaw,
+          );
+        });
       }
     }
     if (along[i] - lastMast > 45) {
@@ -787,6 +839,30 @@ function railViaduct(
         m.quad(
           [b0, b1, [b1[0], b1[1] - 1.2, b1[2]], [b0[0], b0[1] - 1.2, b0[2]]],
           out,
+          [
+            [0, 0],
+            [12, 0],
+            [12, 1.2],
+            [0, 1.2],
+          ],
+          packMat(CM.concrete),
+        );
+        // Slab underside and the inner face below the deck edge.
+        const dn = (p: Vec3): Vec3 => [p[0], p[1] - 1.2, p[2]];
+        m.quad(
+          [dn(a1), dn(a0), dn(b0), dn(b1)],
+          [0, -1, 0],
+          [
+            [0, 0],
+            [12, 0],
+            [12, 4.5],
+            [0, 4.5],
+          ],
+          packMat(CM.concrete),
+        );
+        m.quad(
+          [a1, a0, dn(a0), dn(a1)],
+          [-out[0], 0, -out[2]],
           [
             [0, 0],
             [12, 0],
@@ -872,7 +948,13 @@ function railViaduct(
   }
 }
 
-function expressway(e: Elevated, hf: Heightfield, m: CMesh, lights: LightList) {
+function expressway(
+  e: Elevated,
+  hf: Heightfield,
+  pier: Pier,
+  m: CMesh,
+  lights: LightList,
+) {
   const pts = e.pts;
   const n = pts.length;
   const fr = frames(pts);
@@ -955,21 +1037,23 @@ function expressway(e: Elevated, hf: Heightfield, m: CMesh, lights: LightList) {
     const top = hs[i] - 2;
     if (along[i] - lastPier > 32 && top - ground > 3) {
       lastPier = along[i];
-      m.cylinder(
-        [q[0], ground - 1, q[1]],
-        1.5,
-        top - ground + 1,
-        12,
-        packMat(CM.concrete),
-        false,
-      );
       const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
-      m.box(
-        [q[0], top - 0.8, q[1]],
-        [halfW * 0.8, 0.8, 1.4],
-        packMat(CM.concrete),
-        yaw,
-      );
+      pier(e, q, top, 1.5, () => {
+        m.cylinder(
+          [q[0], ground - 1, q[1]],
+          1.5,
+          top - ground + 1,
+          12,
+          packMat(CM.concrete),
+          false,
+        );
+        m.box(
+          [q[0], top - 0.8, q[1]],
+          [halfW * 0.8, 0.8, 1.4],
+          packMat(CM.concrete),
+          yaw,
+        );
+      });
     }
     if (along[i] - lastLight > 40 && hs[i] - ground > 3) {
       lastLight = along[i];

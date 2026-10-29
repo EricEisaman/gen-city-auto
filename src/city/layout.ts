@@ -11,7 +11,6 @@ import {
   pointInPolygon,
   pointSegment,
   polygonArea,
-  segmentIntersect,
   smoothstep,
   sub2,
   type Vec2,
@@ -396,8 +395,20 @@ function railLines(
     .map(h => ({h, a: Math.atan2(h.p[1] - center[1], h.p[0] - center[0])}))
     .sort((a, b) => a.a - b.a)
     .map(x => x.h.p);
+  // A loop through irregular hubs can fold back over itself; drop the hub
+  // nearest each fold until the line is clean.
+  let pts = resample(catmull(loopHubs, true, 15), 12);
+  for (let fold = selfOverlap(pts); fold && loopHubs.length > 3;) {
+    const q = fold;
+    let bi = 0;
+    loopHubs.forEach((h, i) => {
+      if (dist2(h, q) < dist2(loopHubs[bi], q)) bi = i;
+    });
+    loopHubs.splice(bi, 1);
+    pts = resample(catmull(loopHubs, true, 15), 12);
+    fold = selfOverlap(pts);
+  }
   if (loopHubs.length >= 3) {
-    const pts = resample(catmull(loopHubs, true, 15), 12);
     const wet = pts.some(q => hf.sample(q[0], q[1]) < SEA_LEVEL + 0.5);
     if (!wet) {
       out.push({
@@ -982,36 +993,73 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
 function separateCrossings(lines: Elevated[]) {
   const clearance = 8.5;
   const grade = 0.03;
-  for (let b = 1; b < lines.length; b++) {
-    for (let a = 0; a < b; a++) {
+  for (let b = 0; b < lines.length; b++) {
+    const B = lines[b];
+    const along = [0];
+    for (let k = 1; k < B.pts.length; k++)
+      along.push(along[k - 1] + dist2(B.pts[k - 1], B.pts[k]));
+    for (let a = 0; a <= b; a++) {
       const A = lines[a];
-      const B = lines[b];
-      for (let i = 0; i + 1 < A.pts.length; i++) {
-        for (let j = 0; j + 1 < B.pts.length; j++) {
-          const r = segmentIntersect(
-            A.pts[i],
-            A.pts[i + 1],
-            B.pts[j],
-            B.pts[j + 1],
+      // Wherever the decks overlap in plan (a shallow crossing overlaps for
+      // hundreds of metres, not just at the centreline intersection), B must
+      // clear A's deck. A line that folds over itself clears its earlier part.
+      const reach = elevatedHalfWidth(A) + elevatedHalfWidth(B) + 2;
+      const need: [number, number][] = [];
+      for (let k = 0; k < B.pts.length; k++) {
+        const own = a === b ? A.pts.slice(0, Math.max(0, k - SELF_GAP)) : A.pts;
+        if (own.length < 2) continue;
+        const c = closestOnPolyline(own, B.pts[k]);
+        if (c.d < reach) {
+          const h = lerp(A.heights[c.i], A.heights[c.i + 1], c.t);
+          need.push([along[k], h + clearance]);
+        }
+      }
+      if (!need.length) continue;
+      for (let k = 0; k < B.pts.length; k++) {
+        for (const [s, h] of need) {
+          B.heights[k] = Math.max(
+            B.heights[k],
+            h - grade * Math.max(0, Math.abs(along[k] - s) - 30),
           );
-          if (!r) continue;
-          const ha = lerp(A.heights[i], A.heights[i + 1], r[0]);
-          const need = ha + clearance;
-          const at: Vec2 = [
-            lerp(B.pts[j][0], B.pts[j + 1][0], r[1]),
-            lerp(B.pts[j][1], B.pts[j + 1][1], r[1]),
-          ];
-          for (let k = 0; k < B.pts.length; k++) {
-            const d = dist2(B.pts[k], at);
-            B.heights[k] = Math.max(
-              B.heights[k],
-              need - grade * Math.max(0, d - 30),
-            );
-          }
         }
       }
     }
   }
+}
+
+/** Points (12 m apart) that must separate two parts of one line to count as a fold. */
+const SELF_GAP = 40;
+
+/** A point where a resampled line passes within a deck width of itself. */
+function selfOverlap(pts: Vec2[]): Vec2 | undefined {
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + SELF_GAP; j < pts.length; j++) {
+      // Closed loops: indices near both ends are neighbours too.
+      if (pts.length - j + i < SELF_GAP) break;
+      if (dist2(pts[i], pts[j]) < 14) return pts[i];
+    }
+  }
+  return undefined;
+}
+
+export function elevatedHalfWidth(e: Elevated) {
+  return e.kind === 'rail' ? 5.2 : 9;
+}
+
+/** Closest point on an open polyline: segment index, parameter, distance. */
+export function closestOnPolyline(pts: Vec2[], q: Vec2) {
+  let best = {i: 0, t: 0, d: Infinity};
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const l2 = dx * dx + dz * dz || 1;
+    const t = clamp(((q[0] - a[0]) * dx + (q[1] - a[1]) * dz) / l2, 0, 1);
+    const d = Math.hypot(a[0] + dx * t - q[0], a[1] + dz * t - q[1]);
+    if (d < best.d) best = {i, t, d};
+  }
+  return best;
 }
 
 /** Fraction of sample points inside the polygon that are water. */

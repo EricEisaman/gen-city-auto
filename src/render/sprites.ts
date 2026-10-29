@@ -57,7 +57,7 @@ export class LightSprites implements DrawHook {
     this.lampsPipe = make('vsLamps');
   }
 
-  /** segs: 8 floats per lane segment; lamps: 4 floats per lamp head. */
+  /** segs: 12 floats per lane segment; lamps: 4 floats per lamp head. */
   setData(segs: Float32Array, lamps: Float32Array) {
     for (const b of this.buffers) b.destroy();
     const buf = (label: string, data: Float32Array) => {
@@ -71,11 +71,11 @@ export class LightSprites implements DrawHook {
     };
     const s = buf(
       'sprites/lane segments',
-      segs.length ? segs : new Float32Array(8),
+      segs.length ? segs : new Float32Array(12),
     );
     const l = buf('sprites/lamps', lamps.length ? lamps : new Float32Array(4));
     this.buffers = [s, l];
-    this.segCount = segs.length / 8;
+    this.segCount = segs.length / 12;
     this.lampCount = lamps.length / 4;
     this.bindGroups = [this.cars, this.lampsPipe].map((p, i) =>
       this.device.createBindGroup({

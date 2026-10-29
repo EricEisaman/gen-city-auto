@@ -3,8 +3,8 @@
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 // Lane segment in travel direction: a.xyz, a.w = lateral offset to the left;
-// b.xyz, b.w = seed.
-struct Seg { a: vec4f, b: vec4f };
+// b.xyz, b.w = lane seed; c = (distance along the lane at a, speed, car gap).
+struct Seg { a: vec4f, b: vec4f, c: vec4f };
 @group(0) @binding(1) var<storage, read> segs: array<Seg>;
 // Lamp head: xyz, w = 1 for sodium.
 @group(0) @binding(2) var<storage, read> lamps: array<vec4f>;
@@ -53,11 +53,16 @@ fn culled() -> SOut {
   let s = segs[si];
   let ab = s.b.xyz - s.a.xyz;
   let len = length(ab);
-  let seed = s.b.w + f32(k) * 7.31;
-  // Keep about one car per 28 m of lane.
-  if (hash11(seed) > len / (28.0 * f32(CARS_PER_SEG))) { return culled(); }
-  let speed = 11.0 + hash11(seed + 3.0) * 6.0;
-  let t = fract(hash11(seed + 1.0) + frame.time.x * speed / max(len, 1.0));
+  // Cars sit on a lattice moving along the whole lane at the lane's speed;
+  // this segment draws the ones currently inside it.
+  let base = frame.time.x * s.c.y;
+  let gap = s.c.z;
+  let j = floor((s.c.x - base) / gap) - 1.0 + f32(k);
+  let seed = s.b.w + j * 1.3717;
+  if (hash11(seed + 5.0) < 0.3) { return culled(); }
+  let local = j * gap + base + hash11(seed) * gap * 0.6 - s.c.x;
+  if (local < 0.0 || local >= len) { return culled(); }
+  let t = local / len;
   let dir = ab / max(len, 1e-3);
   let left = normalize(vec3f(dir.z, 0.0, -dir.x));
   let p = s.a.xyz + ab * t + left * s.a.w + vec3f(0.0, 0.75, 0.0);

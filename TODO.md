@@ -111,14 +111,51 @@
 [x] traffic jams are common. All the cars get stuck.
     -> junction deadlock breaker (creep after 4 s stopped), cars stuck > 40 s despawn.
 
-[ ] trains station platforms are missing bottoms
+[x] trains station platforms are missing bottoms
+    -> platforms were a top and an outer lip only; they now have a slab underside and inner face.
 
     freecam=12.79,24.31,-453.23,-2.69,0.55&city=neon&seed=1&time=7.02&timespeed=0&weather=sunny
 
-[ ] These train tracks are impossible. They are stacked on top of each other
+[x] These train tracks are impossible. They are stacked on top of each other
     Further a tree is poking through the tracks.
+    -> that was the Yamanote-style loop folding back over itself (its spline through the hubs
+       self-intersected at a shallow angle). The loop now drops the hub causing a fold. Crossing
+       clearance now uses deck overlap instead of centreline intersections (shallow crossings overlap
+       for 100+ m), also covers a line against itself, and an upper pier that would land on a lower
+       deck becomes a portal frame straddling it. Trees are not planted where they'd reach a deck.
+       Checked 20 city/seed combos: no rail decks clash.
 
     freecam=133.83,34.41,-585.14,-2.41,0.09&city=neon&seed=1&time=22.05&timespeed=0&weather=sunny
 
-[ ] Car lights on highways/streets at night are going too fast, unrealistic speeds
+[ ] guard posts at intersections float in the air
 
+    freecam=461.06,26.74,118.35,-1.13,-0.07&city=neon&seed=1&time=13.99&timespeed=0&weather=sunny
+
+[x] Car lights on highways/streets at night are going too fast, unrealistic speeds
+    -> each light looped along its own ~12 m road segment and jumped back, so streams looked frantic.
+       Lights now flow continuously along whole lanes: 30-45 km/h in town, ~70 km/h on expressways,
+       with per-lane speed variation and random gaps.
+
+[ ] buildings still look very flat - like maybe they need parallax mapping or normal mapping
+    in their textures or some. Same with almost everything. 
+    
+[ ] Roads look flat, dull, splotchy, gray.
+    Nothing like an actual road. Sidewalk, train tracks, they all look worse than PS2 era.
+
+    freecam=527.15,27.42,-25.98,-0.14,-0.35&city=neon&seed=1&time=18.49&timespeed=0&weather=sunny
+
+[ ] Bookshelf window textures are not raymarched and so look flat and PS1 era.
+
+    freecam=512.36,25.62,116.49,-2.47,-0.06&city=neon&seed=1&time=17.03&timespeed=0&weather=sunny
+
+[ ] highway fence has no detail, looks PS1
+
+    freecam=540.09,44.72,50.72,1.46,-0.16&city=neon&seed=1&time=17.46&timespeed=0&weather=sunny
+
+[ ] bloom is way too strong and area too big.
+
+    freecam=528.02,33.99,-29.18,-1.83,0.03&city=neon&seed=1&time=19.46&timespeed=0&weather=sunny
+
+[ ] Many city blocks are a small and single building. That is extremely rare in the real world
+
+    freecam=27.56,363.59,-39.04,-0.30,-1.50&city=neon&seed=1&time=18.43&timespeed=0&weather=sunny

@@ -20,6 +20,7 @@ import {
 } from './gen-base.ts';
 import {insetPolygon} from './graph.ts';
 import {
+  elevatedHalfWidth,
   obb,
   ROAD_WIDTH,
   SIDEWALK,
@@ -1227,6 +1228,8 @@ export interface TileContext {
   tileChains: number[][];
   /** Park blocks overlapping each tile. */
   tileParks: number[][];
+  /** Lowest elevated deck underside per DECK_CELL cell (Infinity if none). */
+  deckFloor: Float32Array;
   /** Tiles per side. */
   tilesPerSide: number;
 }
@@ -1295,8 +1298,52 @@ export function makeTileContext(
     tileJunctions,
     tileChains,
     tileParks,
+    deckFloor: deckFloor(layout),
     tilesPerSide: n,
   };
+}
+
+const DECK_CELL = 8;
+
+function deckFloor(L: CityLayout) {
+  const size = L.params.size;
+  const n = Math.ceil(size / DECK_CELL);
+  const g = new Float32Array(n * n).fill(Infinity);
+  for (const e of L.elevated) {
+    const r = elevatedHalfWidth(e) + 2;
+    for (let i = 0; i + 1 < e.pts.length; i++) {
+      const a = e.pts[i];
+      const b = e.pts[i + 1];
+      const steps = Math.ceil(dist2(a, b) / 3);
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps;
+        const x = lerp(a[0], b[0], t);
+        const z = lerp(a[1], b[1], t);
+        // Underside of the deck with its girders.
+        const h = lerp(e.heights[i], e.heights[i + 1], t) - 3.5;
+        for (let dz = -r; dz <= r; dz += DECK_CELL / 2) {
+          for (let dx = -r; dx <= r; dx += DECK_CELL / 2) {
+            if (dx * dx + dz * dz > r * r) continue;
+            const gx = Math.floor((x + dx + size / 2) / DECK_CELL);
+            const gz = Math.floor((z + dz + size / 2) / DECK_CELL);
+            if (gx < 0 || gz < 0 || gx >= n || gz >= n) continue;
+            g[gz * n + gx] = Math.min(g[gz * n + gx], h);
+          }
+        }
+      }
+    }
+  }
+  return g;
+}
+
+/** Height available above ground before hitting an elevated deck. */
+function deckClearance(ctx: TileContext, x: number, z: number, ground: number) {
+  const size = ctx.layout.params.size;
+  const n = Math.ceil(size / DECK_CELL);
+  const gx = Math.floor((x + size / 2) / DECK_CELL);
+  const gz = Math.floor((z + size / 2) / DECK_CELL);
+  if (gx < 0 || gz < 0 || gx >= n || gz >= n) return Infinity;
+  return ctx.deckFloor[gz * n + gx] - ground;
 }
 
 export function buildTile(
@@ -1359,7 +1406,9 @@ export function buildTile(
             q.p[1] + l[1] * off,
           ];
           if (!inTile(p[0], p[2])) continue;
-          tree(m, p, rng.range(6, 9), lod, rng);
+          const th = rng.range(6, 9);
+          if (deckClearance(ctx, p[0], p[2], p[1]) < th + 1) continue;
+          tree(m, p, th, lod, rng);
         }
       }
     }
@@ -1412,7 +1461,10 @@ export function buildTile(
         return d < 3;
       });
       if (near) continue;
-      tree(m, [x, hf.sample(x, z) + 0.16, z], prng.range(7, 13), lod, prng);
+      const ground = hf.sample(x, z) + 0.16;
+      const th = prng.range(7, 13);
+      if (deckClearance(ctx, x, z, ground) < th + 1) continue;
+      tree(m, [x, ground, z], th, lod, prng);
     }
   }
 

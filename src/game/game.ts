@@ -324,44 +324,56 @@ export class Game {
 
   /** Lane segments and lamp heads for the distant night light sprites. */
   private buildLightSprites() {
+    const lerp3 = (a: Vec3, b: Vec3, t: number): Vec3 => [
+      a[0] + (b[0] - a[0]) * t,
+      a[1] + (b[1] - a[1]) * t,
+      a[2] + (b[2] - a[2]) * t,
+    ];
     const net = this.net!;
     const L = this.city!.summary.layout;
     const segs: number[] = [];
-    let seed = 0;
-    const lane = (a: Vec3, b: Vec3, off: number) =>
-      segs.push(
-        a[0],
-        a[1],
-        a[2],
-        off,
-        b[0],
-        b[1],
-        b[2],
-        (seed++ * 0.6180339) % 1000,
-      );
+    let lanes = 0;
+    // One continuous stream of cars per lane: segments carry their distance
+    // along the lane so cars flow across segment boundaries.
+    const stream = (pts: Vec3[], off: number, speed: number, gap: number) => {
+      const id = (lanes++ * 0.6180339) % 1000;
+      const v = speed * (0.85 + ((id * 7.13) % 1) * 0.3);
+      let s = 0;
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const p = pts[i];
+        const q = pts[i + 1];
+        const len = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]);
+        // Each segment shows at most 4 cars (CARS_PER_SEG).
+        const parts = Math.ceil(len / (gap * 1.5));
+        for (let k = 0; k < parts; k++) {
+          const a = lerp3(p, q, k / parts);
+          const b = lerp3(p, q, (k + 1) / parts);
+          segs.push(...a, off, ...b, id, s + (len * k) / parts, v, gap, 0);
+        }
+        s += len;
+      }
+    };
+    const both = (pts: Vec3[], offs: number[], speed: number, gap: number) => {
+      const rev = [...pts].reverse();
+      for (const off of offs) {
+        stream(pts, off, speed, gap);
+        stream(rev, off, speed, gap);
+      }
+    };
     net.chains.forEach((c, ci) => {
       if (c.kind < 1) return;
-      const n = net.lanesPerDir(ci);
-      for (let i = 0; i + 1 < c.pts.length; i++) {
-        const a: Vec3 = [c.pts[i][0], c.heights[i], c.pts[i][1]];
-        const b: Vec3 = [c.pts[i + 1][0], c.heights[i + 1], c.pts[i + 1][1]];
-        for (let k = 0; k < n; k++) {
-          const off = net.laneOffset(ci, k);
-          lane(a, b, off);
-          lane(b, a, off);
-        }
-      }
+      const pts = c.pts.map((q, i): Vec3 => [q[0], c.heights[i], q[1]]);
+      const offs = [...Array(net.lanesPerDir(ci)).keys()].map(k =>
+        net.laneOffset(ci, k),
+      );
+      // City traffic: 30-50 km/h.
+      both(pts, offs, c.kind >= 2 ? 12 : 10, 30);
     });
     for (const e of L.elevated) {
       if (e.kind !== 'expressway') continue;
-      for (let i = 0; i + 1 < e.pts.length; i++) {
-        const a: Vec3 = [e.pts[i][0], e.heights[i], e.pts[i][1]];
-        const b: Vec3 = [e.pts[i + 1][0], e.heights[i + 1], e.pts[i + 1][1]];
-        for (const off of [2.2, 5.6]) {
-          lane(a, b, off);
-          lane(b, a, off);
-        }
-      }
+      const pts = e.pts.map((q, i): Vec3 => [q[0], e.heights[i], q[1]]);
+      // Shuto expressway: ~70 km/h.
+      both(pts, [2.2, 5.6], 19, 40);
     }
     const lamps: number[] = [];
     streetLightSpots(
