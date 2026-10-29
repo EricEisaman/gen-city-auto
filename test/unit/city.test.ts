@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {PRESETS} from '../../src/city/config.ts';
-import {generateLayout} from '../../src/city/layout.ts';
+import {generateLayout, splitLots, type Lot} from '../../src/city/layout.ts';
 import {extractFaces, insetPolygon, planarize} from '../../src/city/graph.ts';
 import {Rng} from '../../src/math/random.ts';
 import {polygonArea} from '../../src/math/vec.ts';
@@ -95,4 +95,32 @@ void test('city layout is deterministic and populated', () => {
   let max = -Infinity;
   for (const v of h) max = Math.max(max, v);
   assert.ok(max > 20, `max height ${max}`);
+});
+
+void test('lot subdivision gives narrow street-front plots', () => {
+  const block: [number, number][] = [
+    [0, 0],
+    [60, 0],
+    [60, 40],
+    [0, 40],
+  ];
+  const lots: Lot[] = [];
+  const rule = {
+    width: [6, 13] as [number, number],
+    depth: 22,
+    gap: 0,
+    merge: 0,
+  };
+  splitLots(new Rng(3), block, [true, true, true, true], rule, lots);
+  assert.ok(lots.length >= 10, `lots ${lots.length}`);
+  let area = 0;
+  for (const l of lots) {
+    area += polygonArea(l.poly);
+    assert.ok(
+      l.frontage.some(f => f),
+      'every lot faces a street',
+    );
+  }
+  // No gaps: the lots tile the block.
+  assert.ok(Math.abs(area - 60 * 40) < 1, `area ${area}`);
 });
