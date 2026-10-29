@@ -104,7 +104,12 @@ export function person(seed: number): VehicleDesign {
   ellLoft(
     body,
     [
-      [hy + (long ? 0.02 : 0.11), 0.085, 0.1, -0.012],
+      [
+        hy + (long ? 0.02 : 0.11),
+        0.085,
+        long ? 0.07 : 0.1,
+        long ? -0.035 : -0.012,
+      ],
       [hy + 0.16, 0.088, 0.1, -0.005],
       [hy + 0.255, 0.03, 0.03, 0],
     ],

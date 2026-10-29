@@ -114,8 +114,9 @@ export class Game {
   private spawnPoint(): Vec3 {
     if (this.opts.spawn) return [this.opts.spawn[0], 0, this.opts.spawn[1]];
     const L = this.city!.summary.layout;
-    const hub = L.hubs[0].p;
-    return [hub[0] + 120, 0, hub[1] + 60];
+    // Start in a dense district (a sub-center), not beside the central park.
+    const hub = (L.hubs[1] ?? L.hubs[0]).p;
+    return [hub[0] + 60, 0, hub[1] + 40];
   }
 
   private async loadCity(type: CityType, seed: number) {
@@ -156,13 +157,20 @@ export class Game {
     );
     this.camera = new CameraSystem(net);
     this.camera.obstacles = () => {
-      const out: Vec3[] = [];
+      const out: [number, number, number, number][] = [];
       const e = this.player.pos;
       for (const p of this.peds?.peds ?? []) {
         const m = p.model;
         if (Math.abs(m[12] - e[0]) < 40 && Math.abs(m[14] - e[2]) < 40)
-          out.push([m[12], m[13], m[14]]);
+          out.push([m[12], m[13], m[14], 0.4]);
       }
+      for (const c of this.traffic?.cars ?? []) {
+        const m = c.model;
+        if (Math.abs(m[12] - e[0]) < 40 && Math.abs(m[14] - e[2]) < 40)
+          out.push([m[12], m[13], m[14], 2.0]);
+      }
+      for (const p of this.net?.polesNear(e[0], e[2], 40) ?? [])
+        out.push([p[0], p[1], p[2], 0.25]);
       return out;
     };
     this.camera.trainFocus = () => {
@@ -225,7 +233,7 @@ export class Game {
     return Math.max(0, any);
   }
 
-  forceShot(name: string) {
+  forceShot(name: string, lock = true) {
     this.camera.directorEnabled = true;
     const pl = this.player;
     const cam = this.camera as unknown as {
@@ -239,7 +247,7 @@ export class Game {
       this.camera.update(0.01, pl, this.input);
       if (this.camera.shot?.name === name) {
         this.camera.shot.dur = 1e9;
-        this.camera.locked = true;
+        this.camera.locked = lock;
         return;
       }
       if (this.camera.shot) this.camera.shot.t = 1e9;

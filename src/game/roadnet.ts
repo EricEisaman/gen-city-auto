@@ -14,6 +14,8 @@ import type {Heightfield} from '../city/terrain.ts';
 import {hash2} from '../math/random.ts';
 import {pointSegment, type Vec2, type Vec3} from '../math/vec.ts';
 import type {LayoutSummary} from '../workers/city-worker.ts';
+import {streetLightSpots} from '../city/gen-base.ts';
+import type {CityLayout} from '../city/layout.ts';
 
 export const SPEED_LIMIT = [8.5, 11.5, 15, 18];
 
@@ -47,6 +49,7 @@ export class RoadNet {
   private bldGrid = new Map<number, number[]>();
   private readonly cell = 32;
   readonly size: number;
+  private poleGrid = new Map<number, Vec3[]>();
 
   constructor(summary: LayoutSummary, hf: Heightfield) {
     const L = summary.layout;
@@ -77,6 +80,13 @@ export class RoadNet {
           l.push(ci * 65536 + i);
         }
       }
+    });
+    // Street light poles (thin obstacles for camera framing).
+    streetLightSpots(L as unknown as CityLayout, this.geom, p => {
+      const k = this.key(p[0], p[2]);
+      let l = this.poleGrid.get(k);
+      if (!l) this.poleGrid.set(k, (l = []));
+      l.push(p);
     });
     L.buildings.forEach((b, bi) => {
       let x0 = Infinity,
@@ -274,6 +284,22 @@ export class RoadNet {
         ];
     }
     return push;
+  }
+
+  /** Poles within r of a point. */
+  polesNear(x: number, z: number, r: number): Vec3[] {
+    const out: Vec3[] = [];
+    const n = Math.ceil(r / this.cell);
+    for (let dz = -n; dz <= n; dz++) {
+      for (let dx = -n; dx <= n; dx++) {
+        for (const p of this.poleGrid.get(
+          this.key(x + dx * this.cell, z + dz * this.cell),
+        ) ?? []) {
+          if (Math.hypot(p[0] - x, p[2] - z) < r) out.push(p);
+        }
+      }
+    }
+    return out;
   }
 
   /** Random lane location near a point (for spawning). */

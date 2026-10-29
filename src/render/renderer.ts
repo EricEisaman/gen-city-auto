@@ -44,6 +44,8 @@ export interface ViewParams {
   quality?: number;
   /** Rain drops on the lens (bumper / first-person cameras). */
   lensDrops?: boolean;
+  /** Camera inside a vehicle (no god rays). */
+  interior?: boolean;
   /** Motion blur amount 0..1, depth of field aperture (0 = off) and focus distance (m). */
   motionBlur?: number;
   dofAperture?: number;
@@ -944,7 +946,7 @@ export class Renderer {
     fd.set(F.misc, [
       v.debug,
       v.quality ?? 1,
-      v.lensDrops ? 1 : 0,
+      v.interior ? 2 : v.lensDrops ? 1 : 0,
       sky.moonPhase,
     ]);
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);

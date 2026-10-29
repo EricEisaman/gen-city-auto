@@ -167,6 +167,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let tileLine = step(0.92, fract(uv.x * 10.0)) + step(0.9, fract(uv.y * 20.0));
   let streak = valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25;
   var wall = st.wall * (0.88 + 0.12 * valueNoise(uv * 0.7)) * (1.0 - streak * 0.5) * (1.0 - 0.06 * min(tileLine, 1.0));
+  // Street grime: darker, rain-splashed base of the wall.
+  wall *= mix(0.7, 1.0, smoothstep(0.0, 3.0, uv.y));
   s.albedo = wall;
   s.rough = 0.75;
   // Tile grout grooves and the floor-slab bevel as normal detail.
@@ -471,7 +473,7 @@ fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   let c = textureSampleLevel(signAtlas, linearSampler, px / 2048.0, 0.0).rgb;
   s.albedo = c * 0.6;
   s.rough = 0.3;
-  s.emissive = c * c * 1.5 * mix(0.25, 8.0, nightLight());
+  s.emissive = c * c * 1.2 * mix(0.25, 4.5, nightLight());
   return s;
 }
 

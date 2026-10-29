@@ -181,7 +181,7 @@ fn godRays(@builtin(global_invocation_id) id: vec3u) {
   let sun = frame.sunDir.xyz;
   let clip = frame.viewProj * vec4f(frame.camPos.xyz + sun * 10000.0, 1.0);
   var acc = vec3f(0.0);
-  if (clip.w > 0.0 && frame.sunDir.w > 0.0) {
+  if (clip.w > 0.0 && frame.sunDir.w > 0.0 && frame.misc.z < 1.5) {
     let sp = vec2f(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
     let delta = (sp - uv) / 40.0;
     var p = uv;

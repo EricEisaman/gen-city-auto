@@ -51,3 +51,11 @@
     that's my recollection. Not always though. I'm not actually sure. I just know
     something looks off.
 
+[ ] Can we add a free camera mode where the user can fly the camera. ASWD moves the camera
+    left/right/forward/back, mouse aims. Need mobile controls too. This will make it easier
+    to inspect the city. Further, add a button in settings that puts a URL in the clipboard
+    that contains the camera's current position, orientation, time-of-day and other things
+    so that I can give you that URL to highlight certain places.
+
+[ ] Add size=<width>x<height> url param that lets me set the size of the canvas to a fixed
+    number of CSS pixels. i can use this to make videos of a specific size.

@@ -5,24 +5,27 @@ import {ensureDir, sleep, withPage, withServer} from './harness.mjs';
 
 const outDir = process.argv[2] ?? 'test/out/shots';
 const only = process.argv[3];
+// Each scenario asks the director for a shot; if that shot is not valid at
+// the vehicle's current position (blocked, inside geometry) the director picks
+// another, exactly as in normal play. The HUD shows the shot actually used.
 const SHOTS = [
-  {name: 'day-chase', hour: 14, weather: 'sunny', shot: 'chase'},
-  {name: 'day-flyby', hour: 11, weather: 'sunny', shot: 'flyby'},
-  {name: 'golden-aerial', hour: 17.7, weather: 'sunny', shot: 'aerial'},
-  {name: 'golden-telephoto', hour: 17.8, weather: 'cloudy', shot: 'telephoto'},
-  {name: 'dusk-train', hour: 18.35, weather: 'sunny', shot: 'train'},
-  {name: 'night-chase', hour: 22, weather: 'sunny', shot: 'chase'},
-  {name: 'night-side', hour: 23, weather: 'sunny', shot: 'side'},
-  {name: 'night-rain-bumper', hour: 21.5, weather: 'rain', shot: 'bumper'},
-  {name: 'rain-day-chase', hour: 12, weather: 'rain', shot: 'chase'},
-  {name: 'storm-orbit', hour: 16, weather: 'storm', shot: 'orbit'},
-  {name: 'first-person', hour: 15, weather: 'sunny', camera: 'first'},
-  {name: 'heli-aerial', hour: 17, weather: 'cloudy', heli: true, shot: 'orbit'},
+  {name: '01-day-1', hour: 14, weather: 'sunny', shot: 'chase'},
+  {name: '02-day-2', hour: 11, weather: 'sunny', shot: 'flyby'},
+  {name: '03-golden-1', hour: 17.7, weather: 'sunny', shot: 'aerial'},
+  {name: '04-golden-2', hour: 17.8, weather: 'sunny', shot: 'telephoto'},
+  {name: '05-dusk', hour: 18.35, weather: 'sunny', shot: 'train'},
+  {name: '06-night-1', hour: 22, weather: 'sunny', shot: 'chase'},
+  {name: '07-night-2', hour: 23, weather: 'sunny', shot: 'side'},
+  {name: '08-night-rain', hour: 21.5, weather: 'rain', shot: 'bumper'},
+  {name: '09-day-rain', hour: 12, weather: 'rain', shot: 'chase'},
+  {name: '10-storm', hour: 16, weather: 'storm', shot: 'orbit'},
+  {name: '11-first-person', hour: 15, weather: 'sunny', camera: 'first'},
+  {name: '12-helicopter', hour: 17, weather: 'cloudy', heli: true, shot: 'orbit'},
 ].filter(s => !only || s.name.includes(only));
 
 await ensureDir(outDir);
 await withServer(async base => {
-  const r = await withPage(`${base}/index.html?timespeed=0&spawn=30,-893`, async (page, logs) => {
+  const r = await withPage(`${base}/index.html?timespeed=0${process.env.Q ?? ''}`, async (page, logs) => {
     const results = [];
     for (const s of SHOTS) {
       await page.evaluate(async s => {
@@ -36,7 +39,7 @@ await withServer(async base => {
           g.camera.mode = s.camera;
         } else {
           g.camera.mode = 'chase';
-          g.forceShot(s.shot);
+          g.forceShot(s.shot, false);
         }
       }, s);
       await sleep(2500);

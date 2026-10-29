@@ -69,7 +69,7 @@ export class CameraSystem {
   private net: RoadNet;
   trainFocus: () => Vec3 | null = () => null;
   /** Nearby dynamic obstacles (pedestrians) the camera must not sit in or look through. */
-  obstacles: () => Vec3[] = () => [];
+  obstacles: () => [number, number, number, number][] = () => [];
 
   constructor(net: RoadNet) {
     this.net = net;
@@ -182,7 +182,12 @@ export class CameraSystem {
           s.focus === 'train'
             ? this.trainFocus()!
             : ([p[0], p[1] + 1, p[2]] as Vec3);
-        if (this.blocked(s.eye, target)) continue;
+        if (
+          this.blocked(s.eye, target) ||
+          this.obstructedByPeople(s.eye, target) ||
+          this.badEye(s.eye)
+        )
+          continue;
       }
       return s;
     }
@@ -325,8 +330,10 @@ export class CameraSystem {
       const ox = o[0] - e[0];
       const oz = o[2] - e[2];
       const along = (ox * dx + oz * dz) / len;
-      if (along < 0.3 || along > Math.min(len - 1, 12)) continue;
-      if (Math.abs(ox * dz - oz * dx) / len < 0.6) return true;
+      if (along < 0.3 || along > Math.min(len - 3, 20)) continue;
+      // Near objects block a much larger part of the frame.
+      const lateral = Math.abs(ox * dz - oz * dx) / len;
+      if (lateral < o[3] + 0.15 + (along < 4 ? 0.4 : 0)) return true;
     }
     return false;
   }
@@ -399,12 +406,12 @@ export class CameraSystem {
         const len = pl.info?.size[2] ?? 4.5;
         const eye: Vec3 = [
           p[0] + f[0] * (len / 2 + 0.25) + r[0] * s.side * 0.5,
-          p[1] + 0.5,
+          p[1] + 0.8,
           p[2] + f[1] * (len / 2 + 0.25) + r[2] * s.side * 0.5,
         ];
         return {
           eye,
-          target: [p[0] + f[0] * 20, p[1] + 0.8, p[2] + f[1] * 20],
+          target: [p[0] + f[0] * 20, p[1] + 2.6, p[2] + f[1] * 20],
           fov: 1.2,
           near: 0.05,
           interior: false,

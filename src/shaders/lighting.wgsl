@@ -107,7 +107,7 @@ fn skyIrradiance(n: vec3f) -> vec3f {
   }
   var clear = sum / 5.0 * smoothstep(-0.6, 0.4, n.y);
   clear = mix(vec3f(luminance(clear)), clear, 0.7);
-  return mix(clear, frame.skyAmbient.rgb, clamp(frame.weather.x * 1.2 - 0.2, 0.0, 1.0)) + frame.cityGlow.rgb * 0.25;
+  return mix(clear * 0.8, frame.skyAmbient.rgb, clamp(frame.weather.x * 1.2 - 0.2, 0.0, 1.0)) + frame.cityGlow.rgb * 0.25;
 }
 
 fn contactOcclusion(world: vec3f) -> f32 {
@@ -443,7 +443,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // Sun.
   if (frame.sunDir.w > 0.0) {
     let sh = shadow(world, n, vd) * cloudShadow(world);
-    color += brdf(n, v, frame.sunDir.xyz, albedo, f0, rough, metal) * frame.sunColor.rgb * sh;
+    color += brdf(n, v, frame.sunDir.xyz, albedo, f0, rough, metal) * frame.sunColor.rgb * sh * 1.35;
     if (cls == CLASS_FOLIAGE) {
       // Cheap translucency for leaves.
       color += albedo * frame.sunColor.rgb * 0.25 * max(dot(-n, frame.sunDir.xyz), 0.0) * sh;
@@ -484,7 +484,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let hemi = n.y * 0.5 + 0.5;
   // Bounce light from sunlit facades and pavement, stronger deep in canyons.
   let bounce = frame.sunColor.rgb * vec3f(1.0, 0.92, 0.82) * max(frame.sunDir.y, 0.0) * 0.06 * (1.3 - skyVis * 0.6);
-  let skyAmb = frame.groundAmbient.rgb * (1.0 - hemi) + skyIrradiance(n) * hemi * skyVis + bounce;
+  // Light bounced up from sunlit pavement onto downward-facing surfaces.
+  let groundBounce = frame.groundAmbient.rgb + frame.sunColor.rgb * max(frame.sunDir.y, 0.0) * 0.07 * mix(0.6, 1.0, skyVis);
+  let skyAmb = groundBounce * (1.0 - hemi) + skyIrradiance(n) * hemi * skyVis + bounce;
   let diffAmb = albedo * (1.0 - metal) * skyAmb * ao;
   color += diffAmb;
   // Specular ambient: sky reflection, replaced by SSR where available.
