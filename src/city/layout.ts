@@ -248,7 +248,8 @@ function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: 
           const z = axis ? t : off;
           pts.push([center[0] + x * c - z * s, center[1] + x * s + z * c]);
         }
-        lines.push({pts, kind: Road.avenue});
+        // The central north-south avenue may bridge wide water (harbour crossing).
+        lines.push({pts, kind: k === 0 && axis === 1 ? Road.boulevard : Road.avenue, maxBridge: k === 0 && axis === 1 ? 2600 : undefined});
       }
     }
   }
@@ -582,7 +583,7 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
   progress?.('Laying arterials', 0.15);
   const majorLines: Polyline[] = [];
   for (const l of arterials(params, rng, noise, center, hubs)) {
-    for (const piece of clipToLand(l.pts, hf, 700)) {
+    for (const piece of clipToLand(l.pts, hf, l.maxBridge ?? 700)) {
       const inside = piece.filter(q => Math.abs(q[0]) < S - 40 && Math.abs(q[1]) < S - 40);
       if (inside.length > 1) majorLines.push({pts: inside, kind: l.kind});
     }
@@ -660,8 +661,10 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     heights[heights.length - 1] = h1;
     if (bridge.some(b => b)) {
       // Raise the bridge deck clear of the water.
-      heights = heights.map((h, i) => (bridge[i] ? Math.max(h, SEA_LEVEL + 7) : h));
-      for (let it = 0; it < 8; it++) {
+      const wetLen = bridge.filter(b => b).length * 8;
+      const clearance = wetLen > 500 ? 28 : 7;
+      heights = heights.map((h, i) => (bridge[i] ? Math.max(h, SEA_LEVEL + clearance) : h));
+      for (let it = 0; it < (wetLen > 500 ? 60 : 8); it++) {
         const h = heights.slice();
         for (let i = 1; i + 1 < pts.length; i++) heights[i] = Math.max(h[i], (h[i - 1] + 2 * h[i] + h[i + 1]) / 4 - 0.02);
       }

@@ -191,6 +191,63 @@ function roads(L: CityLayout, geom: RoadGeom, m: CMesh, lights: LightList, piers
         const bottom = Math.min(ground, SEA_LEVEL) - 3;
         piers.cylinder([pts[i][0], bottom, pts[i][1]], 1.3, top - bottom, 10, packMat(CM.concrete), false);
       }
+      // Long crossings become suspension bridges: two towers, main cables, hangers.
+      const wetIdx = pts.map((q, i) => (hf.sample(q[0], q[1]) < SEA_LEVEL ? i : -1)).filter(i => i >= 0);
+      if (wetIdx.length && along[wetIdx[wetIdx.length - 1]] - along[wetIdx[0]] > 400) {
+        const a0 = along[wetIdx[0]];
+        const a1 = along[wetIdx[wetIdx.length - 1]];
+        const span = a1 - a0;
+        const towerAt = [a0 + span * 0.2, a0 + span * 0.8];
+        const idxAt = (s: number) => along.findIndex(a => a >= s);
+        const towerH = 70 + span * 0.04;
+        const tops: Vec3[][] = [];
+        for (const ta of towerAt) {
+          const i = Math.max(0, idxAt(ta));
+          const sides: Vec3[] = [];
+          for (const side of [left, right]) {
+            const q = side[i];
+            const base = Math.min(hf.sample(q[0], q[1]), SEA_LEVEL) - 4;
+            const off: Vec2 = [q[0] - pts[i][0], q[1] - pts[i][1]];
+            const ol = Math.hypot(off[0], off[1]) || 1;
+            const tx = q[0] + (off[0] / ol) * 2.5;
+            const tz = q[1] + (off[1] / ol) * 2.5;
+            piers.box([tx, (base + hs[i] + towerH) / 2, tz], [2.2, (hs[i] + towerH - base) / 2, 3], packMat(CM.concrete));
+            sides.push([tx, hs[i] + towerH, tz]);
+          }
+          // Cross beams.
+          piers.beam([sides[0][0], hs[i] + towerH * 0.95, sides[0][2]], [sides[1][0], hs[i] + towerH * 0.95, sides[1][2]], 1.6, 1.6, packMat(CM.concrete));
+          piers.beam([sides[0][0], hs[i] + towerH * 0.5, sides[0][2]], [sides[1][0], hs[i] + towerH * 0.5, sides[1][2]], 1.4, 1.4, packMat(CM.concrete));
+          tops.push(sides);
+          lights.add([sides[0][0], sides[0][1] + 1, sides[0][2]], 30, [1, 0.1, 0.05], LightKind.station);
+        }
+        // Main cables: parabola between towers, and side spans down to the deck.
+        for (let side = 0; side < 2; side++) {
+          const sideLine = side === 0 ? left : right;
+          const cable = (s: number): Vec3 => {
+            const i = Math.max(0, Math.min(pts.length - 1, idxAt(s) < 0 ? pts.length - 1 : idxAt(s)));
+            const q = sideLine[i];
+            const off: Vec2 = [q[0] - pts[i][0], q[1] - pts[i][1]];
+            const ol = Math.hypot(off[0], off[1]) || 1;
+            let y: number;
+            if (s < towerAt[0]) y = lerp(hs[i] + 1, hs[i] + towerH, (s - Math.max(0, towerAt[0] - span * 0.2)) / (span * 0.2));
+            else if (s > towerAt[1]) y = lerp(hs[i] + towerH, hs[i] + 1, (s - towerAt[1]) / (span * 0.2));
+            else {
+              const t = (s - towerAt[0]) / (towerAt[1] - towerAt[0]);
+              y = hs[i] + 4 + (towerH - 4) * Math.pow(2 * t - 1, 2);
+            }
+            return [q[0] + (off[0] / ol) * 2.5, Math.max(y, hs[i] + 1), q[1] + (off[1] / ol) * 2.5];
+          };
+          let prev = cable(Math.max(0, towerAt[0] - span * 0.2));
+          for (let s = Math.max(0, towerAt[0] - span * 0.2) + 12; s <= Math.min(along[along.length - 1], towerAt[1] + span * 0.2); s += 12) {
+            const c = cable(s);
+            piers.beam(prev, c, 0.35, 0.35, packMat(CM.metal));
+            const i = Math.max(0, idxAt(s));
+            if (s > towerAt[0] && s < towerAt[1] && c[1] - hs[i] > 2) piers.beam([c[0], hs[i] + 1, c[2]], c, 0.06, 0.06, packMat(CM.metal));
+            prev = c;
+          }
+        }
+        void tops;
+      }
       // Bridge lights.
       for (let i = 0; i < pts.length; i += 6) {
         if (!elevated[i]) continue;

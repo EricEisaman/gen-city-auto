@@ -18,6 +18,8 @@ export interface GEdge {
 export interface Polyline {
   pts: Vec2[];
   kind: number;
+  /** Longest water crossing allowed (bridge), meters. */
+  maxBridge?: number;
 }
 
 export class Graph {
