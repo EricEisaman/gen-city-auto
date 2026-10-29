@@ -170,6 +170,10 @@
 
     freecam=528.02,33.99,-29.18,-1.83,0.03&city=neon&seed=1&time=19.46&timespeed=0&weather=sunny
 
-[ ] Many city blocks are a small and single building. That is extremely rare in the real world
+[x] Many city blocks are a small and single building. That is extremely rare in the real world
+    -> lots are now cut across the street frontage like Tokyo plots: 5.5-11 m wide downtown,
+       9-20 m in the suburbs, ~22-25 m deep (deep lots become back-to-back plots), every lot keeps
+       street frontage, some get narrow gaps to their neighbours, and old 2-4 storey buildings
+       mix in among mid-rises. A few big core lots stay whole for towers.
 
     freecam=27.56,363.59,-39.04,-0.30,-1.50&city=neon&seed=1&time=18.43&timespeed=0&weather=sunny
