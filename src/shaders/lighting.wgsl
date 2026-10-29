@@ -107,25 +107,25 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
   return c;
 }
 
-// Depth-aware upsample of the half-resolution AO (avoids dark halos at edges).
+// Depth-aware 4x4 blur + upsample of the half-resolution AO (removes the
+// interleaved sampling pattern without dark halos at edges).
 fn bilateralAo(pxf: vec2f, vd: f32) -> f32 {
   let half = vec2i(textureDimensions(aoTex)) - 1;
-  let base = (pxf - 1.0) * 0.5;
-  let b = vec2i(floor(base));
-  let f = fract(base);
+  let hp = (pxf - 1.0) * 0.5;
+  let c = vec2i(floor(hp));
   var sum = 0.0;
   var wsum = 0.0;
-  for (var k = 0; k < 4; k++) {
-    let o = vec2i(k & 1, k >> 1);
-    let q = clamp(b + o, vec2i(0), half);
-    let d = textureLoad(gDepth, min(q * 2, vec2i(frame.resolution.xy) - 1), 0);
-    let z = viewDepth(d);
-    let bw = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
-    let w = bw * exp(-abs(z - vd) / (0.03 * vd + 0.05)) + 1e-4;
-    sum += textureLoad(aoTex, q, 0).r * w;
-    wsum += w;
+  for (var y = -1; y <= 2; y++) {
+    for (var x = -1; x <= 2; x++) {
+      let q = clamp(c + vec2i(x, y), vec2i(0), half);
+      let d = textureLoad(gDepth, min(q * 2, vec2i(frame.resolution.xy) - 1), 0);
+      let z = viewDepth(d);
+      let w = exp(-abs(z - vd) / (0.02 * vd + 0.03)) + 1e-4;
+      sum += textureLoad(aoTex, q, 0).r * w;
+      wsum += w;
+    }
   }
-  return sum / wsum;
+  return sum / max(wsum, 1e-4);
 }
 
 fn D_GGX(nh: f32, a: f32) -> f32 {
@@ -373,7 +373,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     let r = ssr(world, n, v, pxf, rough);
     env = mix(env, r.rgb, r.a);
   }
-  var specOcc = mix(ao, 1.0, 0.5);
+  var specOcc = ao * ao;
   color += env * Fa * specOcc;
   if (cls == CLASS_VEHICLE && metal < 0.95) {
     // Clear coat: a sharp dielectric layer over the paint.

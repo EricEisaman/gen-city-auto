@@ -64,8 +64,8 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
       let brake = I.params.y;
       s.emissive = vec3f(1.0, 0.04, 0.02) * (lightsOn * 4.0 + brake * 14.0);
     }
-    case 8u: { s.albedo = vec3f(0.09, 0.085, 0.08); s.rough = 0.85; }
-    case 9u: { s.albedo = vec3f(0.14, 0.13, 0.12); s.rough = 0.9; }
+    case 8u: { s.albedo = vec3f(0.09, 0.085, 0.08); s.rough = 0.85; s.ao = 0.4; }
+    case 9u: { s.albedo = vec3f(0.14, 0.13, 0.12); s.rough = 0.9; s.ao = 0.45; }
     case 10u: {
       s.albedo = vec3f(0.03);
       s.rough = 0.5;
@@ -127,7 +127,7 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
     beads = step(0.93, hash31(floor(q))) * frame.weather.y;
   }
   let col = sky * fres + spec + vec3f(beads * 0.05);
-  let alpha = clamp(0.35 + fres * 0.6 + beads * 0.3, 0.0, 0.95);
+  let alpha = clamp(0.14 + fres * 0.6 + beads * 0.3, 0.0, 0.95);
   return vec4f(col, alpha);
 }
 

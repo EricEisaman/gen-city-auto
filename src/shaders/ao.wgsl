@@ -32,7 +32,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.9);
   let t = normalize(cross(up, n));
   let b = cross(n, t);
-  let rot = hash21(vec2f(id.xy) + frame.time.z * 7.13) * 6.2831;
+  // Interleaved 4x4 rotation pattern (resolved by a matching 4x4 blur).
+  let cellIdx = f32((id.x & 3u) * 4u + (id.y & 3u));
+  let rot = (cellIdx / 16.0 + fract(frame.time.z * 0.618034) * 0.0625) * 6.2831;
   var occ = 0.0;
   var total = 0.0;
   for (var scale = 0; scale < 2; scale++) {
