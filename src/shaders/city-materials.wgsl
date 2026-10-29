@@ -128,6 +128,8 @@ struct FacadeStyle {
   winH: f32,
   wall: vec3f,
   strip: bool,
+  /** 0 tile, 1 ribbon, 2 piers, 3 metal panel, 4 fair-face concrete. */
+  family: u32,
 };
 
 fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
@@ -143,6 +145,12 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   s.strip = hashuf(h ^ 0x44u) < select(0.28, 0.6, kind == 0u);
   if (s.strip) { s.winW = 1.0; }
   s.wall = wallPalette(hashu(h ^ 0x55u));
+  let fam = hashuf(h ^ 0x66u);
+  s.family = select(select(select(select(0u, 1u, fam < 0.62), 2u, fam < 0.44), 3u, fam < 0.28), 4u, fam < 0.12);
+  if (s.strip) { s.family = 1u; }
+  if (s.family == 2u) { s.winW = 0.62; s.winH = 0.72; }
+  if (s.family == 3u) { s.wall = mix(vec3f(0.42, 0.44, 0.47), vec3f(0.25, 0.26, 0.28), hashuf(h ^ 0x77u)); s.winW = min(s.winW, 0.5); }
+  if (s.family == 4u) { s.wall = vec3f(0.36, 0.355, 0.34) * mix(0.85, 1.1, hashuf(h ^ 0x88u)); }
   if (podium) { s.wall = mix(s.wall, vec3f(0.35, 0.33, 0.3), 0.5); }
   return s;
 }
@@ -171,8 +179,32 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   wall *= mix(0.7, 1.0, smoothstep(0.0, 3.0, uv.y));
   s.albedo = wall;
   s.rough = 0.75;
+  if (st.family == 3u) {
+    // Aluminium cladding panels with dark seams.
+    let pu = fract(uv.x / 1.2);
+    let pv = fract(uv.y / (st.floorH * 0.5));
+    let seam = min(min(pu, 1.0 - pu) * 1.2, min(pv, 1.0 - pv) * st.floorH * 0.5) < 0.012;
+    s.albedo = select(wall, wall * 0.35, seam);
+    s.metal = 0.75;
+    s.rough = 0.38 + 0.1 * hash21(floor(uv / vec2f(1.2, st.floorH * 0.5)));
+  } else if (st.family == 4u) {
+    // Fair-face concrete: formwork panel lines and tie holes.
+    let fu = fract(uv.x / 1.8);
+    let fv = fract(uv.y / 0.9);
+    let joint = min(fu, 1.0 - fu) * 1.8 < 0.01 || min(fv, 1.0 - fv) * 0.9 < 0.008;
+    let tie = length((fract(uv / vec2f(0.6, 0.45)) - 0.5) * vec2f(0.6, 0.45)) < 0.015;
+    s.albedo = wall * (0.9 + 0.12 * valueNoise(uv * 3.0)) * select(1.0, 0.75, joint || tie);
+    s.rough = 0.85;
+  } else if (st.family == 2u) {
+    // Deep vertical piers between the windows (shaded by normal tilt).
+    let lxp = uv.x - floor(uv.x / st.bay) * st.bay;
+    let pierW = (1.0 - st.winW) * 0.5 * st.bay;
+    if (lxp < pierW * 0.3 || lxp > st.bay - pierW * 0.3) {
+      s.normal = normalize(n + T * select(-0.6, 0.6, lxp < pierW));
+    }
+  }
   // Tile grout grooves and the floor-slab bevel as normal detail.
-  let wfade = bumpFade(world);
+  let wfade = bumpFade(world) * select(0.0, 1.0, st.family <= 1u);
   if (wfade > 0.05) {
     let gu = fract(uv.x * 10.0);
     let gv = fract(uv.y * 20.0);

@@ -1,5 +1,5 @@
-html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; }
-canvas { width: 100%; height: 100%; display: block; outline: none; }
+html, body { margin: 0; height: 100%; background: #000; font-family: system-ui, sans-serif; }
+canvas { width: 100%; height: 100%; display: block; }
 #loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: radial-gradient(#1a1d2b, #050507); color: #eee; gap: 14px; }
 #loading .title { font-size: 42px; font-weight: 800; letter-spacing: 0.25em; background: linear-gradient(90deg, #ff5fa2, #ffd36e, #5fe4ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
 #loading .bar { width: 320px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; }
