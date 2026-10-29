@@ -175,11 +175,13 @@ export class Game {
     const pl = this.player;
     const cam = this.camera as unknown as {shot: {name: string; t: number; dur: number} | null; newShotNamed?: (n: string) => void};
     cam.shot = null;
+    this.camera.locked = false;
     // Ask the director repeatedly until it picks the requested shot.
     for (let i = 0; i < 200; i++) {
       this.camera.update(0.01, pl, this.input);
       if (this.camera.shot?.name === name) {
         this.camera.shot.dur = 1e9;
+        this.camera.locked = true;
         return;
       }
       if (this.camera.shot) this.camera.shot.t = 1e9;

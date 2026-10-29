@@ -197,11 +197,14 @@ export class CameraSystem {
     return push[0] !== 0 || push[1] !== 0;
   }
 
+  /** Forced shots (tests, URL ?shot=) skip the automatic cut-away checks. */
+  locked = false;
   private losTimer = 0;
   private blockedFor = 0;
 
   private directed(dt: number, pl: Player): CamOut {
     let out = this.directedRaw(dt, pl);
+    if (this.locked) return out;
     // Periodically verify the subject is visible; cut if blocked for a while.
     this.losTimer += dt;
     if (this.shot && this.shot.name !== 'interior' && this.losTimer > 0.25) {
@@ -257,7 +260,7 @@ export class CameraSystem {
       }
       case 'interior': {
         const e = pl.info?.driverEye ?? [0, 1.2, 0];
-        const eye = pl.toWorld([e[0] * -0.4, e[1] + 0.05, e[2] - 0.9]);
+        const eye = pl.toWorld([e[0] * 0.15, e[1] + 0.02, e[2] - 0.38]);
         const look = pl.toWorld([e[0] * 0.5, e[1] - 0.2, e[2] + 8]);
         return {eye, target: look, fov: 1.2, near: 0.03, interior: true};
       }
