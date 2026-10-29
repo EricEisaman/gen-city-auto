@@ -285,46 +285,177 @@ function cleanPolygon(poly: Vec2[], minEdge: number): Vec2[] {
   return out;
 }
 
-function splitLots(
+/** Whether segment a-b lies on a frontage edge of `poly`. */
+function onFrontage(a: Vec2, b: Vec2, poly: Vec2[], frontage: boolean[]) {
+  const mid: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  for (let k = 0; k < poly.length; k++) {
+    if (pointSegment(mid, poly[k], poly[(k + 1) % poly.length])[0] < 0.05)
+      return frontage[k];
+  }
+  return false;
+}
+
+/**
+ * Frontage flags for `part`, a piece clipped out of `poly`: an edge faces the
+ * street if it lies on a frontage edge of `poly`. Edges on cut lines don't.
+ */
+function inheritFrontage(
+  part: Vec2[],
+  poly: Vec2[],
+  frontage: boolean[],
+): boolean[] {
+  return part.map((a, i) =>
+    onFrontage(a, part[(i + 1) % part.length], poly, frontage),
+  );
+}
+
+function frontageLength(poly: Vec2[], frontage: boolean[]) {
+  let l = 0;
+  poly.forEach((a, i) => {
+    if (frontage[i]) l += dist2(a, poly[(i + 1) % poly.length]);
+  });
+  return l;
+}
+
+/** Extent of `poly` projected on unit axis `d`. */
+function extent(poly: Vec2[], d: Vec2): [number, number] {
+  let lo = Infinity,
+    hi = -Infinity;
+  for (const q of poly) {
+    const s = dot2(q, d);
+    lo = Math.min(lo, s);
+    hi = Math.max(hi, s);
+  }
+  return [lo, hi];
+}
+
+/** Lot dimensions for one block: street frontage width and depth. */
+export interface LotRule {
+  /** Frontage width range; lots are cut to a width in this range. */
+  width: [number, number];
+  /** Max depth from the street before the back becomes its own lot. */
+  depth: number;
+  /** Chance a leaf lot pulls back from its side/rear neighbours. */
+  gap: number;
+  /** Chance per split to stop early and keep a merged, wider lot. */
+  merge: number;
+}
+
+/**
+ * Tokyo-style lot subdivision. Lots are cut across the street frontage into
+ * narrow plots (pencil buildings side by side) and cut off at a max depth so
+ * deep blocks get back lots; every cut keeps street frontage on both pieces
+ * where it can. Interior pieces with no frontage are split by their OBB.
+ */
+export function splitLots(
   rng: Rng,
   poly: Vec2[],
   frontage: boolean[],
-  maxArea: number,
-  minArea: number,
+  rule: LotRule,
   out: Lot[],
   depth = 0,
 ) {
   const area = polygonArea(poly);
-  if (area < minArea * 0.5 || poly.length < 3) return;
-  if (area <= maxArea || depth > 12) {
-    out.push({poly, frontage});
-    return;
+  if (area < 30 || poly.length < 3) return;
+  const [wLo, wHi] = rule.width;
+  // Frontage direction (and midpoint) of the longest street edge.
+  let f: Vec2 | undefined;
+  let fm: Vec2 = poly[0];
+  let best = 0;
+  poly.forEach((a, i) => {
+    if (!frontage[i]) return;
+    const b = poly[(i + 1) % poly.length];
+    const l = dist2(a, b);
+    if (l > best) {
+      best = l;
+      f = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+      fm = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    }
+  });
+  const cut = (d: Vec2, s: number, needFront: boolean) => {
+    const p: Vec2 = [d[0] * s, d[1] * s];
+    const parts: {poly: Vec2[]; fr: boolean[]}[] = [];
+    for (const n of [d, [-d[0], -d[1]] as Vec2]) {
+      const part = clipHalf(poly, p, n);
+      if (part.length < 3 || polygonArea(part) < 35) return null;
+      const fr = part.map((a, i) => {
+        const b = part[(i + 1) % part.length];
+        const mid: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        return Math.abs(dot2(sub2(mid, p), n)) < 0.05
+          ? false
+          : onFrontage(a, b, poly, frontage);
+      });
+      // Narrow street frontage only counts if it's a usable shop front.
+      if (needFront && frontageLength(part, fr) < 3) return null;
+      parts.push({poly: part, fr});
+    }
+    return parts;
+  };
+  const recurse = (parts: {poly: Vec2[]; fr: boolean[]}[] | null) => {
+    if (!parts) return false;
+    for (const q of parts) splitLots(rng, q.poly, q.fr, rule, out, depth + 1);
+    return true;
+  };
+  if (depth < 14 && f) {
+    const n: Vec2 = [-f[1], f[0]];
+    const [f0, f1] = extent(poly, f);
+    const [n0, n1] = extent(poly, n);
+    const w = f1 - f0;
+    const d = n1 - n0;
+    const early = depth > 1 && area < 900 && rng.chance(rule.merge);
+    if (w > wHi && !early) {
+      // Cut across the frontage. Long runs split near the middle (corner lots
+      // keep both streets); short runs peel off one plot of a random width.
+      const s =
+        w > wHi * 2.5
+          ? f0 + w * rng.range(0.38, 0.62)
+          : rng.chance(0.5)
+            ? f0 + rng.range(wLo, Math.min(wHi, w - wLo))
+            : f1 - rng.range(wLo, Math.min(wHi, w - wLo));
+      if (w - wLo >= wLo && recurse(cut(f, s, true))) return;
+    }
+    if (d > rule.depth * 1.35 && !early) {
+      // Too deep: a through lot splits in the middle when both halves keep a
+      // street (two lots back to back), otherwise the back becomes its own lot.
+      if (recurse(cut(n, n0 + d * rng.range(0.42, 0.58), true))) return;
+      // Measure the depth from whichever side the street is on.
+      const atLo = dot2(fm, n) - n0 < n1 - dot2(fm, n);
+      const dd = rule.depth * rng.range(0.7, 1);
+      if (d - dd > 9 && recurse(cut(n, atLo ? n0 + dd : n1 - dd, false)))
+        return;
+    }
   }
-  const box = obb(poly);
-  // Split across the long axis near the middle.
-  const t = rng.range(-0.18, 0.18) * box.hu;
-  const p: Vec2 = [box.c[0] + box.u[0] * t, box.c[1] + box.u[1] * t];
-  const halves: [Vec2, Vec2][] = [
-    [p, box.u],
-    [p, [-box.u[0], -box.u[1]]],
-  ];
-  for (const [pp, n] of halves) {
-    const part = clipHalf(poly, pp, n);
-    if (part.length < 3) continue;
-    // Edges on the split line have no frontage; others inherit from the original
-    // edge they lie on.
-    const fr = part.map((a, i) => {
-      const b = part[(i + 1) % part.length];
-      const mid: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      if (Math.abs(dot2(sub2(mid, pp), n)) < 0.05) return false;
-      for (let k = 0; k < poly.length; k++) {
-        if (pointSegment(mid, poly[k], poly[(k + 1) % poly.length])[0] < 0.05)
-          return frontage[k];
-      }
-      return false;
-    });
-    splitLots(rng, part, fr, maxArea, minArea, out, depth + 1);
+  if (depth < 14 && (!f || area > rule.depth * wHi * 2)) {
+    // Interior lot (or an awkward shape no frontage cut works on): halve by
+    // the OBB while it's large.
+    const box = obb(poly);
+    const long = Math.max(box.hu, box.hv) * 2;
+    if (long > rule.depth * 1.6 || area > rule.depth * wHi * 1.5) {
+      const u: Vec2 = box.hu >= box.hv ? box.u : [-box.u[1], box.u[0]];
+      const s = dot2(box.c, u) + long * rng.range(-0.1, 0.1);
+      if (recurse(cut(u, s, false))) return;
+    }
   }
+  // Leaf. Some lots pull back from their side and rear neighbours so blocks
+  // read as separate buildings with narrow gaps, not one mass.
+  if (rng.chance(rule.gap)) {
+    let q = poly;
+    const g = rng.range(0.35, 0.8);
+    for (let i = 0; i < poly.length && q.length >= 3; i++) {
+      if (frontage[i]) continue;
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      const l = dist2(a, b);
+      if (l < 1e-6) continue;
+      const nn: Vec2 = [-(b[1] - a[1]) / l, (b[0] - a[0]) / l];
+      q = clipHalf(q, [a[0] + nn[0] * g, a[1] + nn[1] * g], nn);
+    }
+    if (q.length >= 3 && polygonArea(q) > area * 0.6) {
+      out.push({poly: q, frontage: inheritFrontage(q, poly, frontage)});
+      return;
+    }
+  }
+  out.push({poly, frontage});
 }
 
 // ---------------------------------------------------------------------------
@@ -762,14 +893,28 @@ export function generateLayout(
     if (park) continue;
     const clean = cleanPolygon(inner, 1.5);
     if (clean.length < 3) continue;
-    const maxLot = lerp(320, 2600, dens * dens) * rng.range(0.8, 1.3);
+    // Most blocks are finely divided into narrow street-front plots (narrower
+    // and deeper downtown, wider with gaps in the suburbs); some core blocks
+    // stay as a few big lots for towers.
+    const big =
+      area > 1500 && rng.chance(Math.pow(dens, 1.6) * params.modernity * 1.6);
+    const rule: LotRule = big
+      ? {width: [30, 70], depth: 60, gap: 0, merge: 0.3}
+      : {
+          width: [
+            lerp(9, 5.5, dens),
+            lerp(20, 11, dens) * rng.range(0.85, 1.25),
+          ],
+          depth: lerp(25, 22, dens) * rng.range(0.85, 1.2),
+          gap: lerp(0.6, 0.15, dens),
+          merge: lerp(0.1, 0.12, dens),
+        };
     const lotsHere: Lot[] = [];
     splitLots(
       rng,
       clean,
       clean.map(() => true),
-      maxLot,
-      60,
+      rule,
       lotsHere,
     );
     for (const lot of lotsHere) lots.push({lot, park: false});
@@ -837,11 +982,19 @@ export function generateLayout(
           brng.range(0.6, 1.4),
       );
     }
+    // Old two-to-four storey shops survive between newer midrises, so street
+    // walls step up and down from lot to lot.
+    if (
+      (kind === 'midrise' || kind === 'pencil') &&
+      dens > 0.3 &&
+      brng.chance(0.15)
+    )
+      floors = brng.int(2, 5);
     floors = clamp(floors, 1, 75);
     const floorH =
       kind === 'house' ? 2.9 : kind === 'glass' || kind === 'tower' ? 3.9 : 3.3;
-    const frontage = lot.frontage.slice(0, fp.length);
-    while (frontage.length < fp.length) frontage.push(false);
+    // Cleaning may drop vertices, so match edges back to the lot's.
+    const frontage = inheritFrontage(fp, lot.poly, lot.frontage);
     let front = -1;
     let bestLen = 0;
     fp.forEach((a, i) => {
