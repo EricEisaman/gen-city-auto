@@ -47,9 +47,7 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
       let metallic = I.color.a > 0.2;
       s.rough = select(0.55, 0.32, metallic);
       s.metal = select(0.0, 0.45, metallic);
-      if (metallic) {
-        s.normal = normalize(n + (hash33(floor(i.local * 600.0)) - 0.5) * 0.02);
-      }
+
       s.albedo *= 1.0 - I.params.w * 0.3 * smoothstep(0.6, 0.0, i.local.y);
     }
     case 1u: { s.albedo = I.color2.rgb; s.rough = 0.4; s.metal = I.color2.a * 0.5; }
@@ -68,12 +66,12 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
       let brake = I.params.y;
       s.emissive = vec3f(1.0, 0.04, 0.02) * (lightsOn * 4.0 + brake * 14.0);
     }
-    case 8u: { s.albedo = vec3f(0.09, 0.085, 0.08); s.rough = 0.85; s.ao = 0.4; }
-    case 9u: { s.albedo = vec3f(0.14, 0.13, 0.12); s.rough = 0.9; s.ao = 0.45; }
+    case 8u: { s.albedo = vec3f(0.09, 0.085, 0.08); s.rough = 0.85; s.ao = 0.6; }
+    case 9u: { s.albedo = vec3f(0.14, 0.13, 0.12); s.rough = 0.9; s.ao = 0.65; }
     case 10u: {
       s.albedo = vec3f(0.03);
       s.rough = 0.5;
-      s.emissive = vec3f(0.25, 0.7, 1.0) * (0.15 + lightsOn * 0.6);
+      s.emissive = vec3f(0.25, 0.7, 1.0) * (0.03 + lightsOn * 0.12);
     }
     case 11u: { s.albedo = vec3f(0.05); s.rough = 0.5; s.metal = 0.6; }
     case 12u: { s.albedo = vec3f(0.65); s.rough = 0.25; s.metal = 1.0; }

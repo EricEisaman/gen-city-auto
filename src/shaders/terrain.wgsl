@@ -69,7 +69,7 @@ struct VOut {
   let h = i.world.y;
   let slope = 1.0 - n.y;
   let nz = fbm2(xz * 0.05);
-  let grass = mix(vec3f(0.1, 0.17, 0.05), vec3f(0.2, 0.24, 0.09), nz);
+  let grass = mix(vec3f(0.09, 0.15, 0.045), vec3f(0.16, 0.2, 0.08), nz) * (0.8 + 0.2 * valueNoise(xz * 3.0) + 0.1 * (hash21(floor(xz * 12.0)) - 0.5));
   let dirt = vec3f(0.24, 0.19, 0.14) * (0.8 + 0.4 * valueNoise(xz * 0.3));
   let rock = vec3f(0.33, 0.31, 0.29) * (0.8 + 0.3 * valueNoise(xz * 0.2 + h));
   s.albedo = mix(grass, dirt, smoothstep(0.55, 0.75, nz + slope));

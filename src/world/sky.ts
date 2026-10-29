@@ -72,6 +72,12 @@ export function computeSky(
   const sunScale =
     SUN_ILLUMINANCE * sunUp * (1 - overcast * 0.85) * (1 - rain * 0.3);
   const sunColor: Vec3 = [T[0] * sunScale, T[1] * sunScale, T[2] * sunScale];
+  // Golden hour: the low sun turns amber (beyond pure Rayleigh extinction,
+  // matching how film and the AAA references grade it).
+  const gold = 1 - smoothstep(0.04, 0.38, sunDir[1]);
+  sunColor[1] *= 1 - 0.18 * gold;
+  sunColor[2] *= 1 - 0.45 * gold;
+  sunColor[0] *= 1 + 0.25 * gold;
 
   // Moon roughly opposite the sun, offset so it is not exactly antipodal.
   const moonDir = sunDirection((hour + 12.6) % 24, 245 + 10);

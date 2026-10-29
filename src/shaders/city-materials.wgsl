@@ -391,8 +391,8 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   // Lane arrows approximated by a short bar before the stop line.
   if (mark > 0.0) {
     let wear = smoothstep(0.2, 0.7, valueNoise(world.xz * 4.0));
-    let c = select(vec3f(0.55), vec3f(0.55, 0.36, 0.05), yellow);
-    s.albedo = mix(s.albedo, c, 0.3 + 0.7 * wear * (0.6 + 0.4 * valueNoise(world.xz * 1.5)));
+    let c = select(vec3f(0.65), vec3f(0.62, 0.42, 0.06), yellow);
+    s.albedo = mix(s.albedo, c, 0.65 + 0.35 * wear * (0.6 + 0.4 * valueNoise(world.xz * 1.5)));
     s.rough = 0.7;
   }
   // Manhole covers along the lane centers.
@@ -571,7 +571,10 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     }
     case M_BARK: { s.albedo = vec3f(0.16, 0.11, 0.08); s.rough = 0.95; }
     case M_GRASS: {
-      s.albedo = mix(vec3f(0.12, 0.2, 0.05), vec3f(0.2, 0.26, 0.08), fbm2(world.xz * 0.2));
+      s.albedo = mix(vec3f(0.1, 0.17, 0.045), vec3f(0.17, 0.22, 0.07), fbm2(world.xz * 0.2)) * 0.85;
+      s.albedo *= 0.8 + 0.2 * valueNoise(world.xz * 3.0) + 0.1 * (hash21(floor(world.xz * 12.0)) - 0.5);
+      // Worn, drier patches.
+      s.albedo = mix(s.albedo, vec3f(0.2, 0.18, 0.11), smoothstep(0.62, 0.8, fbm2(world.xz * 0.05 + 7.0)) * 0.6);
       s.rough = 0.95;
       // Gravel paths through parks.
       let path = abs(sin(world.x * 0.05 + sin(world.z * 0.04) * 2.0));

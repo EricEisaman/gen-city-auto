@@ -68,6 +68,8 @@ export class CameraSystem {
   private rng = new Rng(2024);
   private net: RoadNet;
   trainFocus: () => Vec3 | null = () => null;
+  /** Nearby dynamic obstacles (pedestrians) the camera must not sit in or look through. */
+  obstacles: () => Vec3[] = () => [];
 
   constructor(net: RoadNet) {
     this.net = net;
@@ -306,7 +308,27 @@ export class CameraSystem {
   private badEye(e: Vec3) {
     if (e[1] < this.net.hf.sample(e[0], e[2]) + 0.25) return true;
     const push = this.net.collideBuildings(e, 1.2);
-    return push[0] !== 0 || push[1] !== 0;
+    if (push[0] !== 0 || push[1] !== 0) return true;
+    for (const o of this.obstacles()) {
+      if (Math.hypot(o[0] - e[0], o[2] - e[2]) < 1.8 && e[1] - o[1] < 2.2)
+        return true;
+    }
+    return false;
+  }
+
+  /** True if a pedestrian stands close to the line of sight near the camera. */
+  private obstructedByPeople(e: Vec3, t: Vec3) {
+    const dx = t[0] - e[0];
+    const dz = t[2] - e[2];
+    const len = Math.hypot(dx, dz) || 1;
+    for (const o of this.obstacles()) {
+      const ox = o[0] - e[0];
+      const oz = o[2] - e[2];
+      const along = (ox * dx + oz * dz) / len;
+      if (along < 0.3 || along > Math.min(len - 1, 12)) continue;
+      if (Math.abs(ox * dz - oz * dx) / len < 0.6) return true;
+    }
+    return false;
   }
 
   /** Forced shots (tests, URL ?shot=) skip the automatic cut-away checks. */
@@ -318,7 +340,10 @@ export class CameraSystem {
     let out = this.directedRaw(dt, pl);
     // Never below the local ground or sidewalk, even for locked shots.
     if (!out.interior) {
-      const g = Math.max(this.net.hf.sample(out.eye[0], out.eye[2]), this.net.surfaceHeight(out.eye[0], out.eye[2], out.eye[1]));
+      const g = Math.max(
+        this.net.hf.sample(out.eye[0], out.eye[2]),
+        this.net.surfaceHeight(out.eye[0], out.eye[2], out.eye[1]),
+      );
       if (out.eye[1] < g + 0.6) out.eye = [out.eye[0], g + 0.6, out.eye[2]];
     }
     if (this.locked) return out;
@@ -330,7 +355,12 @@ export class CameraSystem {
         this.shot.focus === 'train'
           ? (this.trainFocus() ?? pl.pos)
           : ([pl.pos[0], pl.pos[1] + 0.8, pl.pos[2]] as Vec3);
-      this.blockedFor = this.blocked(out.eye, tgt) ? this.blockedFor + 0.25 : 0;
+      this.blockedFor =
+        this.blocked(out.eye, tgt) ||
+        this.obstructedByPeople(out.eye, tgt) ||
+        this.badEye(out.eye)
+          ? this.blockedFor + 0.25
+          : 0;
       if (this.blockedFor > 0.5) {
         this.blockedFor = 0;
         this.shot = this.newShot(pl);

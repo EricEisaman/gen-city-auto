@@ -1364,28 +1364,194 @@ export function buildTile(
     }
   }
 
-  // Vending machines in front of some buildings (LOD0 only).
+  // Shop-front clutter (LOD0): vending machine clusters, parked bicycles.
   if (lod === 0) {
     for (const bi of ctx.tileBuildings[tile] ?? []) {
       const b = L.buildings[bi];
-      if (b.front < 0 || b.density < 0.12 || hash2(b.id, 55) % 4 !== 0)
-        continue;
+      if (b.front < 0 || b.density < 0.1) continue;
       const a = b.footprint[b.front],
         c = b.footprint[(b.front + 1) % b.footprint.length];
       const n = edgeNormal(b.footprint, b.front);
-      const p: Vec3 = [
-        lerp(a[0], c[0], 0.2) + n[0] * 0.5,
-        b.base + 0.9,
-        lerp(a[1], c[1], 0.2) + n[2] * 0.5,
-      ];
       const yaw = Math.atan2(n[0], n[2]);
-      m.box(p, [0.5, 0.9, 0.4], packMat(CM.vending, b.id & 0xff), yaw);
-      lights.add(
-        [p[0] + n[0] * 1, p[1], p[2] + n[2] * 1],
-        4,
-        [0.9, 0.95, 1.0],
-        LightKind.vending,
-      );
+      const h = hash2(b.id, 55);
+      if (h % 3 === 0) {
+        const count = 1 + ((h >> 4) % 3);
+        for (let k = 0; k < count; k++) {
+          const t = 0.15 + k * 0.09;
+          const p: Vec3 = [
+            lerp(a[0], c[0], t) + n[0] * 0.5,
+            b.base + 0.9,
+            lerp(a[1], c[1], t) + n[2] * 0.5,
+          ];
+          m.box(
+            p,
+            [0.5, 0.9, 0.4],
+            packMat(CM.vending, (b.id + k) & 0xff),
+            yaw,
+          );
+        }
+        const p0: Vec3 = [
+          lerp(a[0], c[0], 0.2) + n[0] * 1.5,
+          b.base + 0.9,
+          lerp(a[1], c[1], 0.2) + n[2] * 1.5,
+        ];
+        lights.add(p0, 5, [0.9, 0.95, 1.0], LightKind.vending);
+      }
+      if (h % 5 === 1 && dist2(a, c) > 6) {
+        // A row of parked bicycles against the frontage.
+        const count = 3 + ((h >> 6) % 5);
+        for (let k = 0; k < count; k++) {
+          const t = 0.55 + k * (0.35 / count);
+          const base: Vec3 = [
+            lerp(a[0], c[0], t) + n[0] * 0.9,
+            b.base,
+            lerp(a[1], c[1], t) + n[2] * 0.9,
+          ];
+          const col = packMat(CM.paint, (h + k * 37) & 0xff);
+          // Two wheels and a frame, oriented toward the wall.
+          for (const off of [-0.5, 0.5]) {
+            const wc: Vec3 = [
+              base[0] + n[0] * off,
+              base[1] + 0.33,
+              base[2] + n[2] * off,
+            ];
+            m.beam(
+              [wc[0], wc[1] - 0.3, wc[2]],
+              [wc[0], wc[1] + 0.3, wc[2]],
+              0.02,
+              0.3,
+              packMat(CM.wire),
+            );
+          }
+          m.beam(
+            [base[0] - n[0] * 0.45, base[1] + 0.55, base[2] - n[2] * 0.45],
+            [base[0] + n[0] * 0.45, base[1] + 0.6, base[2] + n[2] * 0.45],
+            0.03,
+            0.03,
+            col,
+          );
+          m.box(
+            [base[0] - n[0] * 0.15, base[1] + 0.85, base[2] - n[2] * 0.15],
+            [0.25, 0.02, 0.06],
+            packMat(CM.metal),
+            yaw + Math.PI / 2,
+          );
+        }
+      }
+    }
+    // Guardrails along arterial curbs, bollards at corners, bus stops.
+    for (const ci of ctx.tileChains[tile] ?? []) {
+      const c = L.chains[ci];
+      if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
+      const arc = ctx.geom.arc[ci];
+      const total = arc[arc.length - 1];
+      const [s0, s1] = ctx.geom.setbacks[ci];
+      for (const side of [-1, 1]) {
+        const off = (ROAD_WIDTH[c.kind] / 2 + 0.35) * side;
+        let prev: Vec3 | null = null;
+        for (let s = s0 + 6; s < total - s1 - 6; s += 2) {
+          const q = chainAt(c, arc, s);
+          const l: Vec2 = [-q.d[1], q.d[0]];
+          const p: Vec3 = [
+            q.p[0] + l[0] * off,
+            q.h + 0.16,
+            q.p[1] + l[1] * off,
+          ];
+          if (!inTile(p[0], p[2])) {
+            prev = null;
+            continue;
+          }
+          // Gaps for crossings / driveways.
+          if (hash2(ci * 7 + side, Math.floor(s / 24)) % 5 === 0) {
+            prev = null;
+            continue;
+          }
+          m.box(
+            [p[0], p[1] + 0.4, p[2]],
+            [0.03, 0.4, 0.03],
+            packMat(CM.paint, 0xd0),
+          );
+          if (prev) {
+            m.beam(
+              [prev[0], prev[1] + 0.78, prev[2]],
+              [p[0], p[1] + 0.78, p[2]],
+              0.025,
+              0.03,
+              packMat(CM.paint, 0xd0),
+            );
+            m.beam(
+              [prev[0], prev[1] + 0.45, prev[2]],
+              [p[0], p[1] + 0.45, p[2]],
+              0.02,
+              0.02,
+              packMat(CM.paint, 0xd0),
+            );
+          }
+          prev = p;
+        }
+        // Bus stop every ~300 m on one side.
+        for (
+          let s = s0 + 40 + (hash2(ci, side) % 120);
+          s < total - s1 - 20;
+          s += 300
+        ) {
+          const q = chainAt(c, arc, s);
+          const l: Vec2 = [-q.d[1], q.d[0]];
+          const o = (ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] * 0.6) * side;
+          const p: Vec3 = [q.p[0] + l[0] * o, q.h + 0.16, q.p[1] + l[1] * o];
+          if (!inTile(p[0], p[2])) continue;
+          const yaw = Math.atan2(q.d[0], q.d[1]);
+          m.box(
+            [p[0], p[1] + 2.4, p[2]],
+            [1.8, 0.05, 0.7],
+            packMat(CM.metal),
+            yaw,
+          );
+          for (const e of [-1.6, 1.6])
+            m.box(
+              [p[0] + q.d[0] * e, p[1] + 1.2, p[2] + q.d[1] * e],
+              [0.05, 1.2, 0.05],
+              packMat(CM.metal),
+            );
+          m.box(
+            [p[0] - l[0] * side * 0.65, p[1] + 1.3, p[2] - l[1] * side * 0.65],
+            [1.2, 0.9, 0.04],
+            packMat(CM.screen, (ci + side) & 0xff),
+            yaw,
+          );
+          m.box(
+            [p[0], p[1] + 0.45, p[2]],
+            [1.2, 0.05, 0.25],
+            packMat(CM.metal),
+            yaw,
+          );
+          lights.add(
+            [p[0], p[1] + 2.0, p[2]],
+            6,
+            [0.9, 0.95, 1.0],
+            LightKind.vending,
+          );
+        }
+      }
+    }
+    // Bollards at signalized corners.
+    for (const ji of ctx.tileJunctions[tile] ?? []) {
+      const j = L.junctions[ji];
+      if (!j.signal) continue;
+      const jg = ctx.geom.junctions[ji];
+      for (const q of jg.outline) {
+        const d: Vec2 = [q[0] - j.p[0], q[1] - j.p[1]];
+        const dl = Math.hypot(d[0], d[1]) || 1;
+        for (let k = -2; k <= 2; k++) {
+          const t: Vec2 = [-d[1] / dl, d[0] / dl];
+          const bp: Vec3 = [
+            q[0] + (d[0] / dl) * 0.7 + t[0] * k * 0.9,
+            j.h + 0.16,
+            q[1] + (d[1] / dl) * 0.7 + t[1] * k * 0.9,
+          ];
+          m.cylinder(bp, 0.07, 0.8, 6, packMat(CM.paint, 0xd8), true);
+        }
+      }
     }
   }
   void SODIUM;

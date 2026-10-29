@@ -494,7 +494,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var env = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
   // Below the horizon reflections see the city: darken toward ground ambient.
   env = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, env, smoothstep(-0.05, 0.15, refl.y));
-  if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5) {
+  if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE) {
     let cr = cityReflection(world + n * 0.3, refl);
     env = mix(env, cr.rgb, cr.a);
   }
@@ -510,8 +510,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     let fc = min(0.04 + 0.96 * pow(1.0 - nv, 5.0), 0.45);
     let envSharp = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
     var coatEnv = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, envSharp, smoothstep(-0.05, 0.15, refl.y));
-    let ccr = cityReflection(world + n * 0.3, refl);
-    coatEnv = mix(coatEnv, ccr.rgb, ccr.a);
     if (frame.misc.y > 0.5 && nv > 0.25) {
       let r2 = ssr(world, n, v, pxf, 0.02, false);
       coatEnv = mix(coatEnv, r2.rgb, r2.a);

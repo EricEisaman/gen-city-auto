@@ -155,6 +155,16 @@ export class Game {
       city.summary.layout.hubs.map(h => h.p),
     );
     this.camera = new CameraSystem(net);
+    this.camera.obstacles = () => {
+      const out: Vec3[] = [];
+      const e = this.player.pos;
+      for (const p of this.peds?.peds ?? []) {
+        const m = p.model;
+        if (Math.abs(m[12] - e[0]) < 40 && Math.abs(m[14] - e[2]) < 40)
+          out.push([m[12], m[13], m[14]]);
+      }
+      return out;
+    };
     this.camera.trainFocus = () => {
       // Nearest train car to the player.
       const t = this.trains!;
@@ -390,7 +400,7 @@ export class Game {
       ];
       const yaw = (Math.atan2(model[8], model[10]) / (Math.PI * 2) + 1) % 1;
       this.carLights.set(
-        [p[0], p[1], p[2], 28, 1.3, 1.25, 1.15, 5 + Math.min(yaw, 0.999)],
+        [p[0], p[1], p[2], 24, 0.8, 0.77, 0.7, 5 + Math.min(yaw, 0.999)],
         n * 8,
       );
       n++;

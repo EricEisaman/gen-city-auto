@@ -863,13 +863,9 @@ function expressway(e: Elevated, hf: Heightfield, m: CMesh, lights: LightList) {
   const along: number[] = [0];
   for (let i = 1; i < n; i++)
     along.push(along[i - 1] + dist2(pts[i - 1], pts[i]));
-  // Ramp the ends down to the boulevard below.
+  // Fully elevated: ramps down onto the boulevard would cover its lanes.
   const total = along[n - 1];
-  const hs = e.heights.map((h, i) => {
-    const t = Math.min(along[i], total - along[i]);
-    const ground = hf.sample(pts[i][0], pts[i][1]);
-    return lerp(ground + 0.15, h, Math.min(1, t / 260));
-  });
+  const hs = e.heights.slice();
   const halfW = 9;
   const len = Math.round(total);
   deckBox(
