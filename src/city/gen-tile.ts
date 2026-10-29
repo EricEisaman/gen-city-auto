@@ -909,6 +909,47 @@ export function building(
           packMat(CM.metal),
         );
     }
+  } else if (b.height > 10) {
+    // Distant roofs: a coarse silhouette of the same clutter (stair housing,
+    // a merged block of AC units, a water tank) so skylines aren't bare boxes.
+    const area = polygonArea(roof);
+    if (area > 80) {
+      const box = obb(roof);
+      const yaw = Math.atan2(box.u[0], box.u[1]);
+      const at = (su: number, sv: number): Vec2 => [
+        box.c[0] + box.u[0] * su - box.u[1] * sv,
+        box.c[1] + box.u[1] * su + box.u[0] * sv,
+      ];
+      const h = at(box.hu * 0.45, -box.hv * 0.4);
+      if (b.height > 15 && pointInPolygon(h, roof))
+        m.box(
+          [h[0], roofY + 1.6, h[1]],
+          [1.6, 1.6, 1.6],
+          packMat(CM.facade, (b.style & 0xffff) | (KIND_INDEX[b.kind] << 16)),
+          yaw,
+          aux,
+        );
+      const ac = at(-box.hu * 0.2, box.hv * 0.25);
+      if (pointInPolygon(ac, roof))
+        m.box(
+          [ac[0], roofY + 0.45, ac[1]],
+          [Math.min(box.hu * 0.4, 4), 0.45, Math.min(box.hv * 0.25, 1.6)],
+          packMat(CM.paint, 0xe0),
+          yaw,
+        );
+      if (rng.chance(0.35)) {
+        const t = at(-box.hu * 0.5, -box.hv * 0.3);
+        if (pointInPolygon(t, roof))
+          m.cylinder(
+            [t[0], roofY, t[1]],
+            1.1,
+            3.2,
+            6,
+            packMat(CM.paint, 0xd0),
+            true,
+          );
+      }
+    }
   }
 }
 
