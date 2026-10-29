@@ -183,7 +183,8 @@ fn stars(d: vec3f) -> vec3f {
 }
 
 fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
-  var c = skyRadiance(d);
+  // Below the horizon (beyond the world) continue the horizon haze.
+  var c = skyRadiance(normalize(vec3f(d.x, max(d.y, 0.012), d.z)));
   let night = frame.time.w;
   let r = R_GROUND + frame.camPos.y * 0.001;
   let T = textureSampleLevel(transmittanceTex, linearSampler, transmittanceUv(r, d.y), 0.0).rgb;
@@ -204,9 +205,10 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
   let horizon = exp(-max(d.y, 0.0) * 6.0);
   c += (vec3f(0.0012, 0.0018, 0.004) + frame.cityGlow.rgb * (0.1 + 0.9 * horizon) * (0.6 + frame.weather.x * 1.5)) * night;
   // Clouds.
-  if (d.y > -0.02) {
+  {
     let cl = textureSampleLevel(cloudTex, linearSampler, uv, 0.0);
-    c = c * cl.a + cl.rgb;
+    let k = smoothstep(-0.03, 0.01, d.y);
+    c = mix(c, c * cl.a + cl.rgb, k);
   }
   // Lightning flash lights the whole sky.
   c += vec3f(0.6, 0.65, 0.9) * frame.wind.w * 3.0 * frame.weather.x;

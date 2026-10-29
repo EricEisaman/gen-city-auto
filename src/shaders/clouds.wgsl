@@ -124,7 +124,7 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
   var result = vec4f(0.0, 0.0, 0.0, 1.0);
   if (frame.weather.x > 0.01 && rd.y > 0.005) {
     let t0 = max((CLOUD_BOTTOM - ro.y) / rd.y, 0.0);
-    let t1 = min((CLOUD_TOP - ro.y) / rd.y, 40000.0);
+    let t1 = min((CLOUD_TOP - ro.y) / rd.y, 70000.0);
     if (t1 > t0) {
       let steps = select(24, 56, frame.misc.y > 0.5);
       let dt = (t1 - t0) / f32(steps);
@@ -163,9 +163,11 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
         }
         t += dt;
       }
-      // Fade distant clouds into the sky haze.
-      let fade = smoothstep(38000.0, 12000.0, t0);
-      result = vec4f(L * fade, mix(1.0, T, fade));
+      // Distant clouds dissolve into the horizon haze (keep their opacity so
+      // an overcast deck reaches the horizon instead of ending in an edge).
+      let haze = smoothstep(6000.0, 45000.0, t0);
+      let hazeCol = (frame.skyAmbient.rgb * 1.6 + frame.cityGlow.rgb * 2.0) * (1.0 - T);
+      result = vec4f(mix(L, hazeCol, haze), T);
     }
   }
   // Temporal accumulation (clouds are far: reproject by direction).
