@@ -97,10 +97,18 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
   return s;
 }
 
+// Instance matrices from modelMatrix() are mirrored (det < 0), which flips the
+// winding: the outside of the body is then the back face.
+fn outwardFacing(inst: u32, ff: bool) -> bool {
+  let m = instances[inst].model;
+  let det = dot(cross(m[0].xyz, m[1].xyz), m[2].xyz);
+  return ff != (det < 0.0);
+}
+
 @fragment fn fs(i: VOut, @builtin(front_facing) ff: bool) -> GOut {
   if (i.mat == 2u) { discard; }
   var n = normalize(i.normal);
-  if (!ff) { n = -n; }
+  if (!outwardFacing(i.inst, ff)) { n = -n; }
   let s = vehicleSurf(i, n);
   var o = writeG(s, i.world, i.pos);
   // Moving objects: motion from the previous model matrix.
@@ -115,7 +123,7 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
 @fragment fn fsGlass(i: VOut, @builtin(front_facing) ff: bool) -> @location(0) vec4f {
   if (i.mat != 2u) { discard; }
   var n = normalize(i.normal);
-  if (!ff) { n = -n; }
+  if (!outwardFacing(i.inst, ff)) { n = -n; }
   let v = normalize(frame.camPos.xyz - i.world);
   let nv = abs(dot(n, v));
   let fres = 0.04 + 0.96 * pow(1.0 - nv, 5.0);

@@ -219,6 +219,12 @@ fn horizonColor(d: vec3f) -> vec3f {
   return c;
 }
 
+// What reflections see below the horizon: sunlit pavement and facades
+// (groundAmbient is the radiance bounced up from the street).
+fn groundRadiance() -> vec3f {
+  return frame.groundAmbient.rgb * 1.1 + frame.cityGlow.rgb;
+}
+
 fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
   var c = skyRadiance(normalize(vec3f(d.x, max(d.y, 0.012), d.z)));
   let night = frame.time.w;
@@ -551,7 +557,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // Below the horizon reflections see the city: darken toward ground ambient.
   // Open water reflects the sky down to the horizon.
   let reflLo = select(0.15, 0.01, cls == CLASS_WATER);
-  env = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, env, smoothstep(-0.05, reflLo, refl.y));
+  env = mix(groundRadiance(), env, smoothstep(-0.08, reflLo, refl.y));
   if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE) {
     let cr = cityReflection(world + n * 0.3, refl);
     env = mix(env, cr.rgb, cr.a);
@@ -569,7 +575,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     // Clear coat: a sharp dielectric layer over the paint.
     let fc = min(0.04 + 0.96 * pow(1.0 - nv, 5.0), 0.45);
     let envSharp = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
-    var coatEnv = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, envSharp, smoothstep(-0.05, 0.15, refl.y));
+    var coatEnv = mix(groundRadiance(), envSharp, smoothstep(-0.08, 0.15, refl.y));
     color += coatEnv * fc * specOcc;
     if (frame.sunDir.w > 0.0) {
       let hc = normalize(v + frame.sunDir.xyz);

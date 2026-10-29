@@ -42,7 +42,12 @@
     it needs to be high enough to allow the train below to pass through with power cables.
     -> crossing elevated lines: the later one rises to clear the other by 8.5 m with a 3% approach grade.
 
-[ ] transit trains need windows and doors. Maybe the windows can use similar tech to building windows.
+[x] transit trains need windows and doors. Maybe the windows can use similar tech to building windows.
+    -> the designer had modelled windows, doors, band and gangways, but in the game every vehicle was
+       lit with inverted normals (the instance matrices are mirrored, flipping the winding, so the
+       front-facing test turned normals inward). That made trains and cars dark, grainy (SSAO saw the
+       body as occluded) and hid the window detail. Fixed in vehicle.wgsl; reflections below the
+       horizon also see the sunlit street now instead of near-black.
 
 [x] A production build should
     -> npm run build:prod: minified JS, WGSL stripped of comments/whitespace, gzip size table printed.
