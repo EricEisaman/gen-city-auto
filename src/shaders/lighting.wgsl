@@ -93,10 +93,16 @@ fn cityReflection(world: vec3f, r: vec3f) -> vec4f {
       let fn_ = normalize(vec3f(-r.x, 0.0, -r.z));
       let along = dot(q.xz, vec2f(-fn_.z, fn_.x));
       let cell = vec2f(floor(along / 3.0), floor(q.y / 3.4));
-      let win = step(0.35, fract(along / 3.0)) * step(0.3, fract(q.y / 3.4));
-      let wall = mix(vec3f(0.35, 0.34, 0.32), vec3f(0.05, 0.06, 0.07), win * 0.8);
+      // The window grid is only resolvable nearby; further away (where
+      // neighbouring pixels land on different cells) use its average, or
+      // it aliases into barcode stripes.
+      let far = smoothstep(6.0, 40.0, tq);
+      let winH = step(0.35, fract(along / 3.0)) * step(0.3, fract(q.y / 3.4));
+      let win = mix(winH, 0.45, far);
+      let wall = mix(vec3f(0.35, 0.34, 0.32), vec3f(0.05, 0.06, 0.07), win * 0.5);
       var c = wall * (frame.skyAmbient.rgb * 0.9 + frame.sunColor.rgb * max(dot(fn_, frame.sunDir.xyz), 0.0) * 0.25);
-      let lit = step(1.0 - mix(0.05, 0.35, frame.time.w), hash21(cell + floor(q.xz / 40.0)));
+      let litP = mix(0.05, 0.35, frame.time.w);
+      let lit = mix(step(1.0 - litP, hash21(cell + floor(q.xz / 40.0))), litP, far);
       c += win * lit * vec3f(1.0, 0.75, 0.45) * mix(0.1, 0.6, frame.time.w);
       // Haze with distance.
       c = mix(c, frame.skyAmbient.rgb + frame.cityGlow.rgb, clamp(tq / 1500.0, 0.0, 0.8));
@@ -273,6 +279,19 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
   // Night sky: deep blue plus orange light pollution near the horizon.
   let horizon = exp(-max(d.y, 0.0) * 6.0);
   c += (vec3f(0.0012, 0.0018, 0.004) + frame.cityGlow.rgb * (0.1 + 0.9 * horizon) * (0.6 + frame.weather.x * 1.5)) * night;
+  // Twilight afterglow: an orange band low in the sun's direction that fades
+  // to violet above, strongest just around sunset.
+  {
+    let sy = frame.sunDir.y;
+    let tw = smoothstep(-0.14, -0.01, sy) * smoothstep(0.2, 0.0, sy) * (1.0 - frame.weather.x * 0.8);
+    if (tw > 0.0) {
+      let az = max(dot(normalize(d.xz + vec2f(1e-5)), normalize(frame.sunDir.xz + vec2f(1e-5))), 0.0);
+      let band = exp(-max(d.y, 0.0) * 9.0) * (0.25 + 0.75 * pow(az, 3.0));
+      let violet = exp(-abs(d.y - 0.25) * 5.0) * 0.25;
+      let base = luminance(skyRadiance(normalize(vec3f(d.x, 0.05, d.z)))) + 0.002;
+      c += (vec3f(1.0, 0.42, 0.12) * band + vec3f(0.45, 0.3, 0.6) * violet) * base * 1.6 * tw;
+    }
+  }
   // Under cloud cover the low sky turns to grey haze.
   let hz = horizonColor(d);
   c = mix(c, hz, frame.weather.x * smoothstep(0.25, 0.0, d.y));
