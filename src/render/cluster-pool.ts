@@ -1,0 +1,139 @@
+// GPU pool of city clusters: one big vertex buffer, triangle buffer and cluster
+// table shared by every tile, with simple first-fit range allocators.
+
+import {CLUSTER_WORDS, VERTEX_WORDS, type ClusterData} from '../city/cmesh.ts';
+
+class RangeAllocator {
+  private free: [number, number][] = [];
+  top = 0;
+  readonly capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+  }
+
+  alloc(n: number): number {
+    for (let i = 0; i < this.free.length; i++) {
+      const [start, len] = this.free[i];
+      if (len >= n) {
+        if (len === n) this.free.splice(i, 1);
+        else this.free[i] = [start + n, len - n];
+        return start;
+      }
+    }
+    if (this.top + n > this.capacity) return -1;
+    const s = this.top;
+    this.top += n;
+    return s;
+  }
+
+  release(start: number, n: number) {
+    this.free.push([start, n]);
+    // Coalesce neighbors.
+    this.free.sort((a, b) => a[0] - b[0]);
+    const merged: [number, number][] = [];
+    for (const r of this.free) {
+      const last = merged[merged.length - 1];
+      if (last && last[0] + last[1] === r[0]) last[1] += r[1];
+      else merged.push([r[0], r[1]]);
+    }
+    const tail = merged[merged.length - 1];
+    if (tail && tail[0] + tail[1] === this.top) {
+      this.top = tail[0];
+      merged.pop();
+    }
+    this.free = merged;
+  }
+
+  get used() {
+    let f = 0;
+    for (const r of this.free) f += r[1];
+    return this.top - f;
+  }
+}
+
+export interface PoolHandle {
+  v: number;
+  vn: number;
+  t: number;
+  tn: number;
+  c: number;
+  cn: number;
+}
+
+export class ClusterPool {
+  readonly vertexBuffer: GPUBuffer;
+  readonly triBuffer: GPUBuffer;
+  readonly clusterBuffer: GPUBuffer;
+  private verts: RangeAllocator;
+  private tris: RangeAllocator;
+  private clusters: RangeAllocator;
+  readonly maxClusters: number;
+  private device: GPUDevice;
+
+  constructor(device: GPUDevice, maxVerts: number, maxTris: number, maxClusters: number) {
+    this.device = device;
+    this.maxClusters = maxClusters;
+    this.vertexBuffer = device.createBuffer({
+      label: 'city/pool/vertices',
+      size: maxVerts * VERTEX_WORDS * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.triBuffer = device.createBuffer({
+      label: 'city/pool/triangles',
+      size: maxTris * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.clusterBuffer = device.createBuffer({
+      label: 'city/pool/clusters',
+      size: maxClusters * CLUSTER_WORDS * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.verts = new RangeAllocator(maxVerts);
+    this.tris = new RangeAllocator(maxTris);
+    this.clusters = new RangeAllocator(maxClusters);
+  }
+
+  /** Number of cluster slots the cull pass must scan. */
+  get clusterHighWater() {
+    return this.clusters.top;
+  }
+
+  get stats() {
+    return {verts: this.verts.used, tris: this.tris.used, clusters: this.clusters.used};
+  }
+
+  upload(d: ClusterData): PoolHandle | null {
+    const vn = d.vertices.length / VERTEX_WORDS;
+    const tn = d.tris.length;
+    const cn = d.clusterCount;
+    if (cn === 0) return {v: 0, vn: 0, t: 0, tn: 0, c: 0, cn: 0};
+    const v = this.verts.alloc(vn);
+    const t = v < 0 ? -1 : this.tris.alloc(tn);
+    const c = t < 0 ? -1 : this.clusters.alloc(cn);
+    if (v < 0 || t < 0 || c < 0) {
+      if (v >= 0) this.verts.release(v, vn);
+      if (t >= 0) this.tris.release(t, tn);
+      return null;
+    }
+    const cl = d.clusters.slice();
+    for (let i = 0; i < cn; i++) {
+      cl[i * CLUSTER_WORDS + 4] += v;
+      cl[i * CLUSTER_WORDS + 5] += t;
+    }
+    const q = this.device.queue;
+    q.writeBuffer(this.vertexBuffer, v * VERTEX_WORDS * 4, d.vertices);
+    q.writeBuffer(this.triBuffer, t * 4, d.tris);
+    q.writeBuffer(this.clusterBuffer, c * CLUSTER_WORDS * 4, cl);
+    return {v, vn, t, tn, c, cn};
+  }
+
+  free(h: PoolHandle) {
+    if (h.cn === 0) return;
+    // Zero the cluster records so culling skips them.
+    this.device.queue.writeBuffer(this.clusterBuffer, h.c * CLUSTER_WORDS * 4, new Uint32Array(h.cn * CLUSTER_WORDS));
+    this.verts.release(h.v, h.vn);
+    this.tris.release(h.t, h.tn);
+    this.clusters.release(h.c, h.cn);
+  }
+}

@@ -1,0 +1,351 @@
+// City geometry builder and clusterizer.
+//
+// Vertex format (32 bytes, read with vertex pulling in WGSL):
+//   pos: f32x3, normal: u32 (octahedral unorm16x2), uv: f32x2, mat: u32, aux: u32
+// mat = material id (low 8 bits) | parameter (high 24 bits).
+//
+// Meshes are split into clusters of at most 128 triangles / 255 vertices. Each
+// triangle is stored as one u32 holding three 8-bit cluster-local indices.
+
+import type {Vec2, Vec3} from '../math/vec.ts';
+
+export const CM = {
+  road: 0,
+  sidewalk: 1,
+  curb: 2,
+  facade: 3,
+  roof: 4,
+  glass: 5,
+  metal: 6,
+  sign: 7,
+  foliage: 8,
+  bark: 9,
+  grass: 10,
+  lamp: 11,
+  concrete: 12,
+  rail: 13,
+  signal: 14,
+  frame: 15,
+  paint: 16,
+  shopfront: 17,
+  screen: 18,
+  tile: 19,
+  wire: 20,
+  vending: 21,
+  ledLine: 22,
+  water: 23,
+  asphaltPlain: 24,
+} as const;
+
+export const VERTEX_BYTES = 32;
+export const VERTEX_WORDS = 8;
+export const CLUSTER_TRIS = 128;
+export const CLUSTER_VERTS = 255;
+export const CLUSTER_WORDS = 8;
+
+export function packMat(id: number, param = 0) {
+  return ((param & 0xffffff) << 8) | (id & 0xff);
+}
+
+function octEncode(n: Vec3): number {
+  const l = Math.abs(n[0]) + Math.abs(n[1]) + Math.abs(n[2]) || 1;
+  let x = n[0] / l;
+  let y = n[1] / l;
+  if (n[2] < 0) {
+    const ox = x;
+    x = (1 - Math.abs(y)) * (ox >= 0 ? 1 : -1);
+    y = (1 - Math.abs(ox)) * (y >= 0 ? 1 : -1);
+  }
+  const qx = Math.round((x * 0.5 + 0.5) * 65535);
+  const qy = Math.round((y * 0.5 + 0.5) * 65535);
+  return ((qy & 0xffff) << 16) | (qx & 0xffff);
+}
+
+/** Growable typed-array mesh in the city vertex format. */
+export class CMesh {
+  f32: Float32Array;
+  u32: Uint32Array;
+  vcount = 0;
+  idx: Uint32Array;
+  icount = 0;
+
+  constructor(vcap = 4096, icap = 8192) {
+    const buf = new ArrayBuffer(vcap * VERTEX_BYTES);
+    this.f32 = new Float32Array(buf);
+    this.u32 = new Uint32Array(buf);
+    this.idx = new Uint32Array(icap);
+  }
+
+  private growV(n: number) {
+    if (this.vcount + n <= this.f32.length / VERTEX_WORDS) return;
+    let cap = this.f32.length / VERTEX_WORDS;
+    while (cap < this.vcount + n) cap *= 2;
+    const buf = new ArrayBuffer(cap * VERTEX_BYTES);
+    new Uint32Array(buf).set(this.u32.subarray(0, this.vcount * VERTEX_WORDS));
+    this.f32 = new Float32Array(buf);
+    this.u32 = new Uint32Array(buf);
+  }
+
+  private growI(n: number) {
+    if (this.icount + n <= this.idx.length) return;
+    let cap = this.idx.length;
+    while (cap < this.icount + n) cap *= 2;
+    const idx = new Uint32Array(cap);
+    idx.set(this.idx.subarray(0, this.icount));
+    this.idx = idx;
+  }
+
+  vertex(p: Vec3, n: Vec3, u: number, v: number, mat: number, aux = 0) {
+    this.growV(1);
+    const o = this.vcount * VERTEX_WORDS;
+    this.f32[o] = p[0];
+    this.f32[o + 1] = p[1];
+    this.f32[o + 2] = p[2];
+    this.u32[o + 3] = octEncode(n);
+    this.f32[o + 4] = u;
+    this.f32[o + 5] = v;
+    this.u32[o + 6] = mat >>> 0;
+    this.u32[o + 7] = aux >>> 0;
+    return this.vcount++;
+  }
+
+  tri(a: number, b: number, c: number) {
+    this.growI(3);
+    this.idx[this.icount++] = a;
+    this.idx[this.icount++] = b;
+    this.idx[this.icount++] = c;
+  }
+
+  /** Position of vertex i. */
+  pos(i: number): Vec3 {
+    const o = i * VERTEX_WORDS;
+    return [this.f32[o], this.f32[o + 1], this.f32[o + 2]];
+  }
+
+  /** Triangle whose winding is chosen so its front faces along `n`. */
+  triFacing(a: number, b: number, c: number, n: Vec3) {
+    const A = this.pos(a), B = this.pos(b), C = this.pos(c);
+    const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2];
+    const vx = C[0] - A[0], vy = C[1] - A[1], vz = C[2] - A[2];
+    const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+    if (cx * n[0] + cy * n[1] + cz * n[2] >= 0) this.tri(a, b, c);
+    else this.tri(a, c, b);
+  }
+
+  /** Quad from 4 corners in order around the quad; faces along n. */
+  quad(p: Vec3[], n: Vec3, uv: Vec2[], mat: number, aux = 0) {
+    const a = this.vertex(p[0], n, uv[0][0], uv[0][1], mat, aux);
+    const b = this.vertex(p[1], n, uv[1][0], uv[1][1], mat, aux);
+    const c = this.vertex(p[2], n, uv[2][0], uv[2][1], mat, aux);
+    const d = this.vertex(p[3], n, uv[3][0], uv[3][1], mat, aux);
+    this.triFacing(a, b, c, n);
+    this.triFacing(a, c, d, n);
+  }
+
+  /** Quad with an explicit (possibly non-planar) normal per corner. */
+  quadN(p: Vec3[], ns: Vec3[], uv: Vec2[], mat: number, face: Vec3, aux = 0) {
+    const ids = p.map((q, i) => this.vertex(q, ns[i], uv[i][0], uv[i][1], mat, aux));
+    this.triFacing(ids[0], ids[1], ids[2], face);
+    this.triFacing(ids[0], ids[2], ids[3], face);
+  }
+
+  /**
+   * Oriented box: center, half extents along (right, up, forward) axes, with
+   * the box rotated by `yaw` about +y. UVs are in meters on each face.
+   */
+  box(c: Vec3, h: Vec3, mat: number, yaw = 0, aux = 0, skipBottom = true) {
+    const cs = Math.cos(yaw);
+    const sn = Math.sin(yaw);
+    const R: Vec3 = [cs, 0, -sn];
+    const U: Vec3 = [0, 1, 0];
+    const F: Vec3 = [sn, 0, cs];
+    const P = (x: number, y: number, z: number): Vec3 => [
+      c[0] + R[0] * x * h[0] + F[0] * z * h[2],
+      c[1] + y * h[1],
+      c[2] + R[2] * x * h[0] + F[2] * z * h[2],
+    ];
+    const neg = (v: Vec3): Vec3 => [-v[0], -v[1], -v[2]];
+    // +x face
+    this.quad([P(1, -1, 1), P(1, -1, -1), P(1, 1, -1), P(1, 1, 1)], R, [[0, 0], [2 * h[2], 0], [2 * h[2], 2 * h[1]], [0, 2 * h[1]]], mat, aux);
+    this.quad([P(-1, -1, -1), P(-1, -1, 1), P(-1, 1, 1), P(-1, 1, -1)], neg(R), [[0, 0], [2 * h[2], 0], [2 * h[2], 2 * h[1]], [0, 2 * h[1]]], mat, aux);
+    this.quad([P(-1, -1, 1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1)], F, [[0, 0], [2 * h[0], 0], [2 * h[0], 2 * h[1]], [0, 2 * h[1]]], mat, aux);
+    this.quad([P(1, -1, -1), P(-1, -1, -1), P(-1, 1, -1), P(1, 1, -1)], neg(F), [[0, 0], [2 * h[0], 0], [2 * h[0], 2 * h[1]], [0, 2 * h[1]]], mat, aux);
+    this.quad([P(-1, 1, 1), P(1, 1, 1), P(1, 1, -1), P(-1, 1, -1)], U, [[0, 0], [2 * h[0], 0], [2 * h[0], 2 * h[2]], [0, 2 * h[2]]], mat, aux);
+    if (!skipBottom) {
+      this.quad([P(-1, -1, -1), P(1, -1, -1), P(1, -1, 1), P(-1, -1, 1)], neg(U), [[0, 0], [2 * h[0], 0], [2 * h[0], 2 * h[2]], [0, 2 * h[2]]], mat, aux);
+    }
+  }
+
+  /** Box spanning segment a->b (a thick line), e.g. wires, rails, girders. */
+  beam(a: Vec3, b: Vec3, w: number, hgt: number, mat: number, aux = 0) {
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const dz = b[2] - a[2];
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-4) return;
+    const f: Vec3 = [dx / len, dy / len, dz / len];
+    let r: Vec3 = [f[2], 0, -f[0]];
+    const rl = Math.hypot(r[0], r[2]);
+    r = rl > 1e-4 ? [r[0] / rl, 0, r[2] / rl] : [1, 0, 0];
+    const u: Vec3 = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+    const P = (p: Vec3, sx: number, sy: number): Vec3 => [
+      p[0] + r[0] * sx * w + u[0] * sy * hgt,
+      p[1] + r[1] * sx * w + u[1] * sy * hgt,
+      p[2] + r[2] * sx * w + u[2] * sy * hgt,
+    ];
+    const sides: [number, number, number, number, Vec3][] = [
+      [1, -1, 1, 1, r],
+      [1, 1, -1, 1, u],
+      [-1, 1, -1, -1, [-r[0], -r[1], -r[2]]],
+      [-1, -1, 1, -1, [-u[0], -u[1], -u[2]]],
+    ];
+    for (const [x0, y0, x1, y1, n] of sides) {
+      this.quad([P(a, x0, y0), P(b, x0, y0), P(b, x1, y1), P(a, x1, y1)], n, [[0, 0], [len, 0], [len, 1], [0, 1]], mat, aux);
+    }
+  }
+
+  /** Vertical cylinder (n sides) from y0 to y1. */
+  cylinder(c: Vec3, radius: number, height: number, sides: number, mat: number, cap = true, aux = 0) {
+    const ring: number[] = [];
+    for (let i = 0; i <= sides; i++) {
+      const a = (i / sides) * Math.PI * 2;
+      const n: Vec3 = [Math.cos(a), 0, Math.sin(a)];
+      const u = (i / sides) * Math.PI * 2 * radius;
+      ring.push(this.vertex([c[0] + n[0] * radius, c[1], c[2] + n[2] * radius], n, u, 0, mat, aux));
+      ring.push(this.vertex([c[0] + n[0] * radius, c[1] + height, c[2] + n[2] * radius], n, u, height, mat, aux));
+    }
+    for (let i = 0; i < sides; i++) {
+      const a = ring[i * 2], b = ring[i * 2 + 1], cc = ring[i * 2 + 2], d = ring[i * 2 + 3];
+      const ang = ((i + 0.5) / sides) * Math.PI * 2;
+      const n: Vec3 = [Math.cos(ang), 0, Math.sin(ang)];
+      this.triFacing(a, b, d, n);
+      this.triFacing(a, d, cc, n);
+    }
+    if (cap) {
+      const center = this.vertex([c[0], c[1] + height, c[2]], [0, 1, 0], 0, 0, mat, aux);
+      const top: number[] = [];
+      for (let i = 0; i <= sides; i++) {
+        const a = (i / sides) * Math.PI * 2;
+        top.push(this.vertex([c[0] + Math.cos(a) * radius, c[1] + height, c[2] + Math.sin(a) * radius], [0, 1, 0], Math.cos(a) * radius, Math.sin(a) * radius, mat, aux));
+      }
+      for (let i = 0; i < sides; i++) this.triFacing(center, top[i + 1], top[i], [0, 1, 0]);
+    }
+  }
+}
+
+/** Ear-clipping triangulation of a simple CCW polygon. Returns index triples. */
+export function triangulate(poly: Vec2[]): number[] {
+  const n = poly.length;
+  const out: number[] = [];
+  if (n < 3) return out;
+  const V = Array.from({length: n}, (_, i) => i);
+  const area2 = (a: Vec2, b: Vec2, c: Vec2) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const inTri = (p: Vec2, a: Vec2, b: Vec2, c: Vec2) =>
+    area2(a, b, p) >= 0 && area2(b, c, p) >= 0 && area2(c, a, p) >= 0;
+  let guard = 0;
+  while (V.length > 3 && guard++ < n * n) {
+    let clipped = false;
+    for (let i = 0; i < V.length; i++) {
+      const i0 = V[(i - 1 + V.length) % V.length];
+      const i1 = V[i];
+      const i2 = V[(i + 1) % V.length];
+      const a = poly[i0], b = poly[i1], c = poly[i2];
+      if (area2(a, b, c) <= 1e-9) continue;
+      let ok = true;
+      for (const j of V) {
+        if (j === i0 || j === i1 || j === i2) continue;
+        if (inTri(poly[j], a, b, c)) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      out.push(i0, i1, i2);
+      V.splice(i, 1);
+      clipped = true;
+      break;
+    }
+    if (!clipped) {
+      // Degenerate input: fall back to a fan.
+      for (let i = 1; i + 1 < V.length; i++) out.push(V[0], V[i], V[i + 1]);
+      return out;
+    }
+  }
+  if (V.length === 3) out.push(V[0], V[1], V[2]);
+  return out;
+}
+
+export interface ClusterData {
+  /** Vertex words (VERTEX_WORDS per vertex). */
+  vertices: Uint32Array;
+  /** Packed triangles (one u32 each). */
+  tris: Uint32Array;
+  /**
+   * Cluster records, CLUSTER_WORDS each:
+   *   [cx, cy, cz, radius] as f32, vertOffset, triOffset, triCount | lod << 8 | flags << 12, tile
+   * Offsets are relative to this batch; the pool rebases them on upload.
+   */
+  clusters: Uint32Array;
+  clusterCount: number;
+  bounds: [Vec3, Vec3];
+}
+
+/** Split a mesh into clusters (in index order, which is spatially coherent). */
+export function clusterize(m: CMesh, lod: number, tile: number, flags = 0): ClusterData {
+  const triCount = m.icount / 3;
+  const verts: number[] = [];
+  const tris: number[] = [];
+  const clusters: number[] = [];
+  const clusterF = new Float32Array(1);
+  const asU = new Uint32Array(clusterF.buffer);
+  const f2u = (f: number) => {
+    clusterF[0] = f;
+    return asU[0];
+  };
+  const lo: Vec3 = [Infinity, Infinity, Infinity];
+  const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+  let t = 0;
+  const vertexWords = m.u32;
+  const vertexF = m.f32;
+  while (t < triCount) {
+    const local = new Map<number, number>();
+    const vstart = verts.length / VERTEX_WORDS;
+    const tstart = tris.length;
+    let cl: Vec3 = [Infinity, Infinity, Infinity];
+    let ch: Vec3 = [-Infinity, -Infinity, -Infinity];
+    while (t < triCount && tris.length - tstart < CLUSTER_TRIS) {
+      const ids = [m.idx[t * 3], m.idx[t * 3 + 1], m.idx[t * 3 + 2]];
+      const need = ids.filter(i => !local.has(i)).length;
+      if (local.size + need > CLUSTER_VERTS) break;
+      let packed = 0;
+      ids.forEach((g, k) => {
+        let l = local.get(g);
+        if (l === undefined) {
+          l = local.size;
+          local.set(g, l);
+          for (let w = 0; w < VERTEX_WORDS; w++) verts.push(vertexWords[g * VERTEX_WORDS + w]);
+          const x = vertexF[g * VERTEX_WORDS], y = vertexF[g * VERTEX_WORDS + 1], z = vertexF[g * VERTEX_WORDS + 2];
+          cl = [Math.min(cl[0], x), Math.min(cl[1], y), Math.min(cl[2], z)];
+          ch = [Math.max(ch[0], x), Math.max(ch[1], y), Math.max(ch[2], z)];
+        }
+        packed |= l << (k * 8);
+      });
+      tris.push(packed >>> 0);
+      t++;
+    }
+    const c: Vec3 = [(cl[0] + ch[0]) / 2, (cl[1] + ch[1]) / 2, (cl[2] + ch[2]) / 2];
+    const r = Math.hypot(ch[0] - cl[0], ch[1] - cl[1], ch[2] - cl[2]) / 2;
+    for (let k = 0; k < 3; k++) {
+      lo[k] = Math.min(lo[k], cl[k]);
+      hi[k] = Math.max(hi[k], ch[k]);
+    }
+    clusters.push(f2u(c[0]), f2u(c[1]), f2u(c[2]), f2u(r), vstart, tstart, (tris.length - tstart) | (lod << 8) | (flags << 12), tile);
+  }
+  return {
+    vertices: new Uint32Array(verts),
+    tris: new Uint32Array(tris),
+    clusters: new Uint32Array(clusters),
+    clusterCount: clusters.length / CLUSTER_WORDS,
+    bounds: [lo, hi],
+  };
+}
