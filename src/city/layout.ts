@@ -715,6 +715,32 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     }
     return false;
   };
+  // Road sample points for rejecting blocks that overlap roads.
+  const roadGrid = new Map<number, Vec2[]>();
+  const rkey = (x: number, z: number) => (Math.floor(z / 50) + 500) * 1000 + Math.floor(x / 50) + 500;
+  for (const c of chains) {
+    for (const q of c.pts) {
+      const k = rkey(q[0], q[1]);
+      let l = roadGrid.get(k);
+      if (!l) roadGrid.set(k, (l = []));
+      l.push(q);
+    }
+  }
+  const overlapsRoad = (poly: Vec2[]) => {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const q of poly) {
+      x0 = Math.min(x0, q[0]);
+      x1 = Math.max(x1, q[0]);
+      z0 = Math.min(z0, q[1]);
+      z1 = Math.max(z1, q[1]);
+    }
+    for (let z = Math.floor(z0 / 50); z <= Math.floor(z1 / 50); z++) {
+      for (let x = Math.floor(x0 / 50); x <= Math.floor(x1 / 50); x++) {
+        for (const q of roadGrid.get((z + 500) * 1000 + x + 500) ?? []) if (pointInPolygon(q, poly)) return true;
+      }
+    }
+    return false;
+  };
   for (const f of faces) {
     const kinds = f.edges.map(e => g.edges[e].kind);
     const poly = f.nodes.map(n => g.nodes[n].p);
@@ -731,6 +757,7 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
     cz /= inner.length;
     if (!isLand([cx, cz])) continue;
     if (wetFraction(curb, hf) > 0.02) continue;
+    if (overlapsRoad(curb)) continue;
     const dens = densityAt(hubs, noise, cx, cz);
     const area = polygonArea(inner);
     const park = area > 1500 && hash2(Math.round(cx), Math.round(cz)) % 1000 < params.parkFraction * 1000 * (1.4 - dens);
