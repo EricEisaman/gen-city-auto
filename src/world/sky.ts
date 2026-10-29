@@ -87,7 +87,7 @@ export function computeSky(
   const amb = (k: number) => {
     const base = clear[k] * (1 - overcast) + grey[k] * overcast;
     return (
-      base * (day * 0.85 * (1 - rain * 0.35)) +
+      base * (day * 0.6 * (1 - rain * 0.35)) +
       [0.32, 0.18, 0.2][k] * twilight * 0.6
     );
   };

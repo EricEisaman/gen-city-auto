@@ -576,7 +576,7 @@ export function building(
         m.beam(w0, w1, 0.8, 0.05, packMat(CM.paint, (b.seed >> 8) & 0xff), aux);
       }
     }
-    if (b.density > 0.3 && b.height < 60 && rng.chance(0.25 * signDensity)) {
+    if (b.density > 0.4 && b.height < 60 && rng.chance(0.1 * signDensity)) {
       const id = SIGN.billboard.first + rng.int(0, SIGN.billboard.count);
       const c2 = centroid(roof);
       const w = Math.min(len * 0.45, 7);

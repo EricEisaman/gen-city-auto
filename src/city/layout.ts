@@ -979,6 +979,9 @@ export function generateLayout(
     for (const lot of lotsHere) lots.push({lot, park: false});
   }
 
+  progress?.('Grading blocks', 0.55);
+  gradeBlocks(hf, blocks);
+
   progress?.('Designing buildings', 0.6);
   const buildings: Building[] = [];
   for (const {lot} of lots) {
@@ -1080,6 +1083,81 @@ export function generateLayout(
     buildings,
     elevated,
   };
+}
+
+/**
+ * Grade each block to a plane fitted through the road heights at its curb, so
+ * sidewalks meet the roads with a constant curb instead of sloping wedges.
+ */
+function gradeBlocks(hf: Heightfield, blocks: Block[]) {
+  const n = hf.n;
+  const cell = hf.cell;
+  const S = hf.size / 2;
+  for (const b of blocks) {
+    const poly = b.curb;
+    // Least-squares plane h = a x + c z + d through curb samples.
+    let sxx = 0, sxz = 0, szz = 0, sx = 0, sz = 0, sh = 0, sxh = 0, szh = 0, cnt = 0;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i];
+      const q = poly[(i + 1) % poly.length];
+      const steps = Math.max(1, Math.ceil(dist2(p, q) / 8));
+      for (let k = 0; k < steps; k++) {
+        const x = lerp(p[0], q[0], k / steps);
+        const z = lerp(p[1], q[1], k / steps);
+        const h = hf.sample(x, z);
+        sxx += x * x;
+        sxz += x * z;
+        szz += z * z;
+        sx += x;
+        sz += z;
+        sh += h;
+        sxh += x * h;
+        szh += z * h;
+        cnt++;
+      }
+      x0 = Math.min(x0, p[0]);
+      x1 = Math.max(x1, p[0]);
+      z0 = Math.min(z0, p[1]);
+      z1 = Math.max(z1, p[1]);
+    }
+    if (cnt < 3) continue;
+    // Center the system for numerical stability.
+    const mx = sx / cnt, mz = sz / cnt, mh = sh / cnt;
+    const cxx = sxx / cnt - mx * mx, cxz = sxz / cnt - mx * mz, czz = szz / cnt - mz * mz;
+    const cxh = sxh / cnt - mx * mh, czh = szh / cnt - mz * mh;
+    const det = cxx * czz - cxz * cxz;
+    let a = 0, c = 0;
+    if (Math.abs(det) > 1e-6) {
+      a = (cxh * czz - czh * cxz) / det;
+      c = (czh * cxx - cxh * cxz) / det;
+    }
+    const plane = (x: number, z: number) => mh + a * (x - mx) + c * (z - mz);
+    // Interior cells start on the plane, then relax as a membrane whose edge is
+    // held by the surrounding road heights, so the block meets every road.
+    const gx0 = Math.max(1, Math.floor((x0 + S) / cell));
+    const gx1 = Math.min(n - 2, Math.ceil((x1 + S) / cell));
+    const gz0 = Math.max(1, Math.floor((z0 + S) / cell));
+    const gz1 = Math.min(n - 2, Math.ceil((z1 + S) / cell));
+    const inside: number[] = [];
+    for (let gz = gz0; gz <= gz1; gz++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const x = gx * cell - S;
+        const z = gz * cell - S;
+        if (pointInPolygon([x, z], poly)) {
+          const k = gz * n + gx;
+          hf.data[k] = plane(x, z);
+          inside.push(k);
+        }
+      }
+    }
+    const iters = Math.min(160, 20 + 4 * Math.max(gx1 - gx0, gz1 - gz0));
+    for (let it = 0; it < iters; it++) {
+      for (const k of inside) {
+        hf.data[k] = (hf.data[k - 1] + hf.data[k + 1] + hf.data[k - n] + hf.data[k + n]) * 0.25;
+      }
+    }
+  }
 }
 
 /** Fraction of sample points inside the polygon that are water. */

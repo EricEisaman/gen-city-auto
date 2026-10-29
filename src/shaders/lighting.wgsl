@@ -355,7 +355,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       // Street lights point down.
       lc *= mix(0.15, 1.0, smoothstep(-0.2, 0.3, l.y));
     }
-    color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0;
+    let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
+    color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK;
   }
   // Ambient: hemisphere sky + ground bounce.
   let skyAmb = mix(frame.groundAmbient.rgb, frame.skyAmbient.rgb, n.y * 0.5 + 0.5);
@@ -374,7 +375,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     env = mix(env, r.rgb, r.a);
   }
   var specOcc = ao * ao;
-  color += env * Fa * specOcc;
+  color += min(env * Fa * specOcc, vec3f(6.0));
   if (cls == CLASS_VEHICLE && metal < 0.95) {
     // Clear coat: a sharp dielectric layer over the paint.
     let fc = 0.04 + 0.96 * pow(1.0 - nv, 5.0);
@@ -393,6 +394,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (dbg == 8u) { color = vec3f(ao); }
   color += em.rgb;
   color = applyFog(color, world, uv, dist, rd);
+  // Distant geometry and the sea dissolve into the horizon sky.
+  color = mix(color, skyRadiance(normalize(vec3f(rd.x, max(rd.y, 0.0), rd.z))), smoothstep(9000.0, 38000.0, dist));
   // Debug views.
   if (dbg == 1u) { color = albedo; }
   if (dbg == 2u) { color = n * 0.5 + 0.5; }

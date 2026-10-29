@@ -103,9 +103,16 @@ export class CameraSystem {
         !(s === 'train' && !this.nearTrain(pl)),
     );
     for (let attempt = 0; attempt < 12; attempt++) {
+      const slow = pl.speed < 2;
       const name = this.rng.weighted(
         names,
-        names.map(n => WEIGHTS[n]),
+        names.map(
+          n =>
+            WEIGHTS[n] *
+            (slow && ['flyby', 'side', 'bumper', 'wheel'].includes(n)
+              ? 0.2
+              : 1),
+        ),
       );
       const s: ShotState = {
         name,
@@ -354,10 +361,11 @@ export class CameraSystem {
       case 'chase':
         return this.chase(dt, pl, 6.5, 1.8, 3);
       case 'bumper': {
+        const len = pl.info?.size[2] ?? 4.5;
         const eye: Vec3 = [
-          p[0] - f[0] * 3.5 + r[0] * s.side * 0.9,
-          p[1] + 0.55,
-          p[2] - f[1] * 3.5 + r[2] * s.side * 0.9,
+          p[0] + f[0] * (len / 2 + 0.25) + r[0] * s.side * 0.5,
+          p[1] + 0.5,
+          p[2] + f[1] * (len / 2 + 0.25) + r[2] * s.side * 0.5,
         ];
         return {
           eye,

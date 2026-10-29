@@ -418,8 +418,8 @@ export class Traffic {
         if (
           ahead > 0 &&
           ahead < 25 &&
-          Math.abs(dx * f.dir[1] - dz * f.dir[0]) < 1.7 &&
-          o.dir[0] * f.dir[0] + o.dir[1] * f.dir[1] > 0.3
+          Math.abs(dx * f.dir[1] - dz * f.dir[0]) < 1.9 &&
+          (o.dir[0] * f.dir[0] + o.dir[1] * f.dir[1] > 0.3 || f.turn || o.turn)
         ) {
           const g = ahead - (o.length + f.length) / 2;
           if (g < gap) {
