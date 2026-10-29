@@ -138,13 +138,24 @@
 
 [ ] buildings still look very flat - like maybe they need parallax mapping or normal mapping
     in their textures or some. Same with almost everything. 
+    -> in progress: tiled facades now use a normal-mapped Japanese facade-tile layer (half-bond,
+       recessed grout, glazed faces with per-tile tone and gloss); rendered/concrete walls use the
+       concrete layer. Windows already had a 22 cm parallax reveal.
     
-[ ] Roads look flat, dull, splotchy, gray.
+[x] Roads look flat, dull, splotchy, gray.
     Nothing like an actual road. Sidewalk, train tracks, they all look worse than PS2 era.
+    -> new mipmapped, anisotropically filtered detail textures (render/detail-tex.ts, generated at
+       startup): asphalt aggregate with light quartz chips (two scales, rotated, so no tiling),
+       interlocking sidewalk pavers in a few colours, concrete with pores, ballast stones, each with
+       a normal map and cavity. Roads also get sealed tar cracks, crisp utility-cut patches and worn
+       thermoplastic markings; tracks get concrete sleepers with rusty fastenings; curbs, piers and
+       roofs use the concrete/ballast layers.
 
     freecam=527.15,27.42,-25.98,-0.14,-0.35&city=neon&seed=1&time=18.49&timespeed=0&weather=sunny
 
-[ ] Bookshelf window textures are not raymarched and so look flat and PS1 era.
+[x] Bookshelf window textures are not raymarched and so look flat and PS1 era.
+    -> convenience-store shelves are now traced as three rows of gondolas behind the glass
+       (product faces, shelf lips, visible shelf tops and aisles), so they shift with parallax.
 
     freecam=512.36,25.62,116.49,-2.47,-0.06&city=neon&seed=1&time=17.03&timespeed=0&weather=sunny
 

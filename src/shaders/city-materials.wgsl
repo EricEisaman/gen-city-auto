@@ -3,6 +3,58 @@
 @group(2) @binding(0) var signAtlas: texture_2d<f32>;
 @group(2) @binding(1) var linearSampler: sampler;
 @group(2) @binding(2) var leafTex: texture_2d<f32>;
+// Tileable detail layers (src/render/detail-tex.ts): RG normal, B albedo
+// multiplier around 0.5, A cavity.
+@group(2) @binding(3) var detailTex: texture_2d_array<f32>;
+@group(2) @binding(4) var detailSampler: sampler;
+const DETAIL_ASPHALT = 0;
+const DETAIL_PAVERS = 1;
+const DETAIL_CONCRETE = 2;
+const DETAIL_TILE = 3;
+const DETAIL_BALLAST = 4;
+
+// Screen derivatives captured in uniform control flow (fs entry), so
+// materials can filter textures from inside their switch.
+var<private> dWorldX: vec3f;
+var<private> dWorldY: vec3f;
+var<private> dUvX: vec2f;
+var<private> dUvY: vec2f;
+
+fn detailAt(p: vec2f, dx: vec2f, dy: vec2f, tile: f32, layer: i32) -> vec4f {
+  return textureSampleGrad(detailTex, detailSampler, p / tile, layer, dx / tile, dy / tile);
+}
+
+fn detailXZ(world: vec3f, tile: f32, layer: i32) -> vec4f {
+  return detailAt(world.xz, dWorldX.xz, dWorldY.xz, tile, layer);
+}
+
+fn detailUV(uv: vec2f, tile: f32, layer: i32) -> vec4f {
+  return detailAt(uv, dUvX, dUvY, tile, layer);
+}
+
+// World-space detail projected along the dominant axis of n; returns the
+// sample and writes the matching tangent frame.
+fn detailTri(world: vec3f, n: vec3f, tile: f32, layer: i32, t: ptr<function, vec3f>, b: ptr<function, vec3f>) -> vec4f {
+  let a = abs(n);
+  if (a.y > 0.7) {
+    *t = vec3f(1.0, 0.0, 0.0);
+    *b = vec3f(0.0, 0.0, 1.0);
+    return detailAt(world.xz, dWorldX.xz, dWorldY.xz, tile, layer);
+  }
+  if (a.x > a.z) {
+    *t = vec3f(0.0, 0.0, 1.0);
+    *b = vec3f(0.0, 1.0, 0.0);
+    return detailAt(world.zy, dWorldX.zy, dWorldY.zy, tile, layer);
+  }
+  *t = vec3f(1.0, 0.0, 0.0);
+  *b = vec3f(0.0, 1.0, 0.0);
+  return detailAt(world.xy, dWorldX.xy, dWorldY.xy, tile, layer);
+}
+
+fn detailNormal(n: vec3f, t: vec3f, b: vec3f, d: vec4f, strength: f32) -> vec3f {
+  let xy = (d.xy * 2.0 - 1.0) * strength;
+  return normalize(n + t * xy.x + b * xy.y);
+}
 
 const M_ROAD = 0u;
 const M_SIDEWALK = 1u;
@@ -195,10 +247,12 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let bayIdx = floor(uv.x / st.bay);
   let lx = uv.x - bayIdx * st.bay;
   let cellSeed = hashu(aux ^ hashu((u32(bayIdx + 1000.0) * 73856093u) ^ (u32(floorIdx + 1000.0) * 19349663u)));
-  // Wall: small tiles with grime streaks.
-  let tileLine = step(0.92, fract(uv.x * 10.0)) + step(0.9, fract(uv.y * 20.0));
+  // Wall: glazed tile (tile and ribbon styles) or concrete render, with
+  // grime streaks.
+  let tiled = st.family <= 1u;
+  let wd = select(detailUV(uv, 2.4, DETAIL_CONCRETE), detailUV(uv, 0.96, DETAIL_TILE), tiled);
   let streak = valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25;
-  var wall = st.wall * (0.88 + 0.12 * valueNoise(uv * 0.7)) * (1.0 - streak * 0.5) * (1.0 - 0.06 * min(tileLine, 1.0));
+  var wall = st.wall * (0.88 + 0.12 * valueNoise(uv * 0.7)) * (1.0 - streak * 0.5) * mix(1.0, wd.b * 2.0, select(0.6, 1.0, tiled)) * mix(0.6, 1.0, wd.a);
   // Street grime: darker, rain-splashed base of the wall.
   wall *= mix(0.7, 1.0, smoothstep(0.0, 3.0, uv.y));
   // Weathering. Rain washes dirt off window sills into streaks below each
@@ -244,17 +298,12 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       s.normal = normalize(n + T * select(-0.6, 0.6, lxp < pierW));
     }
   }
-  // Tile grout grooves and the floor-slab bevel as normal detail.
-  let wfade = bumpFade(world) * select(0.0, 1.0, st.family <= 1u);
-  if (wfade > 0.05) {
-    let gu = fract(uv.x * 10.0);
-    let gv = fract(uv.y * 20.0);
-    let du = select(0.0, select(1.0, -1.0, gu < 0.5), min(gu, 1.0 - gu) < 0.06);
-    let dv = select(0.0, select(1.0, -1.0, gv < 0.5), min(gv, 1.0 - gv) < 0.08);
-    var bump = T * du * 0.25 + vec3f(0.0, dv * 0.25, 0.0);
+  // Tile relief and the floor-slab bevel.
+  if (st.family != 3u) {
+    s.normal = detailNormal(s.normal, T, vec3f(0.0, 1.0, 0.0), wd, select(0.5, 1.0, tiled));
+    if (tiled) { s.rough = mix(0.35, 0.8, 1.0 - wd.a); }
     let lyw = uv.y - floor(uv.y / st.floorH) * st.floorH;
-    if (lyw < 0.21 && lyw > 0.18) { bump += vec3f(0.0, 0.9, 0.0); }
-    s.normal = normalize(n + bump * wfade);
+    if (lyw < 0.21 && lyw > 0.18) { s.normal = normalize(s.normal + vec3f(0.0, 0.9, 0.0)); }
   }
   // Floor slab line.
   if (ly < 0.18) { s.albedo = wall * 0.8; }
@@ -281,12 +330,40 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       var glow = vec3f(1.0, 0.85, 0.6) * 0.2;
       if (shopType == 0u) {
         // Konbini: bright cool interior, colored band across the top.
-        // Rows of shelves stocked with colourful packaging under bright tubes.
-        var shelf = vec3f(0.85, 0.88, 0.9);
-        if (ly > 0.25 && ly < 1.75 && fract(ly / 0.5) > 0.12) {
-          let ph = hash21(vec2f(floor(lx * 5.0), floor(ly / 0.5)) + f32(shopSeed % 97u));
-          shelf = mix(vec3f(0.9, 0.85, 0.75), 0.5 + 0.5 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), 0.7) * (0.6 + 0.4 * fract(lx * 5.0 + ph));
+        // Gondola shelves stocked with packaging, traced as parallax planes
+        // facing the street at three depths behind the glass.
+        var shelf = vec3f(0.0);
+        var hitShelf = false;
+        let ndvS = max(-dot(V, n), 0.05);
+        let vS = vec2f(dot(V, T), V.y) / ndvS;
+        for (var r = 0; r < 3; r++) {
+          let depth = 1.0 + f32(r) * 1.7;
+          let q = vec2f(lx, ly) + vS * depth;
+          let qTop = vec2f(lx, ly) + vS * (depth + 0.45);
+          if (q.y > 0.15 && q.y < 1.65) {
+            // Front face: product rows every 0.38 m with white shelf lips.
+            let row = floor((q.y - 0.15) / 0.38);
+            let fy = fract((q.y - 0.15) / 0.38);
+            let pw = mix(0.08, 0.16, hash21(vec2f(row, f32(r) + f32(shopSeed % 31u))));
+            let pid = floor(q.x / pw);
+            let ph = hash21(vec2f(pid, row * 7.0 + f32(r) * 13.0 + f32(shopSeed % 97u)));
+            let pack = mix(vec3f(0.85, 0.82, 0.75), 0.5 + 0.5 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), 0.75);
+            let gapX = fract(q.x / pw) < 0.08;
+            let fill = fy > 0.1 && fy < 0.1 + mix(0.55, 0.85, ph) && !gapX;
+            shelf = select(vec3f(0.12), pack, fill);
+            if (fy < 0.1) { shelf = vec3f(0.92); }
+            // Darker toward the aisle ends.
+            shelf *= 1.0 - 0.25 * f32(r);
+            hitShelf = true;
+            break;
+          }
+          if (q.y >= 1.65 && qTop.y < 1.65) {
+            shelf = vec3f(0.6) * (1.0 - 0.25 * f32(r));
+            hitShelf = true;
+            break;
+          }
         }
+        if (!hitShelf) { shelf = inside * 2.0; }
         inside = inside * 0.3 + shelf * vec3f(1.05, 1.1, 1.15) * mix(0.2, 0.85, night);
         if (ly > st.floorH * 0.66) {
           let bandC = array<vec3f, 3>(vec3f(0.1, 0.5, 0.25), vec3f(0.9, 0.3, 0.05), vec3f(0.1, 0.3, 0.8))[shopSeed % 3u];
@@ -421,26 +498,37 @@ fn curtainWall(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   return s;
 }
 
-fn asphaltH(p: vec2f) -> f32 {
-  var h = valueNoise(p * 40.0) * 0.25 + valueNoise(p * 6.0) * 0.5;
-  // Cracks as grooves.
-  h -= (1.0 - smoothstep(0.0, 0.012, abs(valueNoise(p * 0.7) - 0.5))) * 0.6;
-  return h * 0.01;
-}
-
 fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   var s = defaultSurf(n);
-  let grain = valueNoise(world.xz * 3.0) * 0.5 + valueNoise(world.xz * 0.35) * 0.5;
-  s.albedo = vec3f(0.075, 0.075, 0.08) * (0.75 + 0.5 * grain);
-  s.rough = 0.88;
+  // Aggregate texture at two scales (the second rotated) so it never tiles
+  // visibly; large-scale tone drift stays subtle.
+  let d1 = detailXZ(world, 1.1, DETAIL_ASPHALT);
+  let rot = mat2x2f(0.8, -0.6, 0.6, 0.8);
+  let d2 = detailAt(rot * world.xz, rot * dWorldX.xz, rot * dWorldY.xz, 2.9, DETAIL_ASPHALT);
+  let dd = mix(d1, d2, 0.4);
+  let drift = valueNoise(world.xz * 0.05) * 0.6 + valueNoise(world.xz * 0.4) * 0.4;
+  s.albedo = vec3f(0.14, 0.137, 0.133) * (0.88 + 0.24 * drift) * (dd.b * 2.0) * mix(0.55, 1.0, dd.a);
+  s.rough = 0.86 + (1.0 - dd.a) * 0.1 - (dd.b - 0.5) * 0.15;
   s.cls = CLASS_GROUND;
-  // Patches (rectangular repairs), oil stains and manholes.
+  // Utility-cut patches: newer, darker asphalt with a crisp seam.
   let pc = floor(world.xz / 9.0);
   let ph = hash21(pc);
   let pf = fract(world.xz / 9.0);
-  if (ph > 0.82 && all(pf > vec2f(0.15)) && all(pf < vec2f(0.15 + ph * 0.7))) { s.albedo *= 0.72; s.rough -= 0.05; }
-  let oil = smoothstep(0.75, 0.9, valueNoise(world.xz * 0.6)) * valueNoise(world.xz * 3.0);
-  s.albedo *= 1.0 - oil * 0.35;
+  let pLo = vec2f(0.15);
+  let pHi = vec2f(0.15 + ph * 0.7);
+  if (ph > 0.8 && all(pf > pLo) && all(pf < pHi)) {
+    let e = min(min(pf.x - pLo.x, pHi.x - pf.x), min(pf.y - pLo.y, pHi.y - pf.y)) * 9.0;
+    s.albedo *= select(0.78, 0.45, e < 0.05);
+    s.rough -= 0.06;
+  }
+  // Sealed cracks: thin glossy tar lines.
+  let crack = abs(valueNoise(world.xz * 0.45 + 3.0) - 0.5);
+  let crackW = 0.004 + 0.45 * max(length(dWorldX), length(dWorldY));
+  let tar = (1.0 - smoothstep(crackW * 0.5, crackW * 1.5, crack)) * smoothstep(0.55, 0.7, valueNoise(world.xz * 0.09));
+  s.albedo = mix(s.albedo, vec3f(0.03), tar * 0.8);
+  s.rough = mix(s.rough, 0.4, tar);
+  let oil = smoothstep(0.78, 0.92, valueNoise(world.xz * 0.6)) * valueNoise(world.xz * 3.0);
+  s.albedo *= 1.0 - oil * 0.3;
   s.rough -= oil * 0.25;
   let kind = param & 3u;
   let crossStart = (param & 4u) != 0u;
@@ -474,10 +562,12 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   if ((crossStart && along > 5.2 && along < 5.6 && x > 0.0) || (crossEnd && fromEnd > 5.2 && fromEnd < 5.6 && x < 0.0)) { mark = 1.0; yellow = false; }
   // Lane arrows approximated by a short bar before the stop line.
   if (mark > 0.0) {
-    let wear = smoothstep(0.2, 0.7, valueNoise(world.xz * 4.0));
-    let c = select(vec3f(0.65), vec3f(0.62, 0.42, 0.06), yellow);
-    s.albedo = mix(s.albedo, c, 0.65 + 0.35 * wear * (0.6 + 0.4 * valueNoise(world.xz * 1.5)));
-    s.rough = 0.7;
+    // Thermoplastic paint: bright, worn through where tyres run and where
+    // the aggregate pokes through.
+    let wear = smoothstep(0.25, 0.75, valueNoise(world.xz * 3.0)) * 0.5 + (1.0 - dd.a) * 0.6;
+    let c = select(vec3f(0.78, 0.78, 0.76), vec3f(0.7, 0.48, 0.08), yellow);
+    s.albedo = mix(c, s.albedo, clamp(wear * 0.55, 0.0, 0.8));
+    s.rough = 0.62;
   }
   // Manhole covers along the lane centers.
   if (kind >= 1u) {
@@ -497,42 +587,23 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
     s.rough -= 0.1 * track;
     s.albedo *= 1.0 - 0.18 * track;
   }
-  // Aggregate micro-relief, patches and cracks.
-  let fade = bumpFade(world);
-  if (fade > 0.05) {
-    let e = 0.02;
-    let h0 = asphaltH(world.xz);
-    let hx = asphaltH(world.xz + vec2f(e, 0.0));
-    let hz = asphaltH(world.xz + vec2f(0.0, e));
-    s.normal = bumpNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), h0, hx, hz, e, 0.15 * fade);
-  }
+  s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), dd, 1.0);
   applyWetness(&s, world, 1.0, 0.6);
   return s;
 }
 
 fn sidewalkMat(world: vec3f, n: vec3f) -> Surf {
   var s = defaultSurf(n);
-  let p = world.xz / 0.3;
-  let cell = floor(p);
-  let f = fract(p);
-  let grout = step(f.x, 0.05) + step(f.y, 0.05);
-  let tint = hash21(cell);
-  s.albedo = mix(vec3f(0.3, 0.29, 0.27), vec3f(0.4, 0.39, 0.36), tint) * (1.0 - 0.35 * min(grout, 1.0));
-  s.albedo *= 0.85 + 0.15 * valueNoise(world.xz * 0.5);
-  s.rough = 0.8;
+  let d = detailXZ(world, 1.2, DETAIL_PAVERS);
+  // Each stretch of sidewalk gets one of a few paver colours.
+  let zone = hash21(floor(world.xz / 60.0));
+  let base = select(select(vec3f(0.42, 0.41, 0.39), vec3f(0.46, 0.4, 0.34), zone < 0.55), vec3f(0.36, 0.3, 0.28), zone < 0.2);
+  s.albedo = base * (d.b * 2.0) * mix(0.45, 1.0, d.a) * (0.9 + 0.2 * valueNoise(world.xz * 0.3));
+  // Foot-traffic grime.
+  s.albedo *= 1.0 - 0.15 * smoothstep(0.5, 0.8, valueNoise(world.xz * 0.15 + 9.0));
+  s.rough = 0.8 + (1.0 - d.a) * 0.15;
   s.cls = CLASS_GROUND;
-  let fade = bumpFade(world);
-  if (fade > 0.05) {
-    let tilt = (hash22(cell) - 0.5) * 0.04;
-    let gx = smoothstep(0.0, 0.06, f.x) * smoothstep(1.0, 0.94, f.x);
-    let gz = smoothstep(0.0, 0.06, f.y) * smoothstep(1.0, 0.94, f.y);
-    let gradX = (smoothstep(0.0, 0.06, f.x) - smoothstep(1.0, 0.94, f.x)) * 0.0;
-    _ = gradX;
-    // Grout grooves: slope toward the gaps.
-    let sx = select(0.0, select(-1.0, 1.0, f.x < 0.5), gx < 0.99);
-    let sz = select(0.0, select(-1.0, 1.0, f.y < 0.5), gz < 0.99);
-    s.normal = normalize(n + vec3f(tilt.x + sx * 0.35, 0.0, tilt.y + sz * 0.35) * fade);
-  }
+  s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), d, 1.0);
   applyWetness(&s, world, n.y, 0.7);
   return s;
 }
@@ -616,8 +687,16 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     case M_ASPHALT: { s = roadMat(world, n, vec2f(100.0, 0.0), 0u, 0u); }
     case M_SIDEWALK: { s = sidewalkMat(world, n); }
     case M_CURB: {
-      s.albedo = vec3f(0.55, 0.54, 0.52) * (0.85 + 0.15 * valueNoise(world.xz * 2.0));
+      var t: vec3f;
+      var b: vec3f;
+      let d = detailTri(world, n, 1.5, DETAIL_CONCRETE, &t, &b);
+      s.albedo = vec3f(0.55, 0.54, 0.52) * (0.85 + 0.15 * valueNoise(world.xz * 2.0)) * (d.b * 2.0) * mix(0.6, 1.0, d.a);
+      // Granite-like curb blocks every metre.
+      let blk = fract((world.x + world.z) * 1.0);
+      if (min(blk, 1.0 - blk) < 0.01) { s.albedo *= 0.6; }
+      s.normal = detailNormal(n, t, b, d, 0.8);
       s.rough = 0.8;
+      applyWetness(&s, world, max(n.y, 0.0), 0.5);
     }
     case M_FACADE: { s = facadeMat(world, n, uv, param, aux); }
     case M_GLASS: { s = curtainWall(world, n, uv, param, aux); }
@@ -630,7 +709,9 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       let membrane = hashuf(h ^ 3u) < 0.4;
       var base = select(mix(vec3f(0.30, 0.29, 0.27), vec3f(0.22, 0.25, 0.27), hashuf(h ^ 21u)), vec3f(0.16, 0.25, 0.1), g);
       if (membrane) { base = vec3f(0.34, 0.35, 0.34); }
-      s.albedo = base * select(gravel, seams, membrane) * stain;
+      let rd = detailXZ(world, 2.0, select(DETAIL_BALLAST, DETAIL_CONCRETE, membrane));
+      s.albedo = base * select(gravel, seams, membrane) * stain * (rd.b * 2.0) * mix(0.6, 1.0, rd.a);
+      s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), rd, 0.6);
       s.albedo *= mix(0.75, 1.1, hashuf(h ^ 9u));
       s.rough = 0.9;
       applyWetness(&s, world, n.y, 0.4);
@@ -680,7 +761,11 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       }
     }
     case M_CONCRETE: {
-      s.albedo = vec3f(0.5, 0.49, 0.46) * (0.75 + 0.25 * fbm2(world.xz * 0.3 + world.y * 0.2));
+      var t: vec3f;
+      var b: vec3f;
+      let d = detailTri(world, n, 2.0, DETAIL_CONCRETE, &t, &b);
+      s.normal = detailNormal(n, t, b, d, 0.8);
+      s.albedo = vec3f(0.5, 0.49, 0.46) * (0.75 + 0.25 * fbm2(world.xz * 0.3 + world.y * 0.2)) * (d.b * 2.0) * mix(0.6, 1.0, d.a);
       // Formwork joints, water stains and darker undersides.
       let fw = fract((world.x + world.z) / 1.8);
       let fv = fract(world.y / 0.9);
@@ -692,12 +777,24 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     }
     case M_RAIL: {
       let x = uv.x;
-      let ballast = 0.25 + 0.15 * hash21(floor(world.xz * 12.0));
-      s.albedo = vec3f(ballast * 0.95, ballast * 0.9, ballast * 0.85);
-      for (var k = -1.0; k <= 1.0; k += 2.0) {
-        if (abs(x - k * 2.1) < 1.25 && fract(uv.y / 0.62) < 0.35) { s.albedo = vec3f(0.48, 0.46, 0.43); }
-      }
+      let d = detailXZ(world, 1.5, DETAIL_BALLAST);
+      let ballast = mix(vec3f(0.32, 0.3, 0.28), vec3f(0.42, 0.38, 0.33), valueNoise(world.xz * 0.2));
+      s.albedo = ballast * (d.b * 2.0) * mix(0.35, 1.0, d.a);
+      s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), d, 1.0);
       s.rough = 0.95;
+      // Concrete sleepers under each track, rust-stained around the fastenings.
+      for (var k = -1.0; k <= 1.0; k += 2.0) {
+        let tx = abs(x - k * 2.1);
+        let sl = fract(uv.y / 0.62);
+        if (tx < 1.25 && sl < 0.32) {
+          let c = detailUV(uv, 1.0, DETAIL_CONCRETE);
+          let rust = smoothstep(0.25, 0.0, abs(tx - 0.53)) * 0.5;
+          s.albedo = mix(vec3f(0.5, 0.48, 0.45), vec3f(0.3, 0.17, 0.09), rust) * (c.b * 2.0) * mix(0.6, 1.0, c.a);
+          s.normal = n;
+          s.rough = 0.85;
+        }
+      }
+      applyWetness(&s, world, 1.0, 0.5);
     }
     case M_SIGNAL: {
       let lamp = param & 3u;

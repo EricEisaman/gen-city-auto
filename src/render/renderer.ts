@@ -19,6 +19,7 @@ import {computeSky, type SkyState} from '../world/sky.ts';
 import {ClusterPool, type PoolHandle} from './cluster-pool.ts';
 import {F, FrameData} from './frame.ts';
 import {createLeafTexture, createSignAtlasTexture} from './sign-atlas.ts';
+import {createDetailTexture} from './detail-tex.ts';
 import type {ClusterData} from '../city/cmesh.ts';
 
 export interface Weather {
@@ -116,6 +117,8 @@ export class Renderer {
   private shadowSampler: GPUSampler;
   private signAtlas: GPUTexture;
   private leafTex: GPUTexture;
+  private detailTex: GPUTexture;
+  private detailSampler: GPUSampler;
   private whiteTex: GPUTexture;
   private shadowMap: GPUTexture;
   private transmittance: GPUTexture;
@@ -203,6 +206,16 @@ export class Renderer {
     });
     this.signAtlas = createSignAtlasTexture(device);
     this.leafTex = createLeafTexture(device);
+    this.detailTex = createDetailTexture(device);
+    this.detailSampler = device.createSampler({
+      label: 'sampler/detail aniso repeat',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+      addressModeU: 'repeat',
+      addressModeV: 'repeat',
+      maxAnisotropy: 8,
+    });
     this.whiteTex = device.createTexture({
       label: 'texture/white',
       size: [1, 1],
@@ -1250,7 +1263,13 @@ export class Renderer {
         this.bg(
           'city',
           2,
-          [this.signAtlas.createView(), this.linear, this.leafTex.createView()],
+          [
+            this.signAtlas.createView(),
+            this.linear,
+            this.leafTex.createView(),
+            this.detailTex.createView({dimension: '2d-array'}),
+            this.detailSampler,
+          ],
           'bg/city/textures',
         ),
       );

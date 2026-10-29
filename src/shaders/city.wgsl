@@ -80,6 +80,10 @@ fn leafCutout(i: VOut) {
 }
 
 @fragment fn fs(i: VOut, @builtin(front_facing) ff: bool) -> GOut {
+  dWorldX = dpdx(i.world);
+  dWorldY = dpdy(i.world);
+  dUvX = dpdx(i.uv);
+  dUvY = dpdy(i.uv);
   leafCutout(i);
   var n = normalize(i.normal);
   if (!ff && (i.mat & 0xffu) != 25u) { n = -n; }
