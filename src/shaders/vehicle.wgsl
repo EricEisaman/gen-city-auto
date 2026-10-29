@@ -64,7 +64,7 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
       s.albedo = vec3f(0.45, 0.02, 0.02);
       s.rough = 0.1;
       let brake = I.params.y;
-      s.emissive = vec3f(1.0, 0.04, 0.02) * (lightsOn * 4.0 + brake * 14.0);
+      s.emissive = vec3f(1.0, 0.04, 0.02) * (lightsOn * 3.0 + brake * 8.0);
     }
     case 8u: { s.albedo = vec3f(0.09, 0.085, 0.08); s.rough = 0.85; s.ao = 0.6; }
     case 9u: { s.albedo = vec3f(0.14, 0.13, 0.12); s.rough = 0.9; s.ao = 0.65; }

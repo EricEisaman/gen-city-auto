@@ -637,6 +637,22 @@ function deckBox(
       ],
       sideMat,
     );
+    // Longitudinal girders under the slab, with cross diaphragms every
+    // ~12 m, so the underside reads as a structure rather than a flat sheet.
+    for (const g of [-0.62, 0, 0.62]) {
+      const a = P(i, g, -depth - 0.55);
+      const b = P(j, g, -depth - 0.55);
+      m.beam(a, b, 0.32, 0.55, sideMat);
+    }
+    if (i % 3 === 0) {
+      m.beam(
+        P(i, -0.62, -depth - 0.4),
+        P(i, 0.62, -depth - 0.4),
+        0.18,
+        0.4,
+        sideMat,
+      );
+    }
   }
 }
 
