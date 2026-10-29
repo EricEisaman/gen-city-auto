@@ -381,21 +381,47 @@ fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
 
 fn screenMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   var s = defaultSurf(n);
-  let t = frame.time.x * 0.25 + f32(param & 0xffu);
+  let t = frame.time.x * 0.2 + f32(param & 0xffu) * 0.37;
   let scene = floor(t);
   let k = fract(t);
-  let h = hashuf(u32(scene) * 7919u + param);
-  var c = 0.5 + 0.5 * cos(6.2831 * (vec3f(0.0, 0.33, 0.67) + h + uv.x * 0.6 + vec3f(uv.y * 0.3)));
-  // Big "headline" blocks and a sweeping highlight.
-  let bar = step(0.35, uv.y) * step(uv.y, 0.55) * step(0.1, uv.x) * step(uv.x, 0.1 + 0.8 * min(k * 3.0, 1.0));
-  c = mix(c, vec3f(1.0), bar * 0.8);
-  c *= 0.5 + 0.5 * smoothstep(0.0, 0.1, k) * smoothstep(1.0, 0.9, k);
-  // Pixel grid.
+  let seed = hashu(u32(scene) * 7919u + param);
+  let kind = seed % 4u;
+  let c1 = 0.5 + 0.5 * cos(6.2831 * (vec3f(0.0, 0.33, 0.67) + hashuf(seed)));
+  let c2 = 0.5 + 0.5 * cos(6.2831 * (vec3f(0.0, 0.33, 0.67) + hashuf(seed ^ 9u)));
+  var c = mix(c1, c2, uv.y);
+  switch (kind) {
+    case 0u: {
+      // Product shot: a glowing disc that slowly drifts.
+      let p = uv - vec2f(0.3 + 0.1 * sin(t * 3.0), 0.5);
+      c = mix(c * 0.25, vec3f(1.0), smoothstep(0.22, 0.18, length(p * vec2f(1.8, 1.0))));
+      // Headline blocks on the right.
+      if (uv.x > 0.55 && uv.x < 0.92 && fract(uv.y * 4.0) < 0.45 && uv.y > 0.2 && uv.y < 0.8) { c = vec3f(1.0); }
+    }
+    case 1u: {
+      // Scrolling ticker band.
+      let band = step(0.62, uv.y) * step(uv.y, 0.8);
+      let glyph = step(0.5, hash21(vec2f(floor(uv.x * 24.0 + t * 30.0), floor(uv.y * 30.0))));
+      c = mix(c * 0.4, vec3f(1.0, 0.9, 0.3) * glyph, band);
+    }
+    case 2u: {
+      // Big brand wordmark: chunky glyph grid.
+      let g = vec2f(floor(uv.x * 10.0), floor(uv.y * 4.0));
+      let on = step(0.45, hash21(g + f32(seed % 97u))) * step(0.25, uv.y) * step(uv.y, 0.75) * step(0.08, uv.x) * step(uv.x, 0.92);
+      c = mix(c, vec3f(1.0), on);
+    }
+    default: {
+      // Swirl.
+      let a = atan2(uv.y - 0.5, uv.x - 0.5) + t * 2.0 + length(uv - 0.5) * 8.0;
+      c = mix(c1, c2, 0.5 + 0.5 * sin(a * 3.0));
+    }
+  }
+  // Scene transitions and pixel grid.
+  c *= smoothstep(0.0, 0.06, k) * smoothstep(1.0, 0.94, k);
   let pix = fract(uv * vec2f(160.0, 90.0));
   c *= 0.75 + 0.25 * step(0.2, pix.x) * step(0.2, pix.y);
   s.albedo = vec3f(0.02);
   s.rough = 0.2;
-  s.emissive = c * 2.2;
+  s.emissive = c * mix(1.2, 2.6, nightLight());
   return s;
 }
 
