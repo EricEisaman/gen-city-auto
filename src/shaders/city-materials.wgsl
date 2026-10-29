@@ -200,6 +200,23 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var wall = st.wall * (0.88 + 0.12 * valueNoise(uv * 0.7)) * (1.0 - streak * 0.5) * (1.0 - 0.06 * min(tileLine, 1.0));
   // Street grime: darker, rain-splashed base of the wall.
   wall *= mix(0.7, 1.0, smoothstep(0.0, 3.0, uv.y));
+  // Weathering. Rain washes dirt off window sills into streaks below each
+  // window; slab edges drip too. Patch repairs vary the tone in panels.
+  {
+    let wx0e = (1.0 - st.winW) * 0.5 * st.bay;
+    let sillE = (1.0 - st.winH) * st.floorH * 0.55;
+    let below = sillE - ly;
+    let inSpan = lx > wx0e - 0.05 && lx < st.bay - wx0e + 0.05;
+    let drip = valueNoise(vec2f(uv.x * 9.0, floorIdx * 3.1)) * valueNoise(vec2f(uv.x * 23.0, uv.y * 0.4));
+    let dirtAmt = mix(0.15, 0.55, hashuf(aux ^ 0x5151u));
+    if (below > 0.0 && inSpan) {
+      wall *= 1.0 - dirtAmt * drip * smoothstep(1.4, 0.0, below);
+    }
+    let slabDrip = valueNoise(vec2f(uv.x * 14.0, floorIdx * 7.7));
+    wall *= 1.0 - dirtAmt * 0.6 * slabDrip * smoothstep(0.9, 0.18, ly) * step(0.18, ly);
+    let patchC = floor(uv / vec2f(2.4, st.floorH));
+    wall *= 0.95 + 0.1 * hash21(patchC + f32(aux & 255u));
+  }
   s.albedo = wall;
   s.rough = 0.75;
   if (st.family == 3u) {
