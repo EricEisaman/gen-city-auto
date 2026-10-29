@@ -63,6 +63,8 @@ export class Game {
   private frames = 0;
   private fpsAvg = 60;
   private carLights = new Float32Array(64 * 8);
+  /** Last camera output (for tests). */
+  lastCam: {eye: Vec3; target: Vec3} | null = null;
 
   constructor(gpu: Gpu, opts: GameOptions) {
     this.gpu = gpu;
@@ -385,6 +387,7 @@ export class Game {
     this.helis!.draw(this.time, lightsOn);
     this.peds!.draw();
     this.vehicles.finish();
+    this.lastCam = cam;
     this.rain.intensity = this.weather.state.rain;
     this.renderer.render({
       eye: cam.eye,

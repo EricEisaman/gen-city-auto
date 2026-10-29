@@ -135,10 +135,28 @@ export function chainAt(
   const t = (s - arc[lo]) / seg;
   const a = c.pts[lo];
   const b = c.pts[hi];
-  const l = dist2(a, b) || 1;
+  // Tangents blend smoothly between segments (vertex tangent = average of the
+  // adjacent segment directions) so headings never jump at polyline vertices.
+  const segDir = (i: number): Vec2 => {
+    const i0 = Math.max(0, Math.min(n - 2, i));
+    const p = c.pts[i0];
+    const q = c.pts[i0 + 1];
+    const l = dist2(p, q) || 1;
+    return [(q[0] - p[0]) / l, (q[1] - p[1]) / l];
+  };
+  const cur = segDir(lo);
+  const prev = lo > 0 ? segDir(lo - 1) : cur;
+  const next = hi < n - 1 ? segDir(hi) : cur;
+  const ta: Vec2 = [cur[0] + prev[0], cur[1] + prev[1]];
+  const tb: Vec2 = [cur[0] + next[0], cur[1] + next[1]];
+  const dx = ta[0] + (tb[0] - ta[0]) * t;
+  const dz = ta[1] + (tb[1] - ta[1]) * t;
+  const dl = Math.hypot(dx, dz) || 1;
+  // Heights: smooth (Hermite-like) blend for gentle grade changes.
+  const st = t * t * (3 - 2 * t);
   return {
     p: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t],
-    d: [(b[0] - a[0]) / l, (b[1] - a[1]) / l],
-    h: c.heights[lo] + (c.heights[hi] - c.heights[lo]) * t,
+    d: [dx / dl, dz / dl],
+    h: c.heights[lo] + (c.heights[hi] - c.heights[lo]) * (t * 0.5 + st * 0.5),
   };
 }

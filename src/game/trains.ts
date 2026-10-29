@@ -145,7 +145,12 @@ export class Trains {
       tr.cars.forEach((c, k) => {
         const s = tr.s - tr.dir * (k * this.carLen + this.carLen / 2);
         const q = this.at(line, s);
-        const d: Vec2 = tr.dir === 1 ? q.d : [-q.d[0], -q.d[1]];
+        // Smooth heading from the track a few meters either side.
+        const qa = this.at(line, s - 3);
+        const qb = this.at(line, s + 3);
+        const tl = Math.hypot(qb.p[0] - qa.p[0], qb.p[2] - qa.p[2]) || 1;
+        const td: Vec2 = [(qb.p[0] - qa.p[0]) / tl, (qb.p[2] - qa.p[2]) / tl];
+        const d: Vec2 = tr.dir === 1 ? td : [-td[0], -td[1]];
         // Run on the left-hand track.
         const left: Vec2 = [d[1], -d[0]];
         const p: Vec3 = [

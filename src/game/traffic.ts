@@ -161,7 +161,7 @@ export class LaneFollower {
     const c1: Vec3 = [a.p[0] + a.d[0] * k, a.p[1], a.p[2] + a.d[1] * k];
     const c2: Vec3 = [b.p[0] - b.d[0] * k, b.p[1], b.p[2] - b.d[1] * k];
     const pts: Vec3[] = [];
-    const N = 10;
+    const N = 24;
     for (let i = 0; i <= N; i++) {
       const t = i / N;
       const u = 1 - t;
@@ -247,36 +247,51 @@ export class LaneFollower {
       this.s += step;
       if (this.s >= this.sEnd(net)) this.startTurn(net);
     }
-    this.place(net);
+    this.place(net, dt);
   }
 
-  place(net: RoadNet) {
+  /** Position at path distance `ahead` from the current point (may run into the turn). */
+  private pointAt(net: RoadNet, ahead: number): Vec3 {
     if (this.turn) {
       const tr = this.turn;
+      const t = Math.max(0, Math.min(tr.len, tr.t + ahead));
       let i = 1;
-      while (i < tr.cum.length - 1 && tr.cum[i] < tr.t) i++;
+      while (i < tr.cum.length - 1 && tr.cum[i] < t) i++;
       const seg = tr.cum[i] - tr.cum[i - 1] || 1;
-      const f = Math.min(1, Math.max(0, (tr.t - tr.cum[i - 1]) / seg));
+      const f = Math.min(1, Math.max(0, (t - tr.cum[i - 1]) / seg));
       const p = tr.pts[i - 1];
       const q = tr.pts[i];
-      this.pos = [
+      return [
         p[0] + (q[0] - p[0]) * f,
         p[1] + (q[1] - p[1]) * f,
         p[2] + (q[2] - p[2]) * f,
       ];
-      const l = Math.hypot(q[0] - p[0], q[2] - p[2]) || 1;
-      this.dir = [(q[0] - p[0]) / l, (q[2] - p[2]) / l];
-      this.slope = (q[1] - p[1]) / l;
-    } else {
-      const lp = net.lanePos(
-        this.ref.chain,
-        this.ref.dir,
-        this.ref.lane,
-        this.s,
-      );
-      this.pos = lp.p;
-      this.dir = lp.d;
-      this.slope = lp.slope;
+    }
+    const len = net.length(this.ref.chain);
+    const s = Math.max(0, Math.min(len, this.s + ahead));
+    return net.lanePos(this.ref.chain, this.ref.dir, this.ref.lane, s).p;
+  }
+
+  place(net: RoadNet, dt = Infinity) {
+    this.pos = this.pointAt(net, 0);
+    // Heading from a short look-ahead/look-behind: smooth through vertices
+    // and around junction curves.
+    const a = this.pointAt(net, -1.2);
+    const b = this.pointAt(net, 1.2);
+    const dx = b[0] - a[0];
+    const dz = b[2] - a[2];
+    const l = Math.hypot(dx, dz);
+    if (l > 1e-3) {
+      // Rate-limit heading changes so tight junction curves never pop.
+      const want = Math.atan2(dx, dz);
+      const cur = Math.atan2(this.dir[0], this.dir[1]);
+      let delta = want - cur;
+      while (delta > Math.PI) delta -= 2 * Math.PI;
+      while (delta < -Math.PI) delta += 2 * Math.PI;
+      const maxStep = 5 * dt;
+      const yaw = cur + Math.max(-maxStep, Math.min(maxStep, delta));
+      this.dir = [Math.sin(yaw), Math.cos(yaw)];
+      this.slope = (b[1] - a[1]) / l;
     }
   }
 }
