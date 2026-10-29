@@ -4,6 +4,26 @@ This plan turns [DESIGN.md](DESIGN.md) into a sequence of buildable milestones. 
 milestone ends in something that runs in the browser, passes the puppeteer harness, and
 is reviewed by the AAA judge agent before moving on.
 
+## Status (implementation)
+
+All milestones M0–M13 are implemented in a first version. Notes against the plan:
+
+- **Geometry:** clusters with vertex pulling, GPU culling with Hi-Z occlusion and
+  per-tile LOD selection are in place. Instead of a full Nanite DAG there are
+  two levels: LOD1 shells for every tile are always resident, and LOD0 detail
+  tiles stream in near the camera. An outskirts HLOD skyline extends the city
+  3.6 km past the generated world.
+- **Lighting:** the deferred lighting is tiled per 16×16 tile in compute rather
+  than clustered.
+- **Streets:** a lattice of avenues plus radial/ring arterials and patchwork
+  street grids generate the roads (simpler than tensor fields, and it gives the
+  Tokyo look). Long water crossings become suspension bridges.
+- **People and traffic:** pedestrians use the same NURBS pipeline as vehicles.
+  Traffic drives on the left.
+- **Agents:** the vehicle designer delivered 11 designs. The vehicle judge and
+  the AAA judge review screenshots each round, and their findings drive
+  further passes.
+
 ---
 
 ## 1. Ground rules
