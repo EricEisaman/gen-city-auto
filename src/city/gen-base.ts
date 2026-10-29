@@ -223,22 +223,24 @@ function roads(L: CityLayout, geom: RoadGeom, m: CMesh, lights: LightList, piers
         // Main cables: parabola between towers, and side spans down to the deck.
         for (let side = 0; side < 2; side++) {
           const sideLine = side === 0 ? left : right;
+          const sStart = Math.max(0, towerAt[0] - span * 0.2);
+          const sEnd = Math.min(along[along.length - 1], towerAt[1] + span * 0.2);
           const cable = (s: number): Vec3 => {
             const i = Math.max(0, Math.min(pts.length - 1, idxAt(s) < 0 ? pts.length - 1 : idxAt(s)));
             const q = sideLine[i];
             const off: Vec2 = [q[0] - pts[i][0], q[1] - pts[i][1]];
             const ol = Math.hypot(off[0], off[1]) || 1;
             let y: number;
-            if (s < towerAt[0]) y = lerp(hs[i] + 1, hs[i] + towerH, (s - Math.max(0, towerAt[0] - span * 0.2)) / (span * 0.2));
-            else if (s > towerAt[1]) y = lerp(hs[i] + towerH, hs[i] + 1, (s - towerAt[1]) / (span * 0.2));
+            if (s < towerAt[0]) y = lerp(hs[i] + 1, hs[i] + towerH, (s - sStart) / Math.max(1, towerAt[0] - sStart));
+            else if (s > towerAt[1]) y = lerp(hs[i] + towerH, hs[i] + 1, (s - towerAt[1]) / Math.max(1, sEnd - towerAt[1]));
             else {
               const t = (s - towerAt[0]) / (towerAt[1] - towerAt[0]);
               y = hs[i] + 4 + (towerH - 4) * Math.pow(2 * t - 1, 2);
             }
             return [q[0] + (off[0] / ol) * 2.5, Math.max(y, hs[i] + 1), q[1] + (off[1] / ol) * 2.5];
           };
-          let prev = cable(Math.max(0, towerAt[0] - span * 0.2));
-          for (let s = Math.max(0, towerAt[0] - span * 0.2) + 12; s <= Math.min(along[along.length - 1], towerAt[1] + span * 0.2); s += 12) {
+          let prev = cable(sStart);
+          for (let s = sStart + 12; s <= sEnd; s += 12) {
             const c = cable(s);
             piers.beam(prev, c, 0.35, 0.35, packMat(CM.metal));
             const i = Math.max(0, idxAt(s));
