@@ -22,8 +22,12 @@
     -> added patchy high cirrus (sun forward-scattering, lit by city glow at night), a two-layer star
        field with a power-law magnitude spread and colour temperatures, fading near the hazy horizon.
 
-[ ] Car collisions are poor. Cars z-clip into hills - this happens in the current demo
+[x] Car collisions are poor. Cars z-clip into hills - this happens in the current demo
     right at the start. The car is half under the ground.
+    -> the driving surface used chain heights everywhere, but junctions are rendered as flat plates
+       and roads use a smoothed grade. surfaceHeight() now tests junction polygons first and uses the
+       mesh's grade blend; traffic snaps to it too. tools/drivecheck.ts measures it: samples off by
+       more than 30 cm went from 4% to 0.05% (worst cases are where two roads overlap).
 
 [x] Horizon colors do that match fog colors so when you can see the horizon, like from the helicopter,
     there is a sharp contrast between the horizon/sky-box and the buildings/ground

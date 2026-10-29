@@ -50,6 +50,7 @@ export class RoadNet {
   private readonly cell = 32;
   readonly size: number;
   private poleGrid = new Map<number, Vec3[]>();
+  private junctionGrid = new Map<number, number[]>();
 
   constructor(summary: LayoutSummary, hf: Heightfield) {
     const L = summary.layout;
@@ -80,6 +81,35 @@ export class RoadNet {
           l.push(ci * 65536 + i);
         }
       }
+    });
+    // Junction surfaces (flat polygons at the junction height).
+    this.geom.junctions.forEach((jg, ji) => {
+      if (jg.outline.length < 3) return;
+      let x0 = Infinity,
+        x1 = -Infinity,
+        z0 = Infinity,
+        z1 = -Infinity;
+      for (const q of jg.outline) {
+        x0 = Math.min(x0, q[0]);
+        x1 = Math.max(x1, q[0]);
+        z0 = Math.min(z0, q[1]);
+        z1 = Math.max(z1, q[1]);
+      }
+      for (
+        let z = Math.floor(z0 / this.cell);
+        z <= Math.floor(z1 / this.cell);
+        z++
+      )
+        for (
+          let x = Math.floor(x0 / this.cell);
+          x <= Math.floor(x1 / this.cell);
+          x++
+        ) {
+          const k = this.key(x * this.cell, z * this.cell);
+          let l = this.junctionGrid.get(k);
+          if (!l) this.junctionGrid.set(k, (l = []));
+          l.push(ji);
+        }
     });
     // Street light poles (thin obstacles for camera framing).
     streetLightSpots(L as unknown as CityLayout, this.geom, p => {
@@ -224,22 +254,28 @@ export class RoadNet {
 
   /** Driving surface height: road deck if on a road, else terrain (+ curb). */
   surfaceHeight(x: number, z: number, nearHint?: number): number {
-    const nr = this.nearestRoad(x, z, 1);
     const ground = this.hf.sample(x, z);
+    const ok = (h: number) =>
+      nearHint === undefined || Math.abs(h - nearHint) < 4 || h > ground + 3;
+    // Junction polygons are flat (same as the rendered junction surface).
+    for (const ji of this.junctionGrid.get(this.key(x, z)) ?? []) {
+      if (!pointInPoly(x, z, this.geom.junctions[ji].outline)) continue;
+      const h = this.junctions[ji].h + 0.02;
+      if (ok(h)) return h;
+    }
+    const nr = this.nearestRoad(x, z, 1);
     if (nr) {
       const c = this.chains[nr.chain];
       const half = ROAD_WIDTH[c.kind] / 2;
       if (nr.dist < half + 0.3) {
+        // Same grade blend as chainAt(), which the road mesh is built from.
+        const t = nr.t;
+        const st = t * t * (3 - 2 * t);
         const h =
           c.heights[nr.seg] +
-          (c.heights[nr.seg + 1] - c.heights[nr.seg]) * nr.t +
+          (c.heights[nr.seg + 1] - c.heights[nr.seg]) * (t * 0.5 + st * 0.5) +
           0.02;
-        if (
-          nearHint === undefined ||
-          Math.abs(h - nearHint) < 4 ||
-          h > ground + 3
-        )
-          return h;
+        if (ok(h)) return h;
       }
     }
     return ground + 0.16;
@@ -325,4 +361,18 @@ export class RoadNet {
     }
     return null;
   }
+}
+
+function pointInPoly(x: number, z: number, poly: Vec2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (
+      a[1] > z !== b[1] > z &&
+      x < ((b[0] - a[0]) * (z - a[1])) / (b[1] - a[1]) + a[0]
+    )
+      inside = !inside;
+  }
+  return inside;
 }

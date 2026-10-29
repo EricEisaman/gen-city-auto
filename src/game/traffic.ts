@@ -276,6 +276,9 @@ export class LaneFollower {
 
   place(net: RoadNet, dt = Infinity) {
     this.pos = this.pointAt(net, 0);
+    // Sit on the rendered surface (junctions are flat, lanes follow the grade).
+    this.pos[1] =
+      net.surfaceHeight(this.pos[0], this.pos[2], this.pos[1]) + 0.01;
     // Heading from a short look-ahead/look-behind: smooth through vertices
     // and around junction curves.
     const a = this.pointAt(net, -1.2);
