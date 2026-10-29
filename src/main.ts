@@ -25,6 +25,7 @@ async function main() {
     shot: params.get('shot') ?? undefined,
     debug: num('debug', 0),
     traffic: num('traffic', 380),
+    freecam: params.get('freecam')?.split(',').map(Number),
   });
   await game.init();
   (window as unknown as {__game: Game}).__game = game;

@@ -398,11 +398,11 @@ export class Renderer {
 
   private updateTerrainPatches(eye: Vec3) {
     const patches: number[] = [];
-    const root = 8192;
+    const root = 16384;
     const visit = (x: number, z: number, size: number) => {
       const cx = x + size / 2;
       const cz = z + size / 2;
-      if (Math.abs(cx) - size / 2 > this.worldSize / 2 + 600 || Math.abs(cz) - size / 2 > this.worldSize / 2 + 600) return;
+      if (Math.abs(cx) - size / 2 > this.worldSize / 2 + 4000 || Math.abs(cz) - size / 2 > this.worldSize / 2 + 4000) return;
       const d = Math.hypot(eye[0] - cx, eye[2] - cz, Math.max(0, eye[1] - 60));
       if (d < size * 1.4 && size > 64 && patches.length < 2000 * 4) {
         const h = size / 2;

@@ -196,9 +196,6 @@ export function generateTerrain(p: CityParams, seed: number): Terrain {
       if (land < 0) h = Math.max(-18, -2 + land * 0.05);
       else if (land < 30) h = Math.min(h, lerp(-2, 2.5, land / 30));
 
-      // Map edges fall away so the world has a soft boundary.
-      const edge = Math.max(Math.abs(x), Math.abs(z));
-      if (edge > S - 150) h = lerp(h, Math.min(h, h * 0.5 - 5), smoothstep(S - 150, S, edge));
 
       hf.data[j * n + i] = h;
     }

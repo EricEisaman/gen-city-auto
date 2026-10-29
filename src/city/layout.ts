@@ -585,6 +585,9 @@ export function generateLayout(params: CityParams, seed: number, progress?: (msg
   for (const l of arterials(params, rng, noise, center, hubs)) {
     for (const piece of clipToLand(l.pts, hf, l.maxBridge ?? 700)) {
       const inside = piece.filter(q => Math.abs(q[0]) < S - 40 && Math.abs(q[1]) < S - 40);
+      // Never end a road over water (bridges must land on both shores).
+      while (inside.length && !isLand(inside[inside.length - 1])) inside.pop();
+      while (inside.length && !isLand(inside[0])) inside.shift();
       if (inside.length > 1) majorLines.push({pts: inside, kind: l.kind});
     }
   }

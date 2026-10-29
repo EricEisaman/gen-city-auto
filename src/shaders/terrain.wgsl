@@ -20,16 +20,19 @@ fn heightAt(xz: vec2f) -> f32 {
   let d = textureLoad(heightTex, clamp(i + vec2i(0, 1), vec2i(0), c), 0).r;
   let e = textureLoad(heightTex, clamp(i + vec2i(1, 1), vec2i(0), c), 0).r;
   var h = mix(mix(a, b, f.x), mix(d, e, f.x), f.y);
-  // Outside the generated world the land falls into the sea.
+  // Outside the generated world: land continues as a gentle plain, sea stays sea.
   let edge = max(abs(xz.x), abs(xz.y)) - frame.world.x * 0.5;
-  if (edge > 0.0) { h = mix(h, -20.0, clamp(edge / 400.0, 0.0, 1.0)); }
+  if (edge > 0.0) {
+    if (h < 1.0) { h = mix(h, -20.0, clamp(edge / 400.0, 0.0, 1.0)); }
+    else { h = h + (valueNoise(xz * 0.002) - 0.5) * 20.0 * clamp(edge / 1500.0, 0.0, 1.0); }
+  }
   return h;
 }
 
 fn landAt(xz: vec2f) -> u32 {
   let n = i32(frame.world.z);
   let g = vec2i(round((xz + frame.world.x * 0.5) / frame.world.y));
-  if (any(g < vec2i(0)) || any(g >= vec2i(n))) { return 0u; }
+  if (any(g < vec2i(0)) || any(g >= vec2i(n))) { return 1u; }
   return u32(textureLoad(landTex, g, 0).r * 255.0 + 0.5);
 }
 

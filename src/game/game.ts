@@ -32,6 +32,8 @@ export interface GameOptions {
   shot?: string;
   debug: number;
   traffic: number;
+  /** Fixed camera for tests: x, y, z, yaw, pitch. */
+  freecam?: number[];
 }
 
 export class Game {
@@ -251,7 +253,12 @@ export class Game {
     this.hour = (this.hour + dt * this.timeSpeed + 24) % 24;
     this.weather.update(dt);
     this.player.update(dt, this.input, this.time);
-    const cam = this.camera.update(dt, this.player, this.input);
+    let cam = this.camera.update(dt, this.player, this.input);
+    const fc = this.opts.freecam;
+    if (fc) {
+      const f: Vec3 = [Math.sin(fc[3]) * Math.cos(fc[4]), Math.sin(fc[4]), -Math.cos(fc[3]) * Math.cos(fc[4])];
+      cam = {eye: [fc[0], fc[1], fc[2]], target: [fc[0] + f[0], fc[1] + f[1], fc[2] + f[2]], fov: 1.0, near: 0.5, interior: false};
+    }
     const focus = this.player.pos;
     this.traffic.update(dt, this.time, focus, this.player.follower && this.player.autopilot ? [this.player.follower] : []);
     this.trains!.update(dt);

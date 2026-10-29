@@ -535,6 +535,39 @@ function expressway(e: Elevated, hf: Heightfield, m: CMesh, lights: LightList) {
   }
 }
 
+/**
+ * Outskirts: the city continues past the generated world as low-detail
+ * buildings (an HLOD skyline) so the horizon reads as an endless metropolis.
+ */
+function outskirts(L: CityLayout, m: CMesh) {
+  const hf = L.terrain.heights;
+  const S = L.params.size / 2;
+  const band = 3600;
+  const cell = 75;
+  const rng = new Rng(L.seed ^ 0x51ced);
+  for (let z = -S - band; z < S + band; z += cell) {
+    for (let x = -S - band; x < S + band; x += cell) {
+      const dOut = Math.max(Math.abs(x), Math.abs(z)) - S;
+      if (dOut < 60) continue;
+      const ex = Math.max(-S, Math.min(S, x));
+      const ez = Math.max(-S, Math.min(S, z));
+      const ground = hf.sample(ex, ez);
+      if (ground < 1) continue;
+      if (rng.next() > 0.9 * Math.exp(-dOut / 2600)) continue;
+      const n = rng.int(1, 3);
+      for (let k = 0; k < n; k++) {
+        const w = rng.range(14, 34);
+        const d = rng.range(14, 34);
+        const h = Math.min(160, rng.range(9, 40) * (rng.chance(0.08) ? 3 : 1));
+        const cx = x + rng.range(w / 2, cell - w / 2);
+        const cz = z + rng.range(d / 2, cell - d / 2);
+        const style = rng.int(0, 1 << 16);
+        m.box([cx, ground + h / 2 - 2, cz], [w / 2, h / 2 + 2, d / 2], packMat(CM.facade, style | (2 << 16)), 0, rng.nextU32());
+      }
+    }
+  }
+}
+
 export interface BaseGeometry {
   mesh: CMesh;
   piers: CMesh;
@@ -554,6 +587,7 @@ export function buildBase(L: CityLayout): BaseGeometry {
   blocks(L, m);
   elevatedStructures(L, mask, m, lights);
   streetLights(L, geom, lights);
+  outskirts(L, m);
   return {mesh: m, piers, lights: lights.data, landUse: landUse(L, mask), roadMask: mask, geom};
 }
 
