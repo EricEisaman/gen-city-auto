@@ -200,18 +200,33 @@ export function createLeafTexture(device: GPUDevice): GPUTexture {
     g.fill();
     void r;
   }
+  // Mip chain (the shader rescales alpha per level to keep crown coverage).
+  const levels = Math.log2(size) + 1;
   const tex = device.createTexture({
     label: 'trees/leaf cards',
     size: [size, size],
     format: 'rgba8unorm',
+    mipLevelCount: levels,
     usage:
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.COPY_DST |
       GPUTextureUsage.RENDER_ATTACHMENT,
   });
-  device.queue.copyExternalImageToTexture({source: canvas}, {texture: tex}, [
-    size,
-    size,
-  ]);
+  let src: OffscreenCanvas = canvas;
+  for (let l = 0; l < levels; l++) {
+    const s = size >> l;
+    if (l > 0) {
+      const c = new OffscreenCanvas(s, s);
+      const cg = c.getContext('2d')!;
+      cg.imageSmoothingQuality = 'high';
+      cg.drawImage(src, 0, 0, s, s);
+      src = c;
+    }
+    device.queue.copyExternalImageToTexture(
+      {source: src},
+      {texture: tex, mipLevel: l},
+      [s, s],
+    );
+  }
   return tex;
 }

@@ -63,10 +63,20 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
   return o;
 }
 
+// Mipmapped alpha test. Downsampled alpha averages toward the leaf density,
+// so rescale it per mip level to keep crowns from thinning out at distance,
+// and sharpen around the threshold so edges stay crisp instead of stippled.
+fn leafAlpha(uv: vec2f) -> f32 {
+  let dx = dpdx(uv) * 256.0;
+  let dy = dpdy(uv) * 256.0;
+  let lod = clamp(0.5 * log2(max(dot(dx, dx), dot(dy, dy))), 0.0, 8.0);
+  let a = textureSampleLevel(leafTex, linearSampler, uv, lod).a * (1.0 + lod * 0.28);
+  return a;
+}
+
 fn leafCutout(i: VOut) {
-  if ((i.mat & 0xffu) == 25u) {
-    if (textureSampleLevel(leafTex, linearSampler, i.uv, 0.0).a < 0.5) { discard; }
-  }
+  let a = leafAlpha(i.uv);
+  if ((i.mat & 0xffu) == 25u && a < 0.5) { discard; }
 }
 
 @fragment fn fs(i: VOut, @builtin(front_facing) ff: bool) -> GOut {
@@ -102,5 +112,5 @@ struct SOut {
 }
 
 @fragment fn fsShadow(i: SOut) {
-  if (i.leaf == 1u && textureSampleLevel(leafTex, linearSampler, i.uv, 0.0).a < 0.5) { discard; }
+  if (i.leaf == 1u && textureSampleLevel(leafTex, linearSampler, i.uv, 2.0).a * 1.5 < 0.5) { discard; }
 }
