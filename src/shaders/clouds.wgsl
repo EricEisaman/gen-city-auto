@@ -126,7 +126,7 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
     let t0 = max((CLOUD_BOTTOM - ro.y) / rd.y, 0.0);
     let t1 = min((CLOUD_TOP - ro.y) / rd.y, 40000.0);
     if (t1 > t0) {
-      let steps = 56;
+      let steps = select(24, 56, frame.misc.y > 0.5);
       let dt = (t1 - t0) / f32(steps);
       let jitter = fract(hash21(vec2f(id.xy)) + frame.time.z * 0.618034);
       var t = t0 + dt * jitter;

@@ -21,7 +21,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let uv = (vec2f(id.xy) + 0.5) / vec2f(size);
   let fp = vec2i(uv * full);
   let d = textureLoad(aoDepth, fp, 0);
-  if (d <= 0.0) {
+  if (d <= 0.0 || frame.misc.y < 0.5) {
     textureStore(aoOut, id.xy, vec4f(1.0));
     return;
   }

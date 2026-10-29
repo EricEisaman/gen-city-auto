@@ -34,6 +34,7 @@ export interface GameOptions {
   traffic: number;
   /** Fixed camera for tests: x, y, z, yaw, pitch. */
   freecam?: number[];
+  quality: number;
 }
 
 export class Game {
@@ -304,6 +305,7 @@ export class Game {
       hour: this.hour,
       weather: this.weather.state,
       debug: this.opts.debug,
+      quality: this.opts.quality,
     });
     this.input.endFrame();
     this.fpsAvg = this.fpsAvg * 0.95 + (1 / Math.max(dt, 1e-3)) * 0.05;

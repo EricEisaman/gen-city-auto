@@ -44,7 +44,8 @@ with WebGPU and no libraries. Inspired by GTA V and Marvel's Spider-Man.
 URL parameters: `city=neon|metro|harbour|river`, `seed`, `time` (hours),
 `timespeed` (hours per second), `weather=sunny|cloudy|rain|storm`,
 `vehicle=<design>|heli`, `cam=chase|first|hood|orbit`, `director=0`,
-`shot=<director shot>`, `spawn=x,z`, `debug=1..8` (G-buffer and lighting views).
+`shot=<director shot>`, `spawn=x,z`, `freecam=x,y,z,yaw,pitch`, `quality=low`,
+`debug=1..8` (G-buffer and lighting views).
 
 ## Development
 

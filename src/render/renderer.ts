@@ -40,6 +40,8 @@ export interface ViewParams {
   hour: number;
   weather: Weather;
   debug: number;
+  /** 0 = low (no SSR/AO, cheaper clouds), 1 = high. */
+  quality?: number;
 }
 
 /** Hook for other systems (vehicles, rain) to add draws into renderer passes. */
@@ -475,7 +477,7 @@ export class Renderer {
     fd.set(F.skyAmbient, [...sky.skyAmbient, 0]);
     fd.set(F.groundAmbient, [...sky.groundAmbient, 0]);
     fd.set(F.cityGlow, [...sky.cityGlow, 0]);
-    fd.set(F.misc, [v.debug, 1, 0, sky.moonPhase]);
+    fd.set(F.misc, [v.debug, v.quality ?? 1, 0, sky.moonPhase]);
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);
     d.queue.writeBuffer(this.atmoBuffer, 0, new Float32Array([haze, 1, 0.12, 24]));
 
