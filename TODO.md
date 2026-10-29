@@ -17,3 +17,5 @@
     there is a sharp contrast between the horizon/sky-box and the buildings/ground
 
 [ ] The buildings need more details. They need stronger textures or something.
+
+[ ] the transit tracks need trains sometimes.

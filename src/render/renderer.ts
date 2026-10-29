@@ -125,6 +125,7 @@ export class Renderer {
   private terrainIndexCount: number;
   private heightTex: GPUTexture | null = null;
   private landTex: GPUTexture | null = null;
+  private skylineTex: GPUTexture | null = null;
   private worldSize = 6144;
   private heightCell = 4;
   private heightN = 1537;
@@ -557,6 +558,23 @@ export class Renderer {
     if (n > 0)
       this.device.queue.writeBuffer(this.lightBuffer, 16, lights, 0, n * 8);
     this.lightCount = n;
+  }
+
+  /** Height of terrain + building tops for street-canyon sky visibility. */
+  setSkyline(data: Float32Array, n: number) {
+    this.skylineTex?.destroy();
+    this.skylineTex = this.device.createTexture({
+      label: 'lighting/skyline heights',
+      size: [n, n],
+      format: 'r32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture(
+      {texture: this.skylineTex},
+      data,
+      {bytesPerRow: n * 4},
+      [n, n],
+    );
   }
 
   /** Vehicles for contact occlusion: 12 floats each (see lighting.wgsl Contact). */
@@ -1357,6 +1375,7 @@ export class Renderer {
             this.ubuf(this.lightBuffer),
             t.ao.createView(),
             this.ubuf(this.contactBuffer),
+            (this.skylineTex ?? this.heightTex!).createView(),
           ],
           'bg/lighting/inputs',
         ),

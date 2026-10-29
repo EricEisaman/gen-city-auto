@@ -27,6 +27,56 @@ struct LightBuf { count: u32, pad0: u32, pad1: u32, pad2: u32, lights: array<Lig
 struct Contact { a: vec4f, b: vec4f, c: vec4f };
 struct ContactBuf { count: u32, pad0: u32, pad1: u32, pad2: u32, items: array<Contact> };
 @group(1) @binding(15) var<storage, read> contacts: ContactBuf;
+@group(1) @binding(16) var skyline: texture_2d<f32>;
+
+// Fraction of the sky visible from a point, from a horizon search over the
+// building/terrain height map (8 azimuths x 6 steps). Walls only count the
+// half-space they face.
+fn skyVisibility(world: vec3f, n: vec3f) -> f32 {
+  let N = f32(textureDimensions(skyline).x);
+  let size = frame.world.x;
+  var occl = 0.0;
+  var cnt = 0.0;
+  for (var a = 0; a < 8; a++) {
+    let ang = f32(a) * 0.785398 + 0.39;
+    let dir = vec2f(cos(ang), sin(ang));
+    if (n.y < 0.7 && dot(dir, n.xz) < -0.2) { continue; }
+    var maxS = 0.0;
+    var dist = 2.0;
+    for (var k = 0; k < 6; k++) {
+      let p = world.xz + dir * dist;
+      let g = vec2i((p + size * 0.5) / size * N);
+      if (all(g >= vec2i(0)) && all(g < vec2i(i32(N)))) {
+        let h = textureLoad(skyline, g, 0).r;
+        let s = (h - world.y) / length(vec2f(dist, h - world.y));
+        maxS = max(maxS, s);
+      }
+      dist *= 2.0;
+    }
+    occl += maxS * maxS;
+    cnt += 1.0;
+  }
+  return clamp(1.0 - occl / max(cnt, 1.0), 0.15, 1.0);
+}
+
+// Sky irradiance (as reflected radiance for albedo 1) from the sky-view LUT,
+// cosine-weighted around the normal, blended toward overcast grey by clouds.
+fn skyIrradiance(n: vec3f) -> vec3f {
+  let up = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(n.y) < 0.95);
+  let t = normalize(cross(up, n));
+  let b = cross(n, t);
+  var sum = vec3f(0.0);
+  for (var k = 0; k < 5; k++) {
+    var d = n;
+    if (k > 0) {
+      let a = f32(k) * 1.5708;
+      d = normalize(n + (t * cos(a) + b * sin(a)) * 0.75);
+    }
+    sum += skyRadiance(normalize(vec3f(d.x, max(d.y, 0.03), d.z)));
+  }
+  let clear = sum / 5.0 * smoothstep(-0.6, 0.4, n.y);
+  return mix(clear, frame.skyAmbient.rgb, clamp(frame.weather.x * 1.2 - 0.2, 0.0, 1.0)) + frame.cityGlow.rgb * 0.25;
+}
 
 fn contactOcclusion(world: vec3f) -> f32 {
   var occ = 0.0;
@@ -395,7 +445,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK;
   }
   // Ambient: hemisphere sky + ground bounce.
-  let skyAmb = mix(frame.groundAmbient.rgb, frame.skyAmbient.rgb, n.y * 0.5 + 0.5);
+  var skyVis = 1.0;
+  if (dist < 1500.0 && frame.misc.y > 0.5) { skyVis = mix(skyVisibility(world, n), 1.0, smoothstep(900.0, 1500.0, dist)); }
+  let hemi = n.y * 0.5 + 0.5;
+  let skyAmb = frame.groundAmbient.rgb * (1.0 - hemi) + skyIrradiance(n) * hemi * skyVis;
   let diffAmb = albedo * (1.0 - metal) * skyAmb * ao;
   color += diffAmb;
   // Specular ambient: sky reflection, replaced by SSR where available.
@@ -405,7 +458,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var env = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
   // Below the horizon reflections see the city: darken toward ground ambient.
   env = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, env, smoothstep(-0.05, 0.15, refl.y));
-  env *= mix(1.0, 0.25, rough);
+  env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
   if (rough < 0.35 && frame.misc.y > 0.5) {
     let r = ssr(world, n, v, pxf, rough, cls == CLASS_GROUND && frame.weather.z > 0.3);
     env = mix(env, r.rgb, r.a);

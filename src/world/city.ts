@@ -23,6 +23,8 @@ interface TileState {
 
 type Progress = (msg: string, f: number) => void;
 
+const SKYLINE_N = 2048;
+
 export class City {
   summary!: LayoutSummary;
   heights!: Heightfield;
@@ -156,6 +158,7 @@ export class City {
       L.params.size,
       landUse,
     );
+    this.renderer.setSkyline(this.buildSkyline(), SKYLINE_N);
     for (const c of [base, piers]) {
       const h = this.renderer.uploadClusters(c);
       if (h) this.baseHandles.push(h);
@@ -168,6 +171,60 @@ export class City {
       );
     }
     this.renderer.setTileLods(this.tileLods);
+  }
+
+  /** Max of terrain and building tops on a 2048^2 grid (street-canyon sky visibility). */
+  private buildSkyline(): Float32Array {
+    const L = this.summary.layout;
+    const size = L.params.size;
+    const N = SKYLINE_N;
+    const cell = size / N;
+    const out = new Float32Array(N * N);
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        out[j * N + i] = this.heights.sample(
+          -size / 2 + (i + 0.5) * cell,
+          -size / 2 + (j + 0.5) * cell,
+        );
+      }
+    }
+    for (const b of L.buildings) {
+      const fp = b.footprint;
+      let x0 = Infinity,
+        x1 = -Infinity,
+        z0 = Infinity,
+        z1 = -Infinity;
+      for (const q of fp) {
+        x0 = Math.min(x0, q[0]);
+        x1 = Math.max(x1, q[0]);
+        z0 = Math.min(z0, q[1]);
+        z1 = Math.max(z1, q[1]);
+      }
+      const top = b.base + b.height;
+      const i0 = Math.max(0, Math.floor((x0 + size / 2) / cell));
+      const i1 = Math.min(N - 1, Math.floor((x1 + size / 2) / cell));
+      const j0 = Math.max(0, Math.floor((z0 + size / 2) / cell));
+      const j1 = Math.min(N - 1, Math.floor((z1 + size / 2) / cell));
+      for (let j = j0; j <= j1; j++) {
+        const z = -size / 2 + (j + 0.5) * cell;
+        for (let i = i0; i <= i1; i++) {
+          const x = -size / 2 + (i + 0.5) * cell;
+          let inside = false;
+          for (let a = 0, c = fp.length - 1; a < fp.length; c = a++) {
+            if (
+              fp[a][1] > z !== fp[c][1] > z &&
+              x <
+                ((fp[c][0] - fp[a][0]) * (z - fp[a][1])) /
+                  (fp[c][1] - fp[a][1]) +
+                  fp[a][0]
+            )
+              inside = !inside;
+          }
+          if (inside && top > out[j * N + i]) out[j * N + i] = top;
+        }
+      }
+    }
+    return out;
   }
 
   tileAt(x: number, z: number) {
