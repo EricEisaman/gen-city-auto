@@ -307,10 +307,11 @@ export class CameraSystem {
         const eye = pl.toWorld([e[0], e[1] + 0.15, e[2]]);
         const look = pl.toWorld([
           e[0] + Math.sin(this.yawOff) * 10,
-          e[1] - 0.6 + this.pitchOff * -5,
+          e[1] - 0.35 + this.pitchOff * -5,
           e[2] + Math.cos(this.yawOff) * 10,
         ]);
-        return {eye, target: look, fov: 1.25, near: 0.03, interior: true};
+        // Natural lens: the road and city fill the windscreen, not the dash.
+        return {eye, target: look, fov: 1.0, near: 0.03, interior: true};
       }
       case 'hood': {
         const sz = info?.size ?? [1.8, 1.4, 4.5];
@@ -489,8 +490,8 @@ export class CameraSystem {
       case 'interior': {
         const e = pl.info?.driverEye ?? [0, 1.2, 0];
         const eye = pl.toWorld([e[0] * 0.15, e[1] + 0.02, e[2] - 0.38]);
-        const look = pl.toWorld([e[0] * 0.5, e[1] - 0.2, e[2] + 8]);
-        return {eye, target: look, fov: 1.2, near: 0.03, interior: true};
+        const look = pl.toWorld([e[0] * 0.5, e[1] - 0.1, e[2] + 8]);
+        return {eye, target: look, fov: 1.05, near: 0.03, interior: true};
       }
       case 'aerial': {
         s.eye = [

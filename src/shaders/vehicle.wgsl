@@ -66,8 +66,22 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
       let brake = I.params.y;
       s.emissive = vec3f(1.0, 0.04, 0.02) * (lightsOn * 3.0 + brake * 8.0);
     }
-    case 8u: { s.albedo = vec3f(0.09, 0.085, 0.08); s.rough = 0.85; s.ao = 0.6; }
-    case 9u: { s.albedo = vec3f(0.14, 0.13, 0.12); s.rough = 0.9; s.ao = 0.65; }
+    case 8u: {
+      // Moulded trim with a fine leather-like grain.
+      let grain = valueNoise(i.local.xy * 90.0 + i.local.z * 37.0) * 0.5 + valueNoise(i.local.zy * 210.0) * 0.5;
+      s.albedo = vec3f(0.09, 0.085, 0.08) * (0.8 + 0.4 * grain);
+      s.rough = 0.7 + 0.2 * grain;
+      s.ao = 0.6;
+    }
+    case 9u: {
+      // Seats: ribbed centre panels with stitched seams.
+      let rib = fract(i.local.y * 14.0 + i.local.z * 3.0);
+      let seam = smoothstep(0.06, 0.0, min(rib, 1.0 - rib));
+      s.albedo = vec3f(0.14, 0.13, 0.12) * (1.0 - 0.35 * seam) * (0.9 + 0.2 * valueNoise(i.local.xz * 60.0));
+      s.normal = normalize(n + vec3f(0.0, (rib - 0.5) * 0.25, 0.0));
+      s.rough = 0.9;
+      s.ao = 0.65;
+    }
     case 10u: {
       s.albedo = vec3f(0.03);
       s.rough = 0.5;
