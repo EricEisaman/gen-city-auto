@@ -16,6 +16,7 @@ import {
   LightList,
   SODIUM,
   LED,
+  sidewalkY,
   streetLightSpots,
 } from './gen-base.ts';
 import {insetPolygon} from './graph.ts';
@@ -960,9 +961,9 @@ export function building(
 export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
   const trunkH = h * 0.4;
   m.cylinder(
-    p,
+    [p[0], p[1] - SINK, p[2]],
     0.12 + h * 0.012,
-    trunkH + 0.5,
+    trunkH + 0.5 + SINK,
     lod === 0 ? 6 : 4,
     packMat(CM.bark),
     false,
@@ -1109,6 +1110,9 @@ function blob(
   }
 }
 
+/** How far street furniture extends below the sidewalk so slopes show no gap. */
+const SINK = 0.3;
+
 function streetLight(
   m: CMesh,
   p: Vec3,
@@ -1118,7 +1122,14 @@ function streetLight(
 ) {
   const h = kind >= 2 ? 9 : 6.5;
   const reach = kind >= 2 ? 2.2 : 1.2;
-  m.cylinder(p, 0.09, h, 6, packMat(CM.metal), false);
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.09,
+    h + SINK,
+    6,
+    packMat(CM.metal),
+    false,
+  );
   const top: Vec3 = [p[0], p[1] + h, p[2]];
   const head: Vec3 = [
     p[0] + dir[0] * reach,
@@ -1143,7 +1154,14 @@ function signal(
   group: number,
 ) {
   // Japanese-style horizontal signal head on an arm over the road.
-  m.cylinder(p, 0.12, 6.2, 8, packMat(CM.paint, 0x90), false);
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.12,
+    6.2 + SINK,
+    8,
+    packMat(CM.paint, 0x90),
+    false,
+  );
   const top: Vec3 = [p[0], p[1] + 5.8, p[2]];
   const end: Vec3 = [
     p[0] + armDir[0] * reach,
@@ -1183,7 +1201,14 @@ function signal(
 }
 
 function utilityPole(m: CMesh, p: Vec3) {
-  m.cylinder(p, 0.16, 10, 6, packMat(CM.concrete), false);
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.16,
+    10 + SINK,
+    6,
+    packMat(CM.concrete),
+    false,
+  );
   m.beam(
     [p[0] - 0.8, p[1] + 9, p[2]],
     [p[0] + 0.8, p[1] + 9, p[2]],
@@ -1228,6 +1253,8 @@ export interface TileContext {
   tileChains: number[][];
   /** Park blocks overlapping each tile. */
   tileParks: number[][];
+  /** All blocks (sidewalk slabs and parks) overlapping each tile. */
+  tileBlocks: number[][];
   /** Lowest elevated deck underside per DECK_CELL cell (Infinity if none). */
   deckFloor: Float32Array;
   /** Tiles per side. */
@@ -1246,6 +1273,7 @@ export function makeTileContext(
   const tileJunctions = lists();
   const tileChains = lists();
   const tileParks = lists();
+  const tileBlocks = lists();
   layout.buildings.forEach((b, i) => {
     const c = centroid(b.footprint);
     tileBuildings[tileOf(size, c[0], c[1])].push(i);
@@ -1272,7 +1300,6 @@ export function makeTileContext(
     }
   });
   layout.blocks.forEach((b, i) => {
-    if (!b.park) return;
     let x0 = Infinity,
       x1 = -Infinity,
       z0 = Infinity,
@@ -1286,7 +1313,8 @@ export function makeTileContext(
     for (let z = z0; z <= z1 + TILE_SIZE; z += TILE_SIZE) {
       for (let x = x0; x <= x1 + TILE_SIZE; x += TILE_SIZE) {
         const t = tileOf(size, Math.min(x, x1), Math.min(z, z1));
-        if (!tileParks[t].includes(i)) tileParks[t].push(i);
+        if (!tileBlocks[t].includes(i)) tileBlocks[t].push(i);
+        if (b.park && !tileParks[t].includes(i)) tileParks[t].push(i);
       }
     }
   });
@@ -1298,6 +1326,7 @@ export function makeTileContext(
     tileJunctions,
     tileChains,
     tileParks,
+    tileBlocks,
     deckFloor: deckFloor(layout),
     tilesPerSide: n,
   };
@@ -1361,7 +1390,7 @@ export function buildTile(
     building(L.buildings[bi], m, lod, lights, L.params.signDensity);
 
   // Street lights.
-  streetLightSpots(L, ctx.geom, (p, dir, kind, sodium) => {
+  streetLightSpots(L, ctx.geom, hf, (p, dir, kind, sodium) => {
     if (inTile(p[0], p[2])) streetLight(m, p, dir, kind, sodium);
   });
 
@@ -1380,7 +1409,9 @@ export function buildTile(
       for (let s = s0 + 4; s < total - s1 - 4; s += 28) {
         const q = chainAt(c, arc, s);
         const l: Vec2 = [-q.d[1], q.d[0]];
-        const p: Vec3 = [q.p[0] + l[0] * off, q.h, q.p[1] + l[1] * off];
+        const x = q.p[0] + l[0] * off;
+        const z = q.p[1] + l[1] * off;
+        const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
         const here = inTile(p[0], p[2]);
         if (here && lod === 0) utilityPole(m, p);
         if (prev && lod === 0 && here) {
@@ -1400,11 +1431,9 @@ export function buildTile(
         for (let s = s0 + 10; s < total - s1 - 8; s += 13) {
           const q = chainAt(c, arc, s);
           const l: Vec2 = [-q.d[1], q.d[0]];
-          const p: Vec3 = [
-            q.p[0] + l[0] * off,
-            q.h + 0.16,
-            q.p[1] + l[1] * off,
-          ];
+          const x = q.p[0] + l[0] * off;
+          const z = q.p[1] + l[1] * off;
+          const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
           if (!inTile(p[0], p[2])) continue;
           const th = rng.range(6, 9);
           if (deckClearance(ctx, p[0], p[2], p[1]) < th + 1) continue;
@@ -1425,11 +1454,9 @@ export function buildTile(
       // Pole on the right corner of the approach (traffic drives on the left in
       // Tokyo, so oncoming traffic sees the pole on its left/curb side).
       const off = a.width / 2 + 0.8;
-      const p: Vec3 = [
-        j.p[0] + a.dir[0] * (a.setback + 1.5) + l[0] * off,
-        j.h + 0.16,
-        j.p[1] + a.dir[1] * (a.setback + 1.5) + l[1] * off,
-      ];
+      const x = j.p[0] + a.dir[0] * (a.setback + 1.5) + l[0] * off;
+      const z = j.p[1] + a.dir[1] * (a.setback + 1.5) + l[1] * off;
+      const p: Vec3 = [x, sidewalkY(hf, x, z, j.h), z];
       const group = Math.round((a.angle / Math.PI) * 2) & 1;
       signal(
         m,
@@ -1482,14 +1509,12 @@ export function buildTile(
         const count = 1 + ((h >> 4) % 3);
         for (let k = 0; k < count; k++) {
           const t = 0.15 + k * 0.09;
-          const p: Vec3 = [
-            lerp(a[0], c[0], t) + n[0] * 0.5,
-            b.base + 0.9,
-            lerp(a[1], c[1], t) + n[2] * 0.5,
-          ];
+          const x = lerp(a[0], c[0], t) + n[0] * 0.5;
+          const z = lerp(a[1], c[1], t) + n[2] * 0.5;
+          const p: Vec3 = [x, sidewalkY(hf, x, z, b.base) + 0.8, z];
           m.box(
             p,
-            [0.5, 0.9, 0.4],
+            [0.5, 1.0, 0.4],
             packMat(CM.vending, (b.id + k) & 0xff),
             yaw,
           );
@@ -1506,11 +1531,9 @@ export function buildTile(
         const count = 3 + ((h >> 6) % 5);
         for (let k = 0; k < count; k++) {
           const t = 0.55 + k * (0.35 / count);
-          const base: Vec3 = [
-            lerp(a[0], c[0], t) + n[0] * 0.9,
-            b.base,
-            lerp(a[1], c[1], t) + n[2] * 0.9,
-          ];
+          const x = lerp(a[0], c[0], t) + n[0] * 0.9;
+          const z = lerp(a[1], c[1], t) + n[2] * 0.9;
+          const base: Vec3 = [x, sidewalkY(hf, x, z, b.base), z];
           const col = packMat(CM.paint, (h + k * 37) & 0xff);
           // Two wheels and a frame, oriented toward the wall.
           for (const off of [-0.5, 0.5]) {
@@ -1556,11 +1579,9 @@ export function buildTile(
         for (let s = s0 + 6; s < total - s1 - 6; s += 2) {
           const q = chainAt(c, arc, s);
           const l: Vec2 = [-q.d[1], q.d[0]];
-          const p: Vec3 = [
-            q.p[0] + l[0] * off,
-            q.h + 0.16,
-            q.p[1] + l[1] * off,
-          ];
+          const x = q.p[0] + l[0] * off;
+          const z = q.p[1] + l[1] * off;
+          const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
           if (!inTile(p[0], p[2])) {
             prev = null;
             continue;
@@ -1571,8 +1592,8 @@ export function buildTile(
             continue;
           }
           m.box(
-            [p[0], p[1] + 0.4, p[2]],
-            [0.03, 0.4, 0.03],
+            [p[0], p[1] + (0.4 - SINK) / 2 + 0.2, p[2]],
+            [0.03, 0.4 + SINK / 2, 0.03],
             packMat(CM.paint, 0xd0),
           );
           if (prev) {
@@ -1602,7 +1623,9 @@ export function buildTile(
           const q = chainAt(c, arc, s);
           const l: Vec2 = [-q.d[1], q.d[0]];
           const o = (ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] * 0.6) * side;
-          const p: Vec3 = [q.p[0] + l[0] * o, q.h + 0.16, q.p[1] + l[1] * o];
+          const x = q.p[0] + l[0] * o;
+          const z = q.p[1] + l[1] * o;
+          const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
           if (!inTile(p[0], p[2])) continue;
           const yaw = Math.atan2(q.d[0], q.d[1]);
           m.box(
@@ -1611,12 +1634,16 @@ export function buildTile(
             packMat(CM.metal),
             yaw,
           );
-          for (const e of [-1.6, 1.6])
+          for (const e of [-1.6, 1.6]) {
+            const px = p[0] + q.d[0] * e;
+            const pz = p[2] + q.d[1] * e;
+            const g = sidewalkY(hf, px, pz, q.h) - SINK;
             m.box(
-              [p[0] + q.d[0] * e, p[1] + 1.2, p[2] + q.d[1] * e],
-              [0.05, 1.2, 0.05],
+              [px, (g + p[1] + 2.4) / 2, pz],
+              [0.05, (p[1] + 2.4 - g) / 2, 0.05],
               packMat(CM.metal),
             );
+          }
           m.box(
             [p[0] - l[0] * side * 0.65, p[1] + 1.3, p[2] - l[1] * side * 0.65],
             [1.2, 0.9, 0.04],
@@ -1638,7 +1665,12 @@ export function buildTile(
         }
       }
     }
-    // Bollards at signalized corners.
+    // Bollards at signalized corners, only where they land on the corner
+    // sidewalk (not out in the carriageway).
+    const onSidewalk = (x: number, z: number) =>
+      (ctx.tileBlocks[tileOf(size, x, z)] ?? []).some(bi =>
+        pointInPolygon([x, z], L.blocks[bi].curb),
+      );
     for (const ji of ctx.tileJunctions[tile] ?? []) {
       const j = L.junctions[ji];
       if (!j.signal) continue;
@@ -1648,12 +1680,11 @@ export function buildTile(
         const dl = Math.hypot(d[0], d[1]) || 1;
         for (let k = -2; k <= 2; k++) {
           const t: Vec2 = [-d[1] / dl, d[0] / dl];
-          const bp: Vec3 = [
-            q[0] + (d[0] / dl) * 0.7 + t[0] * k * 0.9,
-            j.h + 0.16,
-            q[1] + (d[1] / dl) * 0.7 + t[1] * k * 0.9,
-          ];
-          m.cylinder(bp, 0.07, 0.8, 6, packMat(CM.paint, 0xd8), true);
+          const x = q[0] + (d[0] / dl) * 0.7 + t[0] * k * 0.9;
+          const z = q[1] + (d[1] / dl) * 0.7 + t[1] * k * 0.9;
+          if (!onSidewalk(x, z)) continue;
+          const bp: Vec3 = [x, sidewalkY(hf, x, z, j.h) - SINK, z];
+          m.cylinder(bp, 0.07, 0.8 + SINK, 6, packMat(CM.paint, 0xd8), true);
         }
       }
     }

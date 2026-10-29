@@ -740,13 +740,20 @@ function railViaduct(
   ];
   for (let i = 0; i < segs; i++) {
     const j = (i + 1) % n;
-    // Parapets.
+    // Parapets with an overhanging coping lip.
     for (const side of [-1, 1]) {
       m.beam(
-        P(i, side * (halfW - 0.15), 0.55),
-        P(j, side * (halfW - 0.15), 0.55),
+        P(i, side * (halfW - 0.15), 0.52),
+        P(j, side * (halfW - 0.15), 0.52),
         0.15,
-        0.55,
+        0.52,
+        packMat(CM.concrete),
+      );
+      m.beam(
+        P(i, side * (halfW - 0.15), 1.08),
+        P(j, side * (halfW - 0.15), 1.08),
+        0.22,
+        0.05,
         packMat(CM.concrete),
       );
     }
@@ -982,23 +989,79 @@ function expressway(
     hs[k] + dy,
     pts[k][1] + fr[k].l[1] * off,
   ];
+  // Shuto-style edge: concrete parapet with a coping lip and drip groove, then
+  // a sound barrier of discrete panels slotted between steel posts. The base
+  // mesh has no LODs and the network is long, so posts stay single boxes.
+  const wall = halfW - 0.2; // barrier centerline
+  const capY = 1.0; // parapet top
+  const postH = 3.0;
+  const steel = packMat(CM.paint, 0x90);
+  const ribbed = packMat(CM.metal); // ribbed metal
+  const clear = packMat(CM.paint, 0x2c); // pale translucent-looking panels
+  let nextPost = 0;
+  let nextLamp = 6;
   for (let i = 0; i + 1 < n; i++) {
+    const seg = along[i + 1] - along[i];
+    const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
     for (const side of [-1, 1]) {
-      m.beam(
-        P(i, side * (halfW - 0.2), 0.5),
-        P(i + 1, side * (halfW - 0.2), 0.5),
+      const run = (
+        off: number,
+        dy: number,
+        w: number,
+        h: number,
+        mat: number,
+      ) => m.beam(P(i, side * off, dy), P(i + 1, side * off, dy), w, h, mat);
+      run(
+        wall,
+        capY * 0.5 - 0.04,
         0.2,
-        0.5,
+        capY * 0.5 - 0.04,
         packMat(CM.concrete),
       );
-      // Sound wall panels on top of the barrier.
-      m.beam(
-        P(i, side * (halfW - 0.2), 2.2),
-        P(i + 1, side * (halfW - 0.2), 2.2),
-        0.05,
-        1.2,
-        packMat(CM.paint, 0x40),
-      );
+      // Coping overhangs both faces; a dark drip groove line runs just under
+      // the outer lip.
+      run(wall, capY, 0.27, 0.06, packMat(CM.concrete));
+      run(halfW + 0.004, capY - 0.09, 0.006, 0.02, packMat(CM.frame));
+      // Panels sit in the post channels (thinner than the posts): ribbed metal
+      // below, translucent above, divided by a steel rail and capped by one.
+      const base = capY + 0.06;
+      run(wall, base + 0.5, 0.025, 0.5, ribbed);
+      run(wall, base + 0.5, 0.032, 0.015, ribbed);
+      run(wall, base + 1.0 + (postH - 1.1) / 2, 0.02, (postH - 1.1) / 2, clear);
+      run(wall, base + 1.0, 0.05, 0.04, steel);
+      run(wall, base + postH - 0.05, 0.08, 0.05, steel);
+    }
+    // Posts every 2 m, proud of the panels on both faces.
+    for (; nextPost < along[i] + seg; nextPost += 2) {
+      const t = (nextPost - along[i]) / (seg || 1);
+      for (const side of [-1, 1]) {
+        const a = P(i, side * wall, capY + 0.06);
+        const b = P(i + 1, side * wall, capY + 0.06);
+        m.box(
+          [
+            lerp(a[0], b[0], t),
+            lerp(a[1], b[1], t) + postH / 2,
+            lerp(a[2], b[2], t),
+          ],
+          [0.085, postH / 2, 0.06],
+          steel,
+          yaw,
+        );
+      }
+    }
+    // Delineator lamps on the inner parapet face.
+    for (; nextLamp < along[i] + seg; nextLamp += 12) {
+      const t = (nextLamp - along[i]) / (seg || 1);
+      for (const side of [-1, 1]) {
+        const a = P(i, side * (wall - 0.21), 0.75);
+        const b = P(i + 1, side * (wall - 0.21), 0.75);
+        m.box(
+          [lerp(a[0], b[0], t), a[1] + (b[1] - a[1]) * t, lerp(a[2], b[2], t)],
+          [0.025, 0.03, 0.18],
+          packMat(CM.lamp, 1),
+          yaw,
+        );
+      }
     }
   }
   // Termini: the deck ends at a crash wall with a yellow attenuator, carried
@@ -1030,6 +1093,7 @@ function expressway(
     );
   }
   let lastPier = -100;
+  let pierCount = 0;
   let lastLight = -100;
   for (let i = 0; i < n; i++) {
     const q = pts[i];
@@ -1038,7 +1102,33 @@ function expressway(
     if (along[i] - lastPier > 32 && top - ground > 3) {
       lastPier = along[i];
       const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
+      // Expansion joint across the deck over each pier.
+      m.beam(
+        P(i, -(halfW - 0.45), 0.012),
+        P(i, halfW - 0.45, 0.012),
+        0.12,
+        0.012,
+        packMat(CM.metal),
+      );
+      const pierNo = pierCount++;
       pier(e, q, top, 1.5, () => {
+        if (pierNo % 2 === 0) {
+          // Drainage downpipe hugging the column, from a deck drain just
+          // past the pier cap down into the ground.
+          const sd = pierNo % 4 === 0 ? 1 : -1;
+          const l = fr[i].l;
+          const d = fr[i].d;
+          const dp: Vec3 = [
+            q[0] + d[0] * 1.6 + l[0] * sd * 0.6,
+            ground - 0.3,
+            q[1] + d[1] * 1.6 + l[1] * sd * 0.6,
+          ];
+          const pipe = packMat(CM.paint, 0x90);
+          m.cylinder(dp, 0.1, top - dp[1], 6, pipe, false);
+          // Pipe clamps.
+          for (let y = ground + 2.5; y < top - 1; y += 3)
+            m.box([dp[0], y, dp[2]], [0.14, 0.04, 0.14], pipe, yaw);
+        }
         m.cylinder(
           [q[0], ground - 1, q[1]],
           1.5,
@@ -1140,9 +1230,25 @@ export function buildBase(L: CityLayout): BaseGeometry {
 }
 
 /** Street light positions (the poles themselves are props in detail tiles). */
+/**
+ * Walking-surface height at (x, z): the sidewalk slab follows the terrain
+ * (see blocks()), not the road chain, so furniture must sit on it. Where the
+ * road is far from the terrain (embankment), fall back to the road level.
+ */
+export function sidewalkY(
+  hf: Heightfield,
+  x: number,
+  z: number,
+  roadH: number,
+) {
+  const g = hf.sample(x, z) + 0.16;
+  return Math.abs(g - roadH) < 2.5 ? g : roadH + 0.16;
+}
+
 export function streetLightSpots(
   L: CityLayout,
   geom: RoadGeom,
+  hf: Heightfield,
   cb: (p: Vec3, dir: Vec2, kind: number, sodium: boolean) => void,
 ) {
   L.chains.forEach((c, ci) => {
@@ -1164,7 +1270,9 @@ export function streetLightSpots(
           (ROAD_WIDTH[c.kind] / 2 + Math.min(0.8, SIDEWALK[c.kind] * 0.4)) *
           side;
         const l: Vec2 = [-q.d[1], q.d[0]];
-        const p: Vec3 = [q.p[0] + l[0] * off, q.h, q.p[1] + l[1] * off];
+        const x = q.p[0] + l[0] * off;
+        const z = q.p[1] + l[1] * off;
+        const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
         cb(p, [-l[0] * side, -l[1] * side], c.kind, sodium);
       }
     }
@@ -1172,7 +1280,7 @@ export function streetLightSpots(
 }
 
 function streetLights(L: CityLayout, geom: RoadGeom, lights: LightList) {
-  streetLightSpots(L, geom, (p, dir, kind, sodium) => {
+  streetLightSpots(L, geom, L.terrain.heights, (p, dir, kind, sodium) => {
     const reach = kind >= 2 ? 2.2 : 1.2;
     const h = kind >= 2 ? 9 : 6.5;
     lights.add(

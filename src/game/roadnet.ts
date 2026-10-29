@@ -112,7 +112,7 @@ export class RoadNet {
         }
     });
     // Street light poles (thin obstacles for camera framing).
-    streetLightSpots(L as unknown as CityLayout, this.geom, p => {
+    streetLightSpots(L as unknown as CityLayout, this.geom, hf, p => {
       const k = this.key(p[0], p[2]);
       let l = this.poleGrid.get(k);
       if (!l) this.poleGrid.set(k, (l = []));

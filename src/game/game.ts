@@ -379,6 +379,7 @@ export class Game {
     streetLightSpots(
       L as unknown as CityLayout,
       net.geom,
+      net.hf,
       (p, dir, kind, sodium) => {
         const reach = kind >= 2 ? 2.2 : 1.2;
         const h = kind >= 2 ? 9 : 6.5;
