@@ -234,6 +234,24 @@ function arterials(p: CityParams, rng: Rng, noise: Noise2D, center: Vec2, hubs: 
       lines.push({pts, kind: Road.avenue});
     }
   }
+  if (p.arterials === 'radial') {
+    // A loose lattice of avenues covers land the rings and radials miss.
+    const gap = 720;
+    const ang = rng.range(-0.3, 0.3);
+    const c = Math.cos(ang), s = Math.sin(ang);
+    for (const axis of [0, 1]) {
+      for (let k = -Math.ceil(S / gap) - 1; k <= Math.ceil(S / gap) + 1; k++) {
+        const pts: Vec2[] = [];
+        for (let t = -S * 1.5; t <= S * 1.5; t += 40) {
+          const off = k * gap + noise.noise(k * 1.7 + axis * 9, t / 900) * 120;
+          const x = axis ? off : t;
+          const z = axis ? t : off;
+          pts.push([center[0] + x * c - z * s, center[1] + x * s + z * c]);
+        }
+        lines.push({pts, kind: Road.avenue});
+      }
+    }
+  }
   // Connect hubs to their nearest neighbors with avenues (sub-center links).
   for (let i = 0; i < hubs.length; i++) {
     const a = hubs[i].p;
@@ -500,7 +518,14 @@ function railLines(p: CityParams, rng: Rng, noise: Noise2D, hubs: Hub[], center:
     .map(x => x.h.p);
   if (loopHubs.length >= 3) {
     const pts = resample(catmull(loopHubs, true, 15), 12);
-    out.push({pts, heights: elevateProfile(pts, hf, 9, 0.03), kind: 'rail', loop: true, stations: []});
+    const wet = pts.some(q => hf.sample(q[0], q[1]) < SEA_LEVEL + 0.5);
+    if (!wet) {
+      out.push({pts, heights: elevateProfile(pts, hf, 9, 0.03), kind: 'rail', loop: true, stations: []});
+    } else {
+      // The loop would cross open water: keep the longest stretch on land.
+      const piece = clipToLand(pts, hf, 350).sort((a, b) => b.length - a.length)[0] ?? [];
+      if (piece.length > 20) out.push({pts: piece, heights: elevateProfile(piece, hf, 9, 0.03), kind: 'rail', loop: false, stations: []});
+    }
   }
   // Cross-town lines from edge to edge through the center.
   for (let k = 1; k < p.railLines; k++) {
