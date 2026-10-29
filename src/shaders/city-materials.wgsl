@@ -116,7 +116,7 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   var light = frame.skyAmbient.rgb * 0.35;
   if (lit) {
     let flicker = 1.0;
-    light += warm * mix(0.35, 1.5, r2 * r2) * flicker * mix(0.12, 1.0, night);
+    light += warm * mix(0.25, 1.1, r2 * r2) * flicker * mix(0.12, 1.0, night);
   }
   return c * light;
 }
