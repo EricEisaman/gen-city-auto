@@ -29,10 +29,17 @@ export class UI {
 
   constructor(game: Game) {
     this.game = game;
+    const g = game;
     this.build();
+    for (const b of document.querySelectorAll<HTMLElement>('#toolbar button'))
+      b.onmousedown = e => e.preventDefault(); // keep keyboard focus on the canvas
+    document.getElementById('btn-cam')!.onclick = () => g.cycleCamera();
+    document.getElementById('btn-veh')!.onclick = () => g.nextVehicle();
+    document.getElementById('btn-menu')!.onclick = () => this.toggleMenu();
     this.help.innerHTML =
       '<b>WASD</b> drive / fly &nbsp; <b>Space</b> handbrake / climb &nbsp; <b>Shift</b> descend &nbsp; <b>Q/E</b> yaw<br>' +
-      '<b>C</b> camera &nbsp; <b>K</b> auto director &nbsp; <b>V</b> car / helicopter &nbsp; <b>B</b> next vehicle<br>' +
+      '<b>C</b> camera (last = free fly: WASD, Space/Shift, drag to look, wheel = speed) &nbsp; <b>L</b> copy link to this view<br>' +
+      '<b>K</b> auto director &nbsp; <b>V</b> car / helicopter &nbsp; <b>B</b> next vehicle<br>' +
       '<b>T</b> +1 hour &nbsp; <b>Y</b> weather &nbsp; <b>N</b> new city &nbsp; <b>M</b> menu &nbsp; <b>F</b> stats &nbsp; <b>H</b> hide help<br>' +
       'Let go of the controls and the car drives itself while the director films it.';
   }
@@ -86,10 +93,13 @@ export class UI {
     } as Partial<HTMLInputElement>);
     cycle.onchange = () => (g.weather.cycle = cycle.checked);
     this.camSel = el('select');
-    for (const m of CAMERA_MODES)
+    for (const m of [...CAMERA_MODES, 'free'])
       this.camSel.append(el('option', {value: m, textContent: m}));
-    this.camSel.onchange = () =>
-      (g.camera.mode = this.camSel.value as (typeof CAMERA_MODES)[number]);
+    this.camSel.onchange = () => {
+      g.freeMode = this.camSel.value === 'free';
+      if (!g.freeMode)
+        g.camera.mode = this.camSel.value as (typeof CAMERA_MODES)[number];
+    };
     const director = el('input', {
       type: 'checkbox',
       checked: g.camera.directorEnabled,
@@ -111,6 +121,15 @@ export class UI {
     };
     vehSel.onchange = () => g.selectVehicle(Number(vehSel.value));
     vehSel.append(el('option', {textContent: 'choose…'}));
+    const link = el('button', {textContent: 'Copy link to this view'});
+    link.onclick = () => {
+      const url = g.shareUrl();
+      void navigator.clipboard
+        ?.writeText(url)
+        .then(() => (link.textContent = 'Copied!'))
+        .catch(() => prompt('Link to this view', url));
+      setTimeout(() => (link.textContent = 'Copy link to this view'), 1500);
+    };
     const row = (label: string, ...c: Node[]) =>
       el('label', {}, label, el('span', {}, ...c));
     this.menu.append(
@@ -125,6 +144,7 @@ export class UI {
       row('Camera', this.camSel),
       row('Auto director', director),
       row('Vehicle', vehSel),
+      row('', link),
     );
   }
 
@@ -142,18 +162,20 @@ export class UI {
     const kmh = Math.round(Math.abs(p.speed) * 3.6);
     const h = Math.floor(g.hour);
     const m = Math.floor((g.hour - h) * 60);
-    const mode = p.autopilot
-      ? g.camera.directorEnabled
+    const mode = g.freeMode
+      ? 'FREE CAMERA'
+      : p.autopilot && g.camera.directorEnabled
         ? `AUTOPILOT · ${g.camera.shot?.name ?? ''}`
-        : 'AUTOPILOT'
-      : 'MANUAL';
+        : p.autopilot
+          ? `AUTOPILOT · ${g.camera.mode}`
+          : `MANUAL · ${g.camera.mode}`;
     this.hud.innerHTML = `<div class="speed">${kmh}<span class="unit"> km/h</span></div><div class="info">${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} · ${g.weather.kind} · ${mode}</div>`;
     if (document.activeElement !== this.timeInput)
       this.timeInput.value = String(g.hour);
     if (document.activeElement !== this.weatherSel)
       this.weatherSel.value = g.weather.kind;
     if (document.activeElement !== this.camSel)
-      this.camSel.value = g.camera.mode;
+      this.camSel.value = g.freeMode ? 'free' : g.camera.mode;
     this.stats.style.display = this.showStats ? '' : 'none';
     if (this.showStats) {
       const s = {

@@ -518,3 +518,52 @@ export class CameraSystem {
     }
   }
 }
+
+/** Fly-anywhere camera: WASD / arrows move, Space/E up, Shift/Q down,
+ * mouse drag (or right-half touch) looks, left-half touch moves, wheel = speed. */
+export class FreeCamera {
+  pos: Vec3 = [0, 100, 0];
+  yaw = 0;
+  pitch = -0.2;
+  speed = 30;
+
+  setPose(p: Vec3, yaw: number, pitch: number) {
+    this.pos = [...p];
+    this.yaw = yaw;
+    this.pitch = pitch;
+  }
+
+  update(dt: number, input: Input): CamOut {
+    this.yaw += input.mouseDX * 0.003;
+    this.pitch = clamp(this.pitch - input.mouseDY * 0.003, -1.5, 1.5);
+    this.speed = clamp(this.speed * Math.pow(1.15, -input.wheel), 2, 600);
+    const f: Vec3 = [
+      Math.sin(this.yaw) * Math.cos(this.pitch),
+      Math.sin(this.pitch),
+      -Math.cos(this.yaw) * Math.cos(this.pitch),
+    ];
+    const r: Vec3 = [Math.cos(this.yaw), 0, Math.sin(this.yaw)];
+    const fwd =
+      input.axis('KeyW', 'ArrowUp') -
+      input.axis('KeyS', 'ArrowDown') -
+      input.touchMove[1];
+    const side =
+      input.axis('KeyD', 'ArrowRight') -
+      input.axis('KeyA', 'ArrowLeft') +
+      input.touchMove[0];
+    const up = input.axis('Space', 'KeyE') - input.axis('ShiftLeft', 'KeyQ');
+    const sp = this.speed * (input.down('ShiftRight') ? 4 : 1) * dt;
+    this.pos = [
+      this.pos[0] + (f[0] * fwd + r[0] * side) * sp,
+      this.pos[1] + (f[1] * fwd + up) * sp,
+      this.pos[2] + (f[2] * fwd + r[2] * side) * sp,
+    ];
+    return {
+      eye: [...this.pos],
+      target: [this.pos[0] + f[0], this.pos[1] + f[1], this.pos[2] + f[2]],
+      fov: 1.0,
+      near: 0.3,
+      interior: false,
+    };
+  }
+}

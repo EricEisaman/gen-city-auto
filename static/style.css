@@ -10,9 +10,16 @@ canvas { width: 100%; height: 100%; display: block; }
 #hud .info { font-size: 13px; opacity: 0.85; margin-top: 4px; }
 #stats { position: absolute; left: 8px; top: 8px; color: #8f8; font: 11px monospace; white-space: pre; text-shadow: 0 0 2px #000; pointer-events: none; }
 #help { position: absolute; left: 12px; bottom: 12px; color: #ddd; font-size: 12px; line-height: 1.5; text-shadow: 0 1px 3px #000; pointer-events: none; }
-#menu { position: absolute; right: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px; background: rgba(10, 12, 20, 0.7); padding: 10px; border-radius: 8px; color: #eee; font-size: 12px; }
+#menu { position: absolute; right: 12px; top: 60px; max-height: calc(100% - 80px); overflow: auto; display: flex; flex-direction: column; gap: 6px; background: rgba(10, 12, 20, 0.7); padding: 10px; border-radius: 8px; color: #eee; font-size: 12px; }
 #menu.hidden { display: none; }
 #menu label { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 #menu select, #menu input, #menu button { font-size: 12px; }
 #errors { position: absolute; left: 8px; bottom: 8px; right: 8px; color: #f66; font: 12px monospace; white-space: pre-wrap; display: none; background: rgba(0, 0, 0, 0.8); max-height: 40%; overflow: auto; }
 #menu .menu-title { font-weight: 700; letter-spacing: 0.1em; }
+#toolbar { position: absolute; right: 12px; top: 12px; display: flex; gap: 6px; }
+#toolbar button { width: 40px; height: 40px; border: 0; border-radius: 8px; background: rgba(10, 12, 20, 0.6); color: #eee; font-size: 20px; cursor: pointer; }
+#toolbar button:hover { background: rgba(40, 44, 60, 0.8); }
+#toolbar button.on { background: rgba(255, 211, 110, 0.35); }
+#camlabel { position: absolute; right: 12px; top: 58px; color: #fff; font-size: 12px; text-shadow: 0 1px 3px #000; pointer-events: none; }
+#menu:not(.hidden) ~ #camlabel { display: none; }
+canvas { touch-action: none; }

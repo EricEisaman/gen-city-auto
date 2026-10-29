@@ -10,7 +10,12 @@ import {GBUFFER_FORMATS, Renderer} from '../render/renderer.ts';
 import {VehicleRenderer} from '../render/vehicles.ts';
 import {UI} from '../ui/ui.ts';
 import {City} from '../world/city.ts';
-import {CameraSystem, CAMERA_MODES, type CameraMode} from './camera.ts';
+import {
+  CameraSystem,
+  CAMERA_MODES,
+  FreeCamera,
+  type CameraMode,
+} from './camera.ts';
 import {Input} from './input.ts';
 import {Pedestrians} from './pedestrians.ts';
 import {Player} from './player.ts';
@@ -63,6 +68,22 @@ export class Game {
   private frames = 0;
   private fpsAvg = 60;
   private carLights = new Float32Array(64 * 8);
+  /** Free-fly inspection camera (the vehicle keeps driving itself). */
+  freeCam = new FreeCamera();
+  freeMode = false;
+  private noInput = {
+    driveActive: () => false,
+    axis: () => 0,
+    down: () => false,
+    hit: () => false,
+    gamepadSteer: () => 0,
+    gamepadThrottle: () => 0,
+    mouseDX: 0,
+    mouseDY: 0,
+    wheel: 0,
+    dragging: false,
+    touchMove: [0, 0],
+  } as unknown as Input;
   /** Last camera output (for tests). */
   lastCam: {eye: Vec3; target: Vec3} | null = null;
 
@@ -207,6 +228,11 @@ export class Game {
         named >= 0 ? named : this.pickVariant('car', 'sports'),
       );
     }
+    const fc = this.opts.freecam;
+    if (fc) {
+      this.freeCam.setPose([fc[0], fc[1], fc[2]], fc[3] ?? 0, fc[4] ?? 0);
+      this.freeMode = true;
+    }
     if (this.opts.shot) this.forceShot(this.opts.shot);
     // Warm up traffic so the streets are busy immediately.
     for (let i = 0; i < 40; i++)
@@ -303,20 +329,79 @@ export class Game {
       flyby: 0.4,
       train: 0.3,
     };
+    if (this.freeMode) return {motionBlur: 0, dofAperture: 0, focus};
     const moving = Math.min(1, Math.abs(this.player.speed) / 3);
     return {
       motionBlur: (blur[shot] ?? 0.3) * moving,
-      dofAperture: this.opts.freecam ? 0 : (dof[shot] ?? 0),
+      dofAperture: dof[shot] ?? 0,
       focus,
     };
   }
 
+  /** Vehicle button / B key: next variant of the same family (car or heli). */
+  nextVehicle() {
+    const v = this.vehicles.variants;
+    const kinds =
+      this.player.kind === 'heli'
+        ? ['helicopter']
+        : ['car', 'taxi', 'van', 'truck', 'bus'];
+    for (let k = 1; k <= v.length; k++) {
+      const idx = (this.player.variant + k) % v.length;
+      if (kinds.includes(v[idx].info.kind)) {
+        this.selectVehicle(idx);
+        break;
+      }
+    }
+  }
+
+  /** Camera button / C key: director -> chase -> first -> hood -> orbit -> free. */
+  cycleCamera() {
+    if (this.freeMode) {
+      this.freeMode = false;
+      this.camera.directorEnabled = true;
+      return;
+    }
+    if (this.camera.directorEnabled && this.player.autopilot) {
+      this.camera.directorEnabled = false;
+      this.camera.mode = CAMERA_MODES[0];
+      return;
+    }
+    if (this.camera.mode === CAMERA_MODES[CAMERA_MODES.length - 1]) {
+      const c = this.lastCam;
+      if (c) {
+        const [yaw, pitch] = yawPitch(c.eye, c.target);
+        this.freeCam.setPose(c.eye, yaw, pitch);
+      }
+      this.freeMode = true;
+      return;
+    }
+    this.camera.cycle();
+  }
+
+  /** Link that reproduces the current view (camera pose, time, weather, city). */
+  shareUrl(): string {
+    const u = new URL(location.href);
+    const c = this.lastCam;
+    if (c) {
+      const [yaw, pitch] = yawPitch(c.eye, c.target);
+      u.searchParams.set(
+        'freecam',
+        [...c.eye, yaw, pitch].map(v => v.toFixed(2)).join(','),
+      );
+    }
+    u.searchParams.set('city', this.cityType);
+    u.searchParams.set('seed', String(this.seed));
+    u.searchParams.set('time', this.hour.toFixed(2));
+    u.searchParams.set('timespeed', '0');
+    u.searchParams.set('weather', this.weather.kind);
+    u.searchParams.delete('shot');
+    return u.toString().replace(/%2C/g, ',');
+  }
+
   private handleKeys() {
     const i = this.input;
-    if (i.hit('KeyC')) {
-      this.camera.cycle();
-      this.camera.directorEnabled = false;
-    }
+    if (i.hit('KeyC')) this.cycleCamera();
+    if (i.hit('KeyL')) void navigator.clipboard?.writeText(this.shareUrl());
     if (i.hit('KeyK'))
       this.camera.directorEnabled = !this.camera.directorEnabled;
     if (i.hit('KeyT')) this.hour = (this.hour + 1) % 24;
@@ -341,21 +426,7 @@ export class Game {
           this.pickVariant('car', 'sports'),
         );
     }
-    if (i.hit('KeyB')) {
-      const v = this.vehicles.variants;
-      const kinds =
-        this.player.kind === 'heli'
-          ? ['helicopter']
-          : ['car', 'taxi', 'van', 'truck', 'bus'];
-      for (let k = 1; k <= v.length; k++) {
-        const idx = (this.player.variant + k) % v.length;
-        if (kinds.includes(v[idx].info.kind)) {
-          this.selectVehicle(idx);
-          break;
-        }
-      }
-    }
-    void CAMERA_MODES;
+    if (i.hit('KeyB')) this.nextVehicle();
   }
 
   frame(dt: number) {
@@ -365,23 +436,14 @@ export class Game {
     this.time += dt;
     this.hour = (this.hour + dt * this.timeSpeed + 24) % 24;
     this.weather.update(dt);
-    this.player.update(dt, this.input, this.time);
-    let cam = this.camera.update(dt, this.player, this.input);
-    const fc = this.opts.freecam;
-    if (fc) {
-      const f: Vec3 = [
-        Math.sin(fc[3]) * Math.cos(fc[4]),
-        Math.sin(fc[4]),
-        -Math.cos(fc[3]) * Math.cos(fc[4]),
-      ];
-      cam = {
-        eye: [fc[0], fc[1], fc[2]],
-        target: [fc[0] + f[0], fc[1] + f[1], fc[2] + f[2]],
-        fov: 1.0,
-        near: 0.5,
-        interior: false,
-      };
-    }
+    this.player.update(
+      dt,
+      this.freeMode ? this.noInput : this.input,
+      this.time,
+    );
+    const cam = this.freeMode
+      ? this.freeCam.update(dt, this.input)
+      : this.camera.update(dt, this.player, this.input);
     const focus = this.player.pos;
     this.traffic.update(
       dt,
@@ -473,4 +535,10 @@ export class Game {
   get rngSeed() {
     return new Rng(this.seed);
   }
+}
+
+function yawPitch(eye: Vec3, target: Vec3): [number, number] {
+  const d = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
+  const l = Math.hypot(d[0], d[1], d[2]) || 1;
+  return [Math.atan2(d[0], -d[2]), Math.asin(d[1] / l)];
 }

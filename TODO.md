@@ -10,10 +10,12 @@
     as it pulls up to red light, the car in front of it is flickering like crazy.
     -> LOD selection now has hysteresis (vehicles near an LOD distance flipped every frame). Please re-check.
 
-[ ] the settings should be in a popup behind a gear icon
-[ ] the camera should have a camera icon outside the settings the cycles through camera modes
+[x] the settings should be in a popup behind a gear icon
+[x] the camera should have a camera icon outside the settings the cycles through camera modes
     (can keep camera setting inside the settings too)
-[ ] the vehicle should have a icon outside the settings that cycles through vehicles.
+[x] the vehicle should have a icon outside the settings that cycles through vehicles.
+    -> toolbar top-right: 📷 cycles director -> chase -> first -> hood -> orbit -> free, 🚗 next vehicle,
+       ⚙ opens the settings (hidden by default). Camera select in settings includes "free".
 
 [ ] the sky looks really boring for some reason - colors too solid? no stars at night? not sure why.
     Ask the art director?
@@ -58,11 +60,15 @@
     something looks off.
     -> offices light in sections (3 floors x ~20 m: one tenant working late); homes room by room.
 
-[ ] Can we add a free camera mode where the user can fly the camera. ASWD moves the camera
+[x] Can we add a free camera mode where the user can fly the camera. ASWD moves the camera
     left/right/forward/back, mouse aims. Need mobile controls too. This will make it easier
     to inspect the city. Further, add a button in settings that puts a URL in the clipboard
     that contains the camera's current position, orientation, time-of-day and other things
     so that I can give you that URL to highlight certain places.
+    -> free camera: WASD/arrows move, Space/E up, Shift/Q down, right Shift = 4x, mouse drag looks,
+       wheel changes speed. Touch: left half of the screen is a move stick, right half looks.
+       The car keeps driving on autopilot. "Copy link to this view" in settings (or L) copies a URL
+       with freecam=x,y,z,yaw,pitch, time, timespeed=0, weather, city and seed; opening it starts in free camera.
 
 [x] Add size=<width>x<height> url param that lets me set the size of the canvas to a fixed
     number of CSS pixels. i can use this to make videos of a specific size.

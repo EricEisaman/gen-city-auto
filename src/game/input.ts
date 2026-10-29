@@ -23,6 +23,8 @@ export class Input {
   mouseDY = 0;
   wheel = 0;
   dragging = false;
+  /** Virtual joystick from a touch on the left half of the screen (-1..1). */
+  touchMove: [number, number] = [0, 0];
 
   constructor(target: HTMLElement) {
     addEventListener('keydown', e => {
@@ -48,6 +50,51 @@ export class Input {
         this.mouseDY += e.movementY;
       }
     });
+    // Touch: left half = move joystick, right half = look.
+    const touches = new Map<number, {x: number; y: number; left: boolean}>();
+    target.addEventListener(
+      'touchstart',
+      e => {
+        for (const t of Array.from(e.changedTouches))
+          touches.set(t.identifier, {
+            x: t.clientX,
+            y: t.clientY,
+            left: t.clientX < innerWidth / 2,
+          });
+        e.preventDefault();
+      },
+      {passive: false},
+    );
+    target.addEventListener(
+      'touchmove',
+      e => {
+        for (const t of Array.from(e.changedTouches)) {
+          const s = touches.get(t.identifier);
+          if (!s) continue;
+          if (s.left) {
+            this.touchMove = [
+              Math.max(-1, Math.min(1, (t.clientX - s.x) / 60)),
+              Math.max(-1, Math.min(1, (t.clientY - s.y) / 60)),
+            ];
+          } else {
+            this.mouseDX += (t.clientX - s.x) * 1.5;
+            this.mouseDY += (t.clientY - s.y) * 1.5;
+            s.x = t.clientX;
+            s.y = t.clientY;
+          }
+        }
+        e.preventDefault();
+      },
+      {passive: false},
+    );
+    const end = (e: TouchEvent) => {
+      for (const t of Array.from(e.changedTouches)) {
+        if (touches.get(t.identifier)?.left) this.touchMove = [0, 0];
+        touches.delete(t.identifier);
+      }
+    };
+    target.addEventListener('touchend', end);
+    target.addEventListener('touchcancel', end);
     target.addEventListener('wheel', e => {
       this.wheel += Math.sign(e.deltaY);
       e.preventDefault();
