@@ -213,7 +213,9 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32) -> vec4f {
       let puv = prev.xy / prev.w * vec2f(0.5, -0.5) + 0.5;
       let edge = min(min(puv.x, 1.0 - puv.x), min(puv.y, 1.0 - puv.y));
       let fade = smoothstep(0.0, 0.08, edge) * (1.0 - f32(i) / 40.0);
-      let c = textureSampleLevel(prevColor, linearSampler, puv, 0.0).rgb;
+      var c = textureSampleLevel(prevColor, linearSampler, puv, 0.0).rgb;
+      // Clamp fireflies (headlights, sun glints) that sparkle in noisy reflections.
+      c = c / (1.0 + luminance(c) * 0.08);
       return vec4f(c, fade);
     }
     prevT = t;
@@ -237,7 +239,8 @@ fn applyFog(c: vec3f, world: vec3f, uv: vec2f, dist: f32, rd: vec3f) -> vec3f {
     var integral = dist;
     if (abs(dh) > 0.01) { integral = (1.0 - exp(-heightFalloff * dh)) / (heightFalloff * rd.y); }
     let amount = 1.0 - exp(-fogD * 0.004 * exp(-heightFalloff * camH) * integral);
-    let fogCol = frame.skyAmbient.rgb * 0.9 + frame.cityGlow.rgb * 1.5 + frame.sunColor.rgb * 0.08 * pow(max(dot(rd, frame.sunDir.xyz), 0.0), 8.0);
+    let ambL = luminance(frame.skyAmbient.rgb * 0.9 + frame.cityGlow.rgb);
+    let fogCol = vec3f(ambL) * vec3f(0.86, 0.92, 1.0) + frame.cityGlow.rgb * 0.4 + frame.sunColor.rgb * 0.08 * pow(max(dot(rd, frame.sunDir.xyz), 0.0), 8.0);
     col = mix(col, fogCol, clamp(amount, 0.0, 1.0));
   }
   return col;
