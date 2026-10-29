@@ -238,6 +238,8 @@ export class Sheet {
 export interface AddOpts extends TessOptions {
   /** Also add the mirror image across x = 0. */
   mirror?: boolean;
+  /** Inward offset of the back side when doubleSided (default 1.2 mm). */
+  backOffset?: number;
   /** Material of the back side when doubleSided. */
   backMat?: number;
   /** Add only the mirror image (for left-side-only details built on the right half). */
@@ -268,7 +270,7 @@ export class Kit {
         for (let i = 0; i < back.positions.length; i++) {
           // Keep seam vertices on the mirror plane so the halves stay closed.
           if (i % 3 === 0 && Math.abs(back.positions[i]) < 1e-6) continue;
-          back.positions[i] += back.normals[i] * 0.0008;
+          back.positions[i] += back.normals[i] * (opts.backOffset ?? 0.0012);
         }
         mergeMesh(this.mesh, back);
       }

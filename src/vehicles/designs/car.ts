@@ -83,6 +83,10 @@ export interface CarConfig {
   cPillar: 'paint' | 'black';
   /** How far forward of the roof's rear corner the C pillar reaches at the top. */
   cPillarTop: number;
+  /** Tailgate: fraction of the rear glass height painted as the lower hatch panel. */
+  hatchLower?: number;
+  /** Gap between tyre and arch (default 4 cm). */
+  archGap?: number;
   /** Height of a body-coloured band above the side windows (tall vehicles). */
   upperBand?: number;
   /** Narrow vertical rear pillar of this width instead of a sloping C pillar. */
@@ -169,7 +173,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
   const zf = wb / 2 + cfg.frontOverhang;
   const zr = zf - cfg.L;
   const track = W - cfg.tyreW / 2 - 0.035;
-  const archR = cfg.wheelR + 0.055;
+  const archR = cfg.wheelR + (cfg.archGap ?? 0.04);
   const axles = [
     {z: wb / 2, wheelR: cfg.wheelR, archR},
     {z: -wb / 2, wheelR: cfg.wheelR, archR},
@@ -342,7 +346,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       segT: 6,
     });
     // The inside trim is a little narrower so its edges never poke through the glass.
-    const mapIn = (s: number, t: number) => map(lerp(0.12, 0.88, s), t);
+    const mapIn = (s: number, t: number) => map(lerp(0.28, 0.72, s), t);
     if (inner)
       kit.decal(g, mapIn, Mat.interior, {
         ns,
@@ -474,6 +478,24 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       bz - 0.03,
       pillarMat(cfg.bPillar),
     );
+  if (cfg.hatchLower) {
+    // Tailgate: body-coloured lower panel below the rear window, and a frame.
+    const pm = cfg.roofMat ?? Mat.paint;
+    glassDecal(
+      () => 0,
+      () => gh.iRearCorner - 0.4,
+      0,
+      cfg.hatchLower,
+      pm,
+    );
+    glassDecal(
+      () => gh.iRearCorner - 1.3,
+      () => gh.iRearCorner - 0.4,
+      cfg.hatchLower,
+      1,
+      pm,
+    );
+  }
   if (cfg.upperBand) {
     // Body-coloured band between the side windows and the roof edge.
     const z0 =
@@ -1182,8 +1204,11 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         [yTop, zDashRear + 0.07],
         [yTop - 0.04, zDashRear - 0.005],
         [yTop - 0.2, zDashRear + 0.03],
-        [Math.min(yTop - 0.3, floorY + 0.3), zDashRear + 0.22],
-        [floorY - 0.01, Math.max(zFire, zDashRear + 0.3)],
+        [
+          Math.min(yTop - 0.3, floorY + 0.3),
+          Math.min(zDashRear + 0.22, zFire - 0.05),
+        ],
+        [floorY - 0.01, Math.max(zFire, zDashRear + 0.1)],
       ];
       const rows: Vec3[][] = prof.map(([y, z]) => {
         // Ends meet the door card (or the glass base at belt height).

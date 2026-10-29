@@ -76,6 +76,8 @@ export function taxi(seed: number): VehicleDesign {
     cPillarTop: 0.1,
     bPillar: 'black',
     aPillar: 'paint',
+    rearPillarWidth: 0.2,
+    pillars: [-0.12, -wheelbase / 2 + 0.5],
     grille: 'chrome',
     headlight: {
       x: width / 2 - 0.22,
@@ -94,42 +96,37 @@ export function taxi(seed: number): VehicleDesign {
       // Roof sign (andon): a lit wedge on a paint2 base near the front of the roof.
       const z = cowl - 0.78 - 0.32;
       const y = ctx.roofY(0, z);
-      blob(kit, [0, y + 0.025, z], [0.24, 0.025, 0.1], Mat.paint2, {
+      blob(kit, [0, y + 0.03, z], [0.3, 0.03, 0.13], Mat.paint2, {
         n: 6,
         m: 6,
         segU: 12,
         segV: 4,
       });
-      blob(kit, [0, y + 0.11, z], [0.2, 0.075, 0.06], Mat.headlight, {
+      blob(kit, [0, y + 0.15, z], [0.27, 0.11, 0.08], Mat.headlight, {
         n: 8,
         m: 4,
         segU: 14,
         segV: 4,
         taper: t => [0.85 + 0.15 * Math.sin(Math.PI * t), 1],
       });
-      blob(kit, [0, y + 0.19, z], [0.18, 0.012, 0.035], Mat.paint2, {
+      blob(kit, [0, y + 0.265, z], [0.24, 0.015, 0.05], Mat.paint2, {
         n: 6,
         segU: 10,
         segV: 3,
       });
-      // Side livery stripe in the second colour along the doors.
+      // Continuous livery stripe in the second colour along the belt, nose to tail.
       const sh = ctx.wall.sheet;
-      const yS = 0.62;
+      const yS = 0.76;
       kit.decal(
         sh,
         projected(
           sh,
           [2, 1],
-          rect(
-            -wheelbase / 2 + 0.47,
-            wheelbase / 2 - 0.42,
-            yS - 0.04,
-            yS + 0.04,
-          ),
+          rect(ctx.zr + 0.25, ctx.zf - 0.25, yS - 0.03, yS + 0.03),
           p => p[0],
         ),
         Mat.paint2,
-        {ns: 8, nt: 2, offset: 0.003, mirror: true, segS: 12, segT: 1},
+        {ns: 16, nt: 2, offset: 0.004, mirror: true, segS: 24, segT: 1},
       );
       // Vacancy display (空車) on the passenger side of the dash, behind the windshield.
       blob(

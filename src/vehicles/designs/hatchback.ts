@@ -7,7 +7,7 @@ import {CITY_PALETTE} from './palettes.ts';
 
 export function hatchback(seed: number): VehicleDesign {
   const rng = new Rng(seed);
-  const L = rng.range(3.95, 4.15);
+  const L = rng.range(3.9, 4.0);
   const width = rng.range(1.69, 1.75);
   const H = rng.range(1.5, 1.55);
   const wheelbase = rng.range(2.5, 2.58);
@@ -28,24 +28,24 @@ export function hatchback(seed: number): VehicleDesign {
     tyreW: 0.185,
     sill: 0.2,
     frontDepth: 0.36,
-    frontExp: 3.6,
+    frontExp: 5,
     rearDepth: 0.22,
-    rearExp: 4,
+    rearExp: 5.5,
     hoodFrontY: 0.74,
     beltF: belt,
     beltR: belt + 0.06,
     deckRearY: belt + 0.06,
     bumperF: 0.21,
-    bumperR: 0.3,
+    bumperR: 0.24,
     ymax: 0.6,
-    tuck: 0.05,
+    tuck: 0.035,
     tumble: 0.05,
     roll: 0.035,
     leanF: 0.14,
     leanR: 0.05,
     cowlZ: cowl,
     wsTopZ: cowl - 0.92,
-    roofRearZ: zr + rng.range(0.28, 0.36),
+    roofRearZ: zr + rng.range(0.55, 0.62),
     rearBaseZ: null,
     roofTumble: 0.17,
     roofCrown: 0.04,
@@ -55,8 +55,9 @@ export function hatchback(seed: number): VehicleDesign {
     glassBulge: 0.03,
     cPillar: 'paint',
     cPillarTop: 0.18,
-    rearPillarWidth: 0.16,
-    pillars: [-0.2, -wheelbase / 2 + 0.45],
+    rearPillarWidth: 0.12,
+    hatchLower: 0.28,
+    pillars: [-0.2],
     bPillar: 'black',
     aPillar: 'paint',
     grille: rng.pick(['slim', 'wide'] as const),

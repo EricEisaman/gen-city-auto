@@ -44,7 +44,7 @@ export function helicopter(seed: number): VehicleDesign {
   const rng = new Rng(seed);
   const kit = new Kit();
   const skidY = 0.05;
-  const floorY = 0.62;
+  const floorY = 0.76;
   const zNose = rng.range(2.25, 2.4);
   const zCabRear = -1.05;
   const zBoomEnd = -6.9;
@@ -208,7 +208,7 @@ export function helicopter(seed: number): VehicleDesign {
     ],
     0.09,
     Mat.metal,
-    {mirror: true, along: 2, seg: 8},
+    {mirror: true, along: 2, seg: 8, caps: true},
   );
   blob(kit, [0, 2.6, 0.15], [0.22, 0.05, 0.25], Mat.plastic, {
     n: 4,
@@ -282,20 +282,20 @@ export function helicopter(seed: number): VehicleDesign {
   fin(
     [
       [0, 1.8, zBoomEnd + 0.15],
-      [0, 2.3, zBoomEnd - 0.05],
-      [0, 2.75, zBoomEnd - 0.25],
+      [0, 2.5, zBoomEnd - 0.12],
+      [0, 3.1, zBoomEnd - 0.45],
     ],
-    0.035,
-    0.32,
+    0.045,
+    0.44,
     Mat.paint,
   );
   fin(
     [
       [0, 1.55, zBoomEnd + 0.15],
-      [0, 1.25, zBoomEnd + 0.05],
+      [0, 1.15, zBoomEnd + 0.0],
     ],
-    0.03,
-    0.22,
+    0.035,
+    0.3,
     Mat.paint,
   );
   fin(
@@ -332,22 +332,23 @@ export function helicopter(seed: number): VehicleDesign {
       Mat.metal,
       {along: 12, seg: 6, caps: true},
     );
-    for (const z of [0.95, -0.55])
-      tube(
-        kit,
-        [
-          [sx * 1.1, skidY, z],
-          [sx * 0.95, 0.4, z],
-          [sx * 0.55, 0.62, z],
-        ],
-        0.045,
-        Mat.metal,
-        {along: 4, seg: 6},
-      );
     blob(kit, [sx * 1.1, 0.25, -0.2], [0.06, 0.06, 0.12], Mat.plastic, {
       segU: 6,
       segV: 3,
     });
+  }
+  // Skid cross tubes: one bent arc each, from skid to skid under the cabin.
+  for (const z of [0.95, -0.55]) {
+    const pts: Vec3[] = [];
+    for (let k = 0; k <= 10; k++) {
+      const a = lerp(-Math.PI * 0.5, Math.PI * 0.5, k / 10);
+      pts.push([
+        1.1 * Math.sin(a),
+        skidY + 0.68 * Math.pow(Math.cos(a), 0.6),
+        z,
+      ]);
+    }
+    tube(kit, pts, 0.045, Mat.metal, {along: 20, seg: 6, caps: true});
   }
   // Lights: landing light under the nose, beacon on the fin, nav lights, strobes.
   blob(kit, [0, 0.72, zNose - 0.5], [0.09, 0.03, 0.09], Mat.headlight, {
@@ -396,12 +397,12 @@ export function helicopter(seed: number): VehicleDesign {
     new Sheet(
       [
         [
-          [0.75, floorY, zCabRear + 0.1],
-          [-0.75, floorY, zCabRear + 0.1],
+          [0.5, floorY, zCabRear + 0.1],
+          [-0.5, floorY, zCabRear + 0.1],
         ],
         [
-          [0.6, floorY, zNose - 0.55],
-          [-0.6, floorY, zNose - 0.55],
+          [0.45, floorY, zNose - 0.55],
+          [-0.45, floorY, zNose - 0.55],
         ],
       ],
       1,
@@ -410,20 +411,20 @@ export function helicopter(seed: number): VehicleDesign {
     Mat.interior,
     {segU: 1, segV: 1},
   );
-  blob(kit, [0, 1.12, 1.45], [0.62, 0.17, 0.12], Mat.plastic, {
+  blob(kit, [0, 1.1, 1.5], [0.52, 0.12, 0.1], Mat.plastic, {
     n: 6,
     m: 6,
     segU: 12,
     segV: 4,
   });
-  blob(kit, [0, 1.15, 1.37], [0.5, 0.12, 0.012], Mat.dash, {
+  blob(kit, [0, 1.1, 1.4], [0.46, 0.1, 0.012], Mat.dash, {
     n: 8,
     m: 6,
     segU: 12,
     segV: 3,
     xf: p => place(p, [0, 0, 0], -0.35),
   });
-  blob(kit, [0, 0.85, 1.25], [0.12, 0.3, 0.1], Mat.plastic, {
+  blob(kit, [0, 0.9, 1.3], [0.11, 0.2, 0.12], Mat.plastic, {
     n: 6,
     m: 6,
     segU: 8,
@@ -546,7 +547,7 @@ export function helicopter(seed: number): VehicleDesign {
   blob(main, [0, 0.05, 0], [0.22, 0.1, 0.22], Mat.metal, {segU: 10, segV: 4});
   blob(main, [0, 0.16, 0], [0.12, 0.08, 0.12], Mat.metal, {segU: 8, segV: 3});
   const tail = new Kit();
-  const tr = 0.82;
+  const tr = 1.1;
   const tRows = blade(tr, 0.16, 0.015, 0.08);
   for (let b = 0; b < 2; b++) {
     const ang = b * Math.PI;
@@ -576,12 +577,12 @@ export function helicopter(seed: number): VehicleDesign {
     rotors: [
       {position: [0, mastY, 0], axis: [0, 1, 0], mesh: main.mesh},
       {
-        position: [-0.18, 2.35, zBoomEnd - 0.12],
+        position: [-0.2, 2.5, zBoomEnd - 0.15],
         axis: [1, 0, 0],
         mesh: tail.mesh,
       },
     ],
-    driverEye: [0.38, 1.6, 0.55],
+    driverEye: [0.38, 1.62, 0.5],
     headlights: [[0, 0.7, zNose - 0.4]],
     taillights: [[0, 2.8, zBoomEnd - 0.26]],
     palette: HELI_PALETTE,

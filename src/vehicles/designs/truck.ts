@@ -149,14 +149,14 @@ export function truck(seed: number): VehicleDesign {
   const wheelbase = rng.range(3.3, 3.45);
   const fo = 1.05;
   const zf = wheelbase / 2 + fo;
-  const cabL = 1.7;
+  const cabL = 1.9;
   const zrCab = zf - cabL;
   const boxL = rng.range(4.1, 4.4);
   const boxFront = zrCab - 0.1;
   const boxRear = boxFront - boxL;
-  const boxTop = rng.range(2.85, 3.05);
+  const boxTop = rng.range(2.6, 2.75);
   const boxW = 0.92;
-  const boxFloor = 1.0;
+  const boxFloor = 0.95;
   const cowl = zf - 0.1;
   const H = 2.05;
   const L = zf - boxRear;
@@ -181,7 +181,7 @@ export function truck(seed: number): VehicleDesign {
     beltF: 1.42,
     beltR: 1.45,
     deckRearY: 1.45,
-    bumperF: 0.42,
+    bumperF: 0.56,
     bumperR: 0.6,
     ymax: 1.0,
     tuck: 0.03,
@@ -342,6 +342,40 @@ export function truck(seed: number): VehicleDesign {
         Mat.rim,
         {doubleSided: true, backMat: Mat.plastic},
       );
+      // Front bumper bar below the cab face, and the rear underride guard.
+      blob(
+        kit,
+        [0, 0.48, zf - 0.08],
+        [width / 2 - 0.02, 0.09, 0.09],
+        Mat.metal,
+        {n: 10, m: 8, segU: 12, segV: 3},
+      );
+      blob(
+        kit,
+        [0, 0.42, boxRear + 0.12],
+        [boxW - 0.12, 0.05, 0.05],
+        Mat.metal,
+        {n: 10, m: 10, segU: 10, segV: 3},
+      );
+      for (const sx of [0.55, -0.55])
+        tube(
+          kit,
+          [
+            [sx, 0.42, boxRear + 0.12],
+            [sx, 0.7, boxRear + 0.2],
+          ],
+          0.03,
+          Mat.metal,
+          {along: 1, seg: 5},
+        );
+      for (const yy of [boxFloor + 0.55, boxTop - 0.55])
+        blob(
+          kit,
+          [boxW - 0.06, yy, boxRear - 0.004],
+          [0.035, 0.02, 0.012],
+          Mat.chrome,
+          {mirror: true, segU: 8, segV: 2},
+        );
       // Big truck mirrors on stalks and the cab step.
       const zm = cowl - 0.15;
       tube(

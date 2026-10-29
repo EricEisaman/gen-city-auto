@@ -7,11 +7,11 @@ import {CITY_PALETTE} from './palettes.ts';
 
 export function sedan(seed: number): VehicleDesign {
   const rng = new Rng(seed);
-  const L = rng.range(4.65, 4.9);
+  const L = rng.range(4.6, 4.8);
   const width = rng.range(1.78, 1.85);
   const H = rng.range(1.42, 1.48);
   const wheelbase = rng.range(2.75, 2.85);
-  const fo = rng.range(0.92, 1.0);
+  const fo = rng.range(0.84, 0.9);
   const zf = wheelbase / 2 + fo;
   const zr = zf - L;
   const cowl = wheelbase / 2 - rng.range(0.38, 0.45);
@@ -27,17 +27,17 @@ export function sedan(seed: number): VehicleDesign {
     tyreW: 0.215,
     sill: 0.19,
     frontDepth: 0.36,
-    frontExp: 3.8,
+    frontExp: 5,
     rearDepth: 0.3,
-    rearExp: 3.6,
+    rearExp: 5.5,
     hoodFrontY: 0.74,
     beltF: 0.95,
     beltR: 0.99,
     deckRearY: 0.96,
     bumperF: 0.2,
-    bumperR: 0.25,
+    bumperR: 0.21,
     ymax: 0.62,
-    tuck: 0.06,
+    tuck: 0.04,
     tumble: 0.055,
     roll: 0.035,
     leanF: 0.14,

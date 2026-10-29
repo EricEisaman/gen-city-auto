@@ -4,10 +4,18 @@
 // bogies and underfloor equipment. Ground (y = 0) is the rail head.
 
 import type {Vec3} from '../../math/vec.ts';
-import {makeCurve, revolve} from '../../nurbs/nurbs.ts';
 import {Mat, type VehicleDesign} from '../types.ts';
 import {buildCar} from './car.ts';
-import {blob, lerp, panel, projected, rect, tube, type Kit} from './kit.ts';
+import {
+  blob,
+  lerp,
+  panel,
+  place,
+  projected,
+  rect,
+  tube,
+  type Kit,
+} from './kit.ts';
 
 /** palette[0] stainless body, palette[1] line colour band. */
 const TRAIN_PALETTE: Vec3[] = [
@@ -21,27 +29,28 @@ const TRAIN_PALETTE: Vec3[] = [
   [0.75, 0.6, 0.0], // Sobu yellow
 ];
 
+/** Solid wheelset: two flanged discs (closed superellipsoids) on an axle. */
 function wheelset(kit: Kit, z: number, r: number) {
   for (const sx of [1, -1]) {
-    const prof = makeCurve(
-      [
-        [sx * 0.5, r * 0.98, z],
-        [sx * 0.56, r, z],
-        [sx * 0.62, r * 0.93, z],
-        [sx * 0.62, 0.0, z],
-      ],
-      2,
-    );
-    const S = revolve(prof, [0, r, z], [1, 0, 0]);
-    kit.surf(S, Mat.metal, {segU: 3, segV: 12, flip: sx > 0});
+    // Disc axis along x: build along z, then yaw 90 degrees (a proper rotation).
+    const disc = (rad: number, half: number, dx: number, mat: number) =>
+      blob(kit, [sx * (0.56 + dx), r, z], [rad, rad, half], mat, {
+        n: 2,
+        m: 10,
+        segU: 12,
+        segV: 3,
+        xf: p => place(p, [0, 0, 0], 0, Math.PI / 2),
+      });
+    disc(r, 0.065, 0, Mat.metal);
+    disc(r + 0.025, 0.012, -0.06, Mat.metal);
   }
   tube(
     kit,
     [
-      [-0.7, r, z],
-      [0.7, r, z],
+      [-0.66, r, z],
+      [0.66, r, z],
     ],
-    0.08,
+    0.07,
     Mat.metal,
     {along: 1, seg: 6},
   );
@@ -72,10 +81,10 @@ export function train(seed: number): VehicleDesign {
     frontOverhang: zf - wb / 2,
     wheelR: 0.43,
     tyreW: 0.12,
-    sill: 1.0,
+    sill: 0.88,
     frontDepth: 0.4,
     frontExp: 3,
-    rearDepth: 0.06,
+    rearDepth: 0.15,
     rearExp: 10,
     hoodFrontY: belt,
     beltF: belt,
@@ -83,7 +92,7 @@ export function train(seed: number): VehicleDesign {
     deckRearY: belt,
     edgeYFn: () => belt,
     bumperF: 0.55,
-    bumperR: 0.95,
+    bumperR: 0.85,
     ymax: 1.65,
     tuck: 0.09,
     tumble: 0.01,
@@ -115,12 +124,12 @@ export function train(seed: number): VehicleDesign {
     rearSeat: false,
     interior: 'none',
     wallBack: Mat.interior,
-    wallSegU: 6,
+    wallSegU: 5,
     spacing: 0.45,
     splitY: 1.3,
     floorY,
     driver: {
-      eye: [-0.55, 2.42, zf - 1.05],
+      eye: [-0.55, 2.35, zf - 1.2],
       wheel: [-0.55, 1.95, zf - 0.6],
       tilt: -1.2,
       wheelR: 0.001,
@@ -154,25 +163,30 @@ export function train(seed: number): VehicleDesign {
         };
         // Enough rows across the band to follow the glass bulge.
         const nt = (y1 ?? 3.2) - y0 > 0.3 ? 5 : 2;
-        const ns = Math.max(2, Math.ceil((b - a) / 1.5) + 1);
+        const ns = Math.max(2, Math.ceil((b - a) / 0.8) + 1);
         kit.decal(g, gside(shape), mat, {
           ns,
           nt,
-          offset: 0.006,
+          offset: 0.01,
           mirror: true,
           segS: ns - 1,
           segT: nt - 1,
         });
         if (inner)
-          kit.decal(g, gside(shape), Mat.interior, {
-            ns,
-            nt,
-            offset: 0.012,
-            inner: true,
-            mirror: true,
-            segS: ns - 1,
-            segT: nt - 1,
-          });
+          kit.decal(
+            g,
+            gside((u, t) => shape(lerp(0.06, 0.94, u), lerp(0.08, 0.92, t))),
+            Mat.interior,
+            {
+              ns,
+              nt,
+              offset: 0.012,
+              inner: true,
+              mirror: true,
+              segS: ns - 1,
+              segT: nt - 1,
+            },
+          );
       };
       // Stainless strip above the windows, and the window/door layout on the glass band.
       opaque(zS0, zS1, winTop, null);
@@ -208,7 +222,7 @@ export function train(seed: number): VehicleDesign {
           wall,
           wside(rect(z - 0.008, z + 0.008, 1.08, belt - 0.02)),
           Mat.rubber,
-          {ns: 2, nt: 3, offset: 0.004, mirror: true, segS: 1, segT: 2},
+          {ns: 2, nt: 3, offset: 0.009, mirror: true, segS: 1, segT: 2},
         );
         kit.decal(
           g,
@@ -224,7 +238,7 @@ export function train(seed: number): VehicleDesign {
         kit.decal(wall, wside(rect(a, b, 1.0, 1.1)), Mat.metal, {
           ns: 2,
           nt: 2,
-          offset: 0.004,
+          offset: 0.013,
           mirror: true,
           segS: 1,
           segT: 1,
@@ -236,7 +250,7 @@ export function train(seed: number): VehicleDesign {
         wall,
         wside(rect(zr + 0.2, zf - 0.6, belt - 0.24, belt - 0.05)),
         Mat.paint2,
-        {ns: 12, nt: 2, offset: 0.003, mirror: true, segS: 24, segT: 1},
+        {ns: 20, nt: 3, offset: 0.008, mirror: true, segS: 24, segT: 2},
       );
       // Front: band across the nose, lights, black mask, destination display.
       const fw = (shape: (s: number, t: number) => [number, number]) =>
@@ -245,12 +259,12 @@ export function train(seed: number): VehicleDesign {
         wall,
         fw(rect(0.003, W - 0.12, belt - 0.24, belt - 0.05)),
         Mat.paint2,
-        {ns: 6, nt: 2, offset: 0.003, mirror: true, segS: 8, segT: 1},
+        {ns: 6, nt: 2, offset: 0.008, mirror: true, segS: 8, segT: 1},
       );
       kit.decal(wall, fw(rect(0.003, W - 0.15, 1.15, 1.5)), Mat.plastic, {
         ns: 6,
         nt: 2,
-        offset: 0.003,
+        offset: 0.008,
         mirror: true,
         segS: 6,
         segT: 1,
@@ -262,7 +276,7 @@ export function train(seed: number): VehicleDesign {
         kit.decal(wall, fw(rect(x - 0.08, x + 0.08, 1.25, 1.4)), mat, {
           ns: 3,
           nt: 3,
-          offset: 0.006,
+          offset: 0.01,
           mirror: true,
         });
       }
@@ -276,13 +290,13 @@ export function train(seed: number): VehicleDesign {
       kit.decal(g, fmap(0.72, 0.84, gh.iFrontCorner + 1.5), Mat.screen, {
         ns: 4,
         nt: 2,
-        offset: 0.007,
+        offset: 0.012,
         mirror: true,
       });
       kit.decal(g, fmap(0.0, 0.08, gh.iSide + 1), Mat.plastic, {
         ns: 5,
         nt: 2,
-        offset: 0.006,
+        offset: 0.01,
         mirror: true,
       });
       // Gangway end: stainless over the glass except a door window, bellows, coupler.
@@ -295,34 +309,68 @@ export function train(seed: number): VehicleDesign {
       kit.decal(g, rmap(0, 1, 0.9, gh.iRearCorner + 0.5), Mat.paint, {
         ns: 8,
         nt: 3,
-        offset: 0.006,
-        mirror: true,
-      });
-      kit.decal(g, rmap(0, 1, 0.9, gh.iRearCorner + 0.5), Mat.interior, {
-        ns: 8,
-        nt: 3,
-        offset: 0.012,
-        inner: true,
+        offset: 0.01,
         mirror: true,
       });
       for (const [a0, a1] of [
-        [0, 0.2],
-        [0.7, 1],
+        [0, 0.28],
+        [0.75, 1],
       ]) {
         kit.decal(g, rmap(a0, a1, 0, 0.9), Mat.paint, {
-          ns: 3,
-          nt: 3,
-          offset: 0.006,
-          mirror: true,
-        });
-        kit.decal(g, rmap(a0, a1, 0, 0.9), Mat.interior, {
-          ns: 3,
-          nt: 3,
-          offset: 0.012,
-          inner: true,
+          ns: 4,
+          nt: 5,
+          offset: 0.01,
           mirror: true,
         });
       }
+      // Gangway door frame, end tail lamps and the rear skirt.
+      kit.decal(g, rmap(0.28, 0.75, 0.75, 0.9), Mat.rubber, {
+        ns: 2,
+        nt: 3,
+        offset: 0.013,
+        mirror: true,
+      });
+      const rw = (shape: (s: number, t: number) => [number, number]) =>
+        projected(wall, [0, 1], shape, p => -p[2]);
+      kit.decal(wall, rw(rect(0.003, 0.42, 1.0, 1.9)), Mat.paint, {
+        ns: 3,
+        nt: 3,
+        offset: 0.01,
+        mirror: true,
+      });
+      for (const xx of [0.42, 0.005])
+        kit.decal(wall, rw(rect(xx, xx + 0.02, 1.0, 1.92)), Mat.rubber, {
+          ns: 2,
+          nt: 3,
+          offset: 0.012,
+          mirror: true,
+        });
+      kit.decal(wall, rw(rect(W - 0.42, W - 0.2, 1.25, 1.4)), Mat.taillight, {
+        ns: 3,
+        nt: 3,
+        offset: 0.012,
+        mirror: true,
+      });
+      kit.decal(wall, rw(rect(W - 0.42, W - 0.2, 1.08, 1.2)), Mat.headlight, {
+        ns: 3,
+        nt: 3,
+        offset: 0.012,
+        mirror: true,
+      });
+      blob(kit, [0, 0.82, zr + 0.12], [W * 0.85, 0.12, 0.08], Mat.metal, {
+        n: 8,
+        m: 8,
+        segU: 12,
+        segV: 3,
+      });
+      // End-cap rail along the rear belt line closes the seam between wall and end glass.
+      blob(
+        kit,
+        [0, belt + 0.07, zr + 0.04],
+        [W - 0.04, 0.09, 0.07],
+        Mat.paint,
+        {n: 10, m: 6, segU: 14, segV: 3},
+      );
       blob(kit, [0, 2.0, zr - 0.12], [0.55, 0.95, 0.12], Mat.rubber, {
         n: 8,
         m: 6,
@@ -349,7 +397,7 @@ export function train(seed: number): VehicleDesign {
       });
       // Bogies, wheelsets and underfloor equipment.
       for (const bz of [-6.9, 6.9]) {
-        blob(kit, [0, 0.62, bz], [1.05, 0.16, 1.4], Mat.metal, {
+        blob(kit, [0, 0.72, bz], [1.1, 0.18, 1.55], Mat.metal, {
           n: 10,
           m: 10,
           segU: 12,
@@ -357,7 +405,7 @@ export function train(seed: number): VehicleDesign {
         });
         for (const dz of [-1.05, 1.05]) wheelset(kit, bz + dz, 0.43);
         for (const sx of [1, -1])
-          blob(kit, [sx * 0.95, 0.5, bz], [0.1, 0.1, 0.9], Mat.metal, {
+          blob(kit, [sx * 0.98, 0.55, bz], [0.12, 0.17, 1.35], Mat.metal, {
             n: 8,
             m: 8,
             segU: 8,
@@ -511,40 +559,56 @@ export function train(seed: number): VehicleDesign {
         Mat.interior,
         {doubleSided: true},
       );
-      blob(kit, [-0.45, 1.85, zf - 0.55], [0.7, 0.13, 0.25], Mat.plastic, {
-        n: 6,
-        m: 6,
+      // Driver's desk: a sloped console across the left of the cab with two
+      // display screens, a speedometer and the one-handle master controller.
+      blob(kit, [-0.55, 1.42, zf - 0.5], [0.75, 0.4, 0.25], Mat.plastic, {
+        n: 8,
+        m: 8,
         segU: 12,
         segV: 4,
       });
-      blob(kit, [-0.55, 1.98, zf - 0.62], [0.35, 0.06, 0.12], Mat.dash, {
-        n: 6,
-        m: 6,
+      blob(kit, [-0.55, 1.84, zf - 0.55], [0.72, 0.03, 0.22], Mat.plastic, {
+        n: 8,
+        m: 8,
+        segU: 12,
+        segV: 3,
+        xf: p => place(p, [0, 0, 0], 0.35),
+      });
+      for (const dx of [-0.25, 0.15])
+        blob(kit, [-0.55 + dx, 1.92, zf - 0.5], [0.16, 0.1, 0.012], Mat.dash, {
+          n: 8,
+          m: 8,
+          segU: 8,
+          segV: 2,
+          xf: p => place(p, [0, 0, 0], -0.5),
+        });
+      blob(kit, [0.3, 1.42, zf - 0.5], [0.45, 0.4, 0.22], Mat.plastic, {
+        n: 8,
+        m: 8,
         segU: 10,
         segV: 3,
-        xf: p => [p[0], p[1] + p[2] * 0.5, p[2]],
       });
       tube(
         kit,
         [
-          [-0.95, 1.9, zf - 0.75],
-          [-0.95, 2.02, zf - 0.85],
+          [-0.95, 1.85, zf - 0.75],
+          [-0.95, 2.0, zf - 0.85],
         ],
         0.012,
         Mat.plastic,
         {along: 1, seg: 4},
       );
-      blob(kit, [-0.95, 2.04, zf - 0.86], [0.06, 0.025, 0.025], Mat.rubber, {
+      blob(kit, [-0.95, 2.02, zf - 0.86], [0.06, 0.025, 0.025], Mat.rubber, {
         segU: 6,
         segV: 2,
       });
-      blob(kit, [-0.55, 1.6, zf - 1.05], [0.25, 0.07, 0.25], Mat.seat, {
+      blob(kit, [-0.55, 1.65, zf - 1.15], [0.25, 0.07, 0.25], Mat.seat, {
         n: 5,
         m: 4,
         segU: 8,
         segV: 4,
       });
-      blob(kit, [-0.55, 1.95, zf - 1.3], [0.24, 0.3, 0.07], Mat.seat, {
+      blob(kit, [-0.55, 2.0, zf - 1.42], [0.24, 0.3, 0.07], Mat.seat, {
         n: 5,
         m: 4,
         segU: 8,

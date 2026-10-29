@@ -58,8 +58,8 @@ export function bus(seed: number): VehicleDesign {
     H,
     wheelbase,
     frontOverhang: fo,
-    wheelR: 0.48,
-    tyreW: 0.27,
+    wheelR: 0.5,
+    tyreW: 0.3,
     rimRatio: 0.5,
     spokes: 8,
     sill: 0.3,
@@ -99,17 +99,17 @@ export function bus(seed: number): VehicleDesign {
     aPillar: 'black',
     grille: 'slim',
     headlight: {x: W - 0.28, y: 0.6, hx: 0.17, hy: 0.055, n: 6, slant: 0},
-    taillight: {x: W - 0.1, y: 0.95, hx: 0.06, hy: 0.22, n: 6},
+    taillight: {x: W - 0.12, y: 1.0, hx: 0.08, hy: 0.3, n: 6},
     doors: [],
     noMirrors: true,
     rearSeat: false,
     interior: 'none',
     wallBack: Mat.interior,
-    wallSegU: 8,
+    wallSegU: 7,
     floorY,
     dualRear: true,
     driver: {
-      eye: [driverX, 1.95, zf - 1.15],
+      eye: [driverX, 1.9, zf - 1.25],
       wheel: [driverX, 1.32, zf - 0.68],
       tilt: -1.05,
       wheelR: 0.24,
@@ -146,18 +146,23 @@ export function bus(seed: number): VehicleDesign {
           segS: 12,
           segT: 2,
         });
-        kit.decal(g, side(shape), Mat.interior, {
-          ns: 10,
-          nt: 3,
-          offset: 0.012,
-          inner: true,
-          mirror: true,
-          segS: 12,
-          segT: 2,
-        });
+        kit.decal(
+          g,
+          side((u, t) => shape(lerp(0.02, 0.98, u), lerp(0.1, 0.9, t))),
+          Mat.interior,
+          {
+            ns: 10,
+            nt: 3,
+            offset: 0.014,
+            inner: true,
+            mirror: true,
+            segS: 12,
+            segT: 2,
+          },
+        );
       };
-      band(winTop, null, Mat.paint);
-      band(winTop, winTop + 0.08, Mat.paint2, 0.009);
+      band(winTop, null, Mat.paint, 0.011);
+      band(winTop, winTop + 0.08, Mat.paint2, 0.014);
       // Livery band along the skirt.
       const archEdge = 0.48 + 0.55;
       for (const [z0, z1] of [
@@ -341,14 +346,44 @@ export function bus(seed: number): VehicleDesign {
         Mat.plastic,
         {along: 1, seg: 6},
       );
+      // Ceiling panel (light liner) below the roof structure.
+      panel(
+        kit,
+        [xi, 2.38, zf - 0.35],
+        [-xi, 2.38, zf - 0.35],
+        [xi, 2.38, zr + 0.25],
+        [-xi, 2.38, zr + 0.25],
+        Mat.seat,
+      );
+      // Full-width dashboard under the windshield with a frame across its base.
+      blob(kit, [0, 1.0, zf - 0.32], [W - 0.12, 0.16, 0.2], Mat.plastic, {
+        n: 8,
+        m: 6,
+        segU: 14,
+        segV: 4,
+      });
+      blob(kit, [0, 1.17, zf - 0.3], [W - 0.14, 0.02, 0.18], Mat.interior, {
+        n: 8,
+        m: 8,
+        segU: 14,
+        segV: 2,
+      });
+      // Rear: roof end cap and a route number box above the rear window.
+      blob(
+        kit,
+        [0, ctx.roofY(0, zr + 0.3) - 0.02, zr + 0.25],
+        [W - 0.1, 0.06, 0.3],
+        Mat.paint,
+        {n: 8, m: 6, segU: 14, segV: 4},
+      );
       // Driver seat.
-      blob(kit, [driverX, 1.08, zf - 1.05], [0.25, 0.07, 0.25], Mat.seat, {
+      blob(kit, [driverX, 1.22, zf - 1.15], [0.25, 0.07, 0.25], Mat.seat, {
         n: 5,
         m: 4,
         segU: 8,
         segV: 4,
       });
-      blob(kit, [driverX, 1.42, zf - 1.32], [0.24, 0.32, 0.07], Mat.seat, {
+      blob(kit, [driverX, 1.56, zf - 1.42], [0.24, 0.32, 0.07], Mat.seat, {
         n: 5,
         m: 4,
         segU: 8,

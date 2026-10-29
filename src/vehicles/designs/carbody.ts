@@ -25,6 +25,7 @@ import {
   norm,
   cross,
   panel,
+  tube,
 } from './kit.ts';
 
 export interface Profile {
@@ -202,7 +203,7 @@ export function archY(axles: Axle[], sill: number, z: number) {
     const R = a.archR;
     if (dz <= R) y = Math.max(y, a.wheelR + Math.sqrt(R * R - dz * dz));
     else {
-      const e = Math.max(0.03, (a.wheelR - sill) * 0.7);
+      const e = Math.max(0.03, (a.wheelR - sill) * 0.45);
       if (dz < R + e)
         y = Math.max(
           y,
@@ -276,7 +277,7 @@ export class Wall {
         const z = a.z + a.archR * Math.cos(Math.PI * (i / N));
         taus.push(ol.tauAtZ(z));
       }
-      const e = Math.max(0.03, (a.wheelR - this.sill()) * 0.7);
+      const e = Math.max(0.03, (a.wheelR - this.sill()) * 0.45);
       for (const d of [0.35, 0.7, 1.05]) {
         taus.push(ol.tauAtZ(a.z + a.archR + e * d));
         taus.push(ol.tauAtZ(a.z - a.archR - e * d));
@@ -459,10 +460,11 @@ export function buildBody(
   const paint = o.paint ?? Mat.paint;
   kit.sheet(wall.sheet, paint, {
     mirror: true,
-    segU: o.wallSegU ?? 12,
+    segU: o.wallSegU ?? 10,
     segV: Math.min(64, wall.stations.length * 2),
     doubleSided: o.wallBack !== undefined,
     backMat: o.wallBack,
+    backOffset: 0.004,
   });
   const edgesOf = (pred: (e: Vec3, tau: number) => boolean, bottom = false) => {
     const out: {p: Vec3; tau: number}[] = [];
@@ -537,6 +539,22 @@ export function buildBody(
     segU: 3,
     segV: Math.min(64, bRows.length * 2),
   });
+  // Arch lips: a rolled edge (closed tube) along each wheel opening hides the
+  // panel edge and the gap to the wheel-well liner.
+  for (const a of spec.axles) {
+    const pts: Vec3[] = [];
+    wall.rows.forEach((r, k) => {
+      const z = wall.stations[k].z;
+      if (Math.abs(z - a.z) < a.archR + 0.02 && wall.stations[k].f < 0.3)
+        pts.push(r[2]);
+    });
+    if (pts.length > 3)
+      tube(kit, pts, 0.014, paint, {
+        mirror: true,
+        along: Math.min(18, pts.length),
+        seg: 4,
+      });
+  }
   return {wall, hood, deck, belly};
 }
 
@@ -739,7 +757,7 @@ export function buildGreenhouse(
     segU: 6,
     segV: 24,
     doubleSided: true,
-    backMat: Mat.interior,
+    backMat: Mat.seat,
   });
   // Headliner trim: closes the seam between the glass top and the roof liner from inside.
   const trim: Vec3[][] = top.map((t, k) => {
