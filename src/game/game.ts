@@ -198,7 +198,15 @@ export class Game {
       for (const c of this.traffic?.cars ?? []) {
         const m = c.model;
         if (Math.abs(m[12] - e[0]) < 40 && Math.abs(m[14] - e[2]) < 40)
-          out.push([m[12], m[13], m[14], Math.max(2.0, (this.vehicles.variants[c.variant]?.info.size[2] ?? 4) / 2)]);
+          out.push([
+            m[12],
+            m[13],
+            m[14],
+            Math.max(
+              2.0,
+              (this.vehicles.variants[c.variant]?.info.size[2] ?? 4) / 2,
+            ),
+          ]);
       }
       for (const p of this.net?.polesNear(e[0], e[2], 40) ?? [])
         out.push([p[0], p[1], p[2], 0.25]);

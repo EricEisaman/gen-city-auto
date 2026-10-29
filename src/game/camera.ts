@@ -336,7 +336,10 @@ export class CameraSystem {
     if (push[0] !== 0 || push[1] !== 0) return true;
     for (const o of this.obstacles()) {
       // Radius-aware: buses and trucks are long, poles thin.
-      if (Math.hypot(o[0] - e[0], o[2] - e[2]) < o[3] + 0.8 && e[1] - o[1] < 3.6)
+      if (
+        Math.hypot(o[0] - e[0], o[2] - e[2]) < o[3] + 0.8 &&
+        e[1] - o[1] < 3.6
+      )
         return true;
     }
     return false;
