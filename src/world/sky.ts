@@ -93,12 +93,12 @@ export function computeSky(
   };
   const night = 1 - smoothstep(-0.16, 0.02, sunDir[1]);
   const moonAmb = 0.012 * moonLight;
-  const glow: Vec3 = [0.06 * cityLights, 0.035 * cityLights, 0.02 * cityLights];
+  const glow: Vec3 = [0.035 * cityLights, 0.022 * cityLights, 0.014 * cityLights];
   const cityGlow: Vec3 = glow.map(
     g => g * night * (0.5 + overcast * 0.9 + rain * 0.5),
   ) as Vec3;
   const skyAmbient: Vec3 = [0, 1, 2].map(
-    k => amb(k) + moonAmb * [0.6, 0.7, 1.0][k] + 0.0015 + cityGlow[k] * 0.5,
+    k => amb(k) + moonAmb * [0.6, 0.7, 1.0][k] + 0.0015 + cityGlow[k] * 0.25,
   ) as Vec3;
   const groundAmbient: Vec3 = [0, 1, 2].map(
     k =>

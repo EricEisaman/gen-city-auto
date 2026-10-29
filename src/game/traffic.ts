@@ -376,7 +376,7 @@ export class Traffic {
       f,
       variant,
       color,
-      metallic: r.chance(0.5) ? 0.25 : 0.0,
+      metallic: r.chance(0.55) ? 0.6 : 0.0,
       color2:
         info.kind === 'taxi' || info.kind === 'bus'
           ? info.palette[

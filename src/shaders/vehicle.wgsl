@@ -44,8 +44,12 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
   switch (i.mat) {
     case 0u: {
       s.albedo = I.color.rgb;
-      s.rough = 0.4;
-      s.metal = I.color.a * 0.5;
+      let metallic = I.color.a > 0.2;
+      s.rough = select(0.55, 0.32, metallic);
+      s.metal = select(0.0, 0.45, metallic);
+      if (metallic) {
+        s.normal = normalize(n + (hash33(floor(i.local * 2500.0)) - 0.5) * 0.06);
+      }
       s.albedo *= 1.0 - I.params.w * 0.3 * smoothstep(0.6, 0.0, i.local.y);
     }
     case 1u: { s.albedo = I.color2.rgb; s.rough = 0.4; s.metal = I.color2.a * 0.5; }
@@ -127,7 +131,7 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
     beads = step(0.93, hash31(floor(q))) * frame.weather.y;
   }
   let col = sky * fres + spec + vec3f(beads * 0.05);
-  let alpha = clamp(0.14 + fres * 0.6 + beads * 0.3, 0.0, 0.95);
+  let alpha = clamp(0.3 + fres * 0.6 + beads * 0.3, 0.0, 0.95);
   return vec4f(col, alpha);
 }
 

@@ -138,6 +138,7 @@ export class VehicleRenderer implements DrawHook {
     {part: Part; lod: number; body: boolean; data: number[]}
   > = new Map();
   eye: Vec3 = [0, 0, 0];
+  private contacts: {d: number; v: number[]}[] = [];
   instanceCount = 0;
 
   constructor(
@@ -305,6 +306,7 @@ export class VehicleRenderer implements DrawHook {
   begin(eye: Vec3) {
     this.eye = eye;
     this.groups.clear();
+    this.contacts = [];
   }
 
   private push(
@@ -349,6 +351,31 @@ export class VehicleRenderer implements DrawHook {
     const L = v.lods[lod];
     const key = `${inst.variant}|${lod}`;
     this.push(`${key}|body`, L.body, lod, true, m, inst.prevModel, inst);
+    if (
+      dist < 160 &&
+      v.info.kind !== 'person' &&
+      v.info.kind !== 'helicopter' &&
+      v.info.kind !== 'train'
+    ) {
+      const sz = v.info.size;
+      this.contacts.push({
+        d: dist,
+        v: [
+          m[12],
+          m[13],
+          m[14],
+          0,
+          m[0],
+          m[2],
+          m[8],
+          m[10],
+          sz[0] / 2,
+          sz[1] / 2,
+          sz[2] / 2,
+          0,
+        ],
+      });
+    }
     if (L.wheel && lod < 2 + (size > 8 ? 1 : 0)) {
       v.info.wheels.forEach((w, k) => {
         const left = w.position[0] < 0;
@@ -421,6 +448,11 @@ export class VehicleRenderer implements DrawHook {
   }
 
   finish() {
+    this.contacts.sort((a, b) => a.d - b.d);
+    const cn = Math.min(this.contacts.length, 128);
+    const cd = new Float32Array(cn * 12);
+    for (let i = 0; i < cn; i++) cd.set(this.contacts[i].v, i * 12);
+    this.renderer.setContacts(cd, cn);
     this.draws = [];
     let n = 0;
     for (const g of this.groups.values()) {

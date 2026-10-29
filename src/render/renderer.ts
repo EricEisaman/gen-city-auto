@@ -42,6 +42,8 @@ export interface ViewParams {
   debug: number;
   /** 0 = low (no SSR/AO, cheaper clouds), 1 = high. */
   quality?: number;
+  /** Rain drops on the lens (bumper / first-person cameras). */
+  lensDrops?: boolean;
 }
 
 /** Hook for other systems (vehicles, rain) to add draws into renderer passes. */
@@ -116,6 +118,7 @@ export class Renderer {
   private cloudNoise: GPUTexture;
   private exposureBuffer: GPUBuffer;
   private lightBuffer: GPUBuffer;
+  private contactBuffer: GPUBuffer;
   private tileLodBuffer: GPUBuffer;
   private patchBuffer: GPUBuffer;
   private terrainIndex: GPUBuffer;
@@ -246,6 +249,12 @@ export class Renderer {
       size: 16 + MAX_LIGHTS * 32,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this.contactBuffer = device.createBuffer({
+      label: 'vehicles/contact occlusion',
+      size: 16 + 128 * 48,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this.contactBuffer, 0, new Uint32Array(4));
     this.tileLodBuffer = device.createBuffer({
       label: 'city/tile lod',
       size: 4 * 4096,
@@ -548,6 +557,18 @@ export class Renderer {
     if (n > 0)
       this.device.queue.writeBuffer(this.lightBuffer, 16, lights, 0, n * 8);
     this.lightCount = n;
+  }
+
+  /** Vehicles for contact occlusion: 12 floats each (see lighting.wgsl Contact). */
+  setContacts(data: Float32Array, count: number) {
+    const n = Math.min(count, 128);
+    this.device.queue.writeBuffer(
+      this.contactBuffer,
+      0,
+      new Uint32Array([n, 0, 0, 0]),
+    );
+    if (n)
+      this.device.queue.writeBuffer(this.contactBuffer, 16, data, 0, n * 12);
   }
 
   // ---------------------------------------------------------------------------
@@ -872,11 +893,25 @@ export class Renderer {
     fd.set(F.world, [this.worldSize, this.heightCell, this.heightN, 0]);
     fd.set(F.cascadeSplits, splits);
     this.cascadeMats.forEach((m, i) => fd.set(F.cascades + i * 16, m));
-    fd.set(F.exposure, [1, 0, 0, 0]);
+    // Physical exposure baseline: an 18% grey card lit by sun + sky maps to
+    // the key value. The histogram meter may only deviate a stop or two.
+    const lum = (c: number[]) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    const key = 0.12 + (0.045 - 0.12) * sky.night;
+    const lit =
+      (lum(sky.sunColor) * Math.max(sky.sunDir[1], 0.15)) / Math.PI +
+      lum(sky.skyAmbient) +
+      lum(sky.cityGlow) * 2;
+    const eBase = key / (0.18 * Math.max(lit, 1e-4));
+    fd.set(F.exposure, [1, eBase, Math.max(-0.2, sky.sunDir[1]), 0]);
     fd.set(F.skyAmbient, [...sky.skyAmbient, 0]);
     fd.set(F.groundAmbient, [...sky.groundAmbient, 0]);
     fd.set(F.cityGlow, [...sky.cityGlow, 0]);
-    fd.set(F.misc, [v.debug, v.quality ?? 1, 0, sky.moonPhase]);
+    fd.set(F.misc, [
+      v.debug,
+      v.quality ?? 1,
+      v.lensDrops ? 1 : 0,
+      sky.moonPhase,
+    ]);
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);
     d.queue.writeBuffer(
       this.atmoBuffer,
@@ -1321,6 +1356,7 @@ export class Renderer {
             t.lit.createView(),
             this.ubuf(this.lightBuffer),
             t.ao.createView(),
+            this.ubuf(this.contactBuffer),
           ],
           'bg/lighting/inputs',
         ),

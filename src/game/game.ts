@@ -358,7 +358,7 @@ export class Game {
       ];
       const yaw = (Math.atan2(model[8], model[10]) / (Math.PI * 2) + 1) % 1;
       this.carLights.set(
-        [p[0], p[1], p[2], 30, 2.5, 2.35, 2.1, 5 + Math.min(yaw, 0.999)],
+        [p[0], p[1], p[2], 28, 1.3, 1.25, 1.15, 5 + Math.min(yaw, 0.999)],
         n * 8,
       );
       n++;
@@ -400,6 +400,10 @@ export class Game {
       weather: this.weather.state,
       debug: this.opts.debug,
       quality: this.opts.quality,
+      lensDrops:
+        cam.interior ||
+        this.camera.shot?.name === 'bumper' ||
+        this.camera.mode === 'hood',
     });
     this.input.endFrame();
     this.fpsAvg = this.fpsAvg * 0.95 + (1 / Math.max(dt, 1e-3)) * 0.05;

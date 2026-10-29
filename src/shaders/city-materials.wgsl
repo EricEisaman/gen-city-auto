@@ -34,6 +34,10 @@ fn nightLight() -> f32 {
 }
 
 fn wallPalette(i: u32) -> vec3f {
+  return wallPaletteRaw(i) * 0.68;
+}
+
+fn wallPaletteRaw(i: u32) -> vec3f {
   switch (i % 12u) {
     case 0u: { return vec3f(0.78, 0.76, 0.72); }  // off-white tile
     case 1u: { return vec3f(0.62, 0.6, 0.57); }   // light concrete
@@ -89,7 +93,7 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
     } else {
       c = vec3f(0.85);
       // Ceiling light panels.
-      if (office && fract(hit.z * 0.4) < 0.25 && abs(hit.x - size.x * 0.5) < 0.4) { c = vec3f(6.0); }
+      if (office && fract(hit.z * 0.4) < 0.25 && abs(hit.x - size.x * 0.5) < 0.4) { c = vec3f(3.0); }
     }
   } else {
     c = wallC * 0.75;
@@ -170,6 +174,18 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var wall = st.wall * (0.88 + 0.12 * valueNoise(uv * 0.7)) * (1.0 - streak * 0.5) * (1.0 - 0.06 * min(tileLine, 1.0));
   s.albedo = wall;
   s.rough = 0.75;
+  // Tile grout grooves and the floor-slab bevel as normal detail.
+  let wfade = bumpFade(world);
+  if (wfade > 0.05) {
+    let gu = fract(uv.x * 10.0);
+    let gv = fract(uv.y * 20.0);
+    let du = select(0.0, select(1.0, -1.0, gu < 0.5), min(gu, 1.0 - gu) < 0.06);
+    let dv = select(0.0, select(1.0, -1.0, gv < 0.5), min(gv, 1.0 - gv) < 0.08);
+    var bump = T * du * 0.25 + vec3f(0.0, dv * 0.25, 0.0);
+    let lyw = uv.y - floor(uv.y / st.floorH) * st.floorH;
+    if (lyw < 0.21 && lyw > 0.18) { bump += vec3f(0.0, 0.9, 0.0); }
+    s.normal = normalize(n + bump * wfade);
+  }
   // Floor slab line.
   if (ly < 0.18) { s.albedo = wall * 0.8; }
 
@@ -203,8 +219,23 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let sill = (1.0 - st.winH) * st.floorH * 0.55;
   let wy1 = sill + st.winH * st.floorH;
   if (lx >= wx0 && lx <= wx1 && ly >= sill && ly <= wy1) {
-    let fx = min(lx - wx0, wx1 - lx);
-    let fy = min(ly - sill, wy1 - ly);
+    // Window reveal parallax: the glass sits 22 cm behind the wall plane.
+    let ndv = max(-dot(V, n), 0.05);
+    let vT = vec2f(dot(V, T), V.y) / ndv;
+    let g = vec2f(lx, ly) + vT * 0.22;
+    if (g.x < wx0 || g.x > wx1 || g.y < sill || g.y > wy1) {
+      s.albedo = wall * 0.8;
+      s.rough = 0.8;
+      if (g.y < sill) { s.normal = vec3f(0.0, 1.0, 0.0); }
+      else if (g.y > wy1) { s.normal = vec3f(0.0, -1.0, 0.0); }
+      else if (g.x < wx0) { s.normal = T; }
+      else { s.normal = -T; }
+      return s;
+    }
+    let lxg = g.x;
+    let lyg = g.y;
+    let fx = min(lxg - wx0, wx1 - lxg);
+    let fy = min(lyg - sill, wy1 - lyg);
     let mull = st.strip && abs(fract(uv.x / 1.6) - 0.5) > 0.47;
     if (fx < 0.07 || fy < 0.07 || mull) {
       s.albedo = vec3f(0.08, 0.08, 0.09);
@@ -214,26 +245,19 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     }
     let office = kind <= 2u && !(kind == 2u && hashuf(style) < 0.4);
     let roomSize = vec2f(wx1 - wx0, wy1 - sill);
-    var inside = interior(vec2f(lx - wx0, ly - sill), roomSize, mix(3.5, 7.0, hashuf(cellSeed)), n, T, V, cellSeed, office);
+    var inside = interior(vec2f(lxg - wx0, lyg - sill), roomSize, mix(3.5, 7.0, hashuf(cellSeed)), n, T, V, cellSeed, office);
     // Curtains / blinds.
     let blinds = hashuf(cellSeed ^ 0xabcu);
     let cover = select(0.0, mix(0.2, 1.0, hashuf(cellSeed ^ 0xdefu)), blinds < 0.35);
-    if ((ly - sill) / roomSize.y > 1.0 - cover) {
+    if ((lyg - sill) / roomSize.y > 1.0 - cover) {
       let lit = luminance(inside) > 0.4;
-      inside = vec3f(0.8, 0.75, 0.65) * select(frame.skyAmbient.rgb * 0.3, vec3f(1.2, 0.95, 0.7), lit) * (0.85 + 0.15 * step(0.5, fract(ly * 30.0)));
+      inside = vec3f(0.8, 0.75, 0.65) * select(frame.skyAmbient.rgb * 0.3, vec3f(1.2, 0.95, 0.7), lit) * (0.85 + 0.15 * step(0.5, fract(lyg * 30.0)));
     }
     let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
-    // Window reveal: the glass sits ~25cm inside the wall, so the frame casts a
-    // shadow band on the side away from the sun and the top edge.
-    let sunT = dot(frame.sunDir.xyz, T);
-    let reveal = 0.25 / max(frame.sunDir.y + 0.15, 0.2);
-    let shadowX = select(lx - wx0, wx1 - lx, sunT < 0.0) < abs(sunT) * 0.25 * 1.5;
-    let shadowY = (wy1 - ly) < reveal * 0.25;
-    let inShadow = (shadowX || shadowY) && frame.sunDir.w > 0.0 && dot(frame.sunDir.xyz, n) > 0.0;
     s.albedo = vec3f(0.03, 0.035, 0.04);
     s.rough = 0.05;
     s.emissive = inside * (1.0 - fres);
-    s.ao = select(1.0, 0.35, inShadow) * smoothstep(0.0, 0.12, min(fx, fy));
+    s.ao = mix(0.55, 1.0, smoothstep(0.0, 0.15, min(fx, fy)));
     s.cls = CLASS_GLASS;
     return s;
   }
@@ -287,6 +311,13 @@ fn curtainWall(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   return s;
 }
 
+fn asphaltH(p: vec2f) -> f32 {
+  var h = valueNoise(p * 40.0) * 0.25 + valueNoise(p * 6.0) * 0.5;
+  // Cracks as grooves.
+  h -= (1.0 - smoothstep(0.0, 0.012, abs(valueNoise(p * 0.7) - 0.5))) * 0.6;
+  return h * 0.01;
+}
+
 fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   var s = defaultSurf(n);
   let grain = valueNoise(world.xz * 3.0) * 0.5 + valueNoise(world.xz * 0.35) * 0.5;
@@ -329,14 +360,23 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   // Lane arrows approximated by a short bar before the stop line.
   if (mark > 0.0) {
     let wear = smoothstep(0.2, 0.7, valueNoise(world.xz * 4.0));
-    let c = select(vec3f(0.75), vec3f(0.75, 0.5, 0.08), yellow);
-    s.albedo = mix(s.albedo, c, 0.4 + 0.6 * wear);
-    s.rough = 0.6;
+    let c = select(vec3f(0.55), vec3f(0.55, 0.36, 0.05), yellow);
+    s.albedo = mix(s.albedo, c, 0.3 + 0.7 * wear * (0.6 + 0.4 * valueNoise(world.xz * 1.5)));
+    s.rough = 0.7;
   }
   // Tyre tracks: slightly polished lanes.
   if (kind >= 1u) {
     let laneCenter = fract(ax / 3.3) - 0.5;
     s.rough -= 0.08 * exp(-laneCenter * laneCenter * 30.0);
+  }
+  // Aggregate micro-relief, patches and cracks.
+  let fade = bumpFade(world);
+  if (fade > 0.05) {
+    let e = 0.02;
+    let h0 = asphaltH(world.xz);
+    let hx = asphaltH(world.xz + vec2f(e, 0.0));
+    let hz = asphaltH(world.xz + vec2f(0.0, e));
+    s.normal = bumpNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), h0, hx, hz, e, 0.15 * fade);
   }
   applyWetness(&s, world, 1.0, 0.6);
   return s;
@@ -349,10 +389,22 @@ fn sidewalkMat(world: vec3f, n: vec3f) -> Surf {
   let f = fract(p);
   let grout = step(f.x, 0.05) + step(f.y, 0.05);
   let tint = hash21(cell);
-  s.albedo = mix(vec3f(0.5, 0.48, 0.45), vec3f(0.62, 0.6, 0.56), tint) * (1.0 - 0.35 * min(grout, 1.0));
+  s.albedo = mix(vec3f(0.3, 0.29, 0.27), vec3f(0.4, 0.39, 0.36), tint) * (1.0 - 0.35 * min(grout, 1.0));
   s.albedo *= 0.85 + 0.15 * valueNoise(world.xz * 0.5);
   s.rough = 0.8;
   s.cls = CLASS_GROUND;
+  let fade = bumpFade(world);
+  if (fade > 0.05) {
+    let tilt = (hash22(cell) - 0.5) * 0.04;
+    let gx = smoothstep(0.0, 0.06, f.x) * smoothstep(1.0, 0.94, f.x);
+    let gz = smoothstep(0.0, 0.06, f.y) * smoothstep(1.0, 0.94, f.y);
+    let gradX = (smoothstep(0.0, 0.06, f.x) - smoothstep(1.0, 0.94, f.x)) * 0.0;
+    _ = gradX;
+    // Grout grooves: slope toward the gaps.
+    let sx = select(0.0, select(-1.0, 1.0, f.x < 0.5), gx < 0.99);
+    let sz = select(0.0, select(-1.0, 1.0, f.y < 0.5), gz < 0.99);
+    s.normal = normalize(n + vec3f(tilt.x + sx * 0.35, 0.0, tilt.y + sz * 0.35) * fade);
+  }
   applyWetness(&s, world, n.y, 0.7);
   return s;
 }
@@ -373,9 +425,9 @@ fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   let f = fract(uv);
   let px = rect.xy + vec2f(mix(2.0, rect.z - 2.0, f.x), mix(2.0, rect.w - 2.0, f.y));
   let c = textureSampleLevel(signAtlas, linearSampler, px / 2048.0, 0.0).rgb;
-  s.albedo = c * 0.7;
+  s.albedo = c * 0.6;
   s.rough = 0.3;
-  s.emissive = c * mix(0.5, 3.0, nightLight());
+  s.emissive = c * c * 1.5 * mix(0.25, 8.0, nightLight());
   return s;
 }
 
@@ -448,8 +500,8 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       let seams = 1.0 - 0.15 * step(0.96, fract(world.x * 0.5)) - 0.15 * step(0.96, fract(world.z * 0.5));
       let stain = 1.0 - 0.3 * smoothstep(0.55, 0.8, fbm2(world.xz * 0.15));
       let membrane = hashuf(h ^ 3u) < 0.4;
-      var base = select(vec3f(0.42, 0.41, 0.39), vec3f(0.2, 0.32, 0.12), g);
-      if (membrane) { base = vec3f(0.5, 0.52, 0.5); }
+      var base = select(mix(vec3f(0.30, 0.29, 0.27), vec3f(0.22, 0.25, 0.27), hashuf(h ^ 21u)), vec3f(0.16, 0.25, 0.1), g);
+      if (membrane) { base = vec3f(0.34, 0.35, 0.34); }
       s.albedo = base * select(gravel, seams, membrane) * stain;
       s.albedo *= mix(0.75, 1.1, hashuf(h ^ 9u));
       s.rough = 0.9;
@@ -536,7 +588,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     case M_LED: {
       let cols = array<vec3f, 4>(vec3f(1.0), vec3f(0.3, 0.6, 1.0), vec3f(0.8, 0.3, 1.0), vec3f(1.0, 0.7, 0.3));
       s.albedo = vec3f(0.3);
-      s.emissive = cols[param % 4u] * night * 12.0;
+      s.emissive = cols[param % 4u] * night * 20.0;
     }
     default: { s.albedo = vec3f(1.0, 0.0, 1.0); }
   }

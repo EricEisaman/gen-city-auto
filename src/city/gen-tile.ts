@@ -241,6 +241,64 @@ function facadeParam(b: Building, shop: boolean, podium: boolean) {
   );
 }
 
+/** Horizontal band around a polygon (ledge / cornice), pushed out by `depth`. */
+function band(
+  m: CMesh,
+  poly: Vec2[],
+  y: number,
+  depth: number,
+  thick: number,
+  mat: number,
+) {
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const c = poly[(i + 1) % poly.length];
+    const n = edgeNormal(poly, i);
+    const len = dist2(a, c);
+    if (len < 0.5) continue;
+    const ex = depth / len;
+    // Extend each run slightly so corners overlap instead of leaving notches.
+    const a2: Vec2 = [a[0] - (c[0] - a[0]) * ex, a[1] - (c[1] - a[1]) * ex];
+    const c2: Vec2 = [c[0] + (c[0] - a[0]) * ex, c[1] + (c[1] - a[1]) * ex];
+    m.beam(
+      [a2[0] + n[0] * depth * 0.5, y, a2[1] + n[2] * depth * 0.5],
+      [c2[0] + n[0] * depth * 0.5, y, c2[1] + n[2] * depth * 0.5],
+      depth * 0.5,
+      thick * 0.5,
+      mat,
+    );
+  }
+}
+
+/** Vertical fins along every edge of a polygon. */
+function fins(
+  m: CMesh,
+  poly: Vec2[],
+  y0: number,
+  y1: number,
+  spacing: number,
+  depth: number,
+  mat: number,
+) {
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const c = poly[(i + 1) % poly.length];
+    const len = dist2(a, c);
+    const n = edgeNormal(poly, i);
+    const yaw = Math.atan2(n[0], n[2]);
+    const count = Math.floor(len / spacing);
+    for (let k = 1; k < count; k++) {
+      const t = k / count;
+      const p: Vec3 = [
+        lerp(a[0], c[0], t) + n[0] * depth * 0.5,
+        (y0 + y1) / 2,
+        lerp(a[1], c[1], t) + n[2] * depth * 0.5,
+      ];
+      m.box(p, [0.06, (y1 - y0) / 2, depth * 0.5], mat, yaw);
+    }
+  }
+}
+
 export function building(
   b: Building,
   m: CMesh,
@@ -378,6 +436,19 @@ export function building(
       }
     }
     walls(m, towerFp, podTop, bodyTop, base, towerMat, aux);
+    if (lod === 0) {
+      // Vertical fins give the tower facade depth and shadow lines.
+      fins(
+        m,
+        towerFp,
+        podTop,
+        bodyTop,
+        b.kind === 'glass' ? 3.0 : 2.4,
+        b.kind === 'glass' ? 0.45 : 0.3,
+        packMat(CM.metal),
+      );
+      band(m, fp, podTop - 0.3, 1.2, 0.35, concrete);
+    }
     if (crownFp !== towerFp) {
       cap(m, towerFp, bodyTop, packMat(CM.roof, b.style & 0xffff), aux);
       walls(m, crownFp, bodyTop, top, base, towerMat, aux);
@@ -471,6 +542,25 @@ export function building(
   const mainTop = setbackTop ? top - b.floorH * rng.int(1, 3) : top;
   const wallMat = packMat(CM.facade, facadeParam(b, shop, false));
   walls(m, fp, b.low, mainTop, base, wallMat, aux);
+  {
+    // Floor ledges (LOD0) and a cornice (all LODs) so the building isn't a box.
+    const floors = Math.floor((mainTop - base) / b.floorH);
+    const office = b.kind === 'midrise' && rng.chance(0.5);
+    if (lod === 0) {
+      for (let f = 1; f < floors; f++) {
+        const deep = office && f % 3 === 0;
+        band(
+          m,
+          fp,
+          base + f * b.floorH + 0.06,
+          deep ? 0.35 : 0.18,
+          0.12,
+          concrete,
+        );
+      }
+    }
+    band(m, fp, mainTop - 0.2, 0.4, 0.4, concrete);
+  }
   roof = fp;
   roofY = mainTop;
   if (setbackTop) {
@@ -696,18 +786,86 @@ export function building(
         );
       }
     }
-    const units = rng.int(1, 4);
+    const area = polygonArea(roof);
+    const box = obb(roof);
+    const yaw = Math.atan2(box.u[0], box.u[1]);
+    const R: Vec2 = box.u;
+    const F: Vec2 = [-box.u[1], box.u[0]];
+    const at = (su: number, sv: number): Vec2 => [
+      box.c[0] + R[0] * su + F[0] * sv,
+      box.c[1] + R[1] * su + F[1] * sv,
+    ];
+    // AC condenser arrays in rows.
+    const units = Math.min(14, rng.int(4, 12) * Math.min(1, area / 300));
+    const rows = rng.chance(0.6) ? 2 : 1;
+    const su0 = rng.range(-box.hu * 0.6, box.hu * 0.2);
+    const sv0 = rng.range(-box.hv * 0.5, box.hv * 0.3);
     for (let k = 0; k < units; k++) {
-      const t = rng.range(0.2, 0.7);
-      const j = rng.int(0, roof.length);
-      const q: Vec2 = [lerp(c[0], roof[j][0], t), lerp(c[1], roof[j][1], t)];
+      const q = at(
+        su0 + (k % Math.ceil(units / rows)) * 1.4,
+        sv0 + Math.floor(k / Math.ceil(units / rows)) * 1.6,
+      );
       if (!pointInPolygon(q, roof)) continue;
       m.box(
-        [q[0], roofY + 0.5, q[1]],
-        [0.6, 0.5, 0.4],
-        packMat(CM.paint, 0xe0),
-        rng.range(0, 3),
+        [q[0], roofY + 0.45, q[1]],
+        [0.55, 0.45, 0.4],
+        packMat(CM.paint, 0xe0 + (k & 3)),
+        yaw,
       );
+    }
+    // Stair / elevator housing.
+    if (b.height > 15) {
+      const q = at(box.hu * 0.45, -box.hv * 0.4);
+      if (pointInPolygon(q, roof)) {
+        m.box(
+          [q[0], roofY + 1.6, q[1]],
+          [1.6, 1.6, 1.6],
+          packMat(CM.facade, (b.style & 0xffff) | (KIND_INDEX[b.kind] << 16)),
+          yaw,
+          aux,
+        );
+      }
+    }
+    // Safety rails.
+    if (rng.chance(0.5)) {
+      for (let i = 0; i < roof.length; i++) {
+        const a = roof[i];
+        const d = roof[(i + 1) % roof.length];
+        const n = edgeNormal(roof, i);
+        m.beam(
+          [a[0] - n[0] * 0.5, roofY + 2.0, a[1] - n[2] * 0.5],
+          [d[0] - n[0] * 0.5, roofY + 2.0, d[1] - n[2] * 0.5],
+          0.03,
+          0.03,
+          packMat(CM.paint, 0x80),
+        );
+      }
+    }
+    // Solar array on low roofs.
+    if (b.height < 25 && rng.chance(0.2)) {
+      for (let k = 0; k < 4; k++) {
+        const q = at(-box.hu * 0.3 + k * 2.2, box.hv * 0.35);
+        if (pointInPolygon(q, roof))
+          m.box(
+            [q[0], roofY + 0.5, q[1]],
+            [1.0, 0.04, 0.8],
+            packMat(CM.glass, 0x1234),
+            yaw,
+          );
+      }
+    }
+    // Pipe run.
+    if (rng.chance(0.4)) {
+      const a = at(-box.hu * 0.7, sv0 - 1.2);
+      const d = at(box.hu * 0.7, sv0 - 1.2);
+      if (pointInPolygon(a, roof) && pointInPolygon(d, roof))
+        m.beam(
+          [a[0], roofY + 0.25, a[1]],
+          [d[0], roofY + 0.25, d[1]],
+          0.12,
+          0.12,
+          packMat(CM.metal),
+        );
     }
   }
 }

@@ -135,3 +135,18 @@ fn signalState(t: f32, phase: f32, group: u32) -> u32 {
   if (x < 20.0) { return 1u; }
   return 2u;
 }
+
+fn hash33(p: vec3f) -> vec3f {
+  var q = fract(p * vec3f(0.1031, 0.1030, 0.0973));
+  q += dot(q, q.yxz + 33.33);
+  return fract((q.xxy + q.yxx) * q.zyx);
+}
+
+// Normal from three samples of a height field (tangent-space finite difference).
+fn bumpNormal(n: vec3f, t: vec3f, b: vec3f, h0: f32, ht: f32, hb: f32, eps: f32, strength: f32) -> vec3f {
+  return normalize(n - (t * (ht - h0) + b * (hb - h0)) * (strength / eps));
+}
+
+fn bumpFade(world: vec3f) -> f32 {
+  return 1.0 / (1.0 + distance(world, frame.camPos.xyz) / 60.0);
+}

@@ -306,7 +306,7 @@ export class Player {
       model: this.model,
       prevModel: this.prev,
       color: this.color,
-      metallic: 0.2,
+      metallic: 0.6,
       color2: this.color2,
       lights,
       brake: this.braking ? 1 : 0,

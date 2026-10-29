@@ -23,6 +23,30 @@ struct LightBuf { count: u32, pad0: u32, pad1: u32, pad2: u32, lights: array<Lig
 @group(1) @binding(13) var<storage, read> lightBuf: LightBuf;
 @group(1) @binding(14) var aoTex: texture_2d<f32>;
 
+// Vehicles for contact occlusion: [pos.xyz, unused], [right.xz, fwd.xz], [half x, y, z, 0].
+struct Contact { a: vec4f, b: vec4f, c: vec4f };
+struct ContactBuf { count: u32, pad0: u32, pad1: u32, pad2: u32, items: array<Contact> };
+@group(1) @binding(15) var<storage, read> contacts: ContactBuf;
+
+fn contactOcclusion(world: vec3f) -> f32 {
+  var occ = 0.0;
+  for (var i = 0u; i < contacts.count; i++) {
+    let C = contacts.items[i];
+    let d = world - C.a.xyz;
+    if (abs(d.x) > 8.0 || abs(d.z) > 8.0) { continue; }
+    let q = vec3f(dot(d.xz, C.b.xy), d.y, dot(d.xz, C.b.zw));
+    let h = C.c.xyz;
+    var o = (1.0 - smoothstep(0.6, 1.0, length(q.xz / (h.xz + 0.4)))) * clamp(1.0 - q.y / 1.0, 0.0, 1.0) * 0.8;
+    for (var w = 0; w < 4; w++) {
+      let wp = vec2f(select(-1.0, 1.0, (w & 1) == 1) * h.x * 0.85, select(-1.0, 1.0, (w & 2) == 2) * h.z * 0.68);
+      let dd = q.xz - wp;
+      o = max(o, 0.9 * exp(-dot(dd, dd) / 0.08) * clamp(1.0 - q.y / 0.6, 0.0, 1.0));
+    }
+    occ = max(occ, o);
+  }
+  return occ;
+}
+
 const R_GROUND = 6360.0;
 const R_TOP = 6460.0;
 const SUN_ILLUMINANCE = 12.0;
@@ -188,11 +212,18 @@ fn cloudShadow(world: vec3f) -> f32 {
   return mix(1.0, 0.35, smoothstep(1.0 - frame.weather.x, 1.15 - frame.weather.x, n) * frame.weather.x);
 }
 
-fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32) -> vec4f {
+fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool) -> vec4f {
   var r = reflect(-v, n);
-  // Roughness jitter (resolved by TAA).
+  // Roughness jitter (resolved by TAA). Wet streets stretch reflections into
+  // vertical streaks toward the camera.
   let j = hash22(px + frame.time.z * 0.618) - 0.5;
-  r = normalize(r + vec3f(j.x, 0.0, j.y) * rough * 0.6);
+  if (aniso) {
+    let side = normalize(cross(n, v));
+    let fwd = cross(side, n);
+    r = normalize(r + side * j.x * rough * 0.15 + fwd * j.y * rough * 1.4);
+  } else {
+    r = normalize(r + vec3f(j.x, 0.0, j.y) * rough * 0.6);
+  }
   if (dot(r, n) < 0.0) { return vec4f(0.0); }
   var t = 0.4 + hash21(px + frame.time.z) * 0.6;
   var prevT = 0.0;
@@ -315,8 +346,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var f0 = mix(vec3f(0.04), albedo, metal);
   if (cls == CLASS_GLASS) { f0 = vec3f(0.06) + albedo * 0.5; }
   if (cls == CLASS_WATER) { f0 = vec3f(0.02); }
-  let ao = a.a * bilateralAo(pxf, vd);
   let dist = length(world - frame.camPos.xyz);
+  var ao = a.a * bilateralAo(pxf, vd);
+  var contactOcc = 0.0;
+  if (n.y > 0.6 && dist < 150.0 && cls != CLASS_VEHICLE) {
+    contactOcc = contactOcclusion(world);
+    ao *= 1.0 - contactOcc;
+  }
 
   let dbg = u32(frame.misc.x);
   var color = vec3f(0.0);
@@ -350,10 +386,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       // Vehicle headlight: forward cone, slightly downward.
       let a = fract(L.kind) * 6.2831853;
       let dir = normalize(vec3f(sin(a), -0.12, cos(a)));
-      lc *= smoothstep(0.82, 0.95, dot(-l, dir));
+      lc *= smoothstep(0.9, 0.97, dot(-l, dir));
     } else if (L.kind < 0.5) {
       // Street lights point down.
-      lc *= mix(0.15, 1.0, smoothstep(-0.2, 0.3, l.y));
+      lc *= mix(0.03, 1.0, smoothstep(0.45, 0.85, l.y)) * (140.0 / 60.0);
     }
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK;
@@ -371,24 +407,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   env = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, env, smoothstep(-0.05, 0.15, refl.y));
   env *= mix(1.0, 0.25, rough);
   if (rough < 0.35 && frame.misc.y > 0.5) {
-    let r = ssr(world, n, v, pxf, rough);
+    let r = ssr(world, n, v, pxf, rough, cls == CLASS_GROUND && frame.weather.z > 0.3);
     env = mix(env, r.rgb, r.a);
   }
   var specOcc = ao * ao;
-  color += min(env * Fa * specOcc, vec3f(6.0));
+  color += min(env * Fa * specOcc * (1.0 - contactOcc), vec3f(6.0));
   if (cls == CLASS_VEHICLE && metal < 0.95) {
     // Clear coat: a sharp dielectric layer over the paint.
     let fc = 0.04 + 0.96 * pow(1.0 - nv, 5.0);
     let envSharp = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
     var coatEnv = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, envSharp, smoothstep(-0.05, 0.15, refl.y));
     if (frame.misc.y > 0.5) {
-      let r2 = ssr(world, n, v, pxf, 0.02);
+      let r2 = ssr(world, n, v, pxf, 0.02, false);
       coatEnv = mix(coatEnv, r2.rgb, r2.a);
     }
     color += coatEnv * fc * specOcc;
     if (frame.sunDir.w > 0.0) {
       let hc = normalize(v + frame.sunDir.xyz);
-      color += frame.sunColor.rgb * D_GGX(max(dot(n, hc), 0.0), 0.05 * 0.05) * 0.25 * fc * max(dot(n, frame.sunDir.xyz), 0.0) * shadow(world, n, vd);
+      color += frame.sunColor.rgb * D_GGX(max(dot(n, hc), 0.0), 0.05 * 0.05) * 1.0 * fc * max(dot(n, frame.sunDir.xyz), 0.0) * shadow(world, n, vd);
     }
   }
   if (dbg == 8u) { color = vec3f(ao); }

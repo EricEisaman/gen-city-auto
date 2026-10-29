@@ -48,7 +48,7 @@ export const LightKind = {
   window: 4,
 } as const;
 export const SODIUM: Vec3 = [1.0, 0.55, 0.22];
-export const LED: Vec3 = [0.85, 0.92, 1.0];
+export const LED: Vec3 = [1.0, 0.88, 0.72];
 
 /** Road coverage raster (1 = road surface) on the heightfield grid. */
 export function roadMask(L: CityLayout): Uint8Array {
@@ -1027,7 +1027,7 @@ export function streetLightSpots(
     const total = arc[arc.length - 1];
     const [s0, s1] = geom.setbacks[ci];
     const spacing = c.kind >= 2 ? 30 : 34;
-    const sodium = hash2(ci, 77) % 3 === 0;
+    const sodium = c.kind >= 3 || hash2(ci, 77) % 6 === 0;
     const sides = c.kind >= 2 ? [-1, 1] : [hash2(ci, 5) % 2 ? 1 : -1];
     for (const side of sides) {
       for (
@@ -1053,7 +1053,7 @@ function streetLights(L: CityLayout, geom: RoadGeom, lights: LightList) {
     const h = kind >= 2 ? 9 : 6.5;
     lights.add(
       [p[0] + dir[0] * reach, p[1] + h - 0.4, p[2] + dir[1] * reach],
-      kind >= 2 ? 24 : 17,
+      kind >= 2 ? 20 : 14,
       sodium ? SODIUM : LED,
       LightKind.street,
     );
