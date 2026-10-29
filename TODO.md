@@ -152,7 +152,10 @@
 
     freecam=540.09,44.72,50.72,1.46,-0.16&city=neon&seed=1&time=17.46&timespeed=0&weather=sunny
 
-[ ] bloom is way too strong and area too big.
+[x] bloom is way too strong and area too big.
+    -> the six bloom levels were summed at equal weight and never normalised, so at night ~60% of
+       every pixel was blurred glow. Coarse levels now fall off (0.6 per level), the sum is
+       normalised and mixed at 5% (day) to 12% (night).
 
     freecam=528.02,33.99,-29.18,-1.83,0.03&city=neon&seed=1&time=19.46&timespeed=0&weather=sunny
 

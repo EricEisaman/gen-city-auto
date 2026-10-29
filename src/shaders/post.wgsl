@@ -293,7 +293,8 @@ fn bloomUp(@builtin(global_invocation_id) id: vec3u) {
   c += textureSampleLevel(bloomSrc, linearSampler, uv + ts * vec2f(1, 1), 0.0).rgb * 1.0;
   c /= 16.0;
   let base = textureLoad(bloomAdd, vec2i(id.xy), 0).rgb;
-  textureStore(bloomDst, id.xy, vec4f(base + c * 1.05, 1.0));
+  // Coarser levels fade so the glow stays tight around bright sources.
+  textureStore(bloomDst, id.xy, vec4f(base + c * 0.6, 1.0));
 }
 
 // --- Auto exposure ------------------------------------------------------------
@@ -430,7 +431,8 @@ fn lensDrops(uv: vec2f) -> vec2f {
   }
   let bloom = textureSampleLevel(tmBloom, linearSampler, uv, 0.0).rgb;
   let night = frame.time.w;
-  c = mix(c, bloom, mix(0.03, 0.1, night) + frame.weather.y * 0.06);
+  // Six levels weighted 0.6^k sum to ~2.4.
+  c = mix(c, bloom / 2.4, mix(0.05, 0.12, night) + frame.weather.y * 0.06);
   c += textureSampleLevel(tmRays, linearSampler, uv, 0.0).rgb;
   c *= tmExpo.value;
   // White balance + split tone by time of day and weather (before tonemapping).
