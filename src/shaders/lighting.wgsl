@@ -59,6 +59,37 @@ fn skyVisibility(world: vec3f, n: vec3f) -> f32 {
   return clamp(1.0 - occl / max(cnt, 1.0), 0.15, 1.0);
 }
 
+// Reflection of the city: march the reflected ray over the skyline height map.
+// A hit returns an approximate facade (wall + window grid, lit windows at
+// night) so glass, paint and wet streets reflect buildings beyond the screen.
+fn cityReflection(world: vec3f, r: vec3f) -> vec4f {
+  let N = f32(textureDimensions(skyline).x);
+  let size = frame.world.x;
+  var t = 1.5;
+  for (var i = 0; i < 28; i++) {
+    let p = world + r * t;
+    let g = vec2i((p.xz + size * 0.5) / size * N);
+    if (any(g < vec2i(0)) || any(g >= vec2i(i32(N)))) { break; }
+    let h = textureLoad(skyline, g, 0).r;
+    if (p.y < h) {
+      // Facade normal approximated as facing back along the ray.
+      let fn_ = normalize(vec3f(-r.x, 0.0, -r.z));
+      let cell = vec2f(floor((p.x + p.z) / 3.0), floor(p.y / 3.4));
+      let win = step(0.35, fract((p.x + p.z) / 3.0)) * step(0.3, fract(p.y / 3.4));
+      let wall = mix(vec3f(0.35, 0.34, 0.32), vec3f(0.05, 0.06, 0.07), win * 0.8);
+      var c = wall * (frame.skyAmbient.rgb * 0.9 + frame.sunColor.rgb * max(dot(fn_, frame.sunDir.xyz), 0.0) * 0.25);
+      let lit = step(1.0 - mix(0.05, 0.4, frame.time.w), hash21(cell + floor(p.xz / 40.0)));
+      c += win * lit * vec3f(1.0, 0.75, 0.45) * mix(0.1, 1.0, frame.time.w);
+      // Haze with distance.
+      c = mix(c, frame.skyAmbient.rgb + frame.cityGlow.rgb, clamp(t / 1500.0, 0.0, 0.8));
+      return vec4f(c, 1.0);
+    }
+    if (p.y > 260.0 && r.y > 0.0) { break; }
+    t *= 1.22;
+  }
+  return vec4f(0.0);
+}
+
 // Sky irradiance (as reflected radiance for albedo 1) from the sky-view LUT,
 // cosine-weighted around the normal, blended toward overcast grey by clouds.
 fn skyIrradiance(n: vec3f) -> vec3f {
@@ -461,6 +492,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var env = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
   // Below the horizon reflections see the city: darken toward ground ambient.
   env = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, env, smoothstep(-0.05, 0.15, refl.y));
+  if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5) {
+    let cr = cityReflection(world + n * 0.3, refl);
+    env = mix(env, cr.rgb, cr.a);
+  }
   env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
   if (rough < 0.35 && frame.misc.y > 0.5) {
     let r = ssr(world, n, v, pxf, rough, cls == CLASS_GROUND && frame.weather.z > 0.3);
@@ -473,6 +508,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     let fc = min(0.04 + 0.96 * pow(1.0 - nv, 5.0), 0.45);
     let envSharp = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
     var coatEnv = mix(frame.groundAmbient.rgb * 0.5 + frame.cityGlow.rgb, envSharp, smoothstep(-0.05, 0.15, refl.y));
+    let ccr = cityReflection(world + n * 0.3, refl);
+    coatEnv = mix(coatEnv, ccr.rgb, ccr.a);
     if (frame.misc.y > 0.5 && nv > 0.25) {
       let r2 = ssr(world, n, v, pxf, 0.02, false);
       coatEnv = mix(coatEnv, r2.rgb, r2.a);
