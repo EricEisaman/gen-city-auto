@@ -262,8 +262,10 @@ export class Game {
     let n = 0;
     const addHeadlights = (model: Float32Array, len: number) => {
       if (n >= 64 || !lightsOn) return;
-      const p: Vec3 = [model[12] + model[8] * (len / 2 + 5), model[13] + 0.8, model[14] + model[10] * (len / 2 + 5)];
-      this.carLights.set([p[0], p[1], p[2], 16, 1.0 * 0.6, 0.95 * 0.6, 0.85 * 0.6, 5], n * 8);
+      // Spotlight at the front bumper; kind 5 + yaw/2pi encodes its direction.
+      const p: Vec3 = [model[12] + model[8] * (len / 2 + 0.3), model[13] + 0.75, model[14] + model[10] * (len / 2 + 0.3)];
+      const yaw = (Math.atan2(model[8], model[10]) / (Math.PI * 2) + 1) % 1;
+      this.carLights.set([p[0], p[1], p[2], 30, 2.5, 2.35, 2.1, 5 + Math.min(yaw, 0.999)], n * 8);
       n++;
     };
     addHeadlights(this.player.model, this.player.info?.size[2] ?? 4.5);

@@ -107,6 +107,27 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
   return c;
 }
 
+// Depth-aware upsample of the half-resolution AO (avoids dark halos at edges).
+fn bilateralAo(pxf: vec2f, vd: f32) -> f32 {
+  let half = vec2i(textureDimensions(aoTex)) - 1;
+  let base = (pxf - 1.0) * 0.5;
+  let b = vec2i(floor(base));
+  let f = fract(base);
+  var sum = 0.0;
+  var wsum = 0.0;
+  for (var k = 0; k < 4; k++) {
+    let o = vec2i(k & 1, k >> 1);
+    let q = clamp(b + o, vec2i(0), half);
+    let d = textureLoad(gDepth, min(q * 2, vec2i(frame.resolution.xy) - 1), 0);
+    let z = viewDepth(d);
+    let bw = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+    let w = bw * exp(-abs(z - vd) / (0.03 * vd + 0.05)) + 1e-4;
+    sum += textureLoad(aoTex, q, 0).r * w;
+    wsum += w;
+  }
+  return sum / wsum;
+}
+
 fn D_GGX(nh: f32, a: f32) -> f32 {
   let a2 = a * a;
   let d = nh * nh * (a2 - 1.0) + 1.0;
@@ -291,7 +312,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var f0 = mix(vec3f(0.04), albedo, metal);
   if (cls == CLASS_GLASS) { f0 = vec3f(0.06) + albedo * 0.5; }
   if (cls == CLASS_WATER) { f0 = vec3f(0.02); }
-  let ao = a.a * textureSampleLevel(aoTex, linearSampler, uv, 0.0).r;
+  let ao = a.a * bilateralAo(pxf, vd);
   let dist = length(world - frame.camPos.xyz);
 
   let dbg = u32(frame.misc.x);
@@ -322,7 +343,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     let win = pow(clamp(1.0 - pow(d / L.radius, 4.0), 0.0, 1.0), 2.0);
     let atten = win / (d2 + 1.0);
     var lc = L.color;
-    if (L.kind < 0.5) {
+    if (L.kind >= 5.0) {
+      // Vehicle headlight: forward cone, slightly downward.
+      let a = fract(L.kind) * 6.2831853;
+      let dir = normalize(vec3f(sin(a), -0.12, cos(a)));
+      lc *= smoothstep(0.82, 0.95, dot(-l, dir));
+    } else if (L.kind < 0.5) {
       // Street lights point down.
       lc *= mix(0.15, 1.0, smoothstep(-0.2, 0.3, l.y));
     }

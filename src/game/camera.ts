@@ -197,8 +197,23 @@ export class CameraSystem {
     return push[0] !== 0 || push[1] !== 0;
   }
 
+  private losTimer = 0;
+  private blockedFor = 0;
+
   private directed(dt: number, pl: Player): CamOut {
     let out = this.directedRaw(dt, pl);
+    // Periodically verify the subject is visible; cut if blocked for a while.
+    this.losTimer += dt;
+    if (this.shot && this.shot.name !== 'interior' && this.losTimer > 0.25) {
+      this.losTimer = 0;
+      const tgt = this.shot.focus === 'train' ? (this.trainFocus() ?? pl.pos) : ([pl.pos[0], pl.pos[1] + 0.8, pl.pos[2]] as Vec3);
+      this.blockedFor = this.blocked(out.eye, tgt) ? this.blockedFor + 0.25 : 0;
+      if (this.blockedFor > 0.5) {
+        this.blockedFor = 0;
+        this.shot = this.newShot(pl);
+        out = this.directedRaw(0, pl);
+      }
+    }
     // Cut away from shots whose camera ends up inside or against geometry.
     for (let tries = 0; tries < 4 && this.shot && this.shot.name !== 'interior' && this.badEye(out.eye); tries++) {
       this.shot = this.newShot(pl);
