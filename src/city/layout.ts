@@ -1086,17 +1086,101 @@ function expressways(
   hf: Heightfield,
 ): Elevated[] {
   const out: Elevated[] = [];
-  // Follow the longest boulevard chains: elevated decks above the arterial.
-  const candidates = chains
-    .map((c, i) => ({i, len: c.pts.length, c}))
-    .filter(x => x.c.kind === Road.boulevard && x.len > 40)
-    .sort((a, b) => b.len - a.len);
-  for (let k = 0; k < Math.min(p.expressways, candidates.length); k++) {
-    const c = candidates[k].c;
-    // Trim the ends so ramps don't land inside junctions.
-    const pts = c.pts.slice(4, -4);
+  // Boulevard chains break at every junction, so first join them into long
+  // "strokes": at each node continue along the straightest boulevard.
+  const blvd = chains
+    .map((c, i) => i)
+    .filter(
+      i => chains[i].kind === Road.boulevard && !chains[i].bridge.some(b => b),
+    );
+  const atNode = new Map<number, number[]>();
+  for (const i of blvd) {
+    for (const nd of [chains[i].start, chains[i].end]) {
+      let l = atNode.get(nd);
+      if (!l) atNode.set(nd, (l = []));
+      l.push(i);
+    }
+  }
+  const used = new Set<number>();
+  // Oriented copy of chain i leaving node `from`.
+  const oriented = (i: number, from: number) => {
+    const c = chains[i];
+    const fwd = c.start === from;
+    return {
+      pts: fwd ? c.pts.slice() : c.pts.slice().reverse(),
+      hs: fwd ? c.heights.slice() : c.heights.slice().reverse(),
+      to: fwd ? c.end : c.start,
+    };
+  };
+  const dirAt = (pts: Vec2[], end: boolean): Vec2 => {
+    const n = pts.length;
+    const a = end ? pts[Math.max(0, n - 3)] : pts[0];
+    const b = end ? pts[n - 1] : pts[Math.min(n - 1, 2)];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+  };
+  const extend = (pts: Vec2[], hs: number[], node: number) => {
+    for (;;) {
+      const d = dirAt(pts, true);
+      let best = -1;
+      let bestDot = Math.cos((30 * Math.PI) / 180);
+      for (const j of atNode.get(node) ?? []) {
+        if (used.has(j)) continue;
+        const o = oriented(j, node);
+        const dj = dirAt(o.pts, false);
+        const dot = d[0] * dj[0] + d[1] * dj[1];
+        if (dot > bestDot) {
+          bestDot = dot;
+          best = j;
+        }
+      }
+      if (best < 0) return;
+      used.add(best);
+      const o = oriented(best, node);
+      pts.push(...o.pts.slice(1));
+      hs.push(...o.hs.slice(1));
+      node = o.to;
+    }
+  };
+  const strokes: {pts: Vec2[]; hs: number[]; len: number}[] = [];
+  for (const i of blvd) {
+    if (used.has(i)) continue;
+    used.add(i);
+    const c = chains[i];
+    const pts = c.pts.slice();
+    const hs = c.heights.slice();
+    extend(pts, hs, c.end);
+    pts.reverse();
+    hs.reverse();
+    extend(pts, hs, c.start);
+    let len = 0;
+    for (let k = 1; k < pts.length; k++)
+      len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+    strokes.push({pts, hs, len});
+  }
+  strokes.sort((a, b) => b.len - a.len);
+  for (const st of strokes) {
+    if (out.length >= p.expressways || st.len < 1400) break;
+    // Trim the ends so the decks don't end on top of junctions.
+    const pts = st.pts.slice(4, -4);
+    const base = st.hs.slice(4, -4);
     if (pts.length < 20) continue;
-    const base = pts.map((q, i) => c.heights[i + 4]);
+    // Keep expressways apart from each other (no parallel stacks).
+    const tooClose = out.some(e => {
+      let near = 0;
+      for (let k = 0; k < pts.length; k += 5) {
+        for (let m = 0; m < e.pts.length; m += 3) {
+          if (
+            Math.hypot(pts[k][0] - e.pts[m][0], pts[k][1] - e.pts[m][1]) < 40
+          ) {
+            near++;
+            break;
+          }
+        }
+      }
+      return near > pts.length / 5 / 4;
+    });
+    if (tooClose) continue;
     const heights = elevateProfile(pts, hf, 0, 0.04).map((h, i) =>
       Math.max(h, base[i] + 11),
     );

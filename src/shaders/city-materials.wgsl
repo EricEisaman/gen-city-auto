@@ -57,6 +57,7 @@ fn wallPaletteRaw(i: u32) -> vec3f {
 fn paintColor(p: u32) -> vec3f {
   if (p == 0x90u) { return vec3f(0.45, 0.46, 0.45); }
   if (p == 0x91u) { return vec3f(0.06, 0.06, 0.06); }
+  if (p == 0x92u) { return vec3f(0.8, 0.55, 0.04); }
   if (p == 0x80u) { return vec3f(0.5, 0.5, 0.5); }
   if (p >= 0xd0u && p < 0xf0u) { return vec3f(0.62, 0.62, 0.6); }
   let h = hashu(p * 2654435761u);

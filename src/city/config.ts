@@ -59,7 +59,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     signDensity: 1,
     modernity: 0.65,
     railLines: 3,
-    expressways: 2,
+    expressways: 5,
     parkFraction: 0.05,
   },
   metro: {
@@ -81,7 +81,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     signDensity: 0.35,
     modernity: 0.55,
     railLines: 1,
-    expressways: 2,
+    expressways: 4,
     parkFraction: 0.07,
   },
   harbour: {
@@ -103,7 +103,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     signDensity: 0.9,
     modernity: 0.75,
     railLines: 2,
-    expressways: 2,
+    expressways: 3,
     parkFraction: 0.04,
   },
   river: {
@@ -125,7 +125,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     signDensity: 0.8,
     modernity: 0.7,
     railLines: 2,
-    expressways: 2,
+    expressways: 3,
     parkFraction: 0.04,
   },
 };

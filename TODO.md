@@ -37,6 +37,8 @@
        now stops at 1.2 km and far waves flatten so the sea mirrors the horizon.
 
 [ ] The buildings need more details. They need stronger textures or something.
+    -> in progress: facades now weather (rain streaks under sills, slab drips, patch repairs), shop
+       shutters, blinds/curtains in windows. More geometry detail (balconies, AC units) still to do.
 
 [x] the transit tracks sometimes collide with each other. Even if one is over the other
     it needs to be high enough to allow the train below to pass through with power cables.
@@ -58,7 +60,12 @@
 
     A development build can do none of that.
 
-[ ] Cities usually have some major roads and highways
+[x] Cities usually have some major roads and highways
+    -> it turned out no expressways were being generated at all (boulevard chains break at every
+       junction, so none met the length test; the overpasses in shots were rail viaducts). Boulevards
+       are now joined into long straight "strokes" through junctions, and the longest become elevated
+       expressways (5 in Tokyo, 3-4 elsewhere), e.g. a ring around the centre. They end at crash walls
+       on end piers (ramps down would cover the boulevard lanes), and carry far traffic light streams.
 
 [x] When viewing from high up or when the view distance is far, consider showing
     headlight and brake lights as single sprites with no car, especially on highways?

@@ -903,6 +903,34 @@ function expressway(e: Elevated, hf: Heightfield, m: CMesh, lights: LightList) {
       );
     }
   }
+  // Termini: the deck ends at a crash wall with a yellow attenuator, carried
+  // by an end pier, instead of stopping in mid-air.
+  for (const k of [0, n - 1]) {
+    const inward = k === 0 ? 1 : -1;
+    const d = fr[k].d;
+    const yaw = Math.atan2(d[0], d[1]);
+    const q = pts[k];
+    const ground = hf.sample(q[0], q[1]);
+    const c = P(k, 0, 0);
+    m.box(
+      [c[0], c[1] + 0.9, c[2]],
+      [halfW, 1.1, 0.25],
+      packMat(CM.concrete),
+      yaw,
+    );
+    const a: Vec3 = [
+      c[0] + d[0] * inward * 1.6,
+      c[1] + 0.5,
+      c[2] + d[1] * inward * 1.6,
+    ];
+    m.box(a, [halfW * 0.35, 0.5, 1.2], packMat(CM.paint, 0x92), yaw);
+    m.box(
+      [c[0], (ground + hs[k] - 2) / 2, c[2]],
+      [halfW * 0.6, (hs[k] - 2 - ground) / 2 + 0.5, 1.0],
+      packMat(CM.concrete),
+      yaw,
+    );
+  }
   let lastPier = -100;
   let lastLight = -100;
   for (let i = 0; i < n; i++) {
