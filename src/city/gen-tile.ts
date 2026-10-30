@@ -6596,19 +6596,17 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
     aux,
   );
   if (lod !== 0) {
-    // Far LOD: LOD0's crown in miniature, built from the same leaf cards
-    // (same material, tint and alpha) so it keeps LOD0's colour and broken
-    // outline; a small shaded core (well inside the cards) stops it reading
-    // see-through. Lower and upper crowns span LOD0's four stacked ones.
+    // Far LOD: LOD0's crown in miniature, eight of the same leaf cards
+    // (same material, tint and alpha; no dark core blob) so it keeps LOD0's
+    // colour and broken outline. Lower and upper crowns span LOD0's four
+    // stacked ones. 32 vertices (was 40 with the octahedron).
     const r = h * (S.r0 + S.r1) * 0.5;
     const rise = h * S.step * 0.9; // LOD0 crown centres span this
     const c: Vec3 = [p[0], p[1] + trunkH + r * 0.6 + rise * 0.5, p[2]];
-    const rh = r * (0.9 + S.spread * 2);
-    blob(m, c, rh * 0.55, 0, aux, lr, sp, (rise * 0.5 + r * 0.8) / (rh * 0.85));
     const lo: Vec3 = [c[0], c[1] - rise * 0.3, c[2]];
     const hi: Vec3 = [c[0], c[1] + rise * 0.3, c[2]];
-    leafCards(m, lo, r * 1.15 * (1 + S.taper * 0.3), 3, aux, lr, 0.95, sp);
-    leafCards(m, hi, r * 1.15 * (1 - S.taper * 0.3), 3, aux, lr, 0.95, sp);
+    leafCards(m, lo, r * 1.15 * (1 + S.taper * 0.3), 4, aux, lr, 0.95, sp);
+    leafCards(m, hi, r * 1.15 * (1 - S.taper * 0.3), 4, aux, lr, 0.95, sp);
     return;
   }
   for (let k = 0; k < 4; k++) {
@@ -7410,7 +7408,7 @@ const HEDGE_H = 0.95;
  * LOD0: a precast concrete planter kerb (`CM.curb` param 1: uv x metres
  * along, y metres up/across) and a lumpy clipped leaf mass (`CM.hedge` 0):
  * a 6-point rounded profile per sample whose points are pushed in and out
- * along their normals by a hash (lumps every sample, 2.2 m), overhanging
+ * along their normals by a hash (lumps every sample, 2.6 m), overhanging
  * the kerb top, with leaf cards (the tree leaf path, `CM.leaves`) on the
  * shoulders for a broken, lighter-tipped outline. Hedge uv: x metres along,
  * y metres up from the planter soil (the shader's AO darkens toward 0).
@@ -7590,7 +7588,7 @@ function hedgeRun(
       return [lerp(q[0], r[0], t), lerp(q[1], r[1], t), lerp(q[2], r[2], t)];
     };
     const side = hv & 1 ? 1 : -1;
-    for (const [c, n, ay] of [
+    const cards: [Vec3, Vec3, Vec3][] = [
       [
         at(0.2 + (((hv >>> 12) & 0xff) / 255) * (W - 0.4), HEDGE_H + 0.05),
         [o[0] * 0.25 * side, 0.97, o[1] * 0.25 * side],
@@ -7604,7 +7602,8 @@ function hedgeRun(
         [-o[0] * side, 0.2, -o[1] * side],
         [0, 1, 0],
       ],
-    ] as [Vec3, Vec3, Vec3][]) {
+    ];
+    for (const [c, n, ay] of [cards[i & 1]]) {
       const hw = 0.42;
       const hh = 0.3;
       const ids = [
@@ -8088,7 +8087,7 @@ function bandY(
 /**
  * Planting-strip hedges along avenues and arterials, both sides, both LODs
  * (hedgeRun): the planter's road-side face 0.38 m behind the kerb (behind
- * the fence), sampled every 2.2 m (LOD0) or 13 m (LOD1); gaps at bus
+ * the fence), sampled every 2.6 m (LOD0) or 26 m (LOD1); gaps at bus
  * stops, a 2 m driveway gap every 35-50 m, none within 8 m of a junction
  * mouth. Runs belong to the tile of their samples' start points.
  */
@@ -8102,7 +8101,7 @@ function hedges(
 ) {
   const L = ctx.layout;
   const hf = L.terrain.heights;
-  const step = lod === 0 ? 2.2 : 13;
+  const step = lod === 0 ? 2.6 : 26;
   for (const ci of ctx.tileChains[tile] ?? []) {
     const c = L.chains[ci];
     if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
@@ -8435,12 +8434,16 @@ export function buildTile(
 
   hedges(ctx, tile, m, land, inTile, lod);
 
-  // LOD1 signals: each pole, its arm and the head's drop as one bent tube
+  // LOD1 signals (junctions with an avenue or arterial arm): each pole,
+  // its arm and the head's drop as one bent tube
   // (12 vertices; the vertex shader keeps it at least ~0.7 px wide), so the
   // junction keeps its poles and mast arms at range.
   if (lod !== 0)
     for (const ji of ctx.tileJunctions[tile] ?? []) {
-      if (!L.junctions[ji].signal) continue;
+      const j = L.junctions[ji];
+      if (!j.signal) continue;
+      // Junctions on avenues and arterials only (the ones read from afar).
+      if (j.arms.every(a => L.chains[a.chain].kind < Road.avenue)) continue;
       signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach) => {
         const y = p[1] + 5.8;
         m.tube(
