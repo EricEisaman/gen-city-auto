@@ -164,7 +164,12 @@ export class Renderer {
     const device = gpu.device;
     this.device = device;
     const lim = device.limits.maxStorageBufferBindingSize;
-    const maxVerts = Math.floor(Math.min(lim, 512 * 1024 * 1024) / 32);
+    // A whole city's LOD1 shells plus the LOD0 ring need ~19M vertices
+    // (neon seed 1); at 512 MB (16.7M) the last tiles to stream in failed
+    // to upload and whole districts showed as bare streets.
+    const maxVerts = Math.floor(
+      Math.min(lim, device.limits.maxBufferSize, 768 * 1024 * 1024) / 32,
+    );
     this.pool = new ClusterPool(
       device,
       maxVerts,

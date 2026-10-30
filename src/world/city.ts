@@ -264,6 +264,8 @@ export class City {
   ) {
     const s = this.tiles[tile];
     const h = this.renderer.uploadClusters(clusters);
+    if (!h && clusters.clusterCount > 0)
+      console.warn(`city: cluster pool full, tile ${tile} LOD${lod} dropped`);
     if (lod === 1) {
       s.pending1 = false;
       s.lod1 = h;
