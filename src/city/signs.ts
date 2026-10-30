@@ -1,17 +1,25 @@
 // Sign atlas layout shared by geometry generation, the atlas painter and the
-// shaders. The atlas is 2048x2048:
+// shaders. The atlas is 2048x2560:
 //   rows    0..1023  vertical shop signs   128x512, 16 x 2 = 32 (ids 0..31)
 //   rows 1024..1407  horizontal shop signs 512x128,  4 x 3 = 12 (ids 32..43)
 //   rows 1408..1535  station name boards   512x128,  4 x 1 =  4 (ids 44..47)
 //   rows 1536..2047  billboards            512x256,  4 x 2 =  8 (ids 48..55)
+//                    (ids 56..71 wrap onto the billboards; gen-base uses them)
+//   rows 2048..2559  square cube signs     256x256,  8 x 2 = 16 (ids 72..87)
 
-export const ATLAS_SIZE = 2048;
+export const ATLAS_W = 2048;
+export const ATLAS_H = 2560;
 export const SIGN = {
   vertical: {first: 0, count: 32},
   horizontal: {first: 32, count: 12},
   station: {first: 44, count: 4},
   billboard: {first: 48, count: 8},
+  square: {first: 72, count: 16},
 } as const;
+
+/** Sign material param flags (above the 8-bit atlas id). */
+export const SIGN_FABRIC = 1 << 8; // unlit cloth: banners, awning valances
+export const SIGN_STRIPES = 1 << 9; // striped awning canvas (no atlas lookup)
 
 /** Atlas rectangle (pixels) for a sign id: [x, y, w, h]. */
 export function signRect(id: number): [number, number, number, number] {
@@ -20,8 +28,12 @@ export function signRect(id: number): [number, number, number, number] {
     const k = id - 32;
     return [(k % 4) * 512, 1024 + Math.floor(k / 4) * 128, 512, 128];
   }
-  const k = (id - 48) % 8;
-  return [(k % 4) * 512, 1536 + Math.floor(k / 4) * 256, 512, 256];
+  if (id < 72) {
+    const k = (id - 48) % 8;
+    return [(k % 4) * 512, 1536 + Math.floor(k / 4) * 256, 512, 256];
+  }
+  const k = (id - 72) % 16;
+  return [(k % 8) * 256, 2048 + Math.floor(k / 8) * 256, 256, 256];
 }
 
 export const SHOP_WORDS = [

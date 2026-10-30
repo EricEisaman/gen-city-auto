@@ -63,20 +63,31 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
   return o;
 }
 
-// Mipmapped alpha test. Downsampled alpha averages toward the leaf density,
-// so rescale it per mip level to keep crowns from thinning out at distance,
-// and sharpen around the threshold so edges stay crisp instead of stippled.
+// Mipmapped leaf alpha. The leaf texture's mips are coverage-preserving
+// (src/render/sign-atlas.ts), so a 0.5 cutoff keeps crown density at range.
 fn leafAlpha(uv: vec2f) -> f32 {
   let dx = dpdx(uv) * 256.0;
   let dy = dpdy(uv) * 256.0;
   let lod = clamp(0.5 * log2(max(dot(dx, dx), dot(dy, dy))), 0.0, 8.0);
-  let a = textureSampleLevel(leafTex, linearSampler, uv, lod).a * (1.0 + lod * 0.28);
-  return a;
+  return textureSampleLevel(leafTex, linearSampler, uv, lod).a;
 }
 
+// Interleaved gradient noise, advanced every frame so TAA integrates the
+// dithered edge band into smooth partial coverage instead of a fixed stipple.
+fn leafDither(fragPos: vec2f) -> f32 {
+  let p = fragPos + (frame.time.z % 64.0) * 5.588238;
+  return fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715))));
+}
+
+// Hashed alpha test limited to the screen-space transition band: alpha is
+// rescaled by its own pixel footprint (fwidth) into pixel coverage, so leaf
+// interiors stay solid, the background stays clear, and only the one-pixel
+// silhouette band dithers (stable once TAA resolves it).
 fn leafCutout(i: VOut) {
   let a = leafAlpha(i.uv);
-  if ((i.mat & 0xffu) == 25u && a < 0.5) { discard; }
+  let w = max(fwidth(a), 0.02);
+  let cov = clamp((a - 0.5) / w + 0.5, 0.0, 1.0);
+  if ((i.mat & 0xffu) == 25u && cov <= leafDither(i.pos.xy)) { discard; }
 }
 
 @fragment fn fs(i: VOut, @builtin(front_facing) ff: bool) -> GOut {
@@ -116,5 +127,5 @@ struct SOut {
 }
 
 @fragment fn fsShadow(i: SOut) {
-  if (i.leaf == 1u && textureSampleLevel(leafTex, linearSampler, i.uv, 2.0).a * 1.5 < 0.5) { discard; }
+  if (i.leaf == 1u && textureSampleLevel(leafTex, linearSampler, i.uv, 2.0).a < 0.5) { discard; }
 }

@@ -33,7 +33,7 @@ import {
   type CityLayout,
 } from './layout.ts';
 import {chainAt, type RoadGeom} from './roadgeom.ts';
-import {SIGN, signColor} from './signs.ts';
+import {SIGN, SIGN_FABRIC, SIGN_STRIPES, signColor} from './signs.ts';
 import type {Heightfield} from './terrain.ts';
 
 export const TILE_SIZE = 256;
@@ -62,6 +62,9 @@ export function tileOf(size: number, x: number, z: number) {
 }
 
 const UP: Vec3 = [0, 1, 0];
+
+const clamp = (x: number, lo: number, hi: number) =>
+  Math.max(lo, Math.min(hi, x));
 
 function centroid(poly: Vec2[]): Vec2 {
   let x = 0,
@@ -160,7 +163,11 @@ function parapet(m: CMesh, poly: Vec2[], y: number, h: number, mat: number) {
   }
 }
 
-/** A sign panel: box whose two big faces show atlas sign `id`. */
+/**
+ * A sign panel: box whose two big faces show atlas sign `id` (id may carry
+ * SIGN_* flags). With `sideId` the two end faces show that sign too (cube
+ * light boxes); otherwise they are a metal frame.
+ */
 function signPanel(
   m: CMesh,
   c: Vec3,
@@ -169,6 +176,7 @@ function signPanel(
   halfH: number,
   thick: number,
   id: number,
+  sideId = -1,
 ) {
   const n: Vec3 = [along[2], 0, -along[0]];
   const P = (s: number, t: number, k: number): Vec3 => [
@@ -223,27 +231,32 @@ function signPanel(
     ],
     frame,
   );
+  const side = sideId >= 0 ? packMat(CM.sign, sideId) : frame;
+  const sideUv: Vec2[] =
+    sideId >= 0
+      ? [
+          [1, 1],
+          [0, 1],
+          [0, 0],
+          [1, 0],
+        ]
+      : [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 1],
+        ];
   m.quad(
     [P(1, -1, 1), P(1, -1, -1), P(1, 1, -1), P(1, 1, 1)],
     along,
-    [
-      [0, 0],
-      [1, 0],
-      [1, 1],
-      [0, 1],
-    ],
-    frame,
+    sideUv,
+    side,
   );
   m.quad(
     [P(-1, -1, -1), P(-1, -1, 1), P(-1, 1, 1), P(-1, 1, -1)],
     [-along[0], 0, -along[2]],
-    [
-      [0, 0],
-      [1, 0],
-      [1, 1],
-      [0, 1],
-    ],
-    frame,
+    sideUv,
+    side,
   );
 }
 
@@ -833,8 +846,10 @@ export function building(
     }
   }
 
-  // Business signs (the Tokyo look): vertical signs protruding from the front,
-  // fascia signs above shops, rooftop billboards.
+  // Business signs (the Tokyo look): stacks of vertical blades protruding
+  // from the front, mixed with projecting cube signs, horizontal box signs,
+  // small LED screens and hanging cloth banners; fascia boxes and fabric
+  // awnings over shops; rooftop billboards.
   if (b.front >= 0 && b.kind !== 'apartment') {
     const i = b.front;
     const a = fp[i],
@@ -843,6 +858,14 @@ export function building(
     const n = edgeNormal(fp, i);
     const along: Vec3 = [(c[0] - a[0]) / len, 0, (c[1] - a[1]) / len];
     const floors = Math.floor((mainTop - base) / b.floorH);
+    // Sign variety comes from a local stream: the building stream `rng` is
+    // drawn exactly as before, so everything generated after is unchanged.
+    const sr = new Rng(hash2(b.seed, 0x51c7));
+    const wallAt = (t: number, out: number, y: number): Vec3 => [
+      lerp(a[0], c[0], t) + n[0] * out,
+      y,
+      lerp(a[1], c[1], t) + n[2] * out,
+    ];
     const vertical = Math.round(
       b.density * 5 * signDensity * rng.range(0.5, 1.4) +
         (b.kind === 'pencil' ? 2 : 0),
@@ -850,27 +873,132 @@ export function building(
     // Tokyo stacks: several tenant signs per facade at different floors.
     const slots = [0.1, 0.9, 0.5, 0.3, 0.7];
     for (let k = 0; k < Math.min(vertical, 6); k++) {
-      const t = slots[k % slots.length] + (k >= 5 ? 0.05 : 0);
+      const t = clamp(
+        slots[k % slots.length] + (k >= 5 ? 0.05 : 0) + sr.range(-0.04, 0.04),
+        0.04,
+        0.96,
+      );
       const span = Math.min(floors - 1, rng.int(2, 6));
       if (span < 1) continue;
       const startFloor = k < 2 ? 1 : rng.int(1, Math.max(2, floors - span));
+      const id = SIGN.vertical.first + rng.int(0, SIGN.vertical.count);
+      const lit = rng.chance(0.6);
       const y0 = base + b.floorH * (startFloor + 0.2);
       const hgt = span * b.floorH * 0.9;
-      const p: Vec3 = [
-        lerp(a[0], c[0], t) + n[0] * 0.75,
-        y0 + hgt / 2,
-        lerp(a[1], c[1], t) + n[2] * 0.75,
-      ];
-      const id = SIGN.vertical.first + rng.int(0, SIGN.vertical.count);
-      // The panel runs perpendicular to the facade.
-      signPanel(m, p, n, 0.6, hgt / 2, 0.15, id);
-      if (rng.chance(0.6))
-        lights.add(
-          [p[0] + n[0] * 1.2, y0 + 1, p[2] + n[2] * 1.2],
-          8,
-          signColor(id),
-          LightKind.sign,
+      // Mostly blades, but not exclusively.
+      const roll = sr.next();
+      const style =
+        k < 2
+          ? roll < 0.72
+            ? 'blade'
+            : 'cube'
+          : roll < 0.5
+            ? 'blade'
+            : roll < 0.65
+              ? 'cube'
+              : roll < 0.82 && len > 6
+                ? 'box'
+                : roll < 0.92
+                  ? 'led'
+                  : 'banner';
+      let lightY = y0 + 1;
+      if (style === 'blade') {
+        // Blades vary in depth off the wall, width, thickness and length.
+        const halfW = sr.range(0.4, 0.78);
+        const out = sr.range(0.3, 0.55) + halfW;
+        const h2 = hgt * sr.range(0.65, 1);
+        const p = wallAt(t, out, y0 + h2 / 2);
+        // The panel runs perpendicular to the facade.
+        signPanel(m, p, n, halfW, h2 / 2, sr.range(0.1, 0.2), id);
+        if (lod === 0) {
+          for (const e of [-0.42, 0.42]) {
+            m.beam(
+              wallAt(t, 0, p[1] + e * h2),
+              wallAt(t, out - halfW, p[1] + e * h2),
+              0.04,
+              0.04,
+              packMat(CM.metal),
+            );
+          }
+        }
+      } else if (style === 'cube') {
+        // Projecting light box on a bracket, sign on all four sides.
+        const hs = sr.range(0.42, 0.75);
+        const out = 0.35 + hs;
+        const y = y0 + hs + sr.range(0, Math.max(0, hgt - hs * 2));
+        const sq = SIGN.square.first + ((id + k * 5) % SIGN.square.count);
+        signPanel(m, wallAt(t, out, y), n, hs, hs, hs * 0.85, sq, sq);
+        m.beam(
+          wallAt(t, 0, y + hs * 0.6),
+          wallAt(t, 0.36, y + hs * 0.6),
+          0.05,
+          0.05,
+          packMat(CM.metal),
         );
+        lightY = y;
+      } else if (style === 'box') {
+        // Horizontal box sign across part of the facade at a tenant floor.
+        const halfW = Math.min(len * sr.range(0.18, 0.32), 4.5);
+        const tc = clamp(t, halfW / len + 0.02, 1 - halfW / len - 0.02);
+        const halfH = sr.range(0.35, 0.6);
+        const y = base + b.floorH * (startFloor + sr.range(0.15, 0.6));
+        const hid = SIGN.horizontal.first + (id % SIGN.horizontal.count);
+        signPanel(
+          m,
+          wallAt(tc, sr.range(0.2, 0.45), y),
+          along,
+          halfW,
+          halfH,
+          0.16,
+          hid,
+        );
+        lightY = y;
+      } else if (style === 'led') {
+        // Small LED screen flush on the facade in a metal case.
+        const w = sr.range(1.4, 2.6);
+        const hh = w * sr.range(0.5, 0.65);
+        const tc = clamp(t, w / len + 0.02, 1 - w / len - 0.02);
+        const y = base + b.floorH * (startFloor + 0.5);
+        const q = wallAt(tc, 0.12, y);
+        m.box(
+          q,
+          [w / 2 + 0.08, hh / 2 + 0.08, 0.1],
+          packMat(CM.metal),
+          Math.atan2(n[0], n[2]),
+        );
+        const P = (s: number, u: number): Vec3 => [
+          q[0] + (along[0] * s * w) / 2 + n[0] * 0.11,
+          y + (u * hh) / 2,
+          q[2] + (along[2] * s * w) / 2 + n[2] * 0.11,
+        ];
+        m.quad(
+          [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)],
+          n,
+          [
+            [0, 1],
+            [1, 1],
+            [1, 0],
+            [0, 0],
+          ],
+          packMat(CM.screen, (b.seed + k * 31) & 0xffff),
+        );
+        lightY = y;
+      } else {
+        // Hanging cloth banner on a pole arm (unlit, printed).
+        const out = sr.range(0.6, 0.9);
+        const h2 = Math.min(hgt * 0.8, sr.range(2.5, 4.5));
+        const p = wallAt(t, out, y0 + h2 / 2);
+        signPanel(m, p, n, 0.32, h2 / 2, 0.01, id | SIGN_FABRIC);
+        m.beam(
+          wallAt(t, 0, p[1] + h2 / 2 + 0.05),
+          wallAt(t, out + 0.4, p[1] + h2 / 2 + 0.05),
+          0.025,
+          0.025,
+          packMat(CM.metal),
+        );
+      }
+      if (lit && style !== 'banner')
+        lights.add(wallAt(t, 1.95, lightY), 8, signColor(id), LightKind.sign);
     }
     // Signs on the side walls near the street corner.
     if (b.density > 0.3 && floors > 2) {
@@ -885,45 +1013,142 @@ export function building(
         const y0 = base + b.floorH * 1.2;
         const hgt = span * b.floorH * 0.9;
         const id = SIGN.vertical.first + rng.int(0, SIGN.vertical.count);
-        signPanel(
-          m,
-          [
-            lerp(a2[0], c2[0], t) + n2[0] * 0.7,
-            y0 + hgt / 2,
-            lerp(a2[1], c2[1], t) + n2[2] * 0.7,
-          ],
-          n2,
-          0.5,
-          hgt / 2,
-          0.12,
-          id,
-        );
+        const at = (out: number, y: number): Vec3 => [
+          lerp(a2[0], c2[0], t) + n2[0] * out,
+          y,
+          lerp(a2[1], c2[1], t) + n2[2] * out,
+        ];
+        if (sr.chance(0.25)) {
+          const hs = sr.range(0.5, 0.8);
+          const sq = SIGN.square.first + (id % SIGN.square.count);
+          signPanel(m, at(0.35 + hs, y0 + hs), n2, hs, hs, hs * 0.85, sq, sq);
+        } else {
+          const halfW = sr.range(0.4, 0.65);
+          const h2 = hgt * sr.range(0.7, 1);
+          signPanel(
+            m,
+            at(0.25 + halfW, y0 + h2 / 2),
+            n2,
+            halfW,
+            h2 / 2,
+            0.12,
+            id,
+          );
+        }
       }
     }
     if (shop && len > 4) {
       const id = SIGN.horizontal.first + rng.int(0, SIGN.horizontal.count);
-      const mid: Vec3 = [
-        (a[0] + c[0]) / 2 + n[0] * 0.2,
-        base + b.floorH * 0.95,
-        (a[1] + c[1]) / 2 + n[2] * 0.2,
-      ];
-      signPanel(m, mid, along, Math.min(len * 0.42, 6), 0.45, 0.12, id);
+      // Fascia box sign: depth, height and width vary; wide frontages
+      // sometimes carry two tenants side by side.
+      const two = len > 9 && sr.chance(0.3);
+      const halfH = sr.range(0.35, 0.6);
+      const out = sr.range(0.18, 0.5);
+      const y = base + b.floorH * 0.95 + (halfH - 0.45) * 0.5;
+      if (two) {
+        const halfW = Math.min(len * 0.2, 4);
+        signPanel(m, wallAt(0.26, out, y), along, halfW, halfH, 0.16, id);
+        const id2 = SIGN.horizontal.first + ((id + 5) % SIGN.horizontal.count);
+        signPanel(
+          m,
+          wallAt(0.74, out, y),
+          along,
+          halfW,
+          halfH * 0.85,
+          0.16,
+          id2,
+        );
+      } else {
+        const halfW = Math.min(len * sr.range(0.3, 0.44), 6);
+        signPanel(m, wallAt(0.5, out, y), along, halfW, halfH, 0.16, id);
+      }
       if (lod === 0) {
-        // Awning.
-        const w0: Vec3 = [
-          lerp(a[0], c[0], 0.08) + n[0] * 0.8,
-          base + b.floorH * 0.72,
-          lerp(a[1], c[1], 0.08) + n[2] * 0.8,
-        ];
-        const w1: Vec3 = [
-          lerp(a[0], c[0], 0.92) + n[0] * 0.8,
-          base + b.floorH * 0.72,
-          lerp(a[1], c[1], 0.92) + n[2] * 0.8,
-        ];
-        m.beam(w0, w1, 0.8, 0.05, packMat(CM.paint, (b.seed >> 8) & 0xff), aux);
+        const ay = base + b.floorH * 0.72;
+        const aStyle = sr.next();
+        if (aStyle < 0.55) {
+          // Sloped fabric awning: striped canvas with a printed valance.
+          const t0 = sr.range(0.06, 0.2),
+            t1 = 1 - sr.range(0.06, 0.2);
+          const reach = sr.range(1.0, 1.5);
+          const drop = reach * sr.range(0.35, 0.55);
+          const W = (t: number, o: number, y2: number) => wallAt(t, o, y2);
+          const q = [
+            W(t0, 0.15, ay),
+            W(t1, 0.15, ay),
+            W(t1, reach, ay - drop),
+            W(t0, reach, ay - drop),
+          ];
+          const span = (t1 - t0) * len * 2;
+          const uv: Vec2[] = [
+            [0, 0],
+            [span, 0],
+            [span, 1],
+            [0, 1],
+          ];
+          const nl = Math.hypot(drop, reach - 0.15);
+          const up: Vec3 = [
+            (n[0] * drop) / nl,
+            (reach - 0.15) / nl,
+            (n[2] * drop) / nl,
+          ];
+          const mat = packMat(CM.sign, ((id * 3 + 1) & 0xff) | SIGN_STRIPES);
+          m.quad(q, up, uv, mat);
+          m.quad(q, [-up[0], -up[1], -up[2]], uv, mat);
+          const vid =
+            SIGN.horizontal.first + ((id + 3) % SIGN.horizontal.count);
+          const vm = (t0 + t1) / 2;
+          signPanel(
+            m,
+            wallAt(vm, reach, ay - drop - 0.14),
+            along,
+            ((t1 - t0) * len) / 2,
+            0.14,
+            0.01,
+            vid | SIGN_FABRIC,
+          );
+        } else if (aStyle < 0.85) {
+          // Flat painted canopy.
+          m.beam(
+            wallAt(0.08, 0.8, ay),
+            wallAt(0.92, 0.8, ay),
+            0.8,
+            0.05,
+            packMat(CM.paint, (b.seed >> 8) & 0xff),
+            aux,
+          );
+        }
+        // Nobori: cloth banners on poles in front of the shop.
+        if (b.density > 0.3 && sr.chance(0.3)) {
+          const count = sr.int(2, 4);
+          for (let f = 0; f < count; f++) {
+            const t = 0.15 + (0.7 * (f + 0.5)) / count;
+            const g = wallAt(t, sr.range(1.0, 1.3), base);
+            m.cylinder(
+              [g[0], g[1] - SINK, g[2]],
+              0.02,
+              2.5 + SINK,
+              4,
+              packMat(CM.metal),
+              false,
+            );
+            const fid =
+              SIGN.vertical.first + ((id * 5 + f) % SIGN.vertical.count);
+            signPanel(
+              m,
+              [g[0] + along[0] * 0.27, base + 1.5, g[2] + along[2] * 0.27],
+              along,
+              0.25,
+              0.85,
+              0.005,
+              fid | SIGN_FABRIC,
+            );
+          }
+        }
       }
     }
-    if (b.density > 0.4 && b.height < 60 && rng.chance(0.1 * signDensity)) {
+    const billboard =
+      b.density > 0.4 && b.height < 60 && rng.chance(0.1 * signDensity);
+    if (billboard) {
       const id = SIGN.billboard.first + rng.int(0, SIGN.billboard.count);
       const c2 = centroid(roof);
       const w = Math.min(len * 0.45, 7);
@@ -936,6 +1161,90 @@ export function building(
         signColor(id),
         LightKind.sign,
       );
+    } else if (
+      b.density > 0.35 &&
+      b.height < 45 &&
+      len > 5 &&
+      sr.chance(0.16 * signDensity)
+    ) {
+      // Rooftop sign on a steel frame near the front edge: a wide billboard,
+      // an LED board or a tall vertical tower sign.
+      const kind = sr.next();
+      const c2 = centroid(roof);
+      const fr = wallAt(0.5, 0, 0);
+      const back = Math.min(2.5, dist2([fr[0], fr[2]], c2));
+      const toC = Math.hypot(c2[0] - fr[0], c2[1] - fr[2]) || 1;
+      const ox = fr[0] + ((c2[0] - fr[0]) / toC) * back;
+      const oz = fr[2] + ((c2[1] - fr[2]) / toC) * back;
+      const lift = sr.range(1.2, 2.5);
+      const metal = packMat(CM.metal);
+      if (kind < 0.3) {
+        const hh = sr.range(2.5, 4.5);
+        const p: Vec3 = [ox, roofY + lift + hh, oz];
+        const vid = SIGN.vertical.first + sr.int(0, SIGN.vertical.count);
+        signPanel(m, p, n, hh * 0.26, hh, 0.25, vid);
+        m.box([ox, roofY + lift / 2, oz], [0.12, lift / 2, 0.12], metal);
+      } else {
+        const w = Math.min(len * sr.range(0.3, 0.45), 6.5);
+        const hh = w * sr.range(0.3, 0.5);
+        const p: Vec3 = [ox, roofY + lift + hh, oz];
+        if (kind < 0.55) {
+          const P = (s: number, u: number): Vec3 => [
+            ox + along[0] * s * w,
+            p[1] + u * hh,
+            oz + along[2] * s * w,
+          ];
+          m.box(
+            [ox, p[1], oz],
+            [w + 0.1, hh + 0.1, 0.15],
+            metal,
+            Math.atan2(n[0], n[2]),
+          );
+          m.quad(
+            [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)].map((q): Vec3 => [
+              q[0] + n[0] * 0.16,
+              q[1],
+              q[2] + n[2] * 0.16,
+            ]),
+            n,
+            [
+              [0, 1],
+              [1, 1],
+              [1, 0],
+              [0, 0],
+            ],
+            packMat(CM.screen, (b.seed >> 4) & 0xffff),
+          );
+        } else {
+          const bid = SIGN.billboard.first + sr.int(0, SIGN.billboard.count);
+          signPanel(m, p, along, w, hh, 0.15, bid);
+        }
+        // Legs and a cross brace behind the board.
+        for (const s of [-0.7, 0.7]) {
+          const lx = ox + along[0] * s * w - n[0] * 0.4;
+          const lz = oz + along[2] * s * w - n[2] * 0.4;
+          m.box(
+            [lx, roofY + (lift + hh) / 2, lz],
+            [0.1, (lift + hh) / 2, 0.1],
+            metal,
+          );
+        }
+        m.beam(
+          [
+            ox - along[0] * 0.7 * w - n[0] * 0.4,
+            roofY + 0.3,
+            oz - along[2] * 0.7 * w - n[2] * 0.4,
+          ],
+          [
+            ox + along[0] * 0.7 * w - n[0] * 0.4,
+            roofY + lift + hh,
+            oz + along[2] * 0.7 * w - n[2] * 0.4,
+          ],
+          0.05,
+          0.05,
+          metal,
+        );
+      }
     }
   }
 
@@ -1218,29 +1527,67 @@ function roofTaken(roof: Vec2[]): number[][] {
 // ---------------------------------------------------------------------------
 // Props
 
+/** Street tree species (leaf/foliage material param; tinted in the shader). */
+export const TREE = {zelkova: 0, ginkgo: 1, columnar: 2} as const;
+
+/**
+ * Species from position: runs of one species along a street (coarse cell
+ * hash; Tokyo tends to plant a street with a single species), plus a few
+ * odd ones out.
+ */
+export function treeSpecies(x: number, z: number): number {
+  const cell = hash2(Math.floor(x / 90), Math.floor(z / 90)) % 100;
+  const own = hash2(Math.floor(x * 4), Math.floor(z * 4)) % 100;
+  const pick = own < 18 ? (own * 37) % 100 : cell;
+  return pick < 45 ? TREE.zelkova : pick < 75 ? TREE.ginkgo : TREE.columnar;
+}
+
+const TREE_SHAPE = [
+  // zelkova: broad vase, crowns widen and spread as they rise.
+  {trunk: 0.4, r0: 0.22, r1: 0.32, spread: 0.075, step: 0.38, taper: -0.12},
+  // ginkgo: loose upright cone, crowns shrink toward the top.
+  {trunk: 0.3, r0: 0.2, r1: 0.25, spread: 0.05, step: 0.5, taper: 0.3},
+  // columnar (pruned street tree): narrow stacked column.
+  {trunk: 0.22, r0: 0.14, r1: 0.17, spread: 0.02, step: 0.62, taper: 0.1},
+];
+
 export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
-  const trunkH = h * 0.4;
+  // Take exactly one value from the caller's stream, so whatever is placed
+  // after a tree does not depend on its species or LOD; the crown is built
+  // from a local stream.
+  const aux = rng.nextU32();
+  const lr = new Rng(aux ^ hash2(Math.floor(p[0] * 8), Math.floor(p[2] * 8)));
+  const sp = treeSpecies(p[0], p[2]);
+  const S = TREE_SHAPE[sp];
+  const trunkH = h * S.trunk;
   m.cylinder(
     [p[0], p[1] - SINK, p[2]],
     0.12 + h * 0.012,
-    trunkH + 0.5 + SINK,
+    trunkH + 0.5 + SINK + (sp === TREE.zelkova ? 0 : h * 0.3),
     lod === 0 ? 6 : 4,
     packMat(CM.bark),
     false,
   );
-  const blobs = lod === 0 ? 4 : 1;
-  const aux = rng.nextU32();
-  for (let k = 0; k < blobs; k++) {
-    const r = h * (lod === 0 ? rng.range(0.22, 0.32) : 0.33);
+  if (lod !== 0) {
+    // Far LOD: one crown with the species' overall proportions.
+    const r = h * (S.r0 + S.r1) * 0.55;
+    const c: Vec3 = [p[0], p[1] + trunkH + r * (0.6 + S.step * 0.8), p[2]];
+    blob(m, c, r * 0.62, 0, aux, lr, sp);
+    leafCards(m, c, r, 4, aux, lr, 1, sp);
+    return;
+  }
+  for (let k = 0; k < 4; k++) {
+    const t = k / 3 - 0.5;
+    const r = h * lr.range(S.r0, S.r1) * (1 - S.taper * t * 2);
     const c: Vec3 = [
-      p[0] + rng.range(-0.25, 0.25) * h * 0.3,
-      p[1] + trunkH + r * (0.6 + k * 0.38),
-      p[2] + rng.range(-0.25, 0.25) * h * 0.3,
+      p[0] + lr.range(-1, 1) * h * S.spread * (1 + t),
+      p[1] + trunkH + r * 0.6 + h * S.step * 0.3 * k,
+      p[2] + lr.range(-1, 1) * h * S.spread * (1 + t),
     ];
-    blob(m, c, r * (lod === 0 ? 0.48 : 0.62), 0, aux, rng);
+    blob(m, c, r * 0.48, 0, aux, lr, sp);
     // Many smaller cards toward the crown surface give a broken, leafy
     // silhouette instead of a few big clumps.
-    leafCards(m, c, r, lod === 0 ? 16 : 4, aux, rng, lod === 0 ? 0.62 : 1);
+    leafCards(m, c, r, 16, aux, lr, 0.62, sp);
   }
 }
 
@@ -1253,8 +1600,9 @@ function leafCards(
   aux: number,
   rng: Rng,
   scale = 1,
+  species = 0,
 ) {
-  const mat = packMat(CM.leaves);
+  const mat = packMat(CM.leaves, species);
   for (let k = 0; k < count; k++) {
     // Random point in the crown and a random card orientation.
     const u = rng.range(-1, 1);
@@ -1309,6 +1657,7 @@ function blob(
   subdiv: number,
   aux: number,
   rng: Rng,
+  species = 0,
 ) {
   let tris: Vec3[][] = [];
   const V: Vec3[] = [
@@ -1351,7 +1700,7 @@ function blob(
     if (j === undefined) jit.set(k, (j = rng.range(0.82, 1.12)));
     return j;
   };
-  const mat = packMat(CM.foliage);
+  const mat = packMat(CM.foliage, species);
   for (const t of tris) {
     const ids = t.map(v => {
       const d = disp(v) * r;
