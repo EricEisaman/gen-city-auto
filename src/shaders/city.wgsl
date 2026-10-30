@@ -30,17 +30,30 @@ struct VOut {
   @location(2) uv: vec2f,
   @location(3) @interpolate(flat) mat: u32,
   @location(4) @interpolate(flat) aux: u32,
-  // Pixel coverage of a widened thin tube (1 = solid).
+  // Pixel coverage of a widened thin tube: 1 = solid; 0..1 = hashed partial
+  // coverage; < 0 = a solid min-width line whose true coverage is -cov
+  // (emissive tubes scale their light by it).
   @location(5) cov: f32,
 };
 
-// Wire (20), frame (15), paint (16) and metal (6) tubes carry their radius
-// in aux bits 0-15 (0.5 mm units, 0 = not a tube; see cmesh.ts). A tube
-// thinner than MIN_TUBE_PX pixels is pushed out along its radial normal to
-// that width and drawn with hashed partial coverage (TAA turns it into a
-// thin continuous line instead of dashes).
+// Wire (20), frame (15), paint (16), metal (6) and lamp (11) tubes carry
+// their radius in aux bits 0-15 (0.5 mm units, 0 = not a tube; see
+// cmesh.ts). A tube thinner than MIN_TUBE_PX pixels is pushed out along its
+// radial normal to that width and drawn with hashed partial coverage.
+//
+// Hashed coverage only resolves where TAA keeps its history: the variance
+// clip throws the history away in every frame whose 3x3 neighbourhood has
+// no covered sample, so a sparse dither (a far wire at 10-40 % coverage)
+// came out as beads and stair-steps. Overhead line wires (wire params 1-2)
+// and lamp tubes are therefore drawn as SOLID lines at least MIN_LINE_PX
+// wide (~1.2 px across the diamond section, so every pixel column along the
+// line holds a sample each frame and TAA's jitter anti-aliases it into a
+// smooth line); the wires fade back to hashed coverage only far out
+// (LINE_FADE metres), the lamps scale their light by the true coverage.
 const MIN_TUBE_PX = 0.7;
-const TUBE_MATS = (1u << 6u) | (1u << 15u) | (1u << 16u) | (1u << 20u);
+const MIN_LINE_PX = 0.85;
+const LINE_FADE = vec2f(260.0, 520.0);
+const TUBE_MATS = (1u << 6u) | (1u << 11u) | (1u << 15u) | (1u << 16u) | (1u << 20u);
 
 fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
   let c = clusters[visible[ii]];
@@ -73,11 +86,19 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
     // World size of one pixel at this depth (projected radius r covers
     // r * proj[1][1] * h / (2 w) pixels).
     let px = 2.0 * max(o.pos.w, 1e-3) / (frame.proj[1][1] * frame.resolution.y);
-    let rMin = MIN_TUBE_PX * px;
+    let isLine = id == 11u || (id == 20u && (v.mat >> 8u) != 0u);
+    let rMin = select(MIN_TUBE_PX, MIN_LINE_PX, isLine) * px;
     if (r < rMin) {
       p += o.normal * (rMin - r);
       o.pos = frame.viewProj * vec4f(p, 1.0);
       o.cov = r / rMin;
+      if (id == 11u) {
+        o.cov = -o.cov;
+      } else if (isLine) {
+        // Solid out to LINE_FADE.x, then back to the hashed coverage.
+        let f = smoothstep(LINE_FADE.x, LINE_FADE.y, o.pos.w);
+        o.cov = max(o.cov, mix(0.5, 0.3, f));
+      }
     }
   }
   o.world = p;
@@ -121,10 +142,13 @@ fn leafCutout(i: VOut) {
   dUvY = dpdy(i.uv);
   leafCutout(i);
   // Widened thin tubes: hashed coverage, gone below 8 % of a pixel.
-  if (i.cov < 1.0 && (i.cov < 0.08 || i.cov <= leafDither(i.pos.xy))) { discard; }
+  if (i.cov >= 0.0 && i.cov < 1.0 && (i.cov < 0.08 || i.cov <= leafDither(i.pos.xy))) { discard; }
   var n = normalize(i.normal);
   if (!ff && (i.mat & 0xffu) != 25u) { n = -n; }
-  let s = cityMaterial(i.world, n, i.uv, i.mat, i.aux);
+  var s = cityMaterial(i.world, n, i.uv, i.mat, i.aux);
+  // Solid min-width lamp line: its light spread over the widened pixels
+  // (energy-preserving: the same mean light as the old sub-pixel dashes).
+  if (i.cov < 0.0) { s.emissive *= -i.cov; }
   return writeG(s, i.world, i.pos);
 }
 
