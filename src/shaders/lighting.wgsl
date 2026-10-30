@@ -289,7 +289,7 @@ fn glassEnv(r: vec3f) -> vec3f {
   if (r.y > 0.0) {
     let p = r.xz / (r.y + 0.12) * 1.3 + frame.wind.xy * frame.time.x * 0.003;
     let n = fbm2(p + fbm2(p * 1.7 + 4.0) * 0.6);
-    let cover = mix(0.35, 0.7, clamp(frame.weather.x, 0.0, 1.0));
+    let cover = mix(0.28, 0.7, clamp(frame.weather.x, 0.0, 1.0));
     let cl = smoothstep(1.0 - cover - 0.1, 1.0 - cover + 0.15, n) * smoothstep(0.0, 0.12, r.y);
     let fwd = 1.0 + 1.5 * pow(max(dot(r, frame.sunDir.xyz), 0.0), 4.0);
     let lit = frame.sunColor.rgb * max(frame.sunDir.y, 0.05) * 0.5 * fwd + frame.skyAmbient.rgb * 0.9 + frame.cityGlow.rgb * 1.5 * night;

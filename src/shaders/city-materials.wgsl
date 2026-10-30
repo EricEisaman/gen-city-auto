@@ -900,7 +900,7 @@ fn partyWall(s: ptr<function, Surf>, uvIn: vec2f, auxIn: u32, bodyH: f32, base: 
   // A blank wall towering over low roofs gets no street or sign light: at
   // night, light pollution and the glow of the streets below still show
   // its value structure instead of a pitch-black slab.
-  (*s).emissive += a * (frame.cityGlow.rgb * 0.8 + vec3f(0.0015, 0.002, 0.003)) * nightLight();
+  (*s).emissive += a * (frame.cityGlow.rgb * 0.4 + vec3f(0.001, 0.0013, 0.002)) * nightLight();
 }
 
 // Surface overrides once the wall material is done: the granite finish on
