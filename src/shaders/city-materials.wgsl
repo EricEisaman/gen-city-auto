@@ -7533,7 +7533,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
           let sh = hash21(vec2f(floor(uv.x / 0.9), floor(bayN * 6.0) + 3.0));
           // (Per-sheet tone kept small: foreshortened from the train, +-14 %
           // sheets read as a checkerboard of tiles.)
-          s.albedo *= mix(0.93, 1.05, sh) * mix(0.84, 1.1, bayN) * (1.0 - 0.4 * jointCov(uv.x / 0.9, fu.x / 0.9, 0.04 / 0.9));
+          s.albedo *= mix(0.99, mix(0.93, 1.05, sh), 1.0 - smoothstep(0.08, 0.3, fu.x)) * mix(0.84, 1.1, bayN) * (1.0 - 0.4 * jointCov(uv.x / 0.9, fu.x / 0.9, 0.04 / 0.9));
           // Standing seams at each sheet lap: a raised rib that keeps a lit
           // crest and a shadow line out to where the corrugation has gone.
           {
