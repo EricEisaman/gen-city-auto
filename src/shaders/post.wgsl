@@ -490,13 +490,17 @@ fn lensDrops(uv: vec2f) -> vec2f {
   // Rain keeps its low-key, flat grade: the stretch must not undo the
   // exposure drop.
   let wetGrade = clamp(rainK * 1.5, 0.0, 1.0) * (1.0 - night);
-  let gain = clamp(0.94 / max(dHi - dLo, 0.05), 1.0, mix(mix(1.45, 1.12, night), 1.06, wetGrade));
+  // (Golden hour: a low sun's sunlit walls already fill the top of the
+  // range; stretching further clips them.)
+  let gain = clamp(0.94 / max(dHi - dLo, 0.05), 1.0, mix(mix(mix(1.45, 1.15, golden), 1.12, night), 1.06, wetGrade));
   let lo = min(dLo, 0.09);
   m = max((m - lo) * gain + 0.015, vec3f(0.0));
   // Whites roll off instead of clipping (overcast skies and wet roofs sit at
   // the top of the range); a clear day keeps its full-strength highlights.
   let soft = clamp(frame.weather.x * 1.5 - 0.5, 0.0, 1.0);
-  m = min(mix(m, shoulder(m, 0.72), soft), vec3f(1.0));
+  // A low golden sun square on a pale wall (metered off the long-shadowed
+  // street) rolls off too, instead of clipping to peach-white.
+  m = min(mix(m, shoulder(m, 0.72), max(soft, golden * 0.8)), vec3f(1.0));
   // Punchy look in AgX space; less saturation in rain.
   m = pow(m, vec3f(mix(1.22, 1.12, night)));
   let sat = mix(1.12, 1.15, night) * mix(1.0, 0.72, rainK) * mix(1.0, 0.9, soft * (1.0 - night));

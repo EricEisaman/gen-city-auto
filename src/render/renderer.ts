@@ -123,6 +123,7 @@ export class Renderer {
   private leafTex: GPUTexture;
   private detailTex: GPUTexture;
   private detailSampler: GPUSampler;
+  private anisoClamp: GPUSampler;
   private whiteTex: GPUTexture;
   private shadowMap: GPUTexture;
   private transmittance: GPUTexture;
@@ -198,6 +199,17 @@ export class Renderer {
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
       addressModeW: 'clamp-to-edge',
+    });
+    // Sign atlas and leaf cards: clamp, trilinear, 8x anisotropic so sign
+    // text keeps its strokes at grazing angles (city-materials atlasGrad).
+    this.anisoClamp = device.createSampler({
+      label: 'sampler/aniso clamp',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+      maxAnisotropy: 8,
     });
     this.linearRepeat = device.createSampler({
       label: 'sampler/linear repeat',
@@ -1275,7 +1287,7 @@ export class Renderer {
           2,
           [
             this.signAtlas.createView(),
-            this.linear,
+            this.anisoClamp,
             this.leafTex.createView(),
             this.detailTex.createView({dimension: '2d-array'}),
             this.detailSampler,

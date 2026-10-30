@@ -505,7 +505,7 @@ fn cloudShadow(world: vec3f) -> f32 {
   return mix(1.0, 0.35, smoothstep(1.0 - frame.weather.x, 1.15 - frame.weather.x, n) * frame.weather.x);
 }
 
-fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool) -> vec4f {
+fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool, thinReject: bool) -> vec4f {
   var r = reflect(-v, n);
   // Roughness jitter (resolved by TAA). Wet streets stretch reflections into
   // vertical streaks toward the camera.
@@ -532,11 +532,49 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool) -> 
     let sceneView = viewDepth(sceneDepth);
     let diff = rayView - sceneView;
     if (diff > 0.0 && diff < max(0.6, (t - prevT) * 1.5) && sceneDepth > 0.0) {
+      // On glass: refine the crossing (bisection between the last miss and
+      // this step), then require the ray to really meet the surface. A ray
+      // passing a metre behind a lamp pole or sign edge used to count as a
+      // hit and drew a dithered ghost of it in every pane. (Wet streets
+      // keep the loose test: their long neon streaks rely on it.)
+      var pHit = p;
+      var conf = 1.0;
+      if (thinReject) {
+        var lo = prevT;
+        var hi = t;
+        var dHit = diff;
+        for (var k = 0; k < 5; k++) {
+          let tm = 0.5 * (lo + hi);
+          let pm = world + r * tm;
+          let cm = frame.viewProj * vec4f(pm, 1.0);
+          let um = vec2f(cm.x / cm.w * 0.5 + 0.5, 0.5 - cm.y / cm.w * 0.5);
+          let dm = cm.w - viewDepth(textureLoad(gDepth, vec2i(clamp(um, vec2f(0.0), vec2f(0.9999)) * frame.resolution.xy), 0));
+          if (dm > 0.0) { hi = tm; dHit = dm; pHit = pm; } else { lo = tm; }
+        }
+        let thick = 0.25 + 0.01 * t;
+        if (dHit > thick) {
+          prevT = t;
+          t = t * 1.18 + 0.3;
+          continue;
+        }
+        conf = 1.0 - smoothstep(thick * 0.5, thick, dHit);
+        // Thin occluders (poles, wires, sign edges) are hit only when a
+        // step happens to land inside them: one step further the ray is in
+        // front of the scene again. Call it a miss (the env takes over).
+        let pn = world + r * (t * 1.18 + 0.3);
+        let cn = frame.viewProj * vec4f(pn, 1.0);
+        let un = vec2f(cn.x / cn.w * 0.5 + 0.5, 0.5 - cn.y / cn.w * 0.5);
+        if (cn.w > 0.0 && all(un > vec2f(0.0)) && all(un < vec2f(1.0))) {
+          let dn = textureLoad(gDepth, vec2i(un * frame.resolution.xy), 0);
+          if (dn <= 0.0 || cn.w - viewDepth(dn) < 0.0) { return vec4f(0.0); }
+        }
+      }
       // Reproject into the previous frame's lit image.
+      let p = pHit;
       let prev = frame.prevViewProj * vec4f(p, 1.0);
       let puv = prev.xy / prev.w * vec2f(0.5, -0.5) + 0.5;
       let edge = min(min(puv.x, 1.0 - puv.x), min(puv.y, 1.0 - puv.y));
-      let fade = smoothstep(0.0, 0.08, edge) * (1.0 - f32(i) / 40.0);
+      let fade = smoothstep(0.0, 0.08, edge) * (1.0 - f32(i) / 40.0) * conf;
       var c = textureSampleLevel(prevColor, linearSampler, puv, 0.0).rgb;
       // Clamp fireflies (headlights, sun glints) that sparkle in noisy reflections.
       c = c / (1.0 + luminance(c) * 0.08);
@@ -814,7 +852,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     // Car paint reflects through its clear coat: a sharp, unjittered ray.
     // Jittered rays on a moving car hit and miss leaves frame to frame and
     // sparkle in a way TAA can't resolve.
-    let r = ssr(world, n, v, pxf, select(rough, 0.0, cls == CLASS_VEHICLE), cls == CLASS_GROUND && frame.weather.z > 0.3);
+    // So does window glass: its roughness is grime and haze, which the
+    // env lobe already blurs; jittered rays dithered a noisy ghost of
+    // every pole and sign in front of a pane.
+    let r = ssr(world, n, v, pxf, select(rough, 0.0, cls == CLASS_VEHICLE || cls == CLASS_GLASS), cls == CLASS_GROUND && frame.weather.z > 0.3, cls == CLASS_GLASS);
     env = mix(env, r.rgb, r.a * smoothstep(1200.0, 700.0, dist));
   }
   // Glass deep in a window recess sees less sky.
