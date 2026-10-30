@@ -30,6 +30,7 @@ struct VOut {
   @location(2) uv: vec2f,
   @location(3) @interpolate(flat) mat: u32,
   @location(4) @interpolate(flat) aux: u32,
+  @location(5) @interpolate(flat) lod: u32,
 };
 
 fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
@@ -60,6 +61,7 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
   o.uv = vec2f(v.u, v.v);
   o.mat = v.mat;
   o.aux = v.aux;
+  o.lod = (clusters[visible[ii]].packed >> 8u) & 0xfu;
   return o;
 }
 
@@ -98,6 +100,7 @@ fn leafCutout(i: VOut) {
   leafCutout(i);
   var n = normalize(i.normal);
   if (!ff && (i.mat & 0xffu) != 25u) { n = -n; }
+  shellLod = i.lod > 0u;
   let s = cityMaterial(i.world, n, i.uv, i.mat, i.aux);
   return writeG(s, i.world, i.pos);
 }

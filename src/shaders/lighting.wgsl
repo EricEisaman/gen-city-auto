@@ -640,6 +640,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // (Not on the signs themselves: anything already emitting is skipped.)
   let wetWall = frame.weather.z * (1.0 - smoothstep(0.3, 0.6, abs(n.y))) * select(0.0, 1.0, cls == CLASS_DEFAULT)
     * (1.0 - smoothstep(0.02, 0.1, luminance(em.rgb)));
+  // How glossy a wet wall is (its rain streaks and run-off sheets).
+  let wetGloss = 1.0 - smoothstep(0.06, 0.22, rough);
   let count = min(atomicLoad(&tileCount), MAX_TILE_LIGHTS);
   for (var k = 0u; k < count; k++) {
     let L = lightBuf.lights[tileLights[k]];
@@ -668,6 +670,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       // over the wall around it (a soft, view-independent sheen; the GGX
       // lobe alone is a pin-prick at this roughness).
       color += lc * atten * 60.0 * 0.04 * wetWall * smoothstep(4.5, 2.2, d) * smoothstep(1.5, 2.0, d);
+      // And a coloured specular smear: the sign mirrored in the film, a
+      // broad lobe stretched down the wall (run-off ripples are vertical),
+      // moving with the eye. Only where the wall is glossy-wet.
+      let hv = normalize(l + v);
+      let nh = max(dot(n, normalize(vec3f(hv.x, hv.y * 0.35, hv.z))), 0.0);
+      color += lc * atten * 60.0 * D_GGX(nh, 0.14) * 0.2 * max(dot(n, l), 0.15) * wetWall * wetGloss;
     }
     if (cls == CLASS_FOLIAGE) {
       // Two-sided leaves: street and sign light scatters through the crown
@@ -692,7 +700,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   color += diffAmb;
   // Specular ambient: sky reflection, replaced by SSR where available.
   let nv = max(dot(n, v), 1e-3);
-  let Fa = f0 + (max(vec3f(1.0 - rough), f0) - f0) * pow(1.0 - nv, 5.0);
+  var Fa = f0 + (max(vec3f(1.0 - rough), f0) - f0) * pow(1.0 - nv, 5.0);
+  // A water film on a wall: rain-blurred, its sheen spreads well beyond the
+  // grazing-angle Fresnel rim, so wet streaks read from across the street.
+  Fa = mix(Fa, max(Fa, vec3f(0.25 + 0.5 * pow(1.0 - nv, 1.5))), wetWall * wetGloss);
   var refl = reflect(-v, n);
   // Wave facets tilted past the horizon still see the sky (the far shore is
   // handled by the city reflection), never the dark ground term.
