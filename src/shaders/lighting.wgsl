@@ -518,7 +518,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let n = decodeNormal(nr.xy);
   let rough = nr.z;
   let metal = nr.w;
-  let cls = u32(em.a * 8.0 + 0.5);
+  let cls = u32(floor(em.a + 1e-3));
+  let sunVis = clamp((em.a - f32(cls)) / 0.75, 0.0, 1.0);
   var albedo = a.rgb;
   let v = -rd;
   var f0 = mix(vec3f(0.04), albedo, metal);
@@ -536,7 +537,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var color = vec3f(0.0);
   // Sun.
   if (frame.sunDir.w > 0.0) {
-    let sh = shadow(world, n, vd) * cloudShadow(world);
+    let sh = shadow(world, n, vd) * cloudShadow(world) * sunVis;
     color += brdf(n, v, frame.sunDir.xyz, albedo, f0, rough, metal) * frame.sunColor.rgb * sh * 1.35;
     if (cls == CLASS_FOLIAGE) {
       // Cheap translucency for leaves.
@@ -546,7 +547,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // Moon.
   if (frame.moonDir.w > 0.0) {
     let moonCol = vec3f(0.5, 0.6, 0.8) * frame.moonDir.w * 0.06;
-    color += brdf(n, v, frame.moonDir.xyz, albedo, f0, rough, metal) * moonCol * shadow(world, n, vd);
+    color += brdf(n, v, frame.moonDir.xyz, albedo, f0, rough, metal) * moonCol * shadow(world, n, vd) * sunVis;
   }
   // Point lights.
   let count = min(atomicLoad(&tileCount), MAX_TILE_LIGHTS);
@@ -605,13 +606,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
   // Screen-space reflections only nearby: far away the depth tolerance grows
   // to kilometres and grazing rays report false hits.
-  if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0 && cls != CLASS_GLASS) {
+  if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0 && (cls != CLASS_GLASS || dist < 150.0)) {
     // Car paint reflects through its clear coat: a sharp, unjittered ray.
     // Jittered rays on a moving car hit and miss leaves frame to frame and
     // sparkle in a way TAA can't resolve.
     let r = ssr(world, n, v, pxf, select(rough, 0.0, cls == CLASS_VEHICLE), cls == CLASS_GROUND && frame.weather.z > 0.3);
     env = mix(env, r.rgb, r.a * smoothstep(1200.0, 700.0, dist));
   }
+  // Glass deep in a window recess sees less sky.
+  if (cls == CLASS_GLASS) { env *= mix(0.5, 1.0, a.a); }
   var specOcc = ao * ao;
   color += min(env * Fa * specOcc * (1.0 - contactOcc), vec3f(6.0));
   if (cls == CLASS_VEHICLE && metal < 0.95) {
@@ -622,7 +625,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     color += coatEnv * fc * specOcc;
     if (frame.sunDir.w > 0.0) {
       let hc = normalize(v + frame.sunDir.xyz);
-      color += frame.sunColor.rgb * D_GGX(max(dot(n, hc), 0.0), 0.05 * 0.05) * 1.0 * fc * max(dot(n, frame.sunDir.xyz), 0.0) * shadow(world, n, vd);
+      color += frame.sunColor.rgb * D_GGX(max(dot(n, hc), 0.0), 0.05 * 0.05) * 1.0 * fc * max(dot(n, frame.sunDir.xyz), 0.0) * shadow(world, n, vd) * sunVis;
     }
   }
   if (dbg == 8u) { color = vec3f(ao); }
@@ -638,6 +641,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (dbg == 2u) { color = n * 0.5 + 0.5; }
   if (dbg == 3u) { color = vec3f(rough); }
   if (dbg == 5u) { color = vec3f(shadow(world, n, vd)); }
+  if (dbg == 9u) { color = vec3f(shadow(world, n, vd) * sunVis); }
   if (dbg == 6u) { color = vec3f(f32(min(u32(max(0.0, 0.0)), 3u))); }
   if (dbg == 4u) { color = vec3f(f32(count) / 32.0, 0.0, 0.0) + albedo * 0.2; }
   textureStore(outColor, px, vec4f(color, 1.0));

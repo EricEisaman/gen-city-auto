@@ -1,6 +1,7 @@
 // Surface description written to the G-buffer.
 
-// Material classes (stored in emissive.a as class / 8).
+// Material classes. emissive.a packs class + sunVis * 0.75: the integer part
+// is the class, the fraction the material's own sun visibility.
 const CLASS_DEFAULT = 0u;
 const CLASS_GLASS = 1u;
 const CLASS_WATER = 2u;
@@ -16,10 +17,13 @@ struct Surf {
   emissive: vec3f,
   ao: f32,
   cls: u32,
+  /** Sun visibility from sub-geometry self-shadowing (window reveals,
+   *  ledges, mullions): 1 = fully lit. Scales sun, moon and glints. */
+  sunVis: f32,
 };
 
 fn defaultSurf(n: vec3f) -> Surf {
-  return Surf(vec3f(0.5), n, 0.8, 0.0, vec3f(0.0), 1.0, CLASS_DEFAULT);
+  return Surf(vec3f(0.5), n, 0.8, 0.0, vec3f(0.0), 1.0, CLASS_DEFAULT, 1.0);
 }
 
 struct GOut {
@@ -33,7 +37,7 @@ fn writeG(s: Surf, world: vec3f, fragPos: vec4f) -> GOut {
   var o: GOut;
   o.albedo = vec4f(clamp(s.albedo, vec3f(0), vec3f(1)), s.ao);
   o.normal = vec4f(encodeNormal(normalize(s.normal)), clamp(s.rough, 0.02, 1.0), s.metal);
-  o.emissive = vec4f(s.emissive, f32(s.cls) / 8.0);
+  o.emissive = vec4f(s.emissive, f32(s.cls) + clamp(s.sunVis, 0.0, 1.0) * 0.75);
   // Motion vector in UV units: current - previous (static geometry).
   let prev = frame.prevViewProj * vec4f(world, 1.0);
   let prevUv = prev.xy / prev.w * vec2f(0.5, -0.5) + 0.5;
