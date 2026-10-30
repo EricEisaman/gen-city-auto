@@ -777,29 +777,55 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       let dir = normalize(vec3f(sin(a), -0.12, cos(a)));
       lc *= smoothstep(0.9, 0.97, dot(-l, dir));
     } else if (L.kind < 0.5) {
-      // Street lights point down, a windowed elliptical pool in direction
-      // space (horizontal offset over drop): road luminaires (kind > 0.01
-      // carries the road axis: 0.05 + 0.4 * angle / pi) reach 1.5 pole
-      // heights along the road and 0.9 across it; junction luminaires
-      // (kind 0) a round pool of 1.1. Outside the pool only a little spill.
-      // Each luminaire's colour temperature varies a little (warm/cool).
-      var e2 = 0.0;
+      // Street lights: a hotspot under the head falling off fast to a dim,
+      // wide tail (mid-grey asphalt between poles, not overlapping discs),
+      // in direction space (horizontal offset over drop, so it scales with
+      // pole height).
+      // - Road luminaires, undirected (kind 0.05 .. 0.45 = 0.05 + 0.4 *
+      //   road angle / pi): elongated 1.5 x 0.9 pole heights along/across.
+      // - Road luminaires, directed (kind -0.05 .. -0.95 = -(0.05 + 0.9 *
+      //   arm angle / 2 pi), the arm pointing from the pole over the road):
+      //   the same ellipse thrown forward 0.35 pole heights onto the
+      //   carriageway (Type II/III), cut off behind the pole.
+      // - Junction luminaires (kind exactly 0): round, 1.25 pole heights.
+      // Colour temperature varies per street (by its axis), warm to cool.
       let lyc = max(l.y, 0.02);
-      if (L.kind > 0.01) {
-        let axis = (L.kind - 0.05) / 0.4 * PI;
-        let ra = vec2f(cos(axis), sin(axis));
-        let pa = dot(l.xz, ra) / (lyc * 1.5);
-        let pc = dot(l.xz, vec2f(-ra.y, ra.x)) / (lyc * 0.9);
+      // Fragment offset from under the head, in pole heights.
+      let q = -l.xz / lyc;
+      var e2 = 0.0;
+      var back = 1.0;
+      var ht = hash21(floor(L.pos.xz * 0.37));
+      if (abs(L.kind) > 0.01) {
+        var ra: vec2f;
+        var fwd = vec2f(0.0);
+        if (L.kind > 0.0) {
+          let axis = (L.kind - 0.05) / 0.4 * PI;
+          ra = vec2f(cos(axis), sin(axis));
+          ht = hash11(floor(fract(axis / PI) * 24.0) + 0.5);
+        } else {
+          let arm = (-L.kind - 0.05) / 0.9 * 2.0 * PI;
+          let ad = vec2f(cos(arm), sin(arm));
+          ra = vec2f(-ad.y, ad.x);
+          fwd = ad;
+          ht = hash11(floor(fract(arm / PI) * 24.0) + 0.5);
+          // House side of the pole: the luminaire's cut-off.
+          back = smoothstep(-0.55, -0.2, dot(q, ad));
+        }
+        let qq = q - fwd * 0.35;
+        let pa = dot(qq, ra) / 1.5;
+        let pc = dot(qq, vec2f(-ra.y, ra.x)) / 0.9;
         e2 = pa * pa + pc * pc;
       } else {
-        e2 = dot(l.xz, l.xz) / (lyc * lyc * 1.21);
+        e2 = dot(q, q) / (1.05 * 1.05);
       }
-      let pool = select(0.0, pow(clamp(1.0 - e2, 0.0, 1.0), 1.5), l.y > 0.0);
-      let ht = hash21(floor(L.pos.xz * 0.37));
-      let temp = mix(vec3f(1.06, 0.97, 0.86), vec3f(0.93, 0.99, 1.08), ht);
+      let w1 = clamp(1.0 - e2, 0.0, 1.0);
+      let pool = select(0.0, (0.65 * exp(-e2 * 7.0) + 0.35 * w1 * w1 * w1) * back, l.y > 0.0);
+      let temp = mix(vec3f(1.08, 0.96, 0.82), vec3f(0.9, 0.98, 1.1), ht);
+      // Foliage scatters what reaches its outer leaves: a softer cut-off.
+      let spill = select(0.02, 0.15, cls == CLASS_FOLIAGE);
       // Junction luminaires stay the strongest: the box is the best-lit
-      // place on the road.
-      lc *= temp * mix(0.025, 1.0, pool) * select(85.0 / 60.0, 120.0 / 60.0, L.kind <= 0.01);
+      // place on the road. Road luminaires 30 % below the old peak.
+      lc *= temp * mix(spill, 1.0, pool) * select(60.0 / 60.0, 105.0 / 60.0, L.kind == 0.0);
     }
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     // Point lights cast no shadows: the vehicle contact term stands in under cars.
@@ -820,7 +846,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       // Two-sided leaves: street and sign light scatters through the crown
       // (a soft non-directional fill) and transmits through back-lit cards,
       // so canopies glow at night instead of going black on the far side.
-      color += albedo * (0.2 + 0.6 * max(dot(-n, l), 0.0)) * lc * atten * (60.0 / PI) * 0.4;
+      // A wrap term on the lit side as well: clipped hedges and crown
+      // sides facing a lamp across the pavement read green, not black.
+      let wrap = max((dot(n, l) + 0.5) / 1.5, 0.0);
+      color += albedo * (0.25 + 0.6 * max(dot(-n, l), 0.0) + 0.5 * wrap) * lc * atten * (60.0 / PI) * 0.4;
     }
   }
   // Ambient: hemisphere sky + ground bounce.
