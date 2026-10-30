@@ -800,6 +800,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       // Junction luminaires stay the strongest: the box is the best-lit
       // place on the road.
       lc *= temp * mix(0.025, 1.0, pool) * select(85.0 / 60.0, 120.0 / 60.0, L.kind <= 0.01);
+    } else if (L.kind > 2.5 && L.kind < 3.5) {
+      // Fittings (soffit fluorescents, bracket and bulkhead lamps) hang under
+      // a slab or hood and cast no shadow here: nothing much above the
+      // fitting sees it. Without this the under-deck lights shone up
+      // through the viaduct deck and lit the soundwall and parapet inner
+      // faces evenly all night.
+      lc *= smoothstep(0.8, 0.1, world.y - L.pos.y);
     }
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     // Point lights cast no shadows: the vehicle contact term stands in under cars.
