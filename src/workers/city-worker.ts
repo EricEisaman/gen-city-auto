@@ -23,6 +23,8 @@ export interface LayoutSummary {
     cell: number;
   };
   geom: RoadGeom;
+  /** Bridge/viaduct solids for the camera (see BaseGeometry.solids). */
+  solids?: number[];
 }
 
 let layout: CityLayout | null = null;
@@ -59,6 +61,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             cell: terrain.heights.cell,
           },
           geom: base.geom,
+          solids: base.solids,
         };
         const baseClusters = clusterize(base.mesh, 0, 0xffffffff, 1);
         const pierClusters = clusterize(base.piers, 0, 0xffffffff, 0);

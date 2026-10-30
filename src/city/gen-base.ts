@@ -1294,6 +1294,9 @@ export interface BaseGeometry {
   landUse: Uint8Array;
   roadMask: Uint8Array;
   geom: RoadGeom;
+  /** Solid boxes of bridges and viaducts (piers, portal frames, station
+   * stairs) for camera collision: cx, cy, cz, hx, hy, hz, yaw per box. */
+  solids: number[];
 }
 
 export function buildBase(L: CityLayout): BaseGeometry {
@@ -1302,9 +1305,27 @@ export function buildBase(L: CityLayout): BaseGeometry {
   const lights = new LightList();
   const geom = computeRoadGeom(L);
   const mask = roadMask(L);
+  // Record the large boxes the bridge and viaduct builders emit, so the
+  // camera can treat them as solid (they are otherwise only render meshes).
+  const solids: number[] = [];
+  const record = (mesh: CMesh) => {
+    const box = mesh.box.bind(mesh);
+    mesh.box = (c, h, mat, yaw = 0, aux = 0, skipBottom = true) => {
+      if (h[1] >= 0.75 && Math.max(h[0], h[2]) >= 0.5)
+        solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw);
+      box(c, h, mat, yaw, aux, skipBottom);
+    };
+    return () => {
+      mesh.box = box;
+    };
+  };
+  const unM = record(m);
+  const unP = record(piers);
   roads(L, geom, m, lights, piers);
   blocks(L, m);
   elevatedStructures(L, mask, m, lights);
+  unM();
+  unP();
   streetLights(L, geom, lights);
   outskirts(L, m);
   return {
@@ -1314,6 +1335,7 @@ export function buildBase(L: CityLayout): BaseGeometry {
     landUse: landUse(L, mask),
     roadMask: mask,
     geom,
+    solids,
   };
 }
 

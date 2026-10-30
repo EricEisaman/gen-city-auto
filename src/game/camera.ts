@@ -107,6 +107,41 @@ interface DeckSeg {
   ha: number;
   hb: number;
   hw: number;
+  /** Top of the structure above the line height (parapet, station canopy). */
+  top: number;
+}
+
+function gridInsert(grid: Map<number, VehicleBox[]>, b: VehicleBox) {
+  const rad = Math.hypot(b.hl, b.hw) + 1;
+  const x0 = Math.floor((b.x - rad) / 16);
+  const x1 = Math.floor((b.x + rad) / 16);
+  const z0 = Math.floor((b.z - rad) / 16);
+  const z1 = Math.floor((b.z + rad) / 16);
+  for (let z = z0; z <= z1; z++)
+    for (let x = x0; x <= x1; x++) {
+      const k = (x + 8192) * 16384 + (z + 8192);
+      let l = grid.get(k);
+      if (!l) grid.set(k, (l = []));
+      l.push(b);
+    }
+}
+
+function gridAt(
+  grid: Map<number, VehicleBox[]>,
+  p: Vec3,
+  margin: number,
+): VehicleBox | null {
+  const k =
+    (Math.floor(p[0] / 16) + 8192) * 16384 + (Math.floor(p[2] / 16) + 8192);
+  for (const b of grid.get(k) ?? []) {
+    if (p[1] < b.y - margin || p[1] > b.y + b.h + margin) continue;
+    const dx = p[0] - b.x;
+    const dz = p[2] - b.z;
+    if (Math.abs(dx * b.fx + dz * b.fz) > b.hl + margin) continue;
+    if (Math.abs(dz * b.fx - dx * b.fz) > b.hw + margin) continue;
+    return b;
+  }
+  return null;
 }
 
 /** View basis for an eye looking at a target. */
@@ -152,6 +187,8 @@ export class CameraSystem {
   /** Moving vehicles near the player (traffic, buses, trains); set by the game. */
   vehicles: () => VehicleBox[] = () => [];
   private vehGrid = new Map<number, VehicleBox[]>();
+  /** Static structures that are not buildings: piers, portal frames, stairs. */
+  private solidGrid = new Map<number, VehicleBox[]>();
   /** Nearby dynamic obstacles (pedestrians) the camera must not sit in or look through. */
   obstacles: () => [number, number, number, number][] = () => [];
 
@@ -164,11 +201,14 @@ export class CameraSystem {
     this.decks = [];
     this.deckGrid.clear();
     for (const e of list) {
-      const hw = elevatedHalfWidth(e);
       const n = e.pts.length;
       const segs = e.loop ? n : n - 1;
       for (let i = 0; i < segs; i++) {
         const j = (i + 1) % n;
+        // Stations (gen-base railViaduct): 4.5 m side platforms each side
+        // with canopies up to 4.6 m above the rails, over 14 segments.
+        const station = e.stations.some(si => i >= si - 7 && i < si + 7);
+        const hw = elevatedHalfWidth(e) + (station ? 4.8 : 0);
         const d: DeckSeg = {
           ax: e.pts[i][0],
           az: e.pts[i][1],
@@ -177,6 +217,7 @@ export class CameraSystem {
           ha: e.heights[i],
           hb: e.heights[j],
           hw,
+          top: station ? 4.9 : DECK_TOP,
         };
         const di = this.decks.push(d) - 1;
         const pad = hw + 3;
@@ -208,7 +249,7 @@ export class CameraSystem {
       const dist = Math.hypot(d.ax + dx * t - p[0], d.az + dz * t - p[2]);
       if (dist > d.hw + margin) continue;
       const h = lerp(d.ha, d.hb, t);
-      if (p[1] > h - DECK_BOTTOM - margin && p[1] < h + DECK_TOP + margin)
+      if (p[1] > h - DECK_BOTTOM - margin && p[1] < h + d.top + margin)
         return true;
     }
     return false;
@@ -220,34 +261,32 @@ export class CameraSystem {
     for (const b of this.vehicles()) {
       // Never the player's own vehicle.
       if (Math.hypot(b.x - pl.pos[0], b.z - pl.pos[2]) < 1) continue;
-      const rad = Math.hypot(b.hl, b.hw);
-      const x0 = Math.floor((b.x - rad) / 16);
-      const x1 = Math.floor((b.x + rad) / 16);
-      const z0 = Math.floor((b.z - rad) / 16);
-      const z1 = Math.floor((b.z + rad) / 16);
-      for (let z = z0; z <= z1; z++)
-        for (let x = x0; x <= x1; x++) {
-          const k = (x + 8192) * 16384 + (z + 8192);
-          let l = this.vehGrid.get(k);
-          if (!l) this.vehGrid.set(k, (l = []));
-          l.push(b);
-        }
+      gridInsert(this.vehGrid, b);
     }
   }
 
-  /** The vehicle box containing p (grown by margin), if any. */
-  private vehicleAt(p: Vec3, margin = 0): VehicleBox | null {
-    const k =
-      (Math.floor(p[0] / 16) + 8192) * 16384 + (Math.floor(p[2] / 16) + 8192);
-    for (const b of this.vehGrid.get(k) ?? []) {
-      if (p[1] < b.y - margin || p[1] > b.y + b.h + margin) continue;
-      const dx = p[0] - b.x;
-      const dz = p[2] - b.z;
-      if (Math.abs(dx * b.fx + dz * b.fz) > b.hl + margin) continue;
-      if (Math.abs(dz * b.fx - dx * b.fz) > b.hw + margin) continue;
-      return b;
+  /** Bridge and viaduct solids from the base generator (cx, cy, cz, hx, hy,
+   * hz, yaw per box; hx along (cos, -sin), hz along (sin, cos)). */
+  setSolids(a: ArrayLike<number>) {
+    this.solidGrid.clear();
+    for (let i = 0; i + 6 < a.length; i += 7) {
+      const yaw = a[i + 6];
+      gridInsert(this.solidGrid, {
+        x: a[i],
+        y: a[i + 1] - a[i + 4],
+        z: a[i + 2],
+        fx: Math.sin(yaw),
+        fz: Math.cos(yaw),
+        hl: a[i + 5],
+        hw: a[i + 3],
+        h: a[i + 4] * 2,
+      });
     }
-    return null;
+  }
+
+  /** The vehicle or solid structure containing p (grown by margin), if any. */
+  private vehicleAt(p: Vec3, margin = 0): VehicleBox | null {
+    return gridAt(this.vehGrid, p, margin) ?? gridAt(this.solidGrid, p, margin);
   }
 
   /** True under an elevated deck (overpass, viaduct). */
@@ -690,6 +729,24 @@ export class CameraSystem {
             ? this.trainTarget()!
             : ([p[0], p[1] + 1, p[2]] as Vec3);
         if (!this.frameOk(s.eye, target, s.fov, pl, s.focus)) continue;
+        // Static cameras: follow the car's path ahead and end the shot
+        // before it drives behind something.
+        if (s.focus === 'player' && name !== 'aerial' && pl.speed > 1) {
+          let clear = s.dur;
+          for (let tt = 0.5; tt <= s.dur; tt += 0.5) {
+            const q: Vec3 = [
+              p[0] + f[0] * pl.speed * tt,
+              p[1] + 1,
+              p[2] + f[1] * pl.speed * tt,
+            ];
+            if (this.blocked(s.eye, q)) {
+              clear = tt - 0.5;
+              break;
+            }
+          }
+          if (clear < 2.5) continue;
+          s.dur = clear;
+        }
       }
       // Same spot, same direction, or the same overpass as a recent cut.
       const [fe, fl] = this.shotFraming(s, pl);
@@ -889,7 +946,7 @@ export class CameraSystem {
     if (this.locked) return out;
     // Periodically verify the subject is visible; cut if blocked for a while.
     this.losTimer += dt;
-    if (this.shot && this.shot.name !== 'interior' && this.losTimer > 0.25) {
+    if (this.shot && this.shot.name !== 'interior' && this.losTimer > 0.1) {
       this.losTimer = 0;
       const tgt =
         this.shot.focus === 'train'
@@ -913,7 +970,7 @@ export class CameraSystem {
       this.blockedFor = severe
         ? 1
         : hidden || lost || this.obstructedByPeople(out.eye, tgt)
-          ? this.blockedFor + 0.25
+          ? this.blockedFor + 0.1
           : 0;
       if (this.blockedFor > 0.5) {
         this.blockedFor = 0;
