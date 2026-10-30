@@ -146,6 +146,8 @@ fn paintColor(p: u32) -> vec3f {
   if (p == 0x90u) { return vec3f(0.45, 0.46, 0.45); }
   if (p == 0x91u) { return vec3f(0.06, 0.06, 0.06); }
   if (p == 0x92u) { return vec3f(0.8, 0.55, 0.04); }
+  // Rail line colour (station bands): JR-style green.
+  if (p == 0x0cu) { return vec3f(0.06, 0.46, 0.26); }
   if (p == 0x80u) { return vec3f(0.5, 0.5, 0.5); }
   if (p >= 0xd0u && p < 0xf0u) { return vec3f(0.62, 0.62, 0.6); }
   let h = hashu(p * 2654435761u);
@@ -4732,9 +4734,9 @@ fn deckStains(ux: f32, uy: f32, y0: f32, seed: u32, fp: f32) -> f32 {
   return clamp(st * 1.45, 0.0, 1.0);
 }
 
-// Fascia drain spout height (uv.y, metres down from the fascia top at the
-// coping lip): the deck drains through the slab edge just below deck level.
-const SCUPPER_Y = 1.22;
+// Fascia drain spout (uv.y, metres down from the fascia top under the
+// coping lip): the geometry's spout leaves the face at 0.09..0.22.
+const SCUPPER_Y = 0.17;
 
 // Crisp drip stain hanging from a scupper at (x0, y0) in face metres (y
 // down): a hard-topped dark tongue as wide as the spout, then 3-7 rivulet
@@ -5057,11 +5059,11 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
     case RC_FASCIA: {
       if (vert) {
         // Board-formed face (uv.x bent units ~ metres): 1.2 x 0.9 m plywood
-        // panels (10 per span, rows break at 0.23 and at deck level 1.13),
+        // panels (10 per span, rows break at 0.16 and at deck level 1.06),
         // each its own tone; thin dark, rougher joint lines with a pale
         // grout fin beside them; a tie-hole grid; a mottled finer octave.
         let sdf = f32(seed & 0xffu);
-        let py = uy - 0.23;
+        let py = uy - 0.16;
         let pnl = vec2f(floor(ux / 1.2), floor(py / 0.9));
         let hpl = hash21(pnl + vec2f(sdf * 0.71, 3.0));
         // Release-oil bloom: each panel a touch darker toward one edge.
@@ -5099,20 +5101,21 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         }
         // Coping shadow band: a crisp darker 16 cm under the lip, then dirt
         // washed down from it fading over half a metre.
-        a *= 1.0 - 0.4 * bandF(uy, -1.0, 0.16, fu.y) - 0.14 * (1.0 - smoothstep(0.16, 0.6, uy)) * (1.0 - bandF(uy, -1.0, 0.16, fu.y));
-        // Scupper at mid-span (uv.x = 6 mod 12): a crisp drip stain under
-        // the spout, size and length hashed per span; coping drips and the
-        // joint run-off from the old deck stains, fainter.
+        a *= 1.0 - 0.35 * bandF(uy, -1.0, 0.1, fu.y) - 0.14 * (1.0 - smoothstep(0.1, 0.55, uy)) * (1.0 - bandF(uy, -1.0, 0.1, fu.y));
+        // Scupper near mid-span (x0 = gen-base scupperU(): 12 i + 6 +-0.9):
+        // a crisp drip stain from right under the spout, size and length
+        // hashed per span; coping drips and the old joint run-off, fainter.
         let hsc = hashu((seed * 0x9e3779b1u) ^ u32(i32(bent) + 65536));
-        let scl = mix(0.7, 1.3, hashuf(hsc ^ 0x11u));
-        var dr = scupperDrip(ux, uy, bent * 12.0 + 6.0, SCUPPER_Y, mix(0.25, 0.45, hashuf(hsc)), scl, f32(hsc & 0xffu), fp) * mix(0.8, 1.0, hashuf(hsc ^ 0x33u));
+        let scx = bent * 12.0 + 6.0 + (hashuf(hsc ^ 0x22u) - 0.5) * 1.8;
+        let scl = mix(1.0, 1.9, hashuf(hsc ^ 0x11u));
+        var dr = scupperDrip(ux, uy, scx, SCUPPER_Y, mix(0.25, 0.45, hashuf(hsc)), scl, f32(hsc & 0xffu), fp) * mix(0.8, 1.0, hashuf(hsc ^ 0x33u));
         // Coping drips: 1-3 per span where the lip's drip groove has
         // clogged, full-height crisp runs from under the coping shadow.
         for (var q = 0u; q < 4u; q++) {
           let hk = hashu(hsc ^ (0x2b3u + q * 0x95u));
           if (q > 0u && hashuf(hk ^ 4u) < 0.4) { continue; }
           var xk = bent * 12.0 + 0.8 + hashuf(hk) * 10.4;
-          xk += select(0.0, 1.2, abs(xk - bent * 12.0 - 6.0) < 0.6);
+          xk += select(0.0, 1.2, abs(xk - scx) < 0.6);
           dr = max(dr, mix(0.75, 1.0, hashuf(hk ^ 1u)) * scupperDrip(ux, uy, xk, 0.16, mix(0.15, 0.35, hashuf(hk ^ 2u)), mix(1.7, 2.8, hashuf(hk ^ 3u)), f32(hk & 0xffu) + 31.0, fp));
         }
         stain = max(min(1.0, dr * 1.35), 0.35 * deckStains(ux + 6.0, uy, 0.12, seed ^ 0x3a7u, fp));
@@ -5284,11 +5287,17 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       }
     }
     case RC_TROUGH: {
-      // 1 m precast lids with dark 1 cm gaps; one in 15 a newer tone.
+      // 1 m precast lids, darker and greener than the rims (damp, mossy),
+      // each rocked a little (its own tone), one in 15 a newer one; the
+      // joints are 2.5 cm dark gaps (prefiltered, they hold to ~30 m),
+      // and through 1 in 40 the black cable bundle shows.
       let lid = floor(ux);
       let hl = hashuf((seed * 0x1b873593u) ^ u32(i32(lid) + 65536));
-      a *= select(1.0, select(1.18, 0.82, hl < 0.033), hl < 0.066) * mix(0.9, 1.06, fract(hl * 37.0));
-      a *= 1.0 - 0.6 * jointCov(ux, fu.x, 0.01);
+      if (n.y > 0.5) { a = vec3f(0.27, 0.278, 0.258) * tex * mix(0.88, 1.06, blot); }
+      a *= select(1.0, select(1.25, 0.8, hl < 0.033), hl < 0.066) * mix(0.84, 1.08, fract(hl * 37.0));
+      let lj = jointCov(ux, fu.x, 0.025);
+      a *= 1.0 - 0.7 * lj;
+      if (fract(hl * 53.0) < 0.025) { a = mix(a, vec3f(0.02), bandF(fract(ux + 0.5) - 0.5, -0.03, 0.03, fu.x)); }
       if (n.y > 0.5) {
         // Walkway lids: boot-worn dark centre line, and they pond in rain.
         a *= 1.0 - 0.15 * smoothstep(0.6, 0.85, valueNoise(world.xz * 0.9 + 3.0));
@@ -5445,9 +5454,12 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         // Panel type by hash: most the ribbed grey original, ~18 % a later
         // replacement in another tone with a finer, shallower rib, and (off
         // ~16 % clear polycarbonate (full height).
+        // The stretch's mix is a geometry param ((param >> 7) & 3: bit 0
+        // clear panels ~1 in 4, bit 1 replaced panels ~1 in 6).
+        let pmix = (param >> 7u) & 3u;
         let ptype = hashuf(hpp ^ 0x7au);
-        let repl = ptype >= 0.66 && ptype < 0.84;
-        let clear = ptype >= 0.84;
+        let clear = (pmix & 1u) != 0u && ptype < 0.25;
+        let repl = (pmix & 2u) != 0u && ptype >= 0.25 && ptype < 0.25 + 1.0 / 6.0;
         let ptone = mix(0.92, 1.08, hashuf(hpp)) * select(vec3f(1.0), vec3f(1.05, 1.02, 0.9), hashuf(hpp ^ 2u) < 0.25)
           * select(vec3f(1.0), select(vec3f(1.22, 1.19, 1.08), vec3f(0.78, 0.86, 0.96), hashuf(hpp ^ 3u) < 0.5), repl);
         // Trapezoid rib profile, 0.2 m pitch: a lit upper chamfer, a flat
@@ -5616,6 +5628,9 @@ fn railBed(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
   bal = mix(bal, vec3f(0.04, 0.034, 0.028), 0.95 * oil);
   // Fresher, paler stone on the shoulders (topped up by the tamping train).
   bal = mix(bal, vec3f(0.27, 0.26, 0.245), smoothstep(1.35, 1.7, atx));
+  // The shoulder slope (|x| > 3.3): fresh pale stone, a dark silty toe.
+  bal = mix(bal, vec3f(0.31, 0.3, 0.28), smoothstep(3.25, 3.45, abs(x)) * (1.0 - smoothstep(3.7, 4.0, abs(x))));
+  bal = mix(bal, vec3f(0.12, 0.11, 0.095), smoothstep(3.75, 4.05, abs(x)));
   let stoneA = d.b * 2.0 * mix(0.3, 1.0, d.a);
   var a = bal * stoneA;
   // One stone in ten rust-stained (the detail layer is grey only).
@@ -5818,8 +5833,29 @@ fn railGirder(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     var bc = mix(vec3f(0.03), vec3f(0.9, 0.7, 0.05), inner);
     bc = mix(bc, vec3f(0.85, 0.85, 0.82), panel);
     let fine = 1.0 - smoothstep(0.008, 0.02, fp);
-    let glyph = step(0.5, valueNoise(vec2f(bx * 14.0, by * 30.0))) * bandF(bx, -0.65, 0.65, fu.x) * bandF(by, -0.07, 0.07, fu.y);
-    bc = mix(bc, vec3f(0.05), glyph * fine);
+    // Clearance height "4.5m" in black on the white panel, laid out to read
+    // left-to-right from the side the face is seen from.
+    var tu: vec3f;
+    var tv: vec3f;
+    uvDirs(&tu, &tv);
+    let rgt = cross(-n, vec3f(0.0, 1.0, 0.0));
+    let gx = select(-bx, bx, dot(tu, rgt) >= 0.0);
+    let k = 0.27;
+    let gy = -by;
+    var gd = rdDigit(vec2f(gx + 0.36, gy) / k, 4u, 0.1) * k;
+    gd = min(gd, length(vec2f(gx + 0.19, gy + 0.085)) - 0.022);
+    gd = min(gd, rdDigit(vec2f(gx + 0.02, gy) / k, 5u, 0.1) * k);
+    // "m": three stems under a bar (sign-stencil style), x-height 0.12 m.
+    let mx = gx - 0.24;
+    let st = 0.025;
+    var md = min(rdSeg(vec2f(mx, gy), vec2f(-0.07, -0.097), vec2f(-0.07, 0.02)), min(rdSeg(vec2f(mx, gy), vec2f(0.0, -0.097), vec2f(0.0, 0.0)), rdSeg(vec2f(mx, gy), vec2f(0.07, -0.097), vec2f(0.07, 0.0))));
+    md = min(md, rdSeg(vec2f(mx, gy), vec2f(-0.07, 0.02), vec2f(0.07, 0.02)));
+    gd = min(gd, md - st);
+    let gw = max(fp, 0.002);
+    let glyph = (1.0 - smoothstep(-gw * 0.5, gw * 0.5, gd)) * panel;
+    // Past ~2 cm a pixel the numeral averages into the panel's grey.
+    let gfine = 1.0 - smoothstep(0.02, 0.045, fp);
+    bc = mix(bc, vec3f(0.05), mix(0.3 * panel, glyph, gfine));
     s.albedo = mix(s.albedo, bc, board);
     s.rough = mix(s.rough, 0.5, board);
     s.metal = mix(s.metal, 0.0, board);
@@ -6018,7 +6054,9 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         if (param == 6u) {
           s.emissive = led * night * (select(5.0, 45.0, n.y < -0.5)) * boost;
         } else {
-          s.emissive = led * night * 14.0 * boost;
+          // (The coping line is a solid min-width tube now: it needs only
+          // a little help at range, or it blooms out at far-night.)
+          s.emissive = led * night * 14.0 * min(boost, 2.5);
         }
       }
     }
