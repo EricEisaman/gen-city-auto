@@ -501,6 +501,21 @@ function railOccluders(
   const views = {...info.views};
   delete views.under;
   delete views.shell;
+  // The orbit preset keeps turning while the screenshots are taken: clear
+  // its whole circle.
+  const o = info.orbit;
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2;
+    views[`orbit${k}`] = {
+      eye: [
+        o.center[0] + Math.sin(a) * o.radius,
+        o.height,
+        o.center[2] + Math.cos(a) * o.radius,
+      ],
+      target: o.center,
+      fov: o.fov,
+    };
+  }
   const hit = (p: Vec2, py: number) => {
     for (const {o, box} of boxes)
       if (
@@ -945,7 +960,22 @@ export function labInfo(
       ];
       views.station = look(v3(sp, g(sp) + 1.7), v3(S.p, S.h - 1), 1.05);
     }
-    orbit = {center: F, radius: 110, height: gF + 35, fov: 1.0};
+    // The orbit stays 20 m above the highest ground on its circle (the
+    // site can sit below a hill, which put the eye in the ground).
+    let ring = gF;
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2;
+      ring = Math.max(
+        ring,
+        g([F[0] + Math.sin(a) * 110, F[2] + Math.cos(a) * 110]),
+      );
+    }
+    orbit = {
+      center: F,
+      radius: 110,
+      height: Math.max(gF + 35, ring + 20),
+      fov: 1.0,
+    };
     // A train for scale: stopped along the platforms at a station, else
     // with its rear 25 m ahead of the section (in the along view and the
     // edge of the side view).
