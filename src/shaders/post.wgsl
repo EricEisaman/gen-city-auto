@@ -443,6 +443,8 @@ fn lensDrops(uv: vec2f) -> vec2f {
   var uv = i.uv;
   uv += lensDrops(uv);
   var c = textureSampleLevel(tmColor, linearSampler, uv, 0.0).rgb;
+  // AO (8) and sky-visibility (10) debug views: raw values (PNG value / 255 = AO), no exposure or grade.
+  if (u32(frame.misc.x) == 8u || u32(frame.misc.x) == 10u) { return vec4f(c, 1.0); }
   // Contrast-adaptive sharpening: restores the detail TAA softens, limited to
   // the local min/max so edges don't ring. Weaker on bright highlights.
   {

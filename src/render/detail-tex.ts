@@ -227,7 +227,9 @@ function tile(): Layer {
   );
   const tw = N / 4;
   const th = N / 14;
-  const tones = Float32Array.from({length: 4 * 14}, () => rng.range(0.4, 0.6));
+  const tones = Float32Array.from({length: 4 * 14}, () =>
+    rng.range(0.34, 0.66),
+  );
   for (let y = 0; y < N; y++) {
     const row = Math.floor(y / th);
     const off = row % 2 ? tw / 2 : 0;
@@ -240,9 +242,9 @@ function tile(): Layer {
       const k = idx(x, y);
       const face = Math.min(1, Math.max(0, (edge - 2.5) / 1.5));
       // Glazed face with a slight pillowing toward the edges.
-      L.h[k] = face * (4 + Math.min(edge, 8) * 0.15) + fine(x, y) * 0.25;
+      L.h[k] = face * (6 + Math.min(edge, 8) * 0.15) + fine(x, y) * 0.25;
       L.a[k] =
-        face < 0.5 ? 0.22 : tones[row * 4 + col] * (0.92 + 0.16 * fine(x, y));
+        face < 0.5 ? 0.3 : tones[row * 4 + col] * (0.92 + 0.16 * fine(x, y));
     }
   }
   L.bump = 0.6;

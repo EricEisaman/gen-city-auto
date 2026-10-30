@@ -30,26 +30,47 @@ struct ContactBuf { count: u32, pad0: u32, pad1: u32, pad2: u32, items: array<Co
 @group(1) @binding(16) var skyline: texture_2d<f32>;
 
 // Fraction of the sky visible from a point, from a horizon search over the
-// building/terrain height map (8 azimuths x 6 steps). Walls only count the
-// half-space they face.
-fn skyVisibility(world: vec3f, n: vec3f) -> f32 {
+// building/terrain height map (8 azimuths x 8 doubling steps, 0.5 m .. 64 m).
+// Walls only count the half-space they face. Height-map texels are several
+// metres wide, so near the point each step also takes the next texel along
+// the ray (the conservative edge): pavement half a metre from a 17 m wall
+// must see that wall. On a wall, samples still inside its own plane (within
+// a texel of it) are skipped, or the wall would occlude itself sideways.
+fn skyVisibility(world: vec3f, n: vec3f, pxf: vec2f) -> f32 {
   let N = f32(textureDimensions(skyline).x);
   let size = frame.world.x;
+  let cell = size / N;
+  let wall = n.y < 0.7;
+  let nh = normalize(n.xz + vec2f(1e-5));
+  // Per-pixel jitter of the azimuths and step lengths (resolved by TAA), so
+  // the height map's texel edges don't print as steps on the pavement.
+  let jit = fract(52.9829189 * fract(dot(pxf, vec2f(0.06711056, 0.00583715))) + frame.time.z * 0.618034);
   var occl = 0.0;
   var cnt = 0.0;
   for (var a = 0; a < 8; a++) {
-    let ang = f32(a) * 0.785398 + 0.39;
+    let ang = (f32(a) + jit) * 0.785398;
     let dir = vec2f(cos(ang), sin(ang));
-    if (n.y < 0.7 && dot(dir, n.xz) < -0.2) { continue; }
+    if (wall && dot(dir, n.xz) < -0.2) { continue; }
     var maxS = 0.0;
-    var dist = 2.0;
-    for (var k = 0; k < 6; k++) {
+    var dist = 0.5 * (0.75 + 0.5 * fract(jit * 7.0 + f32(a) * 0.618));
+    for (var k = 0; k < 8; k++) {
       let p = world.xz + dir * dist;
-      let g = vec2i((p + size * 0.5) / size * N);
-      if (all(g >= vec2i(0)) && all(g < vec2i(i32(N)))) {
-        let h = textureLoad(skyline, g, 0).r;
-        let s = (h - world.y) / length(vec2f(dist, h - world.y));
-        maxS = max(maxS, s);
+      let off = select(1e9, dot(dir, nh) * dist, wall);
+      if (off > cell * 0.75) {
+        let g = vec2i((p + size * 0.5) / size * N);
+        if (all(g >= vec2i(0)) && all(g < vec2i(i32(N)))) {
+          var h = textureLoad(skyline, g, 0).r;
+          if (dist < cell * 2.0) {
+            let g2 = clamp(vec2i((p + dir * cell + size * 0.5) / size * N), vec2i(0), vec2i(i32(N) - 1));
+            h = max(h, textureLoad(skyline, g2, 0).r);
+          }
+          // (Less half a texel of rise: on sloping terrain the texel itself
+          // stands above the point, and the near steps turned dunes and
+          // hillsides into grey blocks.)
+          let dh = h - world.y - cell * 0.5;
+          let s = max(dh, 0.0) / length(vec2f(dist, dh));
+          maxS = max(maxS, s);
+        }
       }
       dist *= 2.0;
     }
@@ -57,6 +78,34 @@ fn skyVisibility(world: vec3f, n: vec3f) -> f32 {
     cnt += 1.0;
   }
   return clamp(1.0 - occl / max(cnt, 1.0), 0.15, 1.0);
+}
+
+// Screen-space contact shadow toward the sun: a short march through the
+// depth buffer for the small casters (sign brackets, AC units, sills,
+// mailboxes, vending machines) that the shadow cascades blur away.
+// Returns the fraction of light blocked.
+fn contactShadow(world: vec3f, n: vec3f, dist: f32, pxf: vec2f) -> f32 {
+  let len = min(0.6 * max(dist / 30.0, 1.0), 2.0);
+  let stepLen = len / 12.0;
+  let start = world + n * (0.015 + dist * 0.0004);
+  let jit = fract(52.9829189 * fract(dot(pxf, vec2f(0.06711056, 0.00583715))) + frame.time.z * 0.618034);
+  let bias = 0.02 + dist * 0.001;
+  for (var i = 0; i < 12; i++) {
+    let t = (f32(i) + jit) * stepLen;
+    let q = start + frame.sunDir.xyz * t;
+    let clip = frame.viewProj * vec4f(q, 1.0);
+    if (clip.w <= 0.0) { break; }
+    let suv = vec2f(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+    if (any(suv <= vec2f(0.0)) || any(suv >= vec2f(1.0))) { break; }
+    let sd = textureLoad(gDepth, vec2i(suv * frame.resolution.xy), 0);
+    if (sd <= 0.0) { continue; }
+    let diff = clip.w - viewDepth(sd);
+    if (diff > bias && diff < 0.15 + bias) {
+      // Fade the last steps so the shadow tip is soft, not a hard cut.
+      return 1.0 - smoothstep(8.0, 12.0, f32(i) + jit);
+    }
+  }
+  return 0.0;
 }
 
 // Reflection of the city: march the reflected ray over the skyline height map.
@@ -367,19 +416,28 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
 }
 
 // Depth-aware 4x4 blur + upsample of the half-resolution AO (removes the
-// interleaved sampling pattern without dark halos at edges).
-fn bilateralAo(pxf: vec2f, vd: f32) -> f32 {
+// interleaved sampling pattern without dark halos at edges). Taps are
+// weighted by their distance from the centre pixel's tangent plane, not by
+// view depth: on ground seen at a grazing angle neighbouring rows differ in
+// depth by metres yet lie on one plane, and a depth test kept the 4-row
+// interleave pattern as stripes. Across a silhouette (a balcony against the
+// sky, a pole in front of a wall) the plane distance is large, so the AO
+// doesn't bleed into a soft halo.
+fn bilateralAo(pxf: vec2f, vd: f32, world: vec3f, n: vec3f) -> f32 {
   let half = vec2i(textureDimensions(aoTex)) - 1;
   let hp = (pxf - 1.0) * 0.5;
   let c = vec2i(floor(hp));
+  let tol = 0.004 * vd + 0.02;
   var sum = 0.0;
   var wsum = 0.0;
   for (var y = -1; y <= 2; y++) {
     for (var x = -1; x <= 2; x++) {
       let q = clamp(c + vec2i(x, y), vec2i(0), half);
-      let d = textureLoad(gDepth, min(q * 2, vec2i(frame.resolution.xy) - 1), 0);
-      let z = viewDepth(d);
-      let w = exp(-abs(z - vd) / (0.02 * vd + 0.03)) + 1e-4;
+      let fq = min(q * 2, vec2i(frame.resolution.xy) - 1);
+      let d = textureLoad(gDepth, fq, 0);
+      let wq = worldFromDepth(vec2f(fq) + 0.5, max(d, 1e-7));
+      let pd = abs(dot(wq - world, n));
+      let w = select(exp(-pd / tol), 0.0, d <= 0.0) + 1e-4;
       sum += textureLoad(aoTex, q, 0).r * w;
       wsum += w;
     }
@@ -612,7 +670,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (cls == CLASS_GLASS) { f0 = vec3f(0.12) + albedo * 0.6; }
   if (cls == CLASS_WATER) { f0 = vec3f(0.02); }
   let dist = length(world - frame.camPos.xyz);
-  var ao = a.a * bilateralAo(pxf, vd);
+  // Screen-space GTAO times the material's own analytic occlusion (reveals,
+  // ledges, wall foot, tile cavity), floored so nothing goes black.
+  var ao = max(a.a * bilateralAo(pxf, vd, world, n), 0.3);
   var contactOcc = 0.0;
   if (n.y > 0.6 && dist < 150.0 && cls != CLASS_VEHICLE) {
     contactOcc = contactOcclusion(world);
@@ -620,11 +680,31 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   }
 
   let dbg = u32(frame.misc.x);
+  if (dbg == 8u) {
+    textureStore(outColor, px, vec4f(vec3f(ao), 1.0));
+    return;
+  }
+  // Multi-bounce (Jimenez 2016): light inter-reflected inside a crease lifts
+  // its occlusion with albedo, so pale walls stay clean in corners.
+  let mbA = 2.0404 * albedo - 0.3324;
+  let mbB = -4.7951 * albedo + 0.6417;
+  let mbC = 2.7552 * albedo + 0.6903;
+  let aoMB = max(vec3f(ao), ((vec3f(ao) * mbA + mbB) * ao + mbC) * ao);
   var color = vec3f(0.0);
   // Sun.
   if (frame.sunDir.w > 0.0) {
-    // A little AO on direct light too, so sunlit inside corners read.
-    let sh = shadow(world, n, vd) * cloudShadow(world) * sunVis * mix(1.0, ao, 0.25);
+    var sh = shadow(world, n, vd) * cloudShadow(world) * sunVis;
+    // Contact shadow where the cascade is too coarse (its 3x3 PCF footprint
+    // wider than ~5 cm) to resolve small casters.
+    if (sh > 0.01 && dist < 120.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE && dot(n, frame.sunDir.xyz) > 0.0) {
+      var c = 0u;
+      for (var k = 0u; k < 3u; k++) {
+        if (vd > frame.cascadeSplits[k]) { c = k + 1u; }
+      }
+      let pcf = frame.cascadeSplits[min(c, 3u)] * 3.0 / 1024.0;
+      let k = smoothstep(0.03, 0.08, pcf) * smoothstep(120.0, 80.0, dist);
+      if (k > 0.0) { sh *= 1.0 - contactShadow(world, n, dist, pxf) * k; }
+    }
     color += brdf(n, v, frame.sunDir.xyz, albedo, f0, rough, metal) * frame.sunColor.rgb * sh * 1.35;
     if (cls == CLASS_FOLIAGE) {
       // Cheap translucency for leaves.
@@ -686,7 +766,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   }
   // Ambient: hemisphere sky + ground bounce.
   var skyVis = 1.0;
-  if (dist < 1500.0 && frame.misc.y > 0.5) { skyVis = mix(skyVisibility(world, n), 1.0, smoothstep(900.0, 1500.0, dist)); }
+  if (dist < 1500.0 && frame.misc.y > 0.5) { skyVis = mix(skyVisibility(world, n, pxf), 1.0, smoothstep(900.0, 1500.0, dist)); }
   let hemi = n.y * 0.5 + 0.5;
   // Bounce light from sunlit facades and pavement, stronger deep in canyons.
   let bounce = frame.sunColor.rgb * vec3f(1.0, 0.92, 0.82) * max(frame.sunDir.y, 0.0) * 0.06 * (1.3 - skyVis * 0.6);
@@ -696,7 +776,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // In full sun the fill is weaker relative to the key (about 4:1 on open
   // streets), so shade reads as shade instead of a uniform grey.
   let fill = mix(1.0, 0.75, smoothstep(0.05, 0.3, frame.sunDir.y) * (1.0 - frame.weather.x));
-  let diffAmb = albedo * (1.0 - metal) * skyAmb * ao * fill;
+  let diffAmb = albedo * (1.0 - metal) * skyAmb * aoMB * fill;
   color += diffAmb;
   // Specular ambient: sky reflection, replaced by SSR where available.
   let nv = max(dot(n, v), 1e-3);
@@ -740,7 +820,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // Glass deep in a window recess sees less sky.
   // A water film on wet glass makes it more of a mirror.
   if (cls == CLASS_GLASS) { env *= mix(0.5, 1.0, a.a) * (1.0 + 0.5 * frame.weather.z) * 1.3; }
-  var specOcc = ao * ao;
+  // Specular occlusion (Lagarde 2014): rough surfaces follow the AO, smooth
+  // ones keep their grazing reflection unless deeply occluded.
+  var specOcc = clamp(pow(nv + ao, exp2(-16.0 * rough - 1.0)) - 1.0 + ao, 0.0, 1.0);
   color += min(env * Fa * specOcc * (1.0 - contactOcc), vec3f(6.0));
   if (cls == CLASS_VEHICLE && metal < 0.95) {
     // Clear coat: a sharp dielectric layer over the paint.
@@ -753,7 +835,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       color += frame.sunColor.rgb * D_GGX(max(dot(n, hc), 0.0), 0.05 * 0.05) * 1.0 * fc * max(dot(n, frame.sunDir.xyz), 0.0) * shadow(world, n, vd) * sunVis;
     }
   }
-  if (dbg == 8u) { color = vec3f(ao); }
   color += em.rgb;
   color = applyFog(color, world, uv, dist, rd);
   // Signs and lit windows carry through haze and rain mist: light scattered
@@ -772,6 +853,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (dbg == 3u) { color = vec3f(rough); }
   if (dbg == 5u) { color = vec3f(shadow(world, n, vd)); }
   if (dbg == 9u) { color = vec3f(shadow(world, n, vd) * sunVis); }
+  if (dbg == 10u) { textureStore(outColor, px, vec4f(vec3f(skyVis), 1.0)); return; }
   if (dbg == 6u) { color = vec3f(f32(min(u32(max(0.0, 0.0)), 3u))); }
   if (dbg == 4u) { color = vec3f(f32(count) / 32.0, 0.0, 0.0) + albedo * 0.2; }
   textureStore(outColor, px, vec4f(color, 1.0));

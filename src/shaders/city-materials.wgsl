@@ -594,6 +594,99 @@ fn castVis(inside: f32) -> f32 {
   return smoothstep(-0.015, 0.02, inside);
 }
 
+// Reveal depths (m) of each opening family, behind the wall plane. The
+// contract with gen-tile's LOD0 reveal geometry: real jamb/head/sill quads,
+// where emitted, use the same depth, so the painted parallax and the
+// geometry's silhouette and shadows agree.
+const REVEAL_PUNCHED = 0.30;   // main window grid (0.45 between deep piers)
+const REVEAL_FROSTED = 0.15;   // rear frosted wired-glass panes
+const REVEAL_GLASSBLOCK = 0.15; // stair-core glass block
+const REVEAL_SHOP = 0.08;      // shopfront glazing between its frame
+
+// One opening model for every window path: the glass sits D behind the wall
+// plane in the rectangle [wx0, wx1] x [sill, wy1] (facade metres, lx/ly the
+// shading point). A view ray that meets a reveal face first writes that
+// face into `s` (wall-toned, its own normal, contact AO toward the back and
+// into the corners, sun cast through the opening, bounce from the lit faces
+// opposite and from a lit room) and returns reveal = true. Otherwise it
+// returns where the ray meets the glass plane (`g`), with the lintel and
+// jamb shadows already in s.sunVis and an edge AO in `glassAo`.
+struct OpeningHit {
+  reveal: bool,
+  g: vec2f,
+  glassAo: f32,
+};
+
+fn opening(s: ptr<function, Surf>, lx: f32, ly: f32, wx0: f32, wx1: f32, sill: f32, wy1: f32, D: f32,
+           V: vec3f, n: vec3f, T: vec3f, wall: vec3f, sl: vec3f, roomL: vec3f) -> OpeningHit {
+  var o: OpeningHit;
+  let sunLit = sl.z > 0.0;
+  let sT = sl.xy;
+  let ndv = max(-dot(V, n), 0.05);
+  let vT = vec2f(dot(V, T), V.y) / ndv;
+  let g = vec2f(lx, ly) + vT * D;
+  o.g = g;
+  o.reveal = g.x < wx0 || g.x > wx1 || g.y < sill || g.y > wy1;
+  if (o.reveal) {
+    (*s).albedo = wall * 0.8;
+    (*s).rough = 0.8;
+    (*s).metal = 0.0;
+    // Depth z where the view ray meets the reveal: the face it crosses
+    // first is the one seen. (Choosing by the glass-plane point instead
+    // let the sill and head shading spill onto the jambs as wedges, so
+    // windows read keystoned.)
+    let tx = select((wx0 - lx) / min(vT.x, -1e-4), (wx1 - lx) / max(vT.x, 1e-4), vT.x > 0.0);
+    let ty = select((sill - ly) / min(vT.y, -1e-4), (wy1 - ly) / max(vT.y, 1e-4), vT.y > 0.0);
+    let z = clamp(min(tx, ty), 0.0, D);
+    let jamb = tx < ty;
+    let hit = vec2f(lx, ly) + vT * z;
+    if (jamb) { (*s).normal = select(T, -T, vT.x > 0.0); }
+    else { (*s).normal = select(vec3f(0.0, 1.0, 0.0), vec3f(0.0, -1.0, 0.0), vT.y > 0.0); }
+    // Contact AO: darker toward the frame at the back of the reveal and
+    // into the corners where jamb meets sill or head; the head soffit sees
+    // no sky at all.
+    let corner = select(min(hit.x - wx0, wx1 - hit.x), min(hit.y - sill, wy1 - hit.y), jamb);
+    let soffit = !jamb && vT.y > 0.0;
+    (*s).ao = mix(0.85, 0.5, z / D) * mix(0.65, 1.0, smoothstep(0.0, 0.12, corner)) * select(1.0, 0.7, soffit);
+    if (sunLit) {
+      // March to the light: lit only if the ray leaves through the
+      // opening. The face's own edge is N.L's job, so only the opposite
+      // edges cast.
+      let e = hit + sT * z;
+      var ix = min(e.x - wx0, wx1 - e.x);
+      var iy = min(e.y - sill, wy1 - e.y);
+      if (jamb) { ix = select(e.x - wx0, wx1 - e.x, vT.x < 0.0); }
+      else { iy = select(e.y - sill, wy1 - e.y, vT.y < 0.0); }
+      (*s).sunVis = min((*s).sunVis, castVis(min(ix, iy)));
+    }
+    // The inner sill holds water in the rain.
+    if (!jamb && vT.y < 0.0) {
+      let wet = frame.weather.z;
+      (*s).rough = mix((*s).rough, 0.08, wet);
+      (*s).albedo *= 1.0 - 0.35 * wet;
+    }
+    // Light from a lit room spills onto the reveal. In sun, the shaded
+    // faces of the recess are lit by the sunlit ones opposite them: without
+    // that bounce a shaded jamb goes as dark as the glass and the opening
+    // reads as a slanted (keystoned) shape. Faces turned away from the sun
+    // (the head soffit, the far jamb) get it too: seen at a grazing angle
+    // they fill a large wedge of the opening, black without it.
+    (*s).emissive = roomL * wall * 0.2;
+    if (sunLit && frame.sunDir.w > 0.0) {
+      let direct = (*s).sunVis * smoothstep(0.0, 0.25, dot((*s).normal, frame.sunDir.xyz));
+      (*s).emissive += (*s).albedo * frame.sunColor.rgb * clamp(sl.z, 0.0, 1.0) * 0.4 * (1.0 - direct);
+    }
+    return o;
+  }
+  // Lintel and side-reveal shadows on the recessed glass and frame.
+  if (sunLit) {
+    let e = g + sT * D;
+    (*s).sunVis = min((*s).sunVis, castVis(min(min(e.x - wx0, wx1 - e.x), min(e.y - sill, wy1 - e.y))));
+  }
+  o.glassAo = mix(0.55, 1.0, smoothstep(0.0, 0.15, min(min(g.x - wx0, wx1 - g.x), min(g.y - sill, wy1 - g.y))));
+  return o;
+}
+
 struct FacadeStyle {
   floorH: f32,
   bay: f32,
@@ -1642,7 +1735,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let fMid = 1.0 - smoothstep(0.25, 0.7, foot);
   let wet = frame.weather.z;
   let streak = mix(0.125, valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25, fFine);
-  var wall = st.wall * (0.88 + 0.12 * valueNoise(uv * 0.7)) * (1.0 - streak * 0.5) * mix(1.0, wd.b * 2.0, select(0.6, 1.0, tiled)) * mix(0.6, 1.0, wd.a);
+  // (The grout cavity darkens ambient light through s.ao below, not the
+  // albedo: tile joints then read in shade, where the sun's N.L can't.)
+  var wall = st.wall * (1.0 - streak * 0.5) * mix(1.0, wd.b * 2.0, select(0.6, 1.0, tiled)) * select(mix(0.6, 1.0, wd.a), 1.0, tiled);
   // Each face of the building has its own tone (sun bleach, a different
   // batch), so corners read even in flat light.
   let faceH = hashu(aux ^ (u32(round(atan2(n.z, n.x) * 2.546) + 64.0) * 0x9e3779b1u));
@@ -1696,8 +1791,11 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     washAmt *= mix(1.0, 0.75 + 0.5 * valueNoise(vec2f(uv.x * 14.0, floorIdx * 7.7)), fFine);
     // Wash is grime, not shadow: a brownish grey.
     wall = mix(wall, wall * vec3f(0.42, 0.39, 0.35), clamp(dirtAmt * washAmt, 0.0, 0.85));
-    let patchC = floor(uv / vec2f(2.4, st.floorH));
-    wall *= mix(1.0, 0.95 + 0.1 * hash21(patchC + f32(aux & 255u)), select(0.5, 1.0, !tiled));
+    // Render is trowelled in patches; tile already has its kiln batches.
+    if (!tiled) {
+      let patchC = floor(uv / vec2f(2.4, st.floorH));
+      wall *= mix(1.0, 0.95 + 0.1 * hash21(patchC + f32(aux & 255u)), 0.5);
+    }
     // Mortar darkens where water and dirt collect: near the ground, under
     // sills and ledges, and on the corner piers.
     if (tiled) {
@@ -1706,7 +1804,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       // Efflorescence: white salt bloom in the joints below each slab line,
       // in patches.
       let eff = smoothstep(0.55, 0.8, valueNoise(uv * vec2f(0.8, 1.5) + 13.0)) * smoothstep(1.1, 0.1, slabBelow);
-      wall = mix(wall, vec3f(0.78, 0.77, 0.72), eff * mix(0.18, 0.55 * (1.0 - wd.a) + 0.1, fFine) * mix(0.5, 1.0, fMid));
+      wall = mix(wall, vec3f(0.78, 0.77, 0.72), eff * mix(0.09, 0.28 * (1.0 - wd.a) + 0.05, fFine) * mix(0.5, 1.0, fMid));
     }
     // Rust bleed: below AC brackets on the rear (about where gen-tile hangs
     // them, under a sill in a third of the bays) and below sign brackets on
@@ -1736,6 +1834,39 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   }
   s.albedo = wall;
   s.rough = 0.75;
+  // Analytic occlusion tied to the facade's own structure, so it holds at
+  // LOD1 where the ledges and canopy are not geometry (screen-space GTAO
+  // multiplies on top): under every floor ledge, the base under the canopy
+  // line, the wall foot, and the tile joints.
+  {
+    // Ledges and the base course project on the street faces only (party
+    // walls and the rear are flat): full strength over the ground floor,
+    // milder under upper floor lines (a ledge or sill course on some
+    // buildings, only the slab joint on others).
+    var ledgeAO = 1.0;
+    if (fz.role <= 1u && fz.zone != FZ_CROWN) {
+      ledgeAO = select(mix(0.7, 1.0, smoothstep(0.0, 0.4, slabBelow)), mix(0.6, 1.0, smoothstep(0.0, 0.5, slabBelow)), fz.zone == FZ_BASE);
+      // The shop canopy or awning line (gen-tile hangs it at 0.62 of the
+      // ground floor, the shopfront transom): the glass and piers below it
+      // sit in its shade.
+      if (fz.zone == FZ_BASE) {
+        let cb = st.floorH * 0.62 - 0.06 - ly;
+        ledgeAO *= select(1.0, mix(0.45, 1.0, smoothstep(0.0, 1.1, cb)), cb > 0.0);
+      }
+      // Under each window's projecting precast sill (and gen-tile's sill
+      // course, where it runs).
+      if (fz.zone == FZ_BODY && !fz.solid) {
+        let wx0s = (1.0 - st.winW) * 0.5 * st.bay;
+        let us = (1.0 - st.winH) * st.floorH * 0.55 - 0.08 - ly;
+        if (us > 0.0 && lx > wx0s - 0.05 && lx < st.bay - wx0s + 0.05) {
+          ledgeAO *= mix(0.65, 1.0, smoothstep(0.0, 0.35, us));
+        }
+      }
+    }
+    // (uv.y < 0 is lower floors on a downhill side: no foot there.)
+    s.ao = ledgeAO * mix(0.7, 1.0, select(smoothstep(0.0, 0.3, -uv.y), smoothstep(0.0, 0.9, uv.y), uv.y >= 0.0));
+    if (tiled) { s.ao *= mix(0.55, 1.0, wd.a); }
+  }
   if (st.family == 3u) {
     // Aluminium cladding panels with dark seams.
     let pu = fract(uv.x / 1.2);
@@ -1775,6 +1906,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       let face = smoothstep(0.3, 0.45, wd.a);
       let tilt = (th - 0.5) * 0.14 * fT * face;
       s.normal = normalize(s.normal + T * tilt.x + vec3f(0.0, tilt.y, 0.0));
+      // Each tile its own tone too: breaks the 0.96 m texture repeat (4 x 14
+      // fixed tones) that otherwise shows as a grid at 10-30 m.
+      s.albedo *= mix(1.0, 0.88 + 0.24 * th.y, (1.0 - smoothstep(0.02, 0.07, foot)) * face);
       s.rough = mix(0.85, mix(mix(0.1, 0.3, th.x), 0.3, 1.0 - fT), face);
     }
     let lyw = uv.y - floor(uv.y / st.floorH) * st.floorH;
@@ -1818,6 +1952,19 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         s.rough = 0.65;
         return s;
       }
+      // The shopfront sits in a shallow reveal of the cladding (the opening
+      // between this bay's piers: 0.2 m at a tenancy edge, else 0.08 m).
+      let firstOfPair = lxu < st.bay;
+      let sx0 = select(0.08, 0.2, firstOfPair);
+      let sx1 = st.bay - select(0.2, 0.08, firstOfPair);
+      let oh = opening(&s, lx, ly, sx0, sx1, 0.15, st.floorH * 0.78, REVEAL_SHOP, V, n, T, wall * 0.6, sl,
+        vec3f(1.0, 0.9, 0.75) * mix(0.1, 0.6, gloomLight()));
+      if (oh.reveal) { return s; }
+      s.ao *= oh.glassAo;
+      let gdx = oh.g.x - lx;
+      let lx = oh.g.x;
+      let ly = oh.g.y;
+      let lxu = lxu + gdx;
       // Shop type per pair of bays: convenience store, restaurant (noren),
       // boutique, or dark office lobby.
       let shopType = shopSeed % 4u;
@@ -1942,9 +2089,18 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     && fz.role != 2u && ((u32(bayIdx + 1000.0) + (aux >> 4u)) % 11u) == 0u);
   if (stairBay) {
     let hw = min(0.45, st.bay * 0.3);
-    let sx = abs(lx - st.bay * 0.5);
-    let sy = ly - st.floorH * 0.3;
-    if (sx < hw && sy > 0.0 && sy < 1.2) {
+    let y0 = st.floorH * 0.3;
+    if (abs(lx - st.bay * 0.5) < hw && ly > y0 && ly < y0 + 1.2) {
+      // Set in its own shallow reveal; the stair light (always on at night)
+      // spills onto it.
+      let stairL = vec3f(0.7, 0.9, 1.0) * mix(0.02, 0.6, gloomLight());
+      let oh = opening(&s, lx, ly, st.bay * 0.5 - hw, st.bay * 0.5 + hw, y0, y0 + 1.2, REVEAL_GLASSBLOCK, V, n, T, wall, sl, stairL);
+      if (oh.reveal) { return s; }
+      let lx = oh.g.x;
+      let ly = oh.g.y;
+      let sx = abs(lx - st.bay * 0.5);
+      let sy = ly - y0;
+      s.ao = oh.glassAo;
       let e = min(hw - sx, min(sy, 1.2 - sy));
       if (e < 0.045) {
         s.albedo = fin.rgb;
@@ -1968,66 +2124,14 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     }
   }
   if (!stairBay && lx >= wx0 && lx <= wx1 && ly >= sill && ly <= wy1) {
-    // Window reveal parallax: the glass sits D behind the wall plane (deeper
-    // between piers).
-    let D = select(0.30, 0.45, st.family == 2u);
-    let ndv = max(-dot(V, n), 0.05);
-    let vT = vec2f(dot(V, T), V.y) / ndv;
-    let g = vec2f(lx, ly) + vT * D;
-    if (g.x < wx0 || g.x > wx1 || g.y < sill || g.y > wy1) {
-      s.albedo = wall * 0.8;
-      s.rough = 0.8;
-      // Depth z where the view ray meets the reveal: the face it crosses
-      // first is the one seen. (Choosing by the glass-plane point instead
-      // let the sill and head shading spill onto the jambs as wedges, so
-      // windows read keystoned.)
-      let tx = select((wx0 - lx) / min(vT.x, -1e-4), (wx1 - lx) / max(vT.x, 1e-4), vT.x > 0.0);
-      let ty = select((sill - ly) / min(vT.y, -1e-4), (wy1 - ly) / max(vT.y, 1e-4), vT.y > 0.0);
-      let z = clamp(min(tx, ty), 0.0, D);
-      let jamb = tx < ty;
-      let hit = vec2f(lx, ly) + vT * z;
-      if (jamb) { s.normal = select(T, -T, vT.x > 0.0); }
-      else { s.normal = select(vec3f(0.0, 1.0, 0.0), vec3f(0.0, -1.0, 0.0), vT.y > 0.0); }
-      // Contact AO: darker toward the frame at the back of the reveal and
-      // into the corners where jamb meets sill or head.
-      let corner = select(min(hit.x - wx0, wx1 - hit.x), min(hit.y - sill, wy1 - hit.y), jamb);
-      s.ao = mix(0.85, 0.5, z / D) * mix(0.65, 1.0, smoothstep(0.0, 0.12, corner));
-      if (sunLit) {
-        // March to the light: lit only if the ray leaves through the
-        // opening. The face's own edge is N.L's job, so only the opposite
-        // edges cast.
-        let e = hit + sT * z;
-        var ix = min(e.x - wx0, wx1 - e.x);
-        var iy = min(e.y - sill, wy1 - e.y);
-        if (jamb) { ix = select(e.x - wx0, wx1 - e.x, vT.x < 0.0); }
-        else { iy = select(e.y - sill, wy1 - e.y, vT.y < 0.0); }
-        s.sunVis = min(s.sunVis, castVis(min(ix, iy)));
-      }
-      // The inner sill holds water in the rain.
-      if (!jamb && vT.y < 0.0) {
-        s.rough = mix(s.rough, 0.08, wet);
-        s.albedo *= 1.0 - 0.35 * wet;
-      }
-      // Light from a lit room spills onto the reveal. In sun, the shaded
-      // faces of the recess are lit by the sunlit ones opposite them: without
-      // that bounce a shaded jamb goes as dark as the glass and the opening
-      // reads as a slanted (keystoned) shape. Faces turned away from the sun
-      // (the head soffit, the far jamb) get it too: seen at a grazing angle
-      // they fill a large wedge of the opening, black without it.
-      s.emissive = roomL * wall * 0.2;
-      if (sunLit && frame.sunDir.w > 0.0) {
-        let direct = s.sunVis * smoothstep(0.0, 0.25, dot(s.normal, frame.sunDir.xyz));
-        s.emissive += s.albedo * frame.sunColor.rgb * clamp(sl.z, 0.0, 1.0) * 0.4 * (1.0 - direct);
-      }
-      return s;
-    }
-    let lxg = g.x;
-    let lyg = g.y;
-    // Lintel and side-reveal shadows on the recessed glass and frame.
-    if (sunLit) {
-      let e = g + sT * D;
-      s.sunVis = min(s.sunVis, castVis(min(min(e.x - wx0, wx1 - e.x), min(e.y - sill, wy1 - e.y))));
-    }
+    // Window reveal (shared opening model): deeper between piers, shallower
+    // for the rear's frosted panes.
+    let frosted = fz.role == 3u && hashuf(cellSeed ^ 0xf05u) < 0.35;
+    let D = select(select(REVEAL_PUNCHED, 0.45, st.family == 2u), REVEAL_FROSTED, frosted);
+    let oh = opening(&s, lx, ly, wx0, wx1, sill, wy1, D, V, n, T, wall, sl, roomL);
+    if (oh.reveal) { return s; }
+    let lxg = oh.g.x;
+    let lyg = oh.g.y;
     let fx = min(lxg - wx0, wx1 - lxg);
     let fy = min(lyg - sill, wy1 - lyg);
     let roomSize = vec2f(wx1 - wx0, wy1 - sill);
@@ -2046,7 +2150,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       s.rough = mix(frameRough(fin), 0.12, wet);
       return s;
     }
-    if (fz.role == 3u && hashuf(cellSeed ^ 0xf05u) < 0.35) {
+    if (frosted) {
       // Frosted wired glass (bathrooms and toilets): pale and translucent
       // by day; at night a dim, warm, featureless glow when someone's in,
       // with the diamond wire mesh showing up close.
@@ -2060,6 +2164,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       s.rough = mix(0.4, frameRough(fin), barCov);
       s.metal = fin.w * barCov;
       s.emissive = glowF * (1.0 - 0.5 * wire) * (1.0 - barCov);
+      s.ao = oh.glassAo;
       return s;
     }
     // Each pane sits slightly out of plane and bows a little, so neighbours
@@ -2131,7 +2236,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     // Each trail is a lens gathering the bright sky above: pale streaks
     // down the dark glass.
     s.emissive += (frame.skyAmbient.rgb * 0.35 + frame.cityGlow.rgb * 2.0) * rivulet * (1.0 - barCov);
-    s.ao = mix(0.55, 1.0, smoothstep(0.0, 0.15, min(fx, fy)));
+    s.ao = oh.glassAo;
     s.cls = select(CLASS_GLASS, CLASS_DEFAULT, barCov > 0.5);
     if (!baseShop) {
       let sk = glassSticker(vec2f(lxg - wx0, lyg - sill), roomSize, cellSeed, foot);
