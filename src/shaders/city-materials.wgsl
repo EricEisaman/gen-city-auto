@@ -163,7 +163,7 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   }
   // Rooms darken away from the window; at grazing angles the room collapses
   // to its average colour instead of slivers of ceiling and wall.
-  c *= mix(1.0, 0.6, clamp(hit.z / depth, 0.0, 1.0));
+  c *= mix(1.0, 0.35, clamp(hit.z / depth, 0.0, 1.0));
   let avg = wallC * 0.62;
   c = mix(c, avg, smoothstep(0.4, 0.12, abs(rd.z)));
   // Blinds (offices) and curtains (homes) at the glass, lit from behind.
@@ -191,7 +191,9 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   // Office colour temperature varies by tenant (3500-6500 K).
   let cool = mix(vec3f(1.0, 0.86, 0.66), vec3f(0.88, 0.95, 1.0), hashuf(section ^ 0x51u));
   let warm = select(vec3f(1.0, 0.72, 0.42), cool, office && r0 > 0.25);
-  var light = frame.skyAmbient.rgb * 0.35;
+  // Daylight in a room is dim and neutral: seen from the street a room is
+  // 5-10x darker than the facade, so the glass reflection dominates.
+  var light = vec3f(luminance(frame.skyAmbient.rgb)) * vec3f(1.0, 0.95, 0.88) * 0.14;
   // Dark offices still show their ceiling grid under corridor and exit
   // lighting, so towers don't read as black slabs at night.
   if (office) { light += vec3f(0.75, 0.85, 1.0) * 0.05 * night; }
@@ -200,6 +202,21 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
     light += warm * mix(0.6, 1.2, r2) * flicker * mix(0.12, 1.0, night);
   }
   return c * light;
+}
+
+// Tangent-space light offset for facade self-shadowing: how far (in facade
+// uv metres) a ray toward the light moves per metre of depth out of the wall.
+// Uses the moon when the sun is down, like the shadow map. w > 0 when the
+// wall faces the light (otherwise N.L already shadows it).
+fn facadeLight(n: vec3f, T: vec3f) -> vec3f {
+  let L = select(frame.moonDir.xyz, frame.sunDir.xyz, frame.sunDir.y > -0.02);
+  let nl = dot(L, n);
+  return vec3f(vec2f(dot(L, T), L.y) / max(nl, 0.08), nl);
+}
+
+// Soft-edged inside test for a cast-shadow footprint (penumbra a few cm).
+fn castVis(inside: f32) -> f32 {
+  return smoothstep(-0.015, 0.02, inside);
 }
 
 struct FacadeStyle {
@@ -245,6 +262,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let st = facadeStyle(style, kind, podium);
   let V = normalize(world - frame.camPos.xyz);
   let T = vec3f(-n.z, 0.0, n.x);
+  let sl = facadeLight(n, T);
+  let sunLit = sl.z > 0.0;
+  let sT = sl.xy;
   // Below the street-level ground floor (downhill sides) the window grid
   // simply continues with lower floors.
   let floorIdx = floor(uv.y / st.floorH);
@@ -312,6 +332,13 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   }
   // Floor slab line.
   if (ly < 0.18) { s.albedo = wall * 0.8; }
+  // Shadow cast by the floor ledge above (projecting P metres, underside at
+  // the next floor line). Works at every LOD, ledge geometry or not.
+  if (sunLit) {
+    let P = select(0.18, 0.40, st.family == 4u || podium);
+    let sy = P * min(sT.y, 6.0);
+    s.sunVis = smoothstep(sy - 0.04, sy + 0.04, st.floorH - ly);
+  }
 
   // Ground floor shopfront.
   if (shop && abs(floorIdx) < 0.5) {
@@ -409,21 +436,43 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let sill = (1.0 - st.winH) * st.floorH * 0.55;
   let wy1 = sill + st.winH * st.floorH;
   if (lx >= wx0 && lx <= wx1 && ly >= sill && ly <= wy1) {
-    // Window reveal parallax: the glass sits 22 cm behind the wall plane.
+    // Window reveal parallax: the glass sits D behind the wall plane (deeper
+    // between piers).
+    let D = select(0.30, 0.45, st.family == 2u);
     let ndv = max(-dot(V, n), 0.05);
     let vT = vec2f(dot(V, T), V.y) / ndv;
-    let g = vec2f(lx, ly) + vT * 0.22;
+    let g = vec2f(lx, ly) + vT * D;
     if (g.x < wx0 || g.x > wx1 || g.y < sill || g.y > wy1) {
       s.albedo = wall * 0.8;
       s.rough = 0.8;
+      s.ao = 0.55;
       if (g.y < sill) { s.normal = vec3f(0.0, 1.0, 0.0); }
       else if (g.y > wy1) { s.normal = vec3f(0.0, -1.0, 0.0); }
       else if (g.x < wx0) { s.normal = T; }
       else { s.normal = -T; }
+      if (sunLit) {
+        // Depth z where the view ray meets the reveal, then march to the
+        // light: lit only if the ray leaves through the opening. The face's
+        // own edge is N.L's job, so only the opposite edges cast.
+        let tx = select((wx0 - lx) / min(vT.x, -1e-4), (wx1 - lx) / max(vT.x, 1e-4), vT.x > 0.0);
+        let ty = select((sill - ly) / min(vT.y, -1e-4), (wy1 - ly) / max(vT.y, 1e-4), vT.y > 0.0);
+        let z = clamp(min(tx, ty), 0.0, D);
+        let e = vec2f(lx, ly) + vT * z + sT * z;
+        var ix = min(e.x - wx0, wx1 - e.x);
+        var iy = min(e.y - sill, wy1 - e.y);
+        if (tx < ty) { ix = select(e.x - wx0, wx1 - e.x, vT.x < 0.0); }
+        else { iy = select(e.y - sill, wy1 - e.y, vT.y < 0.0); }
+        s.sunVis = min(s.sunVis, castVis(min(ix, iy)));
+      }
       return s;
     }
     let lxg = g.x;
     let lyg = g.y;
+    // Lintel and side-reveal shadows on the recessed glass and frame.
+    if (sunLit) {
+      let e = g + sT * D;
+      s.sunVis = min(s.sunVis, castVis(min(min(e.x - wx0, wx1 - e.x), min(e.y - sill, wy1 - e.y))));
+    }
     let fx = min(lxg - wx0, wx1 - lxg);
     let fy = min(lyg - sill, wy1 - lyg);
     let mull = st.strip && abs(fract(uv.x / 1.6) - 0.5) > 0.47;
@@ -433,6 +482,10 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       s.rough = 0.35;
       return s;
     }
+    // Each pane sits slightly out of plane, so neighbours reflect different
+    // sky and city. Glass gets no wall tile relief.
+    let wob = (hash22(vec2f(bayIdx, floorIdx) + f32(aux & 1023u)) - 0.5) * 0.035;
+    s.normal = normalize(n + T * wob.x + vec3f(0.0, wob.y, 0.0));
     let office = kind <= 2u && !(kind == 2u && hashuf(style) < 0.4);
     let roomSize = vec2f(wx1 - wx0, wy1 - sill);
     let section = hashu(aux ^ (u32(floor(floorIdx / 3.0) + 500.0) * 7919u) ^ (u32(floor(uv.x / 18.0)) * 104729u));
@@ -454,6 +507,11 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   }
   // Window sill shadow / AC units under some windows.
   if (ly < sill && ly > sill - 0.1 && lx > wx0 && lx < wx1) { s.albedo = wall * 0.6; }
+  // Deep piers shadow the recessed spandrels between them.
+  if (st.family == 2u && sunLit && lx > wx0 && lx < wx1) {
+    let ex = lx + sT.x * 0.45;
+    s.sunVis = min(s.sunVis, castVis(min(ex - wx0, wx1 - ex)));
+  }
   return s;
 }
 
@@ -472,11 +530,23 @@ fn curtainWall(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   let bayIdx = floor(uv.x / bay);
   let lx = uv.x - bayIdx * bay;
   let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
-  if (lx < 0.06 || lx > bay - 0.06) {
+  // Mullions, a slim transom at each slab and one at the spandrel head.
+  if (lx < 0.06 || lx > bay - 0.06 || ly < 0.05 || abs(ly - 0.95) < 0.025) {
     s.albedo = vec3f(0.45, 0.47, 0.5);
     s.metal = 0.9;
     s.rough = 0.3;
     return s;
+  }
+  // Mullions and transoms project Dm: thin shadows on the glass beside each
+  // mullion and under each transom.
+  let sl = facadeLight(n, T);
+  if (sl.z > 0.0) {
+    let Dm = 0.12;
+    let ex = lx + sl.x * Dm;
+    let ix = min(ex - 0.06, bay - 0.06 - ex);
+    let transom = select(floorH, 0.925, ly < 0.95);
+    let iy = transom - (ly + min(sl.y, 6.0) * Dm);
+    s.sunVis = castVis(min(ix, iy));
   }
   // Each pane is slightly misaligned for realistic broken reflections.
   let wob = (hashuf(hashu(u32(bayIdx + 5000.0)) ^ u32(floorIdx)) - 0.5) * 0.04;
