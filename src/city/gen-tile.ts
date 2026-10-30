@@ -20,6 +20,8 @@ import {
   landing,
   sidewalkY,
   avenueTreeS,
+  bandSurfaceAt,
+  signalLums,
   signalSpots,
   streetLightSpots,
 } from './gen-base.ts';
@@ -6610,10 +6612,13 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
     aux,
   );
   if (lod !== 0) {
-    // Far LOD: LOD0's crown in miniature, eight of the same leaf cards
-    // (same material, tint and alpha; no dark core blob) in its outer
-    // shell, bigger to cover it. 32 vertices.
-    crownCards(m, c, rx, ry, S.flare, 8, h * 0.14, aux, lr, sp, 0.5);
+    // Far LOD: LOD0's crown mass kept (round 4's eight loose cards read as
+    // spindly palm fronds in shell-day): a closed low-poly shell of the
+    // ellipsoid in the same leaf material (its leaf-texture alpha opens
+    // small gaps onto its own darker far side) and three of LOD0's cards
+    // breaking the outline. 32 vertices, as before.
+    crownShell(m, c, rx * 0.9, ry * 0.9, S.flare, aux, sp);
+    crownCards(m, c, rx, ry, S.flare, 3, h * 0.13, aux, lr, sp, 0.75);
     return;
   }
   // A full rounded crown (Tokyo street zelkova / ginkgo, pruned into a dome
@@ -6643,6 +6648,79 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
     );
   }
   crownCards(m, c, rx, ry, S.flare, CROWN_CARDS, h * 0.085, aux, lr, sp, 0);
+}
+
+/**
+ * LOD1 crown mass: a closed six-sided, three-ring ellipsoid shell (radii
+ * rx, ry; flare as crownCards) in the leaf material, both windings, 20
+ * vertices. uv alternates 0.32 / 0.68 per column and ring, so each face
+ * maps the dense middle of the leaf texture (mostly opaque, a few gaps);
+ * normals are the ellipsoid's bent up like the cards'.
+ */
+function crownShell(
+  m: CMesh,
+  c: Vec3,
+  rx: number,
+  ry: number,
+  flare: number,
+  aux: number,
+  species: number,
+) {
+  const mat = packMat(CM.leaves, species);
+  const N = 6;
+  const yaw = (aux & 0xff) / 40;
+  const nrm = (d: Vec3): Vec3 => {
+    const n: Vec3 = [d[0], d[1] + 0.3, d[2]];
+    const l = Math.hypot(n[0], n[1], n[2]) || 1;
+    return [n[0] / l, n[1] / l, n[2] / l];
+  };
+  const vert = (u: number, a: number, uu: number, vv: number) => {
+    const s = Math.sqrt(1 - u * u);
+    const d: Vec3 = [s * Math.cos(a), u, s * Math.sin(a)];
+    const w = rx * (1 + flare * u);
+    return m.vertex(
+      [c[0] + d[0] * w, c[1] + u * ry, c[2] + d[2] * w],
+      nrm(d),
+      uu,
+      vv,
+      mat,
+      aux,
+    );
+  };
+  const rows = [-0.62, 0.08, 0.7];
+  const ring = rows.map((u, r) =>
+    Array.from({length: N}, (_, i) =>
+      vert(
+        u,
+        yaw + ((i + (r & 1) * 0.5) / N) * Math.PI * 2,
+        i & 1 ? 0.68 : 0.32,
+        r & 1 ? 0.68 : 0.32,
+      ),
+    ),
+  );
+  const bottom = vert(-1, 0, 0.5, 0.5);
+  const top = vert(1, 0, 0.5, 0.5);
+  const two = (a: number, b: number, d: number) => {
+    m.tri(a, b, d);
+    m.tri(a, d, b);
+  };
+  for (let i = 0; i < N; i++) {
+    const j = (i + 1) % N;
+    two(bottom, ring[0][i], ring[0][j]);
+    two(top, ring[rows.length - 1][i], ring[rows.length - 1][j]);
+    for (let r = 0; r + 1 < rows.length; r++) {
+      // Rings staggered by half a column (odd rows): zig-zag strip.
+      const lo = ring[r];
+      const hi = ring[r + 1];
+      if (r & 1) {
+        two(lo[i], hi[i], hi[j]);
+        two(lo[i], hi[j], lo[j]);
+      } else {
+        two(lo[i], hi[i], lo[j]);
+        two(lo[j], hi[i], hi[j]);
+      }
+    }
+  }
 }
 
 /**
@@ -7363,7 +7441,8 @@ function signBoardFace(
  * Japanese horizontal signal on its pole: grey head with three dark lenses
  * (the lit one glows), a 30 cm visor over each and a black backplate
  * 14 cm proud all round; the intersection-name plate above it; the
- * junction luminaire on a second arm at SIGNAL_LUM.h (shared pole);
+ * junction luminaire arm at SIGNAL_LUM.h toward the box centre with its
+ * head(s) `lums` (signalLums; shared pole);
  * one or two regulatory plates on the column; optionally the controller
  * cabinet.
  */
@@ -7376,6 +7455,7 @@ function signal(
   group: number,
   name: number,
   cabinet: boolean,
+  lums: [Vec3, Vec2, number, boolean][],
 ) {
   const grey = packMat(CM.paint, 0x90);
   // Column: the shader's pole paint (streaks, foot dirt, sticker scraps
@@ -7491,20 +7571,18 @@ function signal(
     packMat(CM.roadSign, 24 + (name & 7)),
     packMat(CM.roadSign, (24 + (name & 7)) | 0x100),
   );
-  // Junction luminaire (shared pole): arm and flat LED head.
+  // Junction luminaires (shared pole): the arm toward the box centre and a
+  // flat LED head at each of its heads (signalLums).
   const lt: Vec3 = [p[0], p[1] + SIGNAL_LUM.h, p[2]];
-  const le: Vec3 = [
-    p[0] + armDir[0] * SIGNAL_LUM.reach,
-    p[1] + SIGNAL_LUM.h,
-    p[2] + armDir[1] * SIGNAL_LUM.reach,
-  ];
-  m.beam(lt, le, 0.05, 0.05, grey);
-  m.box(
-    [le[0], le[1] - 0.1, le[2]],
-    [0.35, 0.06, 0.15],
-    packMat(CM.lamp, 1),
-    Math.atan2(face[0], face[1]),
-  );
+  m.beam(lt, lums[lums.length - 1][0], 0.05, 0.05, grey);
+  for (const [h, dir] of lums) {
+    m.box(
+      [h[0], h[1] - 0.1, h[2]],
+      [0.35, 0.06, 0.15],
+      packMat(CM.lamp, 1),
+      Math.atan2(dir[1], -dir[0]),
+    );
+  }
   if (cabinet) {
     // Controller cabinet on the back of the pole.
     m.box(
@@ -8622,32 +8700,38 @@ function hedges(
 }
 
 /**
- * Small utility covers set in the sidewalk (NTT, water, gas): the lid's
- * material and its uv range. The lid floats 7 mm over the paving on a
- * 1.2 cm wider CM.paint 0x91 quad (4 mm up) that reads as the dark gap
- * round it. Today the lid borrows the cast-iron tree grate (CM.hedge 1)
- * with uv 1.1..1.6, past the grate's slot rings: plain iron (0.2, 0.18,
- * 0.16), metal 0.5, rough 0.55, wet in rain. For a cover pattern in the
- * shader: give it its own param (e.g. CM.hedge 2) and set the uv range to
- * 0..1 here. Contract: u along the road, v across it from the kerb side;
- * aux high 16 bits = kind (bits 0-1: 0 NTT telecom 0.6 x 0.6 or 0.8 x
- * 0.5, 1 water meter / valve 0.3 x 0.3 or 0.4 x 0.25, 2 gas valve
- * 0.3 x 0.3, 3 common-duct hatch 0.9 x 0.6, along x across) | a hash
- * (bits 2-15) for the casting pattern and wear; the lid's size in metres
- * is the uv's world-space derivative.
+ * Small utility covers set in the sidewalk (NTT, water, gas, duct): the
+ * lid's own material, CM.hedge param 2 (round 4 borrowed the tree grate,
+ * param 1, at uv 1.1..1.6). Contract for the shader (hedgeMat param 2):
+ * - uv 0..1 over the lid: u along the road, v across it from the kerb
+ *   side; round lids map their bounding square (the lid is the disc
+ *   |uv - 0.5| <= 0.5). The lid's size in metres is the uv's world-space
+ *   derivative.
+ * - aux high 16 bits: bits 0-1 kind (0 NTT telecom, 1 water meter /
+ *   valve, 2 gas valve, 3 common-duct hatch), bit 2 round, bits 3-15 a
+ *   hash for the casting pattern, stencil glyph and wear.
+ * - Sizes (along x across, metres): NTT 0.6 x 0.6 or 0.8 x 0.5; water
+ *   round 0.4 or 0.4 x 0.25; gas round 0.26-0.3; duct 0.9 x 0.6.
+ * - Intended look (judge round 4): cast iron, metal ~0.8, rough ~0.5, a
+ *   tread / chequer normal, a rust and dirt ring at the edge, a stencilled
+ *   glyph; wet in rain.
+ * The lid sits 3 mm over the band's actual surface (bandSurfaceAt), no
+ * sides and no separate frame: the shader draws the dark seating gap in
+ * the lid's outer ~12 mm (and the frame ring inside it).
  */
-const WALK_COVER_MAT = packMat(CM.hedge, 1);
-const WALK_COVER_UV = [1.1, 1.6] as const;
+const WALK_COVER_MAT = packMat(CM.hedge, 2);
 
 /**
- * Small square utility covers in the sidewalk every 10-20 m (both sides
+ * Small utility covers (square, oblong and round) in the sidewalk every
+ * 10-20 m (both sides
  * of avenues and boulevards, one side of streets and lanes, picked per
  * cover), in the walk's free zone: in the kerb-side slab strip of streets
  * (between the kerb and the tactile line), between the tree pits on avenues
  * and boulevards, beyond the tactile line on lanes. Hash-placed (no tile
  * RNG draws); kept 9 m (avenues 5 m) from junction mouths, clear of tree
  * pits, 1 m from lamp poles and
- * utility poles, on sidewalk only (landing). LOD0 only, 8 vertices each.
+ * utility poles, on sidewalk only (landing). LOD0 only, 4 vertices each
+ * (round 11).
  */
 function walkCovers(
   ctx: TileContext,
@@ -8705,17 +8789,20 @@ function walkCovers(
       )
         continue;
       // 3/7 NTT, 2/7 water, 1/7 gas, 1/7 duct hatch; half sizes along /
-      // across the road (two shapes each for NTT and water).
+      // across the road (two shapes each for NTT and water; water and gas
+      // valves round).
       const kind = [0, 0, 0, 1, 1, 2, 3][(hs >>> 8) % 7];
       const alt = (hs >>> 12) & 1;
-      const ha = [alt ? 0.4 : 0.3, alt ? 0.2 : 0.15, 0.15, 0.45][kind];
+      const round = kind === 2 || (kind === 1 && !alt);
+      const gasR = 0.13 + ((hs >>> 13) & 3) * 0.006;
+      const ha = [alt ? 0.4 : 0.3, 0.2, gasR, 0.45][kind];
       const [z0, z1, zMax] = zone[c.kind];
       const u = z0 + (((hs >>> 16) & 0xff) / 255) * (z1 - z0);
       const hc = Math.min(
-        [alt ? 0.25 : 0.3, alt ? 0.125 : 0.15, 0.15, 0.3][kind],
+        [alt ? 0.25 : 0.3, alt ? 0.125 : 0.2, gasR, 0.3][kind],
         zMax - u,
       );
-      if (u + hc > SW - 0.15) continue;
+      if (u + hc > SW - 0.15 || (round && hc < ha)) continue;
       // 1.6 m along from a tree (its 1.2 m pit and the cover's half).
       if ((trees.get(side) ?? []).some(t => Math.abs(t - ss) < 0.75 + ha))
         continue;
@@ -8734,40 +8821,47 @@ function walkCovers(
         poles.some(p => Math.hypot(p[0] - x, p[1] - z) < 1.0)
       )
         continue;
-      const y = (b: number) => bandY(hf, q, l, c.kind, u + b);
-      const aux = (kind | ((hs >>> 18) << 2)) & 0xffff;
-      const quad = (
-        grow: number,
-        dy: number,
-        mat: number,
-        a16: number,
-        uv0: number,
-        uv1: number,
-      ) => {
-        const pts = [
-          [-1, -1],
-          [1, -1],
-          [1, 1],
-          [-1, 1],
-        ].map(([a, b]): Vec3 => {
-          const p = P(a * (ha + grow), b * (hc + grow));
-          return [p[0], y(b * (hc + grow)) + dy, p[1]];
-        });
-        const ids = pts.map((p, i) =>
-          m.vertex(
-            p,
-            UP,
-            i === 1 || i === 2 ? uv1 : uv0,
-            i >= 2 ? uv1 : uv0,
-            mat,
-            a16 << 16,
-          ),
-        );
-        m.triFacing(ids[0], ids[1], ids[2], UP);
-        m.triFacing(ids[0], ids[2], ids[3], UP);
+      // On the band mesh's own surface (exact), else the analytic band.
+      const Y = (a: number, b: number, dy: number): Vec3 => {
+        const p = P(a, b);
+        const y =
+          bandSurfaceAt(ctx.geom, p[0], p[1]) ?? bandY(hf, q, l, c.kind, u + b);
+        return [p[0], y + dy, p[1]];
       };
-      quad(0.012, 0.004, packMat(CM.paint, 0x91), 0, 0, 1);
-      quad(0, 0.007, WALK_COVER_MAT, aux, WALK_COVER_UV[0], WALK_COVER_UV[1]);
+      const aux =
+        ((kind | (round ? 4 : 0) | ((hs >>> 18) << 3)) & 0xffff) << 16;
+      // Outline (unit offsets, counter-clockwise from above): the lid's
+      // corners or a 10-gon. No separate seating ring: the shader draws
+      // the dark gap in the lid's outer ~12 mm (budget).
+      const shape: Vec2[] = round
+        ? Array.from({length: 10}, (_, i): Vec2 => [
+            Math.cos((i / 10) * Math.PI * 2),
+            Math.sin((i / 10) * Math.PI * 2),
+          ])
+        : [
+            [-1, -1],
+            [1, -1],
+            [1, 1],
+            [-1, 1],
+          ];
+      const lid = shape.map(([a, b]) =>
+        m.vertex(
+          Y(a * ha, b * hc, 0.003),
+          UP,
+          (a + 1) / 2,
+          (b + 1) / 2,
+          WALK_COVER_MAT,
+          aux,
+        ),
+      );
+      if (round) {
+        const cv = m.vertex(Y(0, 0, 0.003), UP, 0.5, 0.5, WALK_COVER_MAT, aux);
+        for (let i = 0; i < lid.length; i++)
+          m.triFacing(cv, lid[i], lid[(i + 1) % lid.length], UP);
+      } else {
+        m.triFacing(lid[0], lid[1], lid[2], UP);
+        m.triFacing(lid[0], lid[2], lid[3], UP);
+      }
     }
     s += step;
   }
@@ -9041,8 +9135,9 @@ export function buildTile(
 
   // LOD1 signals (junctions with an avenue or arterial arm): each pole,
   // its arm and the head's drop as one bent tube
-  // (12 vertices; the vertex shader keeps it at least ~0.7 px wide), so the
-  // junction keeps its poles and mast arms at range.
+  // (12 vertices; the vertex shader keeps it at least ~0.7 px wide) and the
+  // head as a box, so the junction keeps its poles, mast arms and heads at
+  // range.
   if (lod !== 0)
     for (const ji of ctx.tileJunctions[tile] ?? []) {
       const j = L.junctions[ji];
@@ -9060,6 +9155,22 @@ export function buildTile(
           0.16,
           packMat(CM.paint, 0x90),
         );
+        // The head as a plain dark slab (its backplate's size) hanging
+        // under the arm end, facing the approach and back: 8 vertices.
+        const hx = p[0] + armDir[0] * (reach - 0.7);
+        const hz = p[2] + armDir[1] * (reach - 0.7);
+        const H = (u: number, v: number, f: number): Vec3 => [
+          hx + armDir[0] * u * 0.76 + armDir[1] * f,
+          y - 0.12 + v * 0.34,
+          hz + armDir[1] * u * 0.76 - armDir[0] * f,
+        ];
+        for (const f of [0.1, -0.1])
+          m.quad(
+            [H(-1, -1, f), H(1, -1, f), H(1, 1, f), H(-1, 1, f)],
+            [armDir[1] * Math.sign(f), 0, -armDir[0] * Math.sign(f)],
+            uv01,
+            packMat(CM.paint, 0x91),
+          );
       });
     }
 
@@ -9076,7 +9187,11 @@ export function buildTile(
       signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach, k) => {
         const a = jg.arms[k];
         const group = Math.round((a.angle / Math.PI) * 2) & 1;
-        signal(m, p, armDir, reach, phase, group, ji, first);
+        const lums: [Vec3, Vec2, number, boolean][] = [];
+        signalLums(L, ji, p, armDir, k, (h, d, r, pool) =>
+          lums.push([h, d, r, pool]),
+        );
+        signal(m, p, armDir, reach, phase, group, ji, first, lums);
         first = false;
         // Pedestrian signals across this arm's crossing: one on the signal
         // pole, one on its own pole at the far corner, each facing across.

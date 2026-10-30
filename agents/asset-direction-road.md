@@ -289,6 +289,36 @@ vehicle red on the crossing road.
     sticker scraps at 1.1-1.9 m.
   - Bare `CM.metal` uprights only get the streaks.
 
+**Round 5 geometry (for the shader engineer):**
+- **Utility covers: `CM.hedge` param 2 (NEW, `WALK_COVER_MAT` in `gen-tile.ts`).** Until
+  `hedgeMat` handles param 2 the lids fall through to the clipped-hedge path and render GREEN, so
+  this one is not opt-in: please add the branch (cast iron, metal ~0.8, rough ~0.5, tread/chequer
+  normal, rust and dirt ring at the edge, stencil glyph, wet in rain).
+  - uv 0..1 over the lid: u along the road, v across it from the kerb side. Round lids map their
+    bounding square (the lid is the disc `|uv - 0.5| <= 0.5`); the lid's size in metres is the uv's
+    world-space derivative.
+  - `aux >> 16`: bits 0-1 kind (0 NTT telecom, 1 water meter / valve, 2 gas valve, 3 common-duct
+    hatch), bit 2 round, bits 3-15 a hash (casting pattern, glyph, wear).
+  - Sizes (along x across): NTT 0.6 x 0.6 or 0.8 x 0.5; water round 0.4 or 0.4 x 0.25; gas round
+    0.26-0.3; duct 0.9 x 0.6.
+  - The lid now sits 3 mm over the band mesh's actual surface (`bandSurfaceAt`); no sides (round
+    4's lid floated several cm) and NO separate frame quad any more (budget): please draw the dark
+    seating gap (~12 mm, near-black) and the cast frame ring inside the lid's uv edge.
+- **Junction luminaires** (`signalLums()` in `gen-base.ts`): the luminaire arm now points from each
+  signal pole toward the junction centre; the corner head is a directed light thrown toward the
+  centre (`kind = -(0.05 + 0.9 fract(angle / 2pi))`, radius 24, LED x1.0). On two diagonal poles of
+  each box with an avenue or arterial arm the arm reaches on (up to 6.5 m, 3 m short of the centre)
+  to a second head: a round pool (kind exactly 0, radius 26, LED x0.4; the shader doubles kind 0).
+  Lab `top-night`: box mean luma 21 -> ~65 vs the sidewalk ~43.
+- **Box paint**: unchanged contract (`BOX_PAINT`, uv.x metres along the line); one dashed outer-edge
+  arc per right turn (2 m on / 1.5 m off, each dash 3+ pieces bent along the curve), one lane line
+  per arterial approach, at most six lines per box.
+- **LOD1 tree crown**: a closed 20-vertex ellipsoid shell in `CM.leaves` (both windings, uv
+  alternating 0.32 / 0.68 so each face maps the dense middle of the leaf texture) plus three cards.
+  `inner` / `deep` shading in the leaf path works off the shell's ellipsoid normals.
+- **LOD1 signal heads**: a dark `CM.paint 0x91` slab (0.76 x 0.34 half size, front and back quads)
+  under each mast-arm end.
+
 Until B lands each piece, the new ids render as default grey and `aux` high bits are ignored, so A's
 work can merge first. B can test against today's geometry: the band and new ids just appear later.
 
