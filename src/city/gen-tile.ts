@@ -7114,8 +7114,8 @@ function poleFoot(
   }
   if (!full) return;
   // Anchor bolts: nut and stud as one 5 x 5 x 5 cm box at each diagonal,
-  // set square to the radius, bare galvanised.
-  const bolt = packMat(CM.metal);
+  // set square to the radius, pale zinc (service paint) on the dark plate.
+  const bolt = packMat(CM.paint, 0xd8);
   for (let k = 0; k < 4; k++) {
     const a = Math.PI / 4 + (k * Math.PI) / 2;
     m.box(
@@ -7498,11 +7498,11 @@ function signBoardFace(
 /**
  * Japanese horizontal signal on its pole: grey head with three dark lenses
  * (the lit one glows), a 30 cm visor over each and a black backplate
- * 14 cm proud all round; the intersection-name plate above it; the
- * junction luminaire arm at SIGNAL_LUM.h toward the box centre with its
- * head(s) `lums` (signalLums; shared pole);
- * one or two regulatory plates on the column; optionally the controller
- * cabinet.
+ * 14 cm proud all round with a white border; the intersection-name plate
+ * above it; the junction luminaire arm at SIGNAL_LUM.h toward the box
+ * centre with its head(s) `lums` (signalLums; shared pole); arm-joint
+ * collars; one or two regulatory plates on the column. (The controller
+ * cabinet stands on the ground: junctionFixtures.)
  */
 function signal(
   m: CMesh,
@@ -7865,7 +7865,7 @@ function vnoise1(x: number, seed: number) {
  * along their normals by a hash (lumps every sample, 2.6 m), overhanging
  * the kerb top, with leaf cards (the tree leaf path, `CM.leaves`) on the
  * shoulders (3 per side per sample), standing proud of each outer face
- * (2) and round the run ends for a broken, lighter-tipped outline. Hedge uv: x metres along,
+ * (3) and round the run ends for a broken, lighter-tipped outline. Hedge uv: x metres along,
  * y metres up from the planter soil (the shader's AO darkens toward 0).
  *
  * LOD1: one smooth 4-point green strip (no kerb, no cards).
@@ -8139,28 +8139,28 @@ function hedgeRun(
           0.85,
         );
       }
-      // Outer faces: two near-upright sprays per side standing just
+      // Outer faces: three near-upright sprays per side standing just
       // proud of the clipped face (5-9 cm), yawed 12-35 degrees off it, so
       // the face is not a smooth slab and its outline breaks along the run.
       // (Round 5's planter-rim sprays leaned out over the kerb: their thin
       // shadows striped the planter wall at low sun.)
       const mid = k === 2 ? 1 : 4;
-      for (let j = 0; j < 2; j++) {
-        const t = (j + 0.15 + rnd(k * 16 + j + 40) * 0.7) / 2;
+      for (let j = 0; j < 3; j++) {
+        const t = (j + 0.15 + rnd(k * 64 + j + 40) * 0.7) / 3;
         const c = hull(mid, t);
-        const po = 0.05 + rnd(k * 16 + j + 52) * 0.04;
+        const po = 0.05 + rnd(k * 64 + j + 52) * 0.04;
         tuft(
           [
             c[0] + o[0] * s * po,
-            c[1] - 0.04 + rnd(k * 16 + j + 56) * 0.14,
+            c[1] - 0.04 + rnd(k * 64 + j + 56) * 0.14,
             c[2] + o[1] * s * po,
           ],
           s,
-          (j & 1 ? 1 : -1) * (0.2 + rnd(k * 16 + j + 44) * 0.4),
+          (j & 1 ? 1 : -1) * (0.2 + rnd(k * 64 + j + 44) * 0.4),
           0.95,
           0.25,
-          0.36 + rnd(k * 16 + j + 48) * 0.1,
-          0.26,
+          0.3 + rnd(k * 64 + j + 48) * 0.1,
+          0.24,
           0.3,
         );
       }
@@ -8978,14 +8978,6 @@ function walkCovers(
  */
 const CABINET = 0xab;
 /**
- * walkCovers' aux flag (bit 0, low half; the cover kind / hash stay in the
- * high half): a steel gutter grate (グレーチング) in the carriageway along
- * the kerb, not a sidewalk lid. Until coverMat reads it the grate renders
- * as a common-duct hatch (kind 3).
- */
-const GRATE = 1;
-
-/**
  * Street-edge fixtures of signalized junction ji (round 6): the ground
  * controller cabinet (one per junction, 0.6 x 0.4 x 1.2 m on a 10 cm
  * plinth, behind one signal pole, facing the road; LOD1: an 8-vertex
@@ -9121,75 +9113,6 @@ function junctionFixtures(
       );
     }
   });
-}
-
-/**
- * Steel gutter grates (round 6) in the carriageway along chain ci's kerbs
- * (streets and up, both sides, where the kerb backs onto a sidewalk):
- * every ~12 m (+-1.5 m), 1.0 x 0.3 m, set 1 cm off the kerb face, 4 mm
- * over the road surface. LOD0 only, 4 vertices each. The cover material
- * (WALK_COVER_MAT) with aux = GRATE | (3 | hash << 3) << 16; uv 0..1 over
- * the grate, u along the road, v across it from the kerb face (0) out.
- * Intended shading (coverMat on GRATE): galvanised bearing bars every
- * ~3 cm across the run (along v), a cross bar every ~10 cm, dark void
- * between (the gutter below), a 2 cm angle frame, silt in the low corner.
- */
-function gutterGrates(
-  ctx: TileContext,
-  m: CMesh,
-  ci: number,
-  land: ReturnType<typeof landing>,
-  inTile: (x: number, z: number) => boolean,
-) {
-  const L = ctx.layout;
-  const c = L.chains[ci];
-  if (c.kind < Road.street) return;
-  const arc = ctx.geom.arc[ci];
-  const total = arc[arc.length - 1];
-  const [s0, s1] = ctx.geom.setbacks[ci];
-  const W = ROAD_WIDTH[c.kind];
-  const HL = 0.5;
-  const HW = 0.15;
-  for (const side of [-1, 1]) {
-    let k = 0;
-    for (
-      let s = s0 + 5 + (hash2(ci, side + 0x67) % 7);
-      s < total - s1 - 5;
-      s += 12
-    ) {
-      const h = hash2(ci * 2 + (side > 0 ? 1 : 0), k++ ^ 0x6a7e);
-      const ss = s + ((h & 0xff) / 255 - 0.5) * 3;
-      const q = chainAt(c, arc, ss);
-      const l: Vec2 = [-q.d[1] * side, q.d[0] * side];
-      const off = W / 2 - 0.01 - HW;
-      const x = q.p[0] + l[0] * off;
-      const z = q.p[1] + l[1] * off;
-      if (!inTile(x, z)) continue;
-      // Backed by a sidewalk (not a median, an open edge or another road).
-      const bx = q.p[0] + l[0] * (W / 2 + 0.6);
-      const bz = q.p[1] + l[1] * (W / 2 + 0.6);
-      if (!land.ok(bx, bz, ci) || land.onPlate(x, z)) continue;
-      const y = q.h + 0.024;
-      const aux = GRATE | (((3 | ((h >>> 8) << 3)) & 0xffff) << 16);
-      const P = (a: number, b: number): Vec3 => [
-        x + q.d[0] * a + l[0] * b,
-        y,
-        z + q.d[1] * a + l[1] * b,
-      ];
-      m.quad(
-        [P(-HL, HW), P(HL, HW), P(HL, -HW), P(-HL, -HW)],
-        UP,
-        [
-          [0, 0],
-          [1, 0],
-          [1, 1],
-          [0, 1],
-        ],
-        WALK_COVER_MAT,
-        aux,
-      );
-    }
-  }
 }
 
 export function buildTile(
@@ -9378,10 +9301,7 @@ export function buildTile(
         }
       }
     }
-    if (lod === 0) {
-      walkCovers(ctx, m, ci, land, inTile, poles);
-      gutterGrates(ctx, m, ci, land, inTile);
-    }
+    if (lod === 0) walkCovers(ctx, m, ci, land, inTile, poles);
   }
 
   // Overhead guide signs before signalized junctions (LOD1 keeps panel and
