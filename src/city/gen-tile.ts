@@ -6569,14 +6569,23 @@ export function treeSpecies(x: number, z: number): number {
   return pick < 45 ? TREE.zelkova : pick < 75 ? TREE.ginkgo : TREE.columnar;
 }
 
+/**
+ * Crown shape per species, as fractions of the tree height: clear trunk to
+ * the crown, the crown ellipsoid's horizontal and vertical radii, and
+ * `flare` (radius x (1 + flare) at the top, x (1 - flare) at the bottom:
+ * > 0 a vase that widens as it rises, < 0 an ovoid narrowing upward).
+ */
 const TREE_SHAPE = [
-  // zelkova: broad vase, crowns widen and spread as they rise.
-  {trunk: 0.4, r0: 0.22, r1: 0.32, spread: 0.075, step: 0.38, taper: -0.12},
-  // ginkgo: loose upright cone, crowns shrink toward the top.
-  {trunk: 0.3, r0: 0.2, r1: 0.25, spread: 0.05, step: 0.5, taper: 0.3},
+  // zelkova: broad vase, a full rounded dome wider at the top.
+  {trunk: 0.38, rx: 0.3, ry: 0.27, flare: 0.18},
+  // ginkgo: upright ovoid narrowing to a blunt point.
+  {trunk: 0.3, rx: 0.21, ry: 0.35, flare: -0.32},
   // columnar (pruned street tree): narrow stacked column.
-  {trunk: 0.22, r0: 0.14, r1: 0.17, spread: 0.02, step: 0.62, taper: 0.1},
+  {trunk: 0.22, rx: 0.14, ry: 0.4, flare: -0.08},
 ];
+
+/** LOD0 crown leaf cards (4 vertices each). */
+const CROWN_CARDS = 68;
 
 export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
   // Take exactly one value from the caller's stream, so whatever is placed
@@ -6588,72 +6597,139 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
   const S = TREE_SHAPE[sp];
   const trunkH = h * S.trunk;
   const r0 = 0.12 + h * 0.012;
+  const rx = h * S.rx;
+  const ry = h * S.ry;
+  // Crown centre: its lower tenth hangs below the top of the clear trunk.
+  const c: Vec3 = [p[0], p[1] + trunkH + ry * 0.8, p[2]];
   trunk(
     m,
     [p[0], p[1] - SINK, p[2]],
     r0,
-    trunkH + 0.5 + SINK + (sp === TREE.zelkova ? 0 : h * 0.3),
+    trunkH + SINK + ry * (sp === TREE.zelkova ? 0.5 : 1.1),
     lod === 0 ? 8 : 4,
     aux,
   );
   if (lod !== 0) {
     // Far LOD: LOD0's crown in miniature, eight of the same leaf cards
-    // (same material, tint and alpha; no dark core blob) so it keeps LOD0's
-    // colour and broken outline. Lower and upper crowns span LOD0's four
-    // stacked ones. 32 vertices (was 40 with the octahedron).
-    const r = h * (S.r0 + S.r1) * 0.5;
-    const rise = h * S.step * 0.9; // LOD0 crown centres span this
-    const c: Vec3 = [p[0], p[1] + trunkH + r * 0.6 + rise * 0.5, p[2]];
-    const lo: Vec3 = [c[0], c[1] - rise * 0.3, c[2]];
-    const hi: Vec3 = [c[0], c[1] + rise * 0.3, c[2]];
-    leafCards(m, lo, r * 1.15 * (1 + S.taper * 0.3), 4, aux, lr, 0.95, sp);
-    leafCards(m, hi, r * 1.15 * (1 - S.taper * 0.3), 4, aux, lr, 0.95, sp);
+    // (same material, tint and alpha; no dark core blob) in its outer
+    // shell, bigger to cover it. 32 vertices.
+    crownCards(m, c, rx, ry, S.flare, 8, h * 0.14, aux, lr, sp, 0.5);
     return;
   }
-  // The crown as 4-6 lobes, the leaf masses at the branch ends: each a
-  // small dark core and a tight cluster of leaf cards, on a bark limb from
-  // the top of the trunk. Lobes climb a golden-angle spiral through the
-  // crown's height (the species' spread and taper set how far out), so the
-  // silhouette breaks into clumps with sky between them instead of one
-  // even ball of cards.
-  const n = 4 + (aux % 2);
-  const rAvg = h * (S.r0 + S.r1) * 0.5;
-  const y0 = p[1] + trunkH + rAvg * 0.6;
-  const span = h * S.step * 0.9;
-  const fork: Vec3 = [p[0], p[1] + trunkH * 0.9, p[2]];
+  // A full rounded crown (Tokyo street zelkova / ginkgo, pruned into a dome
+  // or ovoid; round 3's lobes on bare limbs read as palms): three short
+  // scaffold limbs hidden inside and 68 overlapping leaf cards through the
+  // crown ellipsoid, most of them in its outer shell so the outline is
+  // leaves all round with only small sky gaps, the surface pushed in and
+  // out by three broad bulges so it is not a perfect ball. No solid core
+  // (its flat facets showed through as olive discs). 296 vertices, round
+  // 3's lobes were ~306.
+  const fork: Vec3 = [p[0], p[1] + trunkH * 0.95, p[2]];
   const a0 = lr.range(0, Math.PI * 2);
-  for (let k = 0; k < n; k++) {
-    const t = n > 1 ? k / (n - 1) : 0.5;
-    const taper = 1 - S.taper * (t - 0.5) * 2;
-    const r = rAvg * lr.range(0.5, 0.6) * taper;
-    // The top lobe sits near the axis; the rest ring outward.
-    const out =
-      k === n - 1
-        ? rAvg * 0.15
-        : (rAvg * 0.45 + h * S.spread * (0.5 + t * 0.5)) *
-          taper *
-          lr.range(0.85, 1.1);
-    const a = a0 + k * 2.39996 + lr.range(-0.3, 0.3);
-    const c: Vec3 = [
-      p[0] + Math.cos(a) * out,
-      y0 + span * t + lr.range(-0.1, 0.1) * rAvg,
-      p[2] + Math.sin(a) * out,
-    ];
+  for (let k = 0; k < 3; k++) {
+    const a = a0 + (k * Math.PI * 2) / 3;
     m.tube(
       [
         fork,
         [
-          lerp(fork[0], c[0], 0.85),
-          lerp(fork[1], c[1], 0.85),
-          lerp(fork[2], c[2], 0.85),
+          c[0] + Math.cos(a) * rx * 0.5,
+          c[1] + ry * lr.range(0, 0.35),
+          c[2] + Math.sin(a) * rx * 0.5,
         ],
       ],
-      r0 * 0.3,
+      r0 * 0.4,
       packMat(CM.bark),
       aux,
     );
-    blob(m, c, r * 0.5, 0, aux, lr, sp);
-    leafCards(m, c, r, 9, aux, lr, 0.72, sp);
+  }
+  crownCards(m, c, rx, ry, S.flare, CROWN_CARDS, h * 0.085, aux, lr, sp, 0);
+}
+
+/**
+ * `count` alpha leaf cards (the tree leaf path, CM.leaves `species`)
+ * through a crown ellipsoid at c (radii rx, ry; the horizontal radius x
+ * (1 + flare * height)), stratified over height, card centres biased to
+ * the outer shell (`inner`..1 of the radius; 0 = 0.45) and the surface
+ * modulated by three broad bulges (about +-15 %). Card half size about
+ * `size`. Normals are the ellipsoid's outward normal bent a little up, so
+ * the crown shades as one rounded mass.
+ */
+function crownCards(
+  m: CMesh,
+  c: Vec3,
+  rx: number,
+  ry: number,
+  flare: number,
+  count: number,
+  size: number,
+  aux: number,
+  rng: Rng,
+  species: number,
+  inner: number,
+) {
+  const mat = packMat(CM.leaves, species);
+  const lo = inner || 0.45;
+  const bulge: Vec3[] = [0, 1, 2].map(() => {
+    const u = rng.range(-0.6, 0.9);
+    const th = rng.range(0, Math.PI * 2);
+    const s = Math.sqrt(1 - u * u);
+    return [s * Math.cos(th), u, s * Math.sin(th)];
+  });
+  for (let k = 0; k < count; k++) {
+    const u = Math.max(
+      -0.92,
+      Math.min(0.95, ((k + rng.range(0, 1)) / count) * 2 - 1),
+    );
+    const th = rng.range(0, Math.PI * 2);
+    const s = Math.sqrt(1 - u * u);
+    const dir: Vec3 = [s * Math.cos(th), u, s * Math.sin(th)];
+    let b = 0.92;
+    for (const q of bulge) {
+      const d = dir[0] * q[0] + dir[1] * q[1] + dir[2] * q[2];
+      b += Math.max(0, d) ** 3 * 0.25;
+    }
+    // Shell-biased depth (sqrt pulls toward 1).
+    const f = lo + (1 - lo) * Math.sqrt(rng.range(0, 1));
+    const wide = rx * (1 + flare * u) * b * f;
+    const q: Vec3 = [
+      c[0] + dir[0] * wide,
+      c[1] + dir[1] * ry * b * f,
+      c[2] + dir[2] * wide,
+    ];
+    const yaw = rng.range(0, Math.PI);
+    const tilt = rng.range(-0.6, 0.6);
+    const ax: Vec3 = [Math.cos(yaw), 0, Math.sin(yaw)];
+    const ay: Vec3 = [
+      -Math.sin(yaw) * Math.sin(tilt),
+      Math.cos(tilt),
+      Math.cos(yaw) * Math.sin(tilt),
+    ];
+    const sz = size * rng.range(0.8, 1.15);
+    const ids = [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ].map(([a, v]) => {
+      const pp: Vec3 = [
+        q[0] + (ax[0] * a + ay[0] * v) * sz,
+        q[1] + (ax[1] * a + ay[1] * v) * sz,
+        q[2] + (ax[2] * a + ay[2] * v) * sz,
+      ];
+      let nn: Vec3 = [
+        (pp[0] - c[0]) / rx,
+        (pp[1] - c[1]) / ry + 0.3,
+        (pp[2] - c[2]) / rx,
+      ];
+      const l = Math.hypot(nn[0], nn[1], nn[2]) || 1;
+      nn = [nn[0] / l, nn[1] / l, nn[2] / l];
+      return m.vertex(pp, nn, (a + 1) / 2, (1 - v) / 2, mat, aux);
+    });
+    // Double-sided: emit both windings.
+    m.tri(ids[0], ids[1], ids[2]);
+    m.tri(ids[0], ids[2], ids[3]);
+    m.tri(ids[0], ids[2], ids[1]);
+    m.tri(ids[0], ids[3], ids[2]);
   }
 }
 
@@ -8422,6 +8498,158 @@ function hedges(
   }
 }
 
+/**
+ * Small utility covers set in the sidewalk (NTT, water, gas): the lid's
+ * material and its uv range. The lid floats 7 mm over the paving on a
+ * 1.2 cm wider CM.paint 0x91 quad (4 mm up) that reads as the dark gap
+ * round it. Today the lid borrows the cast-iron tree grate (CM.hedge 1)
+ * with uv 1.1..1.6, past the grate's slot rings: plain iron (0.2, 0.18,
+ * 0.16), metal 0.5, rough 0.55, wet in rain. For a cover pattern in the
+ * shader: give it its own param (e.g. CM.hedge 2) and set the uv range to
+ * 0..1 here. Contract: u along the road, v across it from the kerb side;
+ * aux high 16 bits = kind (bits 0-1: 0 NTT telecom 0.6 x 0.6 or 0.8 x
+ * 0.5, 1 water meter / valve 0.3 x 0.3 or 0.4 x 0.25, 2 gas valve
+ * 0.3 x 0.3, 3 common-duct hatch 0.9 x 0.6, along x across) | a hash
+ * (bits 2-15) for the casting pattern and wear; the lid's size in metres
+ * is the uv's world-space derivative.
+ */
+const WALK_COVER_MAT = packMat(CM.hedge, 1);
+const WALK_COVER_UV = [1.1, 1.6] as const;
+
+/**
+ * Small square utility covers in the sidewalk every 10-20 m (both sides
+ * of avenues and boulevards, one side of streets and lanes, picked per
+ * cover), in the walk's free zone: in the kerb-side slab strip of streets
+ * (between the kerb and the tactile line), between the tree pits on avenues
+ * and boulevards, beyond the tactile line on lanes. Hash-placed (no tile
+ * RNG draws); kept 9 m (avenues 5 m) from junction mouths, clear of tree
+ * pits, 1 m from lamp poles and
+ * utility poles, on sidewalk only (landing). LOD0 only, 8 vertices each.
+ */
+function walkCovers(
+  ctx: TileContext,
+  m: CMesh,
+  ci: number,
+  land: ReturnType<typeof landing>,
+  inTile: (x: number, z: number) => boolean,
+  poles: Vec2[],
+) {
+  const L = ctx.layout;
+  const hf = L.terrain.heights;
+  const c = L.chains[ci];
+  const arc = ctx.geom.arc[ci];
+  const total = arc[arc.length - 1];
+  const [s0, s1] = ctx.geom.setbacks[ci];
+  const W = ROAD_WIDTH[c.kind];
+  const SW = SIDEWALK[c.kind];
+  // Lid centre's distance from the kerb (range) and the farthest its edge
+  // may reach, per road kind: all inside the curb band (bandY is exact
+  // there; the plaza beyond is a 14 m grid that wanders off the terrain).
+  // Lanes: beyond the tactile line; streets: the slab strip by the kerb;
+  // avenues and boulevards: between the tree pits, behind the tactile line.
+  const zone: [number, number, number][] = [
+    [1.05, 1.25, 1.5],
+    [0.5, 0.8, 1.05],
+    [2.05, 2.2, 2.42],
+    [2.05, 2.2, 2.42],
+  ];
+  const upSide = hash2(ci, 3) % 2 ? 1 : -1;
+  // Avenue trees (as the tile's tree loop places them), per side.
+  const trees = new Map<number, number[]>();
+  if (c.kind >= Road.avenue)
+    for (const side of [-1, 1]) {
+      const list: number[] = [];
+      for (let t = s0 + 10; t < total - s1 - 8; t += 13)
+        list.push(avenueTreeS(L, ctx.geom, ci, side, t));
+      trees.set(side, list);
+    }
+  // Clear of the signal poles at the mouths (kerb side, up to 7 m back);
+  // avenue covers stand behind them.
+  const end = c.kind >= Road.avenue ? 5 : 9;
+  let s = s0 + end + (hash2(ci, 0xc0e1) % 6);
+  for (let k = 0; s < total - s1 - end; k++) {
+    const h = hash2(ci * 64 + k, 0xc07e);
+    const step = 10 + (h % 11);
+    const sides = c.kind >= Road.avenue ? [-1, 1] : [(h >>> 4) & 1 ? 1 : -1];
+    for (const side of sides) {
+      const hs = hash2(h, side + 7);
+      const ss = s + ((hs & 0xff) / 255 - 0.5) * 3;
+      // Clear of the street's utility poles (kerb side, every 28 m).
+      if (
+        c.kind <= Road.street &&
+        side === upSide &&
+        Math.abs(((ss - s0 - 4) % 28) - 14) > 12.8
+      )
+        continue;
+      // 3/7 NTT, 2/7 water, 1/7 gas, 1/7 duct hatch; half sizes along /
+      // across the road (two shapes each for NTT and water).
+      const kind = [0, 0, 0, 1, 1, 2, 3][(hs >>> 8) % 7];
+      const alt = (hs >>> 12) & 1;
+      const ha = [alt ? 0.4 : 0.3, alt ? 0.2 : 0.15, 0.15, 0.45][kind];
+      const [z0, z1, zMax] = zone[c.kind];
+      const u = z0 + (((hs >>> 16) & 0xff) / 255) * (z1 - z0);
+      const hc = Math.min(
+        [alt ? 0.25 : 0.3, alt ? 0.125 : 0.15, 0.15, 0.3][kind],
+        zMax - u,
+      );
+      if (u + hc > SW - 0.15) continue;
+      // 1.6 m along from a tree (its 1.2 m pit and the cover's half).
+      if ((trees.get(side) ?? []).some(t => Math.abs(t - ss) < 0.75 + ha))
+        continue;
+      const q = chainAt(c, arc, ss);
+      const l: Vec2 = [-q.d[1] * side, q.d[0] * side];
+      const x = q.p[0] + l[0] * (W / 2 + u);
+      const z = q.p[1] + l[1] * (W / 2 + u);
+      if (!inTile(x, z)) continue;
+      const P = (a: number, b: number): Vec2 => [
+        x + q.d[0] * a + l[0] * b,
+        z + q.d[1] * a + l[1] * b,
+      ];
+      const corners = [P(-ha, -hc), P(ha, -hc), P(ha, hc), P(-ha, hc)];
+      if (
+        corners.some(p => !land.ok(p[0], p[1], ci)) ||
+        poles.some(p => Math.hypot(p[0] - x, p[1] - z) < 1.0)
+      )
+        continue;
+      const y = (b: number) => bandY(hf, q, l, c.kind, u + b);
+      const aux = (kind | ((hs >>> 18) << 2)) & 0xffff;
+      const quad = (
+        grow: number,
+        dy: number,
+        mat: number,
+        a16: number,
+        uv0: number,
+        uv1: number,
+      ) => {
+        const pts = [
+          [-1, -1],
+          [1, -1],
+          [1, 1],
+          [-1, 1],
+        ].map(([a, b]): Vec3 => {
+          const p = P(a * (ha + grow), b * (hc + grow));
+          return [p[0], y(b * (hc + grow)) + dy, p[1]];
+        });
+        const ids = pts.map((p, i) =>
+          m.vertex(
+            p,
+            UP,
+            i === 1 || i === 2 ? uv1 : uv0,
+            i >= 2 ? uv1 : uv0,
+            mat,
+            a16 << 16,
+          ),
+        );
+        m.triFacing(ids[0], ids[1], ids[2], UP);
+        m.triFacing(ids[0], ids[2], ids[3], UP);
+      };
+      quad(0.012, 0.004, packMat(CM.paint, 0x91), 0, 0, 1);
+      quad(0, 0.007, WALK_COVER_MAT, aux, WALK_COVER_UV[0], WALK_COVER_UV[1]);
+    }
+    s += step;
+  }
+}
+
 export function buildTile(
   ctx: TileContext,
   tile: number,
@@ -8604,6 +8832,7 @@ export function buildTile(
         }
       }
     }
+    if (lod === 0) walkCovers(ctx, m, ci, land, inTile, poles);
   }
 
   // Overhead guide signs before signalized junctions (LOD1 keeps panel and

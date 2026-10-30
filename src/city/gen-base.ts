@@ -508,11 +508,10 @@ function plateAt(tris: Vec3[][], x: number, z: number): number | null {
  * Markings inside a signalized junction box (Tokyo practice), as paint
  * ribbons 12 mm over the plate (`BOX_PAINT`, 15 cm wide):
  * - right-turn guides (右折導流線): from each avenue approach's inner lane to
- *   the inner departure lane of the arm on its right, a straight run in, an
- *   arc just inside the junction centre and a run out; the turn's inner
- *   edge dotted (1 m on / 2 m off);
- * - the right-turn waiting box (右折待ち): the last 5 m of the run in as a
- *   solid lane-wide rectangle, where turners wait for oncoming traffic;
+ *   the inner departure lane of the arm on its right: a circular arc as
+ *   large as the box allows, tangent to both lanes, both lane edges dashed
+ *   1.5 m on / 1.5 m off (round 3's straight run-in with a solid 5 m
+ *   waiting box read as L-brackets);
  * - lane lines carried across the box (2 m on / 4 m off) to the opposite
  *   arm most in line with the approach (within 3 m), for avenues.
  * Arm frame: `dir` out of the junction, `l` its left; the approach lanes
@@ -668,39 +667,51 @@ function junctionMarkings(
   type ArmF = (typeof F)[number];
   const rightTurn = (A: ArmF, B: ArmF) => {
     const t0: Vec2 = [-A.dir[0], -A.dir[1]];
-    // The path of the inner lane's centre (its edges are the guides): a
-    // straight run in to the waiting box, a circular arc just inside the
-    // centre of the junction, a straight run out.
+    // The path of the turning lane's centre (its edges are the guides): a
+    // circular arc, as large as the box allows, tangent to the approach
+    // lane and to the exit lane (a short straight run in or out only where
+    // the box is longer one way), drawn as a rational quadratic Bezier
+    // (exact circle) through the corner where the two lanes' lines meet.
     const half = Math.min(A.lw, B.lw) / 2 - 0.1;
-    const P = A.at(0.15 + A.lw / 2);
-    const Q = B.at(-0.15 - B.lw / 2);
+    const P = A.at(0.15 + A.lw / 2, 0.6);
+    const Q = B.at(-0.15 - B.lw / 2, 0.6);
     const t1 = B.dir;
     const den = t0[0] * t1[1] - t0[1] * t1[0];
     const dP = ((Q[0] - P[0]) * t1[1] - (Q[1] - P[1]) * t1[0]) / den;
     const dQ = -((Q[0] - P[0]) * t0[1] - (Q[1] - P[1]) * t0[0]) / den;
-    if (Math.abs(den) < 0.3 || dP < 6 || dQ < 2) return;
-    const T = Math.min(dP - 5.5, dQ * 0.9, dP * 0.6);
+    if (Math.abs(den) < 0.3 || dP < 3 || dQ < 3) return;
+    const T = Math.min(dP, dQ);
     const X: Vec2 = [P[0] + t0[0] * dP, P[1] + t0[1] * dP];
     const a0: Vec2 = [X[0] - t0[0] * T, X[1] - t0[1] * T];
     const a1: Vec2 = [X[0] + t1[0] * T, X[1] + t1[1] * T];
+    // Weight cos(half the turn) makes the conic a circular arc.
+    const w = Math.sqrt(Math.max(0.05, (1 + dot(t0, t1)) / 2));
     const path: Vec2[] = [];
     const seg = (p: Vec2, q: Vec2) => {
-      const k = Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1])));
+      const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      if (len < 0.2) return;
+      const k = Math.max(1, Math.ceil(len));
       for (let i = path.length ? 1 : 0; i <= k; i++)
         path.push([lerp(p[0], q[0], i / k), lerp(p[1], q[1], i / k)]);
     };
     seg(P, a0);
-    // Arc a0 -> a1 as a quadratic through X (close to circular here).
-    for (let i = 1; i <= 12; i++) {
-      const t = i / 12;
+    const ka = Math.max(8, Math.ceil((T * 1.6) / 0.5));
+    for (let i = path.length ? 1 : 0; i <= ka; i++) {
+      const t = i / ka;
       const u = 1 - t;
+      const b0 = u * u;
+      const b1 = 2 * u * t * w;
+      const b2 = t * t;
+      const s = b0 + b1 + b2;
       path.push([
-        u * u * a0[0] + 2 * u * t * X[0] + t * t * a1[0],
-        u * u * a0[1] + 2 * u * t * X[1] + t * t * a1[1],
+        (b0 * a0[0] + b1 * X[0] + b2 * a1[0]) / s,
+        (b0 * a0[1] + b1 * X[1] + b2 * a1[1]) / s,
       ]);
     }
     seg(path[path.length - 1], Q);
-    const sides = [-half, half].map(d => {
+    // Both edges of the lane, dashed 1.5 m on / 1.5 m off (dash quads
+    // following the curve), each pair of dashes facing across the lane.
+    for (const d of [-half, half]) {
       const pts = path.map((q, i): Vec2 => {
         const a = path[Math.max(0, i - 1)];
         const b = path[Math.min(path.length - 1, i + 1)];
@@ -716,33 +727,7 @@ function junctionMarkings(
           s[i - 1] +
             Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]),
         );
-      return {pts, s};
-    });
-    // Waiting box: the last 5 m of the run in, drawn solid, with a bar at
-    // each end (path points are 1 m apart on the straight).
-    const kIn = Math.max(1, Math.ceil(dP - T));
-    const ib = Math.max(1, Math.round(kIn * (1 - 0.5 / (dP - T))));
-    const ia = Math.max(0, ib - 5);
-    // Both sides solid along the box; the inner side (+, the turn's centre
-    // side) dotted the rest of the way as the guide line.
-    for (const c of sides) piece(c, c.s[ia], c.s[ib]);
-    const g = sides[1];
-    dashed(g, 1, 2, 0, g.s[ia] - 1);
-    dashed(g, 1, 2, g.s[ib] + 1);
-    for (const i of [ia, ib]) {
-      const p = sides[0].pts[i];
-      const q = sides[1].pts[i];
-      const dx = q[0] - p[0];
-      const dz = q[1] - p[1];
-      const dl = Math.hypot(dx, dz) || 1;
-      // Overlap the side lines by half their width.
-      ribbon(
-        [
-          [p[0] - (dx / dl) * HW, p[1] - (dz / dl) * HW],
-          [q[0] + (dx / dl) * HW, q[1] + (dz / dl) * HW],
-        ],
-        0,
-      );
+      dashed({pts, s}, 1.5, 1.5, 0.3);
     }
   };
   for (const A of F) {
@@ -1176,8 +1161,86 @@ function roads(
         fan.push(ids.map(v => m.pos(v)));
       }
       const members = jg.members ?? [ji];
+      // The hull's heights interpolate between far corners, so on a slope
+      // it can lie up to ~20 cm under an arm's mouth: a hard dark step
+      // along the crosswalk. Ramp the plate up to each mouth it lies more
+      // than 2 cm under: an apron from 10 cm under the strip end (at the
+      // strip's height) down to 1 cm over the plate, 0.8-3.5 m in (12x
+      // the drop), same material and uv, ahead of the plate for the paint.
+      const ramps: Vec3[][] = [];
+      for (const k of members) {
+        const g = geom.junctions[k];
+        g.arms.forEach((a, i) => {
+          if (L.hidden?.chains[a.chain] || geom.absorbed[a.chain]) return;
+          const ar = geom.arc[a.chain];
+          const s = a.end ? ar[ar.length - 1] - a.setback : a.setback;
+          const h = chainAt(L.chains[a.chain], ar, s).h + 0.02;
+          const A = g.outline[i * 2];
+          const B = g.outline[i * 2 + 1];
+          const ex = B[0] - A[0];
+          const ez = B[1] - A[1];
+          const el = Math.hypot(ex, ez) || 1;
+          // Into the box (toward the cluster centre).
+          let nx = -ez / el;
+          let nz = ex / el;
+          if ((cx - A[0]) * nx + (cz - A[1]) * nz < 0) {
+            nx = -nx;
+            nz = -nz;
+          }
+          const cols = Math.max(2, Math.ceil(el / 1.5));
+          const at = (t: number, d: number): Vec2 => [
+            lerp(A[0], B[0], t) + nx * d,
+            lerp(A[1], B[1], t) + nz * d,
+          ];
+          let drop = 0;
+          for (let c = 0; c <= cols; c++) {
+            const q = at(c / cols, 0.3);
+            const y = plateAt(fan, q[0], q[1]);
+            if (y !== null) drop = Math.max(drop, h - y);
+          }
+          if (drop < 0.02) return;
+          const len = Math.min(3.5, Math.max(0.8, drop * 12));
+          const rows = [-0.1, len * 0.5, len].map(d =>
+            Array.from({length: cols + 1}, (_, c) => {
+              const q = at(c / cols, d);
+              const py = plateAt(fan, q[0], q[1]);
+              const y =
+                d < 0 || py === null
+                  ? h - 0.004
+                  : Math.max(py + 0.01, lerp(h, py + 0.01, d / len));
+              return [q[0], y, q[1]] as Vec3;
+            }),
+          );
+          const ids = rows.map(r =>
+            r.map(p => m.vertex(p, UP, p[0], p[2], mat, paux)),
+          );
+          for (let r = 0; r + 1 < rows.length; r++)
+            for (let c = 0; c < cols; c++) {
+              const quad = [
+                [r, c],
+                [r, c + 1],
+                [r + 1, c + 1],
+                [r + 1, c],
+              ];
+              for (const [x, y, z] of [
+                [0, 1, 2],
+                [0, 2, 3],
+              ]) {
+                const t = [quad[x], quad[y], quad[z]];
+                m.triFacing(
+                  ids[t[0][0]][t[0][1]],
+                  ids[t[1][0]][t[1][1]],
+                  ids[t[2][0]][t[2][1]],
+                  UP,
+                );
+                ramps.push(t.map(([rr, cc]) => rows[rr][cc]));
+              }
+            }
+        });
+      }
+      const surf = [...ramps, ...fan];
       if (members.some(k => L.junctions[k].signal))
-        junctionMarkings(L, geom, m, members, (x, z) => plateAt(fan, x, z));
+        junctionMarkings(L, geom, m, members, (x, z) => plateAt(surf, x, z));
     }
     for (const s of jg.slivers) {
       const ids = s.pts.map((q, i) =>
