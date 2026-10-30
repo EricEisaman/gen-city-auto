@@ -491,3 +491,45 @@ but these are the hooks:
   so the shader's "face whose uv.x span is 1.0" test for the ID plate sees 0.86/1.06); roadside
   columns have an 8 cm plinth to 0.3 m.
 - Lab: `LabInfo.train` parks one train at the site; trains in the lab are drawn but never move.
+
+### Round 3 geometry additions (for the shader engineer)
+
+- **Column arris (needs shader):** the chamfer is now CH = 0.10 m, but the bevel still shares
+  the face vertices (flat bevel normals would cost +116k in river). On `RC_COLUMN` faces the bevel
+  is the u span `[k*2hw + 2(hw-CH), (k+1)*2hw]` of face k, i.e. `fract(u / (2hw)) > 1 - CH/hw`;
+  hw = 0.5, or 0.6 when the new flag **`RC_WIDE = 0x40`** is set (flank columns, 1.2 m of u per
+  face). The interpolated normal already turns through the diagonal there; please paint a worn,
+  ~20 % paler arris band (and/or snap the normal to the diagonal) over that span so the corners
+  read as a line at 30-60 m. Roadside columns' footing collar is now 10 cm proud to 0.45 m.
+- `CM.ledLine` param 0 (white, every face x20 at night) on the walkway lantern diffusers
+  (0.6 x 0.16 x 0.22 m box on a post above the soundwall cap, 3.44 m above the deck).
+- `CM.lamp` 1 also on: the coping light line (a vertical, outward-facing 10 cm strip on every
+  non-station span, 5 mm proud of the coping lip outer face, y 1.14..1.24); the fascia up-light
+  fittings (box under the coping, outer face, every 4th bay alternating sides, with a point light);
+  the under-soffit fluorescent fittings (now 7 cm tubes 12 cm below the centre soffit); the
+  under-platform fluorescent rows; the concourse canopy underside; the back-lit platform clock
+  faces. A vertical lamp-1 face only gets the x4 night term: if the coping line reads too dim at
+  the far view, a brighter side term for lamp 1 would help it.
+- Signal heads carry lit lenses on both faces (the back face is the opposite direction's aspect);
+  lens boxes are 0.30 m and stand 9 cm proud so their sides glow from across the line.
+- `RC_TROUGH` also on the centre cable trough between the tracks (lid top 'h' at y 0.22,
+  |lateral| <= 0.32, uv.x along in bent units; sides 'v'). The centre `CM.rail` flat is now only
+  0.32..0.6 each side. Off the platforms the outer ballast shoulder drops to y -0.10 at 4.0 into
+  a concrete cess (`RC_PARAPET`, 'h', 4.0..4.3).
+- Platform coping stones: `RC_PLATFORM` 'plat' strip 0.0..0.4 m from the edge, 3 cm proud (y
+  1.48), so the white edge line now sits on a raised precast edge; the paving starts at 0.4.
+- `RC_BEAM | RC_ROADSIDE` quads along the bottom 0.45 m of both outer girder webs over roads
+  (1.5 cm proud), uv.y mapped to 1.1..1.38 so the existing hazard band fills them.
+- Pier number plates: `CM.sign` 56..63 (the JR board look) 0.4 x 0.26 m quads, uv 0..1, on the
+  street face of every column taller than 3.5 m, 2.6 m up.
+- Gado-shita infill (~1 bay in 4 off roads): corrugated `CM.paint 0xf8` or `RC_STATION` side
+  walls, a roller shutter (0xf8 with uv u = height, so the ribs run horizontally), a shutter box
+  and a 4:1 atlas sign (`CM.sign` 32..47). Logged as camera solids.
+- Downpipes: `CM.paint` PAINT_STEEL | 3 (dark green) tubes, r 0.11, on the outer column face.
+- Station: cap beams (`RC_BEAM`) under the platform slab at every station bent; two 0.45 m
+  longitudinal ribs per side; ducts `CM.paint 0x90` (r 0.16) and `0x301` (r 0.08); concourse
+  vestibule `RC_STATION | RC_GLAZED` box 1.5 m proud with `CM.frame` door frame, canopy with a
+  line-colour band (`CM.paint 0x0c`), fins and a louvre band on the upper band, AC units
+  (`CM.paint 0xd0`), a bike rack; stair towers get rooftop plant and fins. Platform: benches and
+  vending every bay in a 4-bay rhythm, platform number plates (`CM.roadSign` 24+, both faces),
+  departure boards lowered 0.35 m on rods with a clock beside them.
