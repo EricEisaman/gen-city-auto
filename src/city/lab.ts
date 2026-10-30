@@ -22,6 +22,7 @@ import {
   ROAD_WIDTH,
   SIDEWALK,
   type Block,
+  type Building,
   type BuildingKind,
   type CityLayout,
   type Elevated,
@@ -40,7 +41,10 @@ export interface LabSpec {
   kind?: BuildingKind;
   /** Rail: centre the section on a station. */
   station?: boolean;
-  /** Keep the buildings around a road or rail asset as context. */
+  /**
+   * Keep the buildings around the asset as context (for a building: its
+   * neighbours within CTX_R, minus those in front of a camera preset).
+   */
   ctx?: boolean;
 }
 
@@ -305,10 +309,44 @@ export function isolate(L: CityLayout, spec: LabSpec): Isolated {
         bb => dist2(centroid(bb.curb), centroid(blk.curb)) < 400,
       );
       mask.blocks[bi] = 0;
-      return {
+      const site: Site = {asset: 'building', building: 0, chain, s};
+      const label = `building #${i} ${b.kind} ${b.height.toFixed(0)} m`;
+      if (!spec.ctx)
+        return {
+          layout: {...L, buildings: [b], elevated: [], hidden: mask},
+          site,
+          label,
+        };
+      // In context: the streets and blocks around the subject and every
+      // building within CTX_R of it, minus those that stand between a camera
+      // preset and the subject (the presets only depend on the subject and
+      // its street, so they are computed on the subject alone first).
+      const P = centroid(b.footprint);
+      L.chains.forEach((c, ci) => {
+        if (closestOnPolyline(c.pts, P).d < CTX_R + 60) mask.chains[ci] = 0;
+      });
+      showEnds(L, mask);
+      showBlocks(L, mask, bb => dist2(centroid(bb.curb), P) < CTX_R + 80);
+      const alone: Isolated = {
         layout: {...L, buildings: [b], elevated: [], hidden: mask},
-        site: {asset: 'building', building: 0, chain, s},
-        label: `building #${i} ${b.kind} ${b.height.toFixed(0)} m`,
+        site,
+        label,
+      };
+      const near = keepBuildings(mask.blocks).filter(
+        o => o !== b && dist2(centroid(o.footprint), P) < CTX_R,
+      );
+      const views = labInfo(alone, geom, []).views;
+      const blocked = occluders(b, near, views);
+      const ctxB = near.filter(o => !blocked.has(o));
+      return {
+        layout: {
+          ...L,
+          buildings: [b, ...ctxB],
+          elevated: [],
+          hidden: mask,
+        },
+        site,
+        label: `${label} (+${ctxB.length} around, ${blocked.size} cut)`,
       };
     }
     throw new Error(`lab: only ${spec.pick - n} ${spec.kind ?? ''} buildings`);
@@ -418,6 +456,72 @@ export function isolate(L: CityLayout, spec: LabSpec): Isolated {
     site: {asset: 'rail', line: 0, s: site.s, station: site.station},
     label: `rail line ${site.line} at ${site.s.toFixed(0)} m${site.station >= 0 ? ' (station)' : ''}`,
   };
+}
+
+/** Building lab context radius (neighbour centroids, metres). */
+const CTX_R = 120;
+
+/**
+ * Neighbours that hide part of the subject from a camera preset: sight lines
+ * from each preset's eye to points just inside the subject's footprint (its
+ * corners and edge midpoints, at the heights the preset is meant to judge),
+ * marched until they enter the subject. Street-level, mid and far presets
+ * check the whole height; the elevated ones (aerial, rear, orbit) only the
+ * upper 60 %, so low foreground buildings stay.
+ */
+function occluders(
+  b: Building,
+  near: Building[],
+  views: Record<string, LabView>,
+): Set<Building> {
+  const fp = b.footprint;
+  const c = centroid(fp);
+  const pts: Vec2[] = [];
+  const inset = (q: Vec2): Vec2 => {
+    const dx = c[0] - q[0];
+    const dz = c[1] - q[1];
+    const l = Math.hypot(dx, dz) || 1;
+    return [q[0] + (dx / l) * 0.4, q[1] + (dz / l) * 0.4];
+  };
+  fp.forEach((q, k) => {
+    const r = fp[(k + 1) % fp.length];
+    pts.push(inset(q), inset([(q[0] + r[0]) / 2, (q[1] + r[1]) / 2]));
+  });
+  const top = b.base + b.height;
+  const boxes = near.map(o => ({o, box: bbox(o.footprint, 0.3)}));
+  const out = new Set<Building>();
+  const groundViews = new Set(['street', 'facade', 'service', 'mid', 'far']);
+  for (const [name, v] of Object.entries(views)) {
+    if (name === 'shell') continue;
+    const hs = groundViews.has(name)
+      ? [b.base + 2.5, b.base + b.height * 0.5, top - 0.3]
+      : [b.base + b.height * 0.4, b.base + b.height * 0.7, top - 0.3];
+    const E = v.eye;
+    for (const q of pts)
+      for (const y of hs) {
+        const dx = q[0] - E[0];
+        const dz = q[1] - E[2];
+        const n = Math.ceil(Math.hypot(dx, dz) / 0.5);
+        for (let k = 0; k <= n; k++) {
+          const t = k / n;
+          const p: Vec2 = [E[0] + dx * t, E[2] + dz * t];
+          const py = E[1] + (y - E[1]) * t;
+          if (py <= top && pointInPolygon(p, fp)) break;
+          for (const {o, box} of boxes)
+            if (
+              !out.has(o) &&
+              p[0] >= box[0] &&
+              p[0] <= box[2] &&
+              p[1] >= box[1] &&
+              p[1] <= box[3] &&
+              py < o.base + o.height + 0.5 &&
+              pointInPolygon(p, o.footprint)
+            )
+              out.add(o);
+        }
+      }
+  }
+  return out;
 }
 
 function arcOf(pts: Vec2[]) {
@@ -559,12 +663,19 @@ export function labInfo(
     // 3/4 directions on the street side and behind.
     const d34 = rot(n, 0.7 * dirU);
     const back = rot([-n[0], -n[1]], -0.6 * dirU);
+    // Mid and far at the size a player sees the building (far: >= 150 px
+    // tall at 720p for a midrise); far-iso is the old silhouette check.
+    const fitAt = (fov: number) => (0.6 * size) / Math.tan(fov / 2);
+    const dMid = Math.max(70, fitAt(0.8) * 1.15);
     views.mid = look(
-      from(C, d34, Math.max(100, fit * 1.3), y0 + 20 + b.height * 0.2),
+      from(C, d34, dMid, y0 + dMid * 0.2 + b.height * 0.2),
       C,
+      0.8,
     );
-    views.far = look(from(C, d34, Math.max(350, fit * 2.5), y0 + 60), C);
+    const dFar = Math.max(180, fitAt(0.47) * 1.3);
+    views.far = look(from(C, d34, dFar, y0 + dFar * 0.17), C, 0.47);
     views.shell = {...views.far, lod1: true};
+    views['far-iso'] = look(from(C, d34, Math.max(350, fit * 2.5), y0 + 60), C);
     // Aerial: 45 degrees down onto the roof, close enough that the roof
     // fills about 40 % of the frame (the top of the front facade shows).
     const R = v3([C[0], C[2]], top - Math.min(3, b.height * 0.15));

@@ -51,8 +51,12 @@ Asset lab (one asset alone in the full renderer, for art review):
 `lab=building|road|rail`, `pick=<n>` (0 = most typical building / most
 central signalized junction / first straight viaduct section),
 `kind=tower|glass|midrise|pencil|house|apartment|station` (buildings),
-`station=1` (rail: a station), `ctx=1` (road/rail: keep the buildings around),
-`view=<preset>`: building `street|facade|mid|far|shell|aerial|rear|service|orbit`,
+`station=1` (rail: a station), `ctx=1` (keep the buildings around; for a
+building, its streets and the neighbours within 120 m, minus any that stand
+between a preset camera and it),
+`view=<preset>`: building
+`street|facade|mid|far|shell|far-iso|aerial|rear|service|orbit` (`mid` 70 m,
+`far` 180 m at a long lens, `far-iso` the old 350 m silhouette view),
 road `eye|low|top|mid|far|shell|curb|orbit`, rail
 `side|under|along|mid|far|shell|station|orbit`. `shell` is `far` with every
 tile forced to LOD1. Traffic, pedestrians, trains and the director are off;
@@ -70,8 +74,9 @@ npm run test:perf    # frame-time measurements
 node test/puppeteer/turntable.mjs <design>   # vehicle turntable screenshots
 npm run lab -- building --kind=midrise --times=day,night   # asset lab shots
 #   test/puppeteer/lab.mjs <building|road|rail> [--pick=0] [--kind=..]
-#   [--station=1] [--ctx=1] [--views=a,b] [--times=day,golden,night,rain]
-#   [--size=1280x720] -> test/out/lab/*.png and <asset>-sheet.png
+#   [--station=1] [--ctx=0|1|0,1] [--views=a,b] [--times=day,golden,night,rain]
+#   [--size=1280x720] -> test/out/lab/*.png and <asset>[-ctx]-sheet.png
+#   (--ctx=1 shots are named <asset>-<kind><pick>-ctx-<view>-<time>.png)
 node tools/map.ts neon 1 test/out/map.png    # 2D map of a city layout
 ```
 
