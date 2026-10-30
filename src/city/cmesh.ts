@@ -9,7 +9,7 @@
 // tubes to a minimum on-screen width: hashed partial coverage for most, a
 // solid ~1 px line for overhead-line wires (CM.wire params != 0) and lamp
 // tubes (whose light is scaled by the true coverage). The high 16 bits stay
-// free (seed).
+// free (seed), except bit 31 on a tube: FINE_TUBE (distance fade).
 //
 // Meshes are split into clusters of at most 128 triangles / 255 vertices. Each
 // triangle is stored as one u32 holding three 8-bit cluster-local indices.
@@ -68,6 +68,13 @@ const TUBE_MATS =
   (1 << CM.paint) |
   (1 << CM.metal) |
   (1 << CM.lamp);
+
+/**
+ * Tube aux flag: fine hardware (OHLE droppers, arms, insulators) that
+ * city.wgsl fades out with distance (FINE_NEAR..FINE_FAR), so it does not
+ * read as beads strung along the wires at mid / far range.
+ */
+export const FINE_TUBE = 0x80000000;
 
 export const VERTEX_BYTES = 32;
 export const VERTEX_WORDS = 8;

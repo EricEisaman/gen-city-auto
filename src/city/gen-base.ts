@@ -12,7 +12,7 @@ import {
   type Vec2,
   type Vec3,
 } from '../math/vec.ts';
-import {CM, CMesh, packMat, triangulate} from './cmesh.ts';
+import {CM, CMesh, FINE_TUBE, packMat, triangulate} from './cmesh.ts';
 import {
   LANES,
   ROAD_WIDTH,
@@ -2183,6 +2183,17 @@ export const RC_RECESS = 0x40;
  * aux seed, plus a +-8 % tint and grime at the foot.
  */
 export const RC_PANELS_SHIFT = 7;
+/**
+ * Accent span, 2 bits at RC_ACCENT_SHIFT ((param >> 9) & 3) on a span's
+ * RC_FASCIA faces (the recess band, fillet and face) and the RC_PARAPET
+ * coping lip over them: one span (12 m, bent to bent) in about five, so
+ * the deck edge at 300 m has a beat of lighter / darker spans instead of
+ * one grey ribbon. 1 = repaired span (fresh, paler patch-repair mortar,
+ * crisp ends at the bents); 2 = protective coating (warm grey-beige,
+ * flatter, cleaner); 3 = old span (darker, heavier soot and run-off).
+ * 0 = normal. Wants roughly +-10-15 % value, readable at the far view.
+ */
+export const RC_ACCENT_SHIFT = 9;
 /** CM.metal params: railhead tube, rail web/foot, galvanised OLE steel. */
 export const RAIL_STEEL = 0x4000;
 export const RAIL_WEB = 0x4001;
@@ -2267,6 +2278,22 @@ function railViaduct(
   const conc = (role: number) => packMat(CM.concrete, role);
   const galv = packMat(CM.metal, GALV);
   const road = pts.map(q => onRoad(q));
+  // Under-deck fitting light. At stations, where the deck is too high for
+  // its radius to reach the ground (the columns were lit and the ground
+  // black), a second, low pool light 5.2 m over the ground under it
+  // (LightKind.station: lighting.wgsl lights nothing much above it and
+  // throws a cone onto the ground), so the ground gets its pools.
+  const underLight = (p: Vec3, r: number, col: Vec3, pool: boolean) => {
+    lights.add(p, r, col, LightKind.station);
+    const gy = hf.sample(p[0], p[2]);
+    if (pool && p[1] - gy > r - 2 && p[1] - gy > 7.5)
+      lights.add(
+        [p[0], gy + 5.2, p[2]],
+        8,
+        [col[0] * 0.6, col[1] * 0.6, col[2] * 0.6],
+        LightKind.station,
+      );
+  };
   // Stations: segments si-7 .. si+6 carry platforms instead of parapets.
   const station = new Uint8Array(segs);
   for (const si of e.stations)
@@ -2285,6 +2312,14 @@ function railViaduct(
   // Lit strip under the coping on some 120 m stretches (per side).
   const glowOf = (i: number, s: number) =>
     railHash(ei + 303, Math.floor(i / 10) * 2 + (s > 0 ? 1 : 0)) < 0.3;
+  // Accent spans (RC_ACCENT_SHIFT): one span in each run of five, at a
+  // hashed position, with a hashed kind 1..3.
+  const accentOf = (i: number) => {
+    if (station[i]) return 0;
+    const b = Math.floor(i / 5);
+    if (i - b * 5 !== Math.floor(railHash(ei + 1201, b) * 5)) return 0;
+    return 1 + Math.floor(railHash(ei + 1202, b) * 3);
+  };
   // Girder spans: segments touching a road point (bent to bent).
   const girder = new Int32Array(segs).fill(-1);
   for (let i = 0; i < segs; i++) {
@@ -2451,7 +2486,8 @@ function railViaduct(
         // Coping drip lip 19 cm deep (was 12): its soffit and the shadow
         // it throws on the fascia are the hard dark line under the pale
         // coping that carries the deck edge at range.
-        E(L(5.43, 1.25), L(5.43, 1.06), s, 0, pa, 'v');
+        const acc = accentOf(i) << RC_ACCENT_SHIFT;
+        E(L(5.43, 1.25), L(5.43, 1.06), s, 0, conc(RC_PARAPET | acc), 'v');
         E(L(5.43, 1.06), L(5.12, 1.06), 0, -1, pa, 'h');
         // Shadow band: the top 0.36 m of the fascia is set back 8 cm
         // (RC_FASCIA | RC_RECESS) under the lip, then a 45-degree
@@ -2460,13 +2496,13 @@ function railViaduct(
         // view (3-4 px), over a lit fillet line. All three keep the
         // fascia's uv.y (metres down from 1.06) so formwork, scupper
         // streaks and stains run straight across them.
-        const fa = conc(RC_FASCIA);
+        const fa = conc(RC_FASCIA | acc);
         E(
           L(5.12, 1.06),
           L(5.12, 0.7),
           s,
           0,
-          conc(RC_FASCIA | RC_RECESS),
+          conc(RC_FASCIA | RC_RECESS | acc),
           'v',
           1.06,
         );
@@ -2484,13 +2520,16 @@ function railViaduct(
           E(L(5.5, -0.06), L(5.2, -0.06), 0, -1, tq, 'h');
         }
       }
-      if (s > 0) {
-        // Cable tray along the inner face of the +1 edge beam / girder
-        // (bracketed to it), 0.85 m under the centre soffit: a 0.58 m
-        // galvanised bottom and a 15 cm lip, so the underside has a
-        // service run along it.
-        E(L(2.8, -1.25), L(3.38, -1.25), 0, -1, galv, 'h');
-        E(L(2.8, -1.1), L(2.8, -1.25), -s, 0, galv, 'v');
+      if (s > 0 && g < 0 && !st) {
+        // Cable tray along the +1 side just inside the column line, hung
+        // under the transverse beams' haunches (y -2.95, 2.55 m under the
+        // centre soffit: at -1.25 it was hidden between the beams from the
+        // ground): a 0.6 m galvanised bottom, 20 cm lips both sides and the
+        // cable bundle showing over them, on drop rods every bay.
+        E(L(2.7, -2.95), L(3.3, -2.95), 0, -1, galv, 'h');
+        E(L(2.7, -2.75), L(2.7, -2.95), -s, 0, galv, 'v');
+        E(L(3.3, -2.75), L(3.3, -2.95), s, 0, galv, 'v');
+        E(L(2.72, -2.8), L(3.28, -2.8), 0, 1, packMat(CM.paint, 0x301), 'h');
       }
       const beam = conc(RC_BEAM);
       if (g < 0) {
@@ -2886,13 +2925,76 @@ function railViaduct(
             return [p[0] + d[0] * 0.28, y, p[2] + d[1] * 0.28];
           };
           const conduit = packMat(CM.paint, 0x90);
-          const ys = s > 0 ? hs[i] - 1.27 : cTop - 0.05;
+          const tray = s > 0 && !inStation;
+          const ys = tray ? hs[i] - 2.85 : cTop - 0.05;
           const run = [at(g + 0.15), at(ys)];
-          if (s > 0) {
-            run.push(at(ys, 3.1));
+          if (tray) {
+            run.push(at(ys, 3.0));
             m.box(at(g + 1.6, cx - 0.04), [0.08, 0.2, 0.15], conduit, yaw);
           }
           m.tube(run, 0.04, conduit);
+        }
+        // Maintenance ladder up the street face of about one bent in ten
+        // (alternating sides, not where a soundwall is): a caged steel
+        // ladder from 2.3 m (anti-climb gap) on stand-offs to the column,
+        // edge beam and fascia, its stiles carried 1.05 m over the coping
+        // and over into the walkway: a vertical line down the pier and a
+        // hoop over the parapet line, every ~120 m.
+        if (
+          !inStation &&
+          !flank &&
+          h > 4 &&
+          no % 10 === 5 &&
+          s === ((no / 10) & 1 ? 1 : -1) &&
+          i < segs &&
+          !wallOf(i) &&
+          !wallOf(W(i - 1) % segs)
+        ) {
+          const X = 5.75;
+          const A = (x: number, y: number, a: number): Vec3 => {
+            const p = P(i, s * x, 0);
+            return [p[0] + d[0] * a, y, p[2] + d[1] * a];
+          };
+          const yb = g + 2.3;
+          const yt = hs[i] + 2.3;
+          const yc = hs[i] + 1.25;
+          for (const a of [-0.22, 0.22]) {
+            m.tube(
+              [A(X, yb, a), A(X, yt, a), A(5.15, yt, a), A(5.15, yc, a)],
+              0.03,
+              galv,
+            );
+            // Stand-offs: column face, edge beam, fascia.
+            for (const [y, x] of [
+              [g + 3.0, 4.4],
+              [hs[i] - 1.6, 4.4],
+              [hs[i] - 0.2, 5.2],
+            ])
+              m.tube([A(X, y, a), A(x, y, a)], 0.022, galv, FINE_TUBE);
+          }
+          for (let y = yb + 0.3; y < yc; y += 0.9)
+            m.tube([A(X, y, -0.22), A(X, y, 0.22)], 0.016, galv, FINE_TUBE);
+          // Cage: hoops every 1.4 m from 2.2 m up the ladder, three bars.
+          const cage: [number, number][] = [
+            [X, -0.36],
+            [X + 0.55, -0.36],
+            [X + 0.72, 0],
+            [X + 0.55, 0.36],
+            [X, 0.36],
+          ];
+          const h0 = yb + 2.2;
+          let h1 = h0;
+          for (let y = h0; y < hs[i] + 0.9; y += 1.8) {
+            m.tube(
+              cage.map(([x, a]) => A(x, y, a)),
+              0.02,
+              galv,
+            );
+            h1 = y;
+          }
+          if (h1 > h0)
+            for (const [x, a] of cage.slice(1, 4))
+              m.tube([A(x, h0, a), A(x, h1, a)], 0.018, galv);
         }
         // Bridge number plate on the street face of every column, 2.6 m
         // up: a white enamel plate (the JR board look: white, dark text,
@@ -3035,11 +3137,11 @@ function railViaduct(
       if (flank || (no % 4 === 2 && hs[i] - ground > 6)) {
         const u = P(i, 0, flank ? -3.06 : -2.36);
         m.box(u, [0.5, 0.06, 0.2], packMat(CM.lamp, 1), yaw, 0, false);
-        lights.add(
+        underLight(
           [u[0], u[1] - 0.4, u[2]],
           11,
           [LED[0] * 0.8, LED[1] * 0.8, LED[2] * 0.8],
-          LightKind.station,
+          inStation,
         );
       }
     });
@@ -3308,8 +3410,9 @@ function railViaduct(
     line(k => P(k, c + stag(k), CW), 0.007, packMat(CM.wire, 1));
     line(k => P(k, c + stag(k), MW - 0.5 * sag(k)), 0.008, packMat(CM.wire, 2));
     // Droppers every 6 m (two a bay, none at the gantries), on the
-    // straight lines between the wires' points; wire tubes stay a solid
-    // ~1 px line at range (city.wgsl), so they read as a comb.
+    // straight lines between the wires' points. FINE_TUBE: city.wgsl fades
+    // them out past ~45-100 m, where each one was a 1 px dot and the pair
+    // of wires read as a dashed line; the wires themselves stay solid.
     const lp = (a: Vec3, b: Vec3, t: number): Vec3 => [
       lerp(a[0], b[0], t),
       lerp(a[1], b[1], t),
@@ -3322,7 +3425,12 @@ function railViaduct(
         const c1 = P(k + 1, c + stag(k + 1), CW);
         const m0 = P(k, c + stag(k), MW - 0.5 * sag(k));
         const m1 = P(k + 1, c + stag(k + 1), MW - 0.5 * sag(k + 1));
-        m.tube([lp(c0, c1, t), lp(m0, m1, t)], 0.007, packMat(CM.wire, 2));
+        m.tube(
+          [lp(c0, c1, t), lp(m0, m1, t)],
+          0.007,
+          packMat(CM.wire, 2),
+          FINE_TUBE,
+        );
       }
   }
   // Coping light line on every non-station span, both sides: a 9 cm LED
@@ -3343,39 +3451,137 @@ function railViaduct(
       }
     }
   }
-  for (const s of [-1, 1]) {
-    // Feeders: a point every 2nd bent is enough for their sag.
-    line(k => P(k, s * 4.8, 9.0 - 0.6 * sag(k)), 0.012, packMat(CM.wire, 2), 2);
-  }
+  // One feeder, on the -1 masts (a point every 2nd bent is enough for its
+  // sag): with one each side the line carried six parallel wires, which
+  // at mid / far range merged into a grey hatch over the deck.
+  line(k => P(k, -4.8, 9.0 - 0.6 * sag(k)), 0.012, packMat(CM.wire, 2), 2);
 
+  // OHLE structures every 4th point. Most are the light Warren-truss
+  // portal; per gantry (a hash of the line and point, not the layout RNG)
+  // about one in four is a pair of cantilever masts (no beam over the
+  // centre: a gap in the row of portals), one in six a heavy box-girder
+  // portal on taller H masts, and every signal location (24 points) a
+  // signal bridge: a box girder with a grated walkway and handrails over
+  // it and an access ladder up one mast. About one gantry in three carries
+  // a disconnector (an isolator box high on a mast with an operating rod
+  // down to a handle box at walkway level and a jumper to the feeder).
+  const ins = packMat(CM.paint, INSULATOR);
+  const cab = packMat(CM.paint, 0x90);
   for (let i = 0; i < n; i++) {
     if (!isGantry(i)) continue;
     const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
+    const d = fr[i].d;
+    const gh = railHash(ei + 707, i);
+    const kind = i % 24 === 0 ? 3 : gh < 0.17 ? 2 : gh < 0.42 ? 1 : 0;
+    const heavy = kind >= 2;
+    // Mast tops: 9.0 (feeder support); heavy portals 9.6.
+    const mTop = heavy ? 9.6 : 9.0;
     for (const s of [-1, 1]) {
-      const b = P(i, s * 4.8, 1.2 + 3.9);
-      m.box(b, [0.09, 3.9, 0.15], galv, yaw);
+      const b = P(i, s * 4.8, (1.2 + mTop) / 2);
+      if (heavy) {
+        // H mast: two flanges and a web, wider than the light masts.
+        for (const f of [-1, 1])
+          m.box(
+            [b[0] + d[0] * f * 0.13, b[1], b[2] + d[1] * f * 0.13],
+            [0.15, (mTop - 1.2) / 2, 0.025],
+            galv,
+            yaw,
+          );
+        m.box(b, [0.025, (mTop - 1.2) / 2, 0.11], galv, yaw);
+        // Cap plate.
+        m.box(P(i, s * 4.8, mTop + 0.03), [0.19, 0.03, 0.19], galv, yaw);
+      } else m.box(b, [0.09, (mTop - 1.2) / 2, 0.15], galv, yaw);
     }
-    // Warren truss: two chords and one zig-zag of diagonals.
-    m.tube([P(i, -4.8, 8.6), P(i, 4.8, 8.6)], 0.06, galv);
-    m.tube([P(i, -4.8, 7.9), P(i, 4.8, 7.9)], 0.06, galv);
-    const zz: Vec3[] = [];
-    for (let k = 0; k <= 12; k++)
-      zz.push(P(i, -4.8 + k * 0.8, k % 2 ? 8.6 : 7.9));
-    m.tube(zz, 0.035, galv);
-    const ins = packMat(CM.paint, INSULATOR);
+    if (kind === 0) {
+      // Warren truss: two chords and one zig-zag of diagonals.
+      m.tube([P(i, -4.8, 8.6), P(i, 4.8, 8.6)], 0.06, galv);
+      m.tube([P(i, -4.8, 7.9), P(i, 4.8, 7.9)], 0.06, galv);
+      const zz: Vec3[] = [];
+      for (let k = 0; k <= 12; k++)
+        zz.push(P(i, -4.8 + k * 0.8, k % 2 ? 8.6 : 7.9));
+      m.tube(zz, 0.035, galv);
+    } else if (kind === 1) {
+      // Cantilevers: a horizontal arm over each track at 7.9 m with a
+      // raking tie from the mast head; the centre stays open.
+      for (const s of [-1, 1]) {
+        m.tube([P(i, s * 4.8, 7.9), P(i, s * 1.3, 7.9)], 0.055, galv);
+        m.tube([P(i, s * 4.8, 8.95), P(i, s * 2.0, 7.95)], 0.035, galv);
+      }
+    } else {
+      // Box girder 0.8 m deep across both tracks (a solid bar at range).
+      m.box(P(i, 0, 8.3), [5.05, 0.4, 0.17], galv, yaw, 0, false);
+      if (kind === 3) {
+        // Signal bridge: a grated walkway on the girder, handrails both
+        // sides, and a ladder up the -1 mast.
+        m.box(P(i, 0, 8.74), [5.2, 0.04, 0.55], galv, yaw, 0, false);
+        for (const f of [-1, 1]) {
+          const R = (o: number, y: number): Vec3 => {
+            const p = P(i, o, y);
+            return [p[0] + d[0] * f * 0.5, p[1], p[2] + d[1] * f * 0.5];
+          };
+          m.tube([R(-5.15, 9.85), R(5.15, 9.85)], 0.03, galv);
+          m.tube([R(-5.15, 9.3), R(5.15, 9.3)], 0.02, galv);
+          for (const o of [-5.15, 0, 5.15])
+            m.tube([R(o, 8.78), R(o, 9.85)], 0.025, galv);
+        }
+        for (const f of [-1, 1]) {
+          const L = (y: number): Vec3 => {
+            const p = P(i, -5.12, y);
+            return [p[0] + d[0] * f * 0.2, p[1], p[2] + d[1] * f * 0.2];
+          };
+          m.tube([L(1.25), L(9.85)], 0.025, galv);
+        }
+        for (let y = 1.7; y < 8.7; y += 0.9) {
+          const p = P(i, -5.12, y);
+          m.tube(
+            [
+              [p[0] - d[0] * 0.2, y, p[2] - d[1] * 0.2],
+              [p[0] + d[0] * 0.2, y, p[2] + d[1] * 0.2],
+            ],
+            0.015,
+            galv,
+            FINE_TUBE,
+          );
+        }
+      }
+    }
+    // Disconnector on one mast of about one gantry in three.
+    if (railHash(ei + 708, i) < 0.33) {
+      const s = railHash(ei + 709, i) < 0.5 ? -1 : 1;
+      const x = 4.8 + (heavy ? 0.35 : 0.3);
+      m.box(P(i, s * x, 7.05), [0.22, 0.34, 0.28], cab, yaw, 0, false);
+      m.box(P(i, s * x, 1.85), [0.14, 0.2, 0.14], cab, yaw);
+      m.tube(
+        [P(i, s * (x - 0.05), 2.05), P(i, s * (x - 0.05), 6.68)],
+        0.02,
+        galv,
+        FINE_TUBE,
+      );
+      // Jumper from the isolator up to the feeder (on its side) or the
+      // mast head, on a post insulator.
+      m.tube([P(i, s * x, 7.39), P(i, s * x, 7.8)], 0.05, ins, FINE_TUBE);
+      m.tube(
+        [P(i, s * x, 7.8), P(i, s * 4.8, s < 0 ? 9.0 : mTop - 0.2)],
+        0.012,
+        packMat(CM.wire, 2),
+        FINE_TUBE,
+      );
+    }
     for (const c of [-2.1, 2.1]) {
       // Drop pole outboard of the track, hung from the bottom chord on an
       // insulator; a messenger support arm, and a registration arm on a
       // hinge insulator whose tip is the contact wire's support point (the
-      // same staggered point the wire polyline passes through).
+      // same staggered point the wire polyline passes through). All fine
+      // hardware (FINE_TUBE): gone past ~100 m, where it beaded the wires.
       const st = stag(i);
       const sg = Math.sign(c);
       const xd = c + sg * 0.9;
-      m.tube([P(i, xd, 7.9), P(i, xd, 7.45)], 0.065, ins);
-      m.tube([P(i, xd, 7.45), P(i, xd, CW + 0.55)], 0.04, galv);
-      m.tube([P(i, xd, MW), P(i, c + st, MW)], 0.03, galv);
-      m.tube([P(i, xd, CW + 0.55), P(i, xd, CW + 0.22)], 0.055, ins);
-      m.tube([P(i, xd, CW + 0.22), P(i, c + st, CW)], 0.025, galv);
+      const F = FINE_TUBE;
+      m.tube([P(i, xd, 7.9), P(i, xd, 7.45)], 0.065, ins, F);
+      m.tube([P(i, xd, 7.45), P(i, xd, CW + 0.55)], 0.04, galv, F);
+      m.tube([P(i, xd, MW), P(i, c + st, MW)], 0.03, galv, F);
+      m.tube([P(i, xd, CW + 0.55), P(i, xd, CW + 0.22)], 0.055, ins, F);
+      m.tube([P(i, xd, CW + 0.22), P(i, c + st, CW)], 0.025, galv, F);
       // Signal heads every 24 points (288 bent units), facing the trains
       // that approach on this track (left-hand running). Both lamps lit
       // (hash aspect: green over yellow, yellow over yellow, red over red).
@@ -3435,13 +3641,23 @@ function railViaduct(
     // shows a sequence of separate pools, not one white floor.
     const c = mid(i, 0.5, 0, -0.6);
     if (i % 2 === 1 && c[1] - hf.sample(c[0], c[2]) > 5)
-      lights.add(
+      underLight(
         c,
         9,
         [cool[0] * 0.5, cool[1] * 0.5, cool[2] * 0.5],
-        LightKind.station,
+        station[i] === 1,
       );
     const st = station[i] === 1;
+    // Drop rods for the cable tray (non-station, non-girder spans), every
+    // 4th bay (the tray reads from its lips; rods are fine hardware).
+    if (!st && girder[i] < 0 && i % 4 === 1)
+      for (const x of [2.72, 3.28])
+        m.tube(
+          [mid(i, 0.5, x, -0.4), mid(i, 0.5, x, -2.76)],
+          0.012,
+          galv,
+          FINE_TUBE,
+        );
     // Walkway lamp every 3rd bay, alternating sides, on a bracket off the
     // parapet / soundwall (mid-bay, clear of masts and bents).
     // The post rises clear of the soundwall cap (2.87) so the lantern is
@@ -3573,6 +3789,87 @@ function railViaduct(
             uv,
             jm,
           );
+      }
+    }
+    // At the same expansion joints: a coping step (a 0.6 m precast joint
+    // block standing 25 cm proud of the coping and 6 cm outboard of the
+    // lip: a notch in the deck's top line every 48 m in every side and 3/4
+    // view) and a galvanised finger plate across the walkway troughs.
+    if (i % 4 === 2 && !station[W(i - 1) % segs]) {
+      const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
+      const wall = wallOf(i) || wallOf(W(i - 1) % segs);
+      for (const s of [-1, 1]) {
+        const x0 = wall ? 5.18 : 4.95;
+        m.box(
+          P(i, s * ((x0 + 5.49) / 2), 1.27),
+          [(5.49 - x0) / 2, 0.23, 0.3],
+          conc(RC_PARAPET),
+          yaw,
+          seed(i),
+        );
+        const d = fr[i].d;
+        const F = (x: number, a: number): Vec3 => {
+          const p = P(i, s * x, 0.365);
+          return [p[0] + d[0] * a, p[1], p[2] + d[1] * a];
+        };
+        m.quad(
+          [F(4.31, -0.2), F(4.93, -0.2), F(4.93, 0.2), F(4.31, 0.2)],
+          UP,
+          [
+            [0, 0],
+            [0.62, 0],
+            [0.62, 0.4],
+            [0, 0.4],
+          ],
+          galv,
+        );
+      }
+    }
+    // Lineside equipment cabinets (location cases) on the walkway in about
+    // one span in five, off soundwall stretches: a 1.6 m pale grey case
+    // with a rain hood, standing 0.7 m above the coping, so the parapet
+    // line has a profile break wherever the deck is seen edge-on.
+    if (!wallOf(i) && railHash(ei + 808, i) < 0.2) {
+      const s = railHash(ei + 809, i) < 0.5 ? -1 : 1;
+      const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
+      const tc = 0.28 + railHash(ei + 810, i) * 0.1;
+      const cm = packMat(CM.paint, 0xd0);
+      const c0 = mid(i, tc, s * 4.62, 0.36 + 0.8);
+      m.box(c0, [0.28, 0.8, 0.55], cm, yaw);
+      const c1 = mid(i, tc, s * 4.6, 1.99);
+      m.box(c1, [0.36, 0.035, 0.65], cm, yaw, 0, false);
+      // A second, shorter case beside it on about half of them.
+      if (railHash(ei + 811, i) < 0.5) {
+        const t2 = tc + 1.4 / (dist2(pts[i], pts[W(i + 1)]) || 12);
+        m.box(mid(i, t2, s * 4.62, 0.36 + 0.6), [0.28, 0.6, 0.4], cm, yaw);
+        m.box(mid(i, t2, s * 4.6, 1.59), [0.34, 0.03, 0.48], cm, yaw, 0, false);
+      }
+    }
+    // Span number plates: a white enamel plate (the JR board look, CM.sign
+    // 56..63) 1.2 x 0.5 m on the fascia in about one span in five, both
+    // sides, below the outer cable trough, out of step with the accent
+    // spans: a bright tick on the grey edge that survives to ~300 m.
+    if (i % 5 === (ei * 3 + 1) % 5) {
+      for (const s of [-1, 1]) {
+        const l = fr[i].l;
+        const d = fr[i].d;
+        const c = mid(i, 0.28, s * 5.215, -0.45);
+        const A = (x: number, y: number): Vec3 => [
+          c[0] + d[0] * x * s,
+          c[1] + y,
+          c[2] + d[1] * x * s,
+        ];
+        m.quad(
+          [A(-0.6, 0.25), A(0.6, 0.25), A(0.6, -0.25), A(-0.6, -0.25)],
+          [l[0] * s, 0, l[1] * s],
+          [
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 1],
+          ],
+          packMat(CM.sign, 56 + ((ei + i) % 8)),
+        );
       }
     }
     const t = (scupperU(seed(i) >>> 16, i) - 12 * i) / 12;
@@ -3741,34 +4038,94 @@ function railViaduct(
         flat(r0, r1, r2, r3, UP, len, 5.8, packMat(CM.paint, 0xf8));
         flat(r0, r1, r2, r3, [0, -1, 0], len, 5.8, metal);
         {
-          // Roof top furniture: a polycarbonate skylight strip down the
-          // middle of every bay (CM.paint SKYLIGHT, 0.8 m wide, 4 cm
-          // proud, stopping 0.3 m short of the T-frames), a ridge
-          // ventilator with a cap every 2nd bay near the high edge.
+          // Roof top, for the view from the train (the eye is only ~0.4 m
+          // over the roof plane there, so anything flush is invisible):
+          // standing seams every ~0.9 m down the slope (5 cm tents, the
+          // shader's 0.9 m sheet laps sit between them), a raised ridge
+          // rooflight down the middle of every bay (CM.paint SKYLIGHT, a
+          // 0.84 m wide, 0.24 m tall prism stopping 0.3 m short of the
+          // T-frames), a capped ventilator in every bay near the high edge
+          // and an upstand lip on the low (gutter) edge.
           const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
+          const d = fr[i].d;
           const ry = (x: number) => CY + 0.15 + (0.3 * (x - 4.0)) / 5.8;
-          m.box(
-            mid(i, 0.5, o(7.0), ry(7.0) + 0.04),
-            [0.4, 0.04, len / 2 - 0.3],
-            packMat(CM.paint, SKYLIGHT),
-            yaw,
-          );
-          if ((i - si) % 2 === 0) {
-            m.box(
-              mid(i, 0.25, o(8.9), ry(8.9) + 0.18),
-              [0.22, 0.18, 0.3],
-              packMat(CM.paint, 0x90),
-              yaw,
-            );
-            m.box(
-              mid(i, 0.25, o(8.9), ry(8.9) + 0.39),
-              [0.3, 0.03, 0.38],
-              packMat(CM.paint, 0x90),
-              yaw,
-              0,
-              false,
-            );
+          const R = (t: number, x: number, dy: number) =>
+            mid(i, t, o(x), ry(x) + dy);
+          const roofM = packMat(CM.paint, 0xf8);
+          const ns = Math.round(len / 0.9);
+          for (let q = 1; q < ns; q++) {
+            const u = (q * len) / ns;
+            const t = u / len;
+            const dt = 0.05 / len;
+            for (const f of [-1, 1]) {
+              const nr: Vec3 = [d[0] * f * 0.7071, 0.7071, d[1] * f * 0.7071];
+              m.quad(
+                [
+                  R(t + f * dt, 4.0, 0),
+                  R(t + f * dt, 9.8, 0),
+                  R(t, 9.8, 0.05),
+                  R(t, 4.0, 0.05),
+                ],
+                nr,
+                [
+                  [u + f * 0.05, 0],
+                  [u + f * 0.05, 5.8],
+                  [u, 5.8],
+                  [u, 0],
+                ],
+                roofM,
+              );
+            }
           }
+          // Ridge rooflight.
+          {
+            const sk = packMat(CM.paint, SKYLIGHT);
+            const ta = 0.3 / len;
+            const tb = 1 - ta;
+            const ll = fr[i].l;
+            for (const f of [-1, 1]) {
+              const x0 = 7.0 + f * 0.42;
+              const nr: Vec3 = [
+                ll[0] * side * f * 0.5,
+                0.866,
+                ll[1] * side * f * 0.5,
+              ];
+              m.quad(
+                [
+                  R(ta, x0, 0),
+                  R(tb, x0, 0),
+                  R(tb, 7.0, 0.24),
+                  R(ta, 7.0, 0.24),
+                ],
+                nr,
+                [
+                  [0, 0],
+                  [len - 0.6, 0],
+                  [len - 0.6, 0.48],
+                  [0, 0.48],
+                ],
+                sk,
+              );
+            }
+            for (const [t, f] of [
+              [ta, -1],
+              [tb, 1],
+            ] as [number, number][]) {
+              const nf: Vec3 = [d[0] * f, 0, d[1] * f];
+              const a0 = m.vertex(R(t, 6.58, 0), nf, 0, 0, sk);
+              const a1 = m.vertex(R(t, 7.42, 0), nf, 0.84, 0, sk);
+              const a2 = m.vertex(R(t, 7.0, 0.24), nf, 0.42, 0.24, sk);
+              m.triFacing(a0, a1, a2, nf);
+            }
+          }
+          const vm = packMat(CM.paint, 0x90);
+          m.box(R(0.5, 8.9, 0.25), [0.3, 0.25, 0.45], vm, yaw);
+          m.box(R(0.5, 8.9, 0.54), [0.4, 0.04, 0.55], vm, yaw, 0, false);
+          // Gutter lip on the low edge (both faces), only 6 cm: the train
+          // eye is ~0.2 m over this edge, a taller upstand hid the roof.
+          const up = (p: Vec3, y: number): Vec3 => [p[0], p[1] + y, p[2]];
+          flat(up(r1, 0.06), up(r0, 0.06), r0, r1, inn, len, 0.06, vm);
+          flat(up(r0, 0.06), up(r1, 0.06), r1, r0, out, len, 0.06, vm);
         }
         // Track-side fascia 0.6 m deep, a light-box strip along its lower
         // edge (lit face down and toward the track), back fascia 0.3 m.
@@ -3863,10 +4220,12 @@ function railViaduct(
             false,
           );
       }
-      // Eaves gutter along the low (track-side) roof edge.
+      // Eaves gutter hung along the low (track-side) roof edge, just under
+      // it (on top of the roof it stood in the train eye's line of sight
+      // and hid the roof).
       {
         const gp: Vec3[] = [];
-        for (let k = i0; k <= i1; k++) gp.push(P(k, o(4.12), CY + 0.22));
+        for (let k = i0; k <= i1; k++) gp.push(P(k, o(3.93), CY + 0.07));
         m.tube(gp, 0.075, packMat(CM.paint, 0x90));
       }
       // Hanging name boards facing the track, and a big one on the back
@@ -4209,7 +4568,7 @@ function railViaduct(
       }
       for (let k = i0; k < i1; k += 2) {
         const c = mid(k, 0.5, o(7.45), -1.2);
-        lights.add([c[0], c[1] - 0.6, c[2]], 9, cool, LightKind.station);
+        underLight([c[0], c[1] - 0.6, c[2]], 9, cool, true);
       }
     }
     // Glazed concourse under the deck: two bays between the station bents,

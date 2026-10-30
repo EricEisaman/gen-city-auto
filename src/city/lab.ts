@@ -458,6 +458,38 @@ export function isolate(L: CityLayout, spec: LabSpec): Isolated {
     station: site.station,
   };
   const label = `rail line ${site.line} at ${site.s.toFixed(0)} m${site.station >= 0 ? ' (station)' : ''}`;
+  // Park and lawn trees stand at random: one could fill the side preset's
+  // lens (a crown in front of rail-station0-side-*). Hide the planted
+  // blocks its sight line crosses in the 30 m in front of the eye (their
+  // trees go with them; the lab shows the asset, not the park).
+  {
+    const sv = labInfo(
+      {
+        layout: {...L, buildings: [], elevated: [e], hidden: mask},
+        site: railSite,
+        label,
+      },
+      geom,
+      [],
+    ).views.side;
+    const E = sv.eye;
+    const T = sv.target;
+    const len = Math.hypot(T[0] - E[0], T[2] - E[2]) || 1;
+    for (let d = 0; d <= Math.min(30, len); d += 1) {
+      const q: Vec2 = [
+        E[0] + ((T[0] - E[0]) * d) / len,
+        E[2] + ((T[2] - E[2]) * d) / len,
+      ];
+      L.blocks.forEach((b, bi) => {
+        if (
+          !mask.blocks[bi] &&
+          (b.park || (b.fill ?? []).some(f => f.kind === 'green')) &&
+          pointInPolygon(q, b.curb)
+        )
+          mask.blocks[bi] = 1;
+      });
+    }
+  }
   if (!spec.ctx)
     return {
       layout: {...L, buildings: [], elevated: [e], hidden: mask},

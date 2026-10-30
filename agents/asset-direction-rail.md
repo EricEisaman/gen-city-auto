@@ -652,3 +652,59 @@ but these are the hooks:
     box's +x face with the same box UVs (u 0..0.9, v 0..1.8). **Shader ask:** draw the window and
     header only where `(param & 0x300) == 0x300` (or on the street machine's mesh); the box's other
     faces then stay plain body.
+
+### Round 6 geometry additions (for the shader engineer)
+
+- **Fine OHLE hardware fade (city.wgsl vs, cmesh.ts `FINE_TUBE` = aux bit 31 on a tube):** droppers,
+  drop poles, registration / messenger arms, insulators, disconnector rods and jumpers, ladder rungs and
+  stand-offs, tray drop rods fade out (hashed coverage) between `FINE_NEAR` 45 m and `FINE_FAR` 100 m.
+  Contact, messenger and feeder wires stay solid min-width lines. Only **one feeder** now (on the -1
+  masts, 9.0 m): five overhead lines instead of six. No material change needed.
+- **Gantry variety** (per gantry hash, not the layout RNG): ~58 % light Warren truss portal (as before);
+  ~25 % **cantilever pairs** (horizontal galv arm at 7.9 m from each mast to lateral 1.3 plus a raking
+  tie; no beam over the centre); ~17 % **heavy portals**: galvanised H masts (two 0.3 m flanges + web,
+  `GALV` boxes) to 9.6 m with a cap plate and a **0.8 m deep box girder** (`GALV` box, 7.9..8.7);
+  every signal location (`i % 24 == 0`) is a **signal bridge**: the heavy portal plus a 1.1 m grated
+  walkway (`GALV` box at 8.74) with handrails at 9.3 / 9.85 and a ladder up the -1 mast. The big
+  `GALV` boxes are flat metal faces 10 m long: a little streaking / bolt-row rhythm along u (box UVs,
+  metres) would help, they read as one flat bar now.
+- **Disconnectors** on ~1 gantry in 3: `CM.paint 0x90` box (0.44 x 0.68 x 0.56 m) high on a mast's
+  outer face at 7.05 m, a handle box at 1.85 m, a FINE operating rod and an insulator + jumper.
+- **Expansion joints** (`i % 4 == 2`, same as the round-5 cover plates): a **coping step** - an
+  `RC_PARAPET` box 0.6 m along, y 1.04..1.50 (25 cm proud of the coping top), lateral 4.95..5.49
+  (5.18.. on soundwall stretches), box UVs (metres) - and a galv **finger plate** quad across the
+  walkway troughs (lateral 4.31..4.93, y 0.365, uv metres).
+- **Accent spans: `RC_ACCENT_SHIFT` = 9, `(param >> 9) & 3`** on one span in ~5 (hashed position per
+  run of five, hashed kind): set on that span's `RC_FASCIA` faces (recess band, fillet, face; with
+  `RC_RECESS` where applicable) and on the `RC_PARAPET` coping lip outer face. **Shader ask (#2):**
+  1 = repaired span (fresh, paler patch-repair mortar, crisp ends at the bents), 2 = protective
+  coating (warm grey-beige, flatter, cleaner), 3 = old span (darker, heavier soot / run-off);
+  roughly +-10-15 % value so a 12 m span reads as lighter / darker at the far view. Ignored = today.
+- **Span number plates:** `CM.sign 56..63` (the pier-plate JR board look, uv 0..1) 1.2 x 0.5 m on the
+  fascia (lateral 5.215, y -0.2..-0.7, 28 % into the span), both sides, one span in five.
+- **Lineside cabinets:** `CM.paint 0xd0` location cases (0.56 x 1.6 x 1.1 m with a rain-hood box, a
+  second 1.2 m case beside about half) on the walkway troughs (lateral 4.34..4.9) in ~1 span in 5,
+  off soundwall stretches; they stand ~0.7 m over the coping in profile.
+- **Maintenance ladders:** every 10th bent (alternating sides, off soundwalls and stations): a caged
+  galv ladder at lateral 5.75 from 2.3 m above ground to 1.05 m over the coping, stiles bent over
+  into the walkway (lateral 5.15), hoops every 1.8 m, stand-offs to the column / edge beam / fascia.
+- **Cable tray moved** to where it can be seen from the ground: lateral 2.7..3.3, bottom at y -2.95
+  (under the transverse beam haunches; it was at -1.25, hidden between beams), 20 cm lips both sides
+  (galv), a dark cable bundle top (`CM.paint 0x301`, 'h', y -2.8), drop rods every 4th bay. Only on
+  non-station, non-girder spans. The +1 conduits now bend into it at y -2.85.
+- **Station canopy roof top:** standing seams every ~0.9 m down the slope (`CM.paint 0xf8` 5 cm
+  tents, normals 45 degrees along, uv = the roof's: u along from the segment start, v 0..5.8 up the
+  slope), the skylight is now a **raised ridge rooflight** (`SKYLIGHT` prism 0.84 m wide, 0.24 m
+  tall; slopes uv u along 0..len-0.6, v 0..0.48; triangular ends), a capped ventilator in **every**
+  bay (`CM.paint 0x90`, 0.6 x 0.5 x 0.9 m, cap 0.8 x 1.1 m) and a 6 cm gutter lip (`0x90`, both
+  faces) on the low track-side edge; the round eaves gutter now hangs just under that edge (3.93,
+  CY + 0.07) instead of on the roof. The train eye is only ~0.2 m over the low edge, so the raised
+  rooflights / vents are what shows; SKYLIGHT still wants its milky polycarbonate look, and the
+  roof top's grazing view would gain from a stronger rib / sheet-lap contrast that survives
+  foreshortening (the 0.9 m laps are ~1 px tall there).
+- **Station under-deck pools:** where a station's under-deck fitting is too high for its light to
+  reach the ground, a second `LightKind.station` light (radius 8, 0.6x colour) 5.2 m above the
+  ground under it throws a pool (lighting.wgsl's high-fitting cone).
+- **Lab:** rail sites hide the park / lawn blocks the `side` preset's sight line crosses in the 30 m
+  in front of the eye (their trees go with them): a park crown filled `rail-station0-side-*`. The
+  station0 site stands in a big park, so its views (ctx and not) now show bare ground around it.

@@ -56,6 +56,15 @@ const MIN_TUBE_PX = 0.7;
 const MIN_LINE_PX = 0.7;
 const LINE_FADE = 700.0;
 const TUBE_MATS = (1u << 6u) | (1u << 11u) | (1u << 15u) | (1u << 16u) | (1u << 20u);
+// Fine hardware (aux bit 31, cmesh.ts FINE_TUBE: OHLE droppers, registration
+// and messenger arms, drop poles, insulators): at mid / far range each piece
+// is a 1 px dot, so a line of them read as beads strung along the continuous
+// wires. They fade out (hashed coverage) between FINE_NEAR and FINE_FAR and
+// leave the contact / messenger / feeder lines and the portals to carry the
+// read.
+const FINE_TUBE = 0x80000000u;
+const FINE_NEAR = 45.0;
+const FINE_FAR = 100.0;
 
 fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
   let c = clusters[visible[ii]];
@@ -100,6 +109,10 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
       } else if (isLine) {
         o.cov = max(o.cov, 0.3);
       }
+    }
+    if ((v.aux & FINE_TUBE) != 0u) {
+      let fade = 1.0 - smoothstep(FINE_NEAR, FINE_FAR, o.pos.w);
+      if (fade < 1.0) { o.cov = select(abs(o.cov), 1.0, o.cov < 0.0) * fade; }
     }
   }
   o.world = p;
