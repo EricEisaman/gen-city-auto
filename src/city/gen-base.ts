@@ -1236,6 +1236,14 @@ function expressway(
         m.box(l, [0.35, 0.1, 0.2], packMat(CM.lamp, 0));
         lights.add([l[0], l[1] - 0.5, l[2]], 30, SODIUM, LightKind.street);
       }
+      // Lamps under the deck light the street below, as on the Shuto.
+      if (hs[i] - ground > 6) {
+        for (const side of [-1, 1]) {
+          const u = P(i, side * halfW * 0.45, -2.15);
+          m.box(u, [0.5, 0.08, 0.25], packMat(CM.lamp, 0));
+          lights.add([u[0], u[1] - 0.4, u[2]], 22, LED, LightKind.street);
+        }
+      }
     }
   }
 }
