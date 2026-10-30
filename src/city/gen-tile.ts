@@ -6585,7 +6585,7 @@ const TREE_SHAPE = [
 ];
 
 /** LOD0 crown leaf cards (4 vertices each). */
-const CROWN_CARDS = 68;
+const CROWN_CARDS = 62;
 
 export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
   // Take exactly one value from the caller's stream, so whatever is placed
@@ -6618,11 +6618,11 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
   }
   // A full rounded crown (Tokyo street zelkova / ginkgo, pruned into a dome
   // or ovoid; round 3's lobes on bare limbs read as palms): three short
-  // scaffold limbs hidden inside and 68 overlapping leaf cards through the
+  // scaffold limbs hidden inside and 62 overlapping leaf cards through the
   // crown ellipsoid, most of them in its outer shell so the outline is
   // leaves all round with only small sky gaps, the surface pushed in and
   // out by three broad bulges so it is not a perfect ball. No solid core
-  // (its flat facets showed through as olive discs). 296 vertices, round
+  // (its flat facets showed through as olive discs). 272 vertices, round
   // 3's lobes were ~306.
   const fork: Vec3 = [p[0], p[1] + trunkH * 0.95, p[2]];
   const a0 = lr.range(0, Math.PI * 2);
@@ -7723,7 +7723,7 @@ function vnoise1(x: number, seed: number) {
  * a 6-point rounded profile per sample whose points are pushed in and out
  * along their normals by a hash (lumps every sample, 2.6 m), overhanging
  * the kerb top, with leaf cards (the tree leaf path, `CM.leaves`) on the
- * shoulders (4 per side per sample), spilling over the planter rim (3) and
+ * shoulders (3 per side per sample), spilling over the planter rim (2) and
  * round the run ends
  * for a broken, lighter-tipped outline. Hedge uv: x metres along,
  * y metres up from the planter soil (the shader's AO darkens toward 0).
@@ -7977,12 +7977,12 @@ function hedgeRun(
       [2, -1],
       [3, 1],
     ] as const) {
-      // Top edge: four tufts per shoulder, standing up and leaning out
+      // Top edge: three tufts per shoulder, standing up and leaning out
       // past the hull, yawed 25-60 degrees off the run (so a view along
       // the hedge does not see them edge-on): the top outline breaks into
       // leaves against the sky and the walk instead of a chamfered box.
-      for (let j = 0; j < 4; j++) {
-        const t = (j + 0.15 + rnd(k * 16 + j) * 0.7) / 4;
+      for (let j = 0; j < 3; j++) {
+        const t = (j + 0.15 + rnd(k * 16 + j) * 0.7) / 3;
         const c = hull(k, t);
         tuft(
           [
@@ -7999,11 +7999,11 @@ function hedgeRun(
           0.85,
         );
       }
-      // Planter rim: three sprays per side spilling out and down over the
+      // Planter rim: two sprays per side spilling out and down over the
       // kerb top, so the hedge's foot is not a ruled line on the kerb.
       const base = k === 2 ? 0 : 5;
-      for (let j = 0; j < 3; j++) {
-        const t = (j + 0.2 + rnd(k * 16 + j + 40) * 0.6) / 3;
+      for (let j = 0; j < 2; j++) {
+        const t = (j + 0.2 + rnd(k * 16 + j + 40) * 0.6) / 2;
         const c = hull(base, t);
         tuft(
           [c[0] + o[0] * s * 0.1, c[1] + 0.13, c[2] + o[1] * s * 0.1],
@@ -8017,17 +8017,19 @@ function hedgeRun(
         );
       }
     }
-    // One on a side every segment, alternating sides.
+    // One on a side every other segment, alternating sides.
     const side = hv & 1 ? 1 : -1;
-    const c = hull(side > 0 ? 4 : 1, 0.3 + fr(20) * 0.4);
-    card(
-      [c[0] + o[0] * side * 0.04, c[1] - 0.05, c[2] + o[1] * side * 0.04],
-      ax,
-      [0, 1, 0],
-      [o[0] * side, 0.2, o[1] * side],
-      0.42,
-      0.3,
-    );
+    if (!(i & 1)) {
+      const c = hull(side > 0 ? 4 : 1, 0.3 + fr(20) * 0.4);
+      card(
+        [c[0] + o[0] * side * 0.04, c[1] - 0.05, c[2] + o[1] * side * 0.04],
+        ax,
+        [0, 1, 0],
+        [o[0] * side, 0.2, o[1] * side],
+        0.42,
+        0.3,
+      );
+    }
   }
   // Run ends (the flat cap read as a cut box at a gap): a spray over the
   // cap face and tufts on its two top corners and the top middle, leaning

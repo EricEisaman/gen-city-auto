@@ -510,7 +510,7 @@ function plateAt(tris: Vec3[][], x: number, z: number): number | null {
  * - right-turn guides (右折導流線): from each avenue approach's inner lane to
  *   the inner departure lane of the arm on its right: a circular arc as
  *   large as the box allows, tangent to both lanes, both lane edges dashed
- *   1.5 m on / 1.5 m off (round 3's straight run-in with a solid 5 m
+ *   2 m on / 2 m off (round 3's straight run-in with a solid 5 m
  *   waiting box read as L-brackets);
  * - lane lines carried across the box (2 m on / 4 m off) to the opposite
  *   arm most in line with the approach (within 3 m), for avenues.
@@ -709,7 +709,7 @@ function junctionMarkings(
       ]);
     }
     seg(path[path.length - 1], Q);
-    // Both edges of the lane, dashed 1.5 m on / 1.5 m off (dash quads
+    // Both edges of the lane, dashed 2 m on / 2 m off (dash quads
     // following the curve), each pair of dashes facing across the lane.
     for (const d of [-half, half]) {
       const pts = path.map((q, i): Vec2 => {
@@ -727,7 +727,7 @@ function junctionMarkings(
           s[i - 1] +
             Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]),
         );
-      dashed({pts, s}, 1.5, 1.5, 0.3);
+      dashed({pts, s}, 2, 2, 0.3);
     }
   };
   for (const A of F) {
@@ -1187,7 +1187,7 @@ function roads(
             nx = -nx;
             nz = -nz;
           }
-          const cols = Math.max(2, Math.ceil(el / 1.5));
+          const cols = Math.max(2, Math.ceil(el / 3));
           const at = (t: number, d: number): Vec2 => [
             lerp(A[0], B[0], t) + nx * d,
             lerp(A[1], B[1], t) + nz * d,
@@ -1200,7 +1200,7 @@ function roads(
           }
           if (drop < 0.02) return;
           const len = Math.min(3.5, Math.max(0.8, drop * 12));
-          const rows = [-0.1, len * 0.5, len].map(d =>
+          const rows = [-0.1, len].map(d =>
             Array.from({length: cols + 1}, (_, c) => {
               const q = at(c / cols, d);
               const py = plateAt(fan, q[0], q[1]);
