@@ -606,7 +606,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // Screen-space reflections only nearby: far away the depth tolerance grows
   // to kilometres and grazing rays report false hits.
   if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0 && cls != CLASS_GLASS) {
-    let r = ssr(world, n, v, pxf, rough, cls == CLASS_GROUND && frame.weather.z > 0.3);
+    // Car paint reflects through its clear coat: a sharp, unjittered ray.
+    // Jittered rays on a moving car hit and miss leaves frame to frame and
+    // sparkle in a way TAA can't resolve.
+    let r = ssr(world, n, v, pxf, select(rough, 0.0, cls == CLASS_VEHICLE), cls == CLASS_GROUND && frame.weather.z > 0.3);
     env = mix(env, r.rgb, r.a * smoothstep(1200.0, 700.0, dist));
   }
   var specOcc = ao * ao;

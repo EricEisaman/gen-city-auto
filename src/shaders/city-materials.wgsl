@@ -188,8 +188,13 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   } else {
     lit = hashuf(seed ^ 0x1234567u) < mix(0.03, 0.34, night);
   }
-  let warm = select(vec3f(1.0, 0.72, 0.42), vec3f(0.92, 0.96, 1.0), office && r0 > 0.25);
+  // Office colour temperature varies by tenant (3500-6500 K).
+  let cool = mix(vec3f(1.0, 0.86, 0.66), vec3f(0.88, 0.95, 1.0), hashuf(section ^ 0x51u));
+  let warm = select(vec3f(1.0, 0.72, 0.42), cool, office && r0 > 0.25);
   var light = frame.skyAmbient.rgb * 0.35;
+  // Dark offices still show their ceiling grid under corridor and exit
+  // lighting, so towers don't read as black slabs at night.
+  if (office) { light += vec3f(0.75, 0.85, 1.0) * 0.05 * night; }
   if (lit) {
     let flicker = 1.0;
     light += warm * mix(0.6, 1.2, r2) * flicker * mix(0.12, 1.0, night);
