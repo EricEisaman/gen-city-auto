@@ -268,6 +268,27 @@ vehicle red on the crossing road.
 - A must check that the float survives the light upload in `renderer.ts` unquantized (`kind` already
   carries a fraction for headlights, so it should).
 
+**Round 3 additions (shader side landed; each is opt-in, old geometry renders as before):**
+- **Directed road luminaires (forward throw).** `kind = -(0.05 + 0.9 * fract(armAngle / 2π))`, with
+  `armAngle = atan2(dir[1], dir[0])` and `dir` the arm direction from the pole over the road (the
+  same `dir` `streetLight()` uses).
+  - The shader throws the pool 0.35 pole heights forward onto the carriageway and cuts it off behind
+    the pole (house side), which keeps sidewalks and lots from being evenly lit.
+  - Negative kinds still pass `kind < 0.5` (street light) in `city.ts` and `lighting.wgsl`.
+  - The undirected `0.05 + 0.4 * ...` form keeps working.
+  - Junction luminaires may use it too, with `dir` pointing down the approach. That lights the
+    driver's own approach to the stop line, which is unlit in `curb-night` today.
+- **Junction plate centre.** The plate's `aux = (round(cx * 4) + 32768) | (round(cz * 4) + 32768) << 16`
+  (quarter metres, 16 bits each; 0 = unknown).
+  - With it, oil drips and rubber haze gather round the centre, where right-turners wait.
+  - Without it, the plate is still uniformly worn.
+- **Road poles.** Use `packMat(CM.metal, 0x10)` for galvanised street-light columns and
+  `packMat(CM.paint, 0x93)` for grey signal and sign columns.
+  - Use cylinder uv: x = metres around, y = metres up from the sunk foot (`SINK = 0.3`).
+  - The shader adds vertical streaks (rough 0.35-0.5), the bottom 0.5 m of splash dirt, and torn
+    sticker scraps at 1.1-1.9 m.
+  - Bare `CM.metal` uprights only get the streaks.
+
 Until B lands each piece, the new ids render as default grey and `aux` high bits are ignored, so A's
 work can merge first. B can test against today's geometry: the band and new ids just appear later.
 
