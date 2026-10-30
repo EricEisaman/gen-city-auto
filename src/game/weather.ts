@@ -19,8 +19,8 @@ const TARGETS: Record<
 > = {
   sunny: {cloud: 0.42, rain: 0, fog: 0.0, wind: 0.4},
   cloudy: {cloud: 0.78, rain: 0, fog: 0.12, wind: 0.7},
-  rain: {cloud: 0.92, rain: 0.65, fog: 0.35, wind: 0.9},
-  storm: {cloud: 1.0, rain: 1.0, fog: 0.55, wind: 1.6},
+  rain: {cloud: 0.92, rain: 0.65, fog: 0.42, wind: 0.9},
+  storm: {cloud: 1.0, rain: 1.0, fog: 0.65, wind: 1.6},
 };
 
 export class WeatherSystem {

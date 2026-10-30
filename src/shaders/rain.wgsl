@@ -20,10 +20,12 @@ const BOX = 36.0;
   var p = h * BOX + vel * frame.time.x;
   p = p - floor((p - cam + BOX * 0.5) / BOX) * BOX;
   // Motion-blurred streak (~1/50 s exposure), thin, varying per drop.
-  let len = speed * mix(0.02, 0.04, h.y);
+  let len = speed * mix(0.03, 0.055, h.y);
   let dir = normalize(vel);
   let toCam = normalize(cam - p);
-  let side = normalize(cross(dir, toCam)) * mix(0.003, 0.006, h.z);
+  // At least ~0.7 px wide so streaks survive TAA instead of averaging away.
+  let pxW = distance(p, cam) * 1.4 / frame.resolution.y;
+  let side = normalize(cross(dir, toCam)) * max(mix(0.004, 0.008, h.z), pxW);
   let corner = array<vec2f, 6>(vec2f(-1, 0), vec2f(1, 0), vec2f(1, 1), vec2f(-1, 0), vec2f(1, 1), vec2f(-1, 1))[vi];
   let w = p + side * corner.x + dir * len * corner.y;
   var o: ROut;
@@ -33,8 +35,11 @@ const BOX = 36.0;
   return o;
 }
 
+// Premultiplied "over" blend: each streak partly replaces what is behind it
+// with the bright refracted sky, so it reads against dark facades and, being
+// brighter than the sky's own average, against an overcast sky as well.
 @fragment fn fs(i: ROut) -> @location(0) vec4f {
-  let a = (1.0 - abs(i.uv.x)) * pow(sin(i.uv.y * PI), 0.7) * i.fade * 0.35;
-  let c = frame.skyAmbient.rgb * 0.8 + frame.cityGlow.rgb * 4.0 + frame.sunColor.rgb * 0.03 + vec3f(1.5) * frame.wind.w;
+  let a = (1.0 - abs(i.uv.x)) * pow(sin(i.uv.y * PI), 0.7) * i.fade * 0.42;
+  let c = frame.skyAmbient.rgb * 1.9 + frame.cityGlow.rgb * 6.0 + frame.sunColor.rgb * 0.05 + vec3f(1.5) * frame.wind.w;
   return vec4f(c * a, a);
 }

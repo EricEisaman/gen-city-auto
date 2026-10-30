@@ -87,7 +87,12 @@ fn remap(v: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
 fn weatherAt(xz: vec2f) -> f32 {
   let w = frame.wind.xy * frame.time.x * 6.0;
   let n = fbm2((xz + w) * 0.00011) * 0.7 + fbm2((xz - w * 0.5) * 0.0004) * 0.3;
-  return clamp(frame.weather.x * 1.15 + (n - 0.47) * 1.6 - 0.12, 0.0, 1.0);
+  var cov = frame.weather.x * 1.15 + (n - 0.47) * 1.6 - 0.12;
+  // Breakup: even a rain deck has thinner lanes and gaps (only a full storm
+  // closes them), so an overcast sky is never one flat sheet.
+  let brk = fbm2((xz + w * 1.3) * 0.0007 + vec2f(17.3, 5.1));
+  cov -= smoothstep(0.42, 0.72, brk) * 0.5 * (1.0 - smoothstep(0.94, 1.0, frame.weather.x));
+  return clamp(cov, 0.0, 1.0);
 }
 
 fn cloudDensity(p: vec3f, cheap: bool) -> f32 {
@@ -126,7 +131,10 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
     let t0 = max((CLOUD_BOTTOM - ro.y) / rd.y, 0.0);
     let t1 = min((CLOUD_TOP - ro.y) / rd.y, 70000.0);
     if (t1 > t0) {
-      let steps = select(24, 56, frame.misc.y > 0.5);
+      // Grazing rays toward the horizon cross tens of kilometres of the
+      // layer: give them more steps so distant clouds keep defined edges.
+      let baseSteps = select(24.0, 56.0, frame.misc.y > 0.5);
+      let steps = i32(baseSteps * mix(1.0, 1.75, smoothstep(6000.0, 30000.0, t1 - t0)));
       let dt = (t1 - t0) / f32(steps);
       let jitter = fract(hash21(vec2f(id.xy)) + frame.time.z * 0.618034);
       var t = t0 + dt * jitter;
@@ -153,7 +161,12 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
           let beer = exp(-od * sigma * 0.6);
           let powder = 1.0 - exp(-d * 6.0);
           let h = (p.y - CLOUD_BOTTOM) / (CLOUD_TOP - CLOUD_BOTTOM);
-          let amb = frame.skyAmbient.rgb * mix(0.35, 0.9, h) + frame.cityGlow.rgb * 2.5 * (1.0 - h) + vec3f(0.7, 0.75, 1.0) * frame.wind.w * 4.0;
+          // Night: the base is lit by the city below, warm orange/magenta
+          // toward the horizon, dimmer and violet overhead.
+          let up = smoothstep(0.08, 0.6, rd.y);
+          let glowTint = mix(vec3f(1.45, 0.62, 0.55), vec3f(0.5, 0.62, 1.75), up) * mix(1.0, 0.5, up);
+          let glow = luminance(frame.cityGlow.rgb) * glowTint * 2.5 * (1.0 - h) * mix(0.75, 1.25, d);
+          let amb = frame.skyAmbient.rgb * mix(0.5, 0.95, h) + glow + vec3f(0.7, 0.75, 1.0) * frame.wind.w * 4.0;
           let S = (lightCol * beer * phase * mix(1.0, powder * 2.0, 0.5) + amb) * (1.0 - storm * 0.55);
           let ext = d * sigma;
           let stepT = exp(-ext * dt);
@@ -163,8 +176,13 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
         }
         t += dt;
       }
+      // Sharpen coverage: faint, isolated wisps (which upsample to a soft
+      // grey smudge) drop out and cloud edges get a crisper falloff.
+      let a = 1.0 - T;
+      let a2 = smoothstep(0.06, 0.65, a);
+      L *= a2 / max(a, 1e-4);
       // Aerial perspective toward the horizon is applied when compositing.
-      result = vec4f(L, T);
+      result = vec4f(L, 1.0 - a2);
     }
   }
   // Temporal accumulation (clouds are far: reproject by direction).

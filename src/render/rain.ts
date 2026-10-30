@@ -31,7 +31,7 @@ export class RainRenderer implements DrawHook {
           {
             format,
             blend: {
-              color: {srcFactor: 'one', dstFactor: 'one'},
+              color: {srcFactor: 'one', dstFactor: 'one-minus-src-alpha'},
               alpha: {srcFactor: 'zero', dstFactor: 'one'},
             },
           },

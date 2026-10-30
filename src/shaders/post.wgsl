@@ -305,6 +305,20 @@ struct Exposure { value: f32, avgLum: f32, pad0: f32, pad1: f32 };
 
 var<workgroup> bins: array<atomic<u32>, 64>;
 
+// Exposure drop (EV) for bad weather: ~0.75 stop in daytime rain, ~0.9 in a storm,
+// less at night where the key is already low.
+fn weatherGloomEv() -> f32 {
+  let rain = frame.weather.y;
+  let overcast = clamp(frame.weather.x * 1.6 - 0.75, 0.0, 1.0);
+  return (min(rain * 1.2, 1.0) * 0.75 + overcast * 0.2) * (1.0 - frame.time.w * 0.6);
+}
+
+// Highlight shoulder: identity below k, rolls smoothly up to 1 above it.
+fn shoulder(x: vec3f, k: f32) -> vec3f {
+  let over = max(x - k, vec3f(0.0)) / (1.0 - k);
+  return select(x, k + (1.0 - k) * (1.0 - exp(-over)), x > vec3f(k));
+}
+
 // Histogram metering: 64 bins of log2 luminance over [-10, 6], averaging only
 // the 40th..95th percentile so dark asphalt and sun glints don't drive it.
 // The result is clamped to +-1 stop around a physical baseline from the CPU.
@@ -350,8 +364,11 @@ fn exposure(@builtin(local_invocation_index) li: u32, @builtin(local_invocation_
       if (!gotHi && acc >= total * 0.995) { evHi = ev; gotHi = true; }
     }
     let avg = exp2(sum / max(cnt, 1.0));
-    let key = mix(0.17, 0.05, frame.time.w);
-    let base = max(frame.exposure.y, 1e-4);
+    // Rain and storm grade about a stop darker than a sunny key (the meter
+    // would otherwise lift an overcast street back to sunny brightness).
+    let gloom = exp2(-weatherGloomEv());
+    let key = mix(0.17, 0.05, frame.time.w) * gloom;
+    let base = max(frame.exposure.y, 1e-4) * gloom;
     let spread = mix(2.0, 3.0, frame.time.w);
     let tgt = clamp(key / max(avg, 1e-5), base / spread, base * spread);
     var cur = expo.value;
@@ -468,12 +485,19 @@ fn lensDrops(uv: vec2f) -> vec2f {
   let E = tmExpo.value;
   let dLo = agx(vec3f(exp2(tmExpo.pad0) * E)).g;
   let dHi = agx(vec3f(exp2(tmExpo.pad1) * E)).g;
-  let gain = clamp(0.94 / max(dHi - dLo, 0.05), 1.0, mix(1.45, 1.12, night));
+  // Rain keeps its low-key, flat grade: the stretch must not undo the
+  // exposure drop.
+  let wetGrade = clamp(rainK * 1.5, 0.0, 1.0) * (1.0 - night);
+  let gain = clamp(0.94 / max(dHi - dLo, 0.05), 1.0, mix(mix(1.45, 1.12, night), 1.06, wetGrade));
   let lo = min(dLo, 0.09);
-  m = clamp((m - lo) * gain + 0.015, vec3f(0.0), vec3f(1.0));
+  m = max((m - lo) * gain + 0.015, vec3f(0.0));
+  // Whites roll off instead of clipping (overcast skies and wet roofs sit at
+  // the top of the range); a clear day keeps its full-strength highlights.
+  let soft = clamp(frame.weather.x * 1.5 - 0.5, 0.0, 1.0);
+  m = min(mix(m, shoulder(m, 0.72), soft), vec3f(1.0));
   // Punchy look in AgX space; less saturation in rain.
   m = pow(m, vec3f(mix(1.22, 1.12, night)));
-  let sat = mix(1.12, 1.15, night) * mix(1.0, 0.85, rainK);
+  let sat = mix(1.12, 1.15, night) * mix(1.0, 0.72, rainK) * mix(1.0, 0.9, soft * (1.0 - night));
   let ml = luminance(m);
   m = max(mix(vec3f(ml), m, sat), vec3f(0.0));
   // Soft vignette and highlight-safe grain.

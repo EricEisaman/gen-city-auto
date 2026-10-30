@@ -234,6 +234,21 @@ fn cirrus(d: vec3f) -> f32 {
 
 const CLOUD_BASE = 1500.0;
 
+// Night sky light pollution: deep blue overhead grading to a warm city glow
+// (sodium orange, then magenta from the neon) toward the horizon. Overcast
+// skies reflect more of it back down.
+fn nightGlow(d: vec3f) -> vec3f {
+  let y = max(d.y, 0.0);
+  let g = luminance(frame.cityGlow.rgb) * (0.6 + frame.weather.x * 1.5);
+  let orange = vec3f(1.0, 0.5, 0.22) / 0.586;
+  let magenta = vec3f(0.95, 0.32, 0.62) / 0.47;
+  let blue = vec3f(0.32, 0.45, 1.0) / 0.44;
+  let warm = mix(orange, magenta, smoothstep(0.015, 0.16, y));
+  let low = exp(-y * 6.0);
+  let col = mix(blue * 0.12, warm, low) * g + vec3f(0.0012, 0.0018, 0.0045);
+  return col;
+}
+
 // The colour everything converges to at the horizon: clear-sky haze, greyed by
 // cloud cover, plus night light pollution. Distant clouds, the far edge of the
 // world and the sky below the horizon all blend to this so they meet seamlessly.
@@ -241,7 +256,10 @@ fn horizonColor(d: vec3f) -> vec3f {
   let s = skyRadiance(normalize(vec3f(d.x, max(d.y, 0.012), d.z)));
   let grey = vec3f(luminance(s)) * vec3f(0.93, 0.96, 1.0) * mix(1.0, 0.75, frame.weather.y);
   var c = mix(s, grey, clamp(frame.weather.x * 1.1 - 0.15, 0.0, 0.9));
-  c += (vec3f(0.0012, 0.0018, 0.004) + frame.cityGlow.rgb * (0.6 + frame.weather.x * 1.5)) * frame.time.w;
+  // The clear-sky LUT knows nothing of the cloud deck: under overcast the
+  // horizon is far dimmer than a clear one (sun cut by the clouds).
+  c *= mix(1.0, 0.5, clamp(frame.weather.x * 1.6 - 0.75, 0.0, 1.0));
+  c += nightGlow(vec3f(d.x, 0.0, d.z)) * frame.time.w;
   return c;
 }
 
@@ -276,9 +294,8 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
     let lit = frame.sunColor.rgb * 0.06 * fwd + frame.skyAmbient.rgb * 0.35 + frame.cityGlow.rgb * 1.2 * night;
     c = mix(c, lit + c * 0.4, ci);
   }
-  // Night sky: deep blue plus orange light pollution near the horizon.
-  let horizon = exp(-max(d.y, 0.0) * 6.0);
-  c += (vec3f(0.0012, 0.0018, 0.004) + frame.cityGlow.rgb * (0.1 + 0.9 * horizon) * (0.6 + frame.weather.x * 1.5)) * night;
+  // Night sky: deep blue overhead, city glow near the horizon.
+  c += nightGlow(d) * night;
   // Twilight afterglow: an orange band low in the sun's direction that fades
   // to violet above, strongest just around sunset.
   {
@@ -299,8 +316,11 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
   {
     let cl = textureSampleLevel(cloudTex, linearSampler, uv, 0.0);
     let tc = max(CLOUD_BASE - frame.camPos.y, 100.0) / max(d.y, 0.003);
-    let haze = 1.0 - exp(-tc / 14000.0);
-    c = c * cl.a + mix(cl.rgb, hz * (1.0 - cl.a), haze);
+    // Far clouds dissolve into the sky behind them (which already carries
+    // the horizon haze), not into a flat grey silhouette.
+    let haze = 1.0 - exp(-tc / 12000.0);
+    let behind = mix(c, hz, clamp(frame.weather.x * 1.3 - 0.3, 0.0, 1.0));
+    c = mix(c * cl.a + cl.rgb, behind, haze);
   }
   // Below the horizon (beyond the world) continue the horizon haze.
   c = mix(c, hz, smoothstep(0.004, -0.004, d.y));
@@ -439,6 +459,27 @@ fn applyFog(c: vec3f, world: vec3f, uv: vec2f, dist: f32, rd: vec3f) -> vec3f {
   let w = clamp((slice - 0.5) / 32.0, 0.0, 1.0);
   let ap = textureSampleLevel(apVolume, linearSampler, vec3f(uv, w), 0.0);
   var col = c * ap.a + ap.rgb;
+  // City haze: a low aerosol layer (450 m scale height) that the thin
+  // physical atmosphere underestimates. It fades distant blocks toward the
+  // horizon colour, which already carries the sun-angle tint (warm toward a
+  // low sun, blue-grey away from it), so towers 1-2 km out lose ~40% of
+  // their contrast on a clear day and fog, sky and outskirts still converge.
+  {
+    let fall = 1.0 / 450.0;
+    let dh = rd.y * dist;
+    var integral = dist;
+    if (abs(dh) > 0.5) { integral = (1.0 - exp(-fall * dh)) / (fall * rd.y); }
+    let sigma = (0.3 + frame.weather.x * 0.12 + frame.weather.w * 0.25) * 1e-3;
+    // Nearby blocks stay crisp; the haze builds up over the first kilometre.
+    let od = sigma * exp(-fall * max(frame.camPos.y, 0.0)) * max(integral, 0.0) * smoothstep(80.0, 900.0, dist);
+    // Its brightness is capped near that of a white surface in the current
+    // light: the horizon toward a low sun (Mie peak) or a clear sky above an
+    // overcast deck would otherwise turn the whole view milky.
+    var hz = horizonColor(rd);
+    let lit = luminance(frame.sunColor.rgb) * max(frame.sunDir.y, 0.1) / PI + luminance(frame.skyAmbient.rgb) + luminance(frame.cityGlow.rgb) * 2.0;
+    hz *= min(1.0, lit * 0.9 / max(luminance(hz), 1e-5));
+    col = mix(col, hz, 1.0 - exp(-od));
+  }
   // Weather fog: height-based mist that thickens with rain.
   let fogD = frame.weather.w;
   if (fogD > 0.0) {
