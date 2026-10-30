@@ -58,14 +58,35 @@ export const LED: Vec3 = [1.0, 0.88, 0.72];
  * Road coverage raster (1 = road surface) on the heightfield grid. `visible`
  * leaves out chains hidden by the asset lab.
  */
-export function roadMask(L: CityLayout, visible = false): Uint8Array {
+export function roadMask(
+  L: CityLayout,
+  visible = false,
+  geom?: RoadGeom,
+): Uint8Array {
   const hf = L.terrain.heights;
   const n = hf.n;
   const mask = new Uint8Array(n * n);
   const S = hf.size / 2;
+  // With `geom` (the lab's visible mask), chain ends at junctions that get
+  // no plate (roads(): at most one arm shown) stop under the strip's end
+  // instead of painting the junction area as asphalt-coloured ground.
+  const ends = new Map<number, number>();
+  if (visible && geom && L.hidden)
+    L.junctions.forEach(j => {
+      if (j.arms.filter(a => !L.hidden!.chains[a.chain]).length <= 1)
+        for (const a of j.arms) ends.set(a.chain * 2 + a.end, 1);
+    });
   for (const [ci, c] of L.chains.entries()) {
     if (visible && L.hidden?.chains[ci]) continue;
     const half = ROAD_WIDTH[c.kind] / 2 + 1;
+    let sMin = -Infinity;
+    let sMax = Infinity;
+    if (geom && ends.size) {
+      const arc = geom.arc[ci];
+      const [s0, s1] = geom.setbacks[ci];
+      if (ends.has(ci * 2)) sMin = s0 + half;
+      if (ends.has(ci * 2 + 1)) sMax = arc[arc.length - 1] - s1 - half;
+    }
     for (let i = 0; i + 1 < c.pts.length; i++) {
       const a = c.pts[i];
       const b = c.pts[i + 1];
@@ -73,6 +94,10 @@ export function roadMask(L: CityLayout, visible = false): Uint8Array {
       const steps = Math.ceil(len / 2);
       for (let s = 0; s <= steps; s++) {
         const t = s / steps;
+        if (geom && ends.size) {
+          const sa = geom.arc[ci][i] + t * len;
+          if (sa < sMin || sa > sMax) continue;
+        }
         const x = a[0] + (b[0] - a[0]) * t;
         const z = a[1] + (b[1] - a[1]) * t;
         const r = Math.ceil(half / hf.cell);
@@ -211,6 +236,250 @@ function offsetLine(pts: Vec2[], off: number): Vec2[] {
   });
 }
 
+/**
+ * Kerbs on carriageway edges that no block curb lines (gen-base blocks()
+ * kerbs every edge it borders), sampled with the strip:
+ * - Open edges (no visible block beyond, no other road, no plate: the city
+ *   edge, block-less land, the lab's hidden blocks): a kerb face (CM.curb,
+ *   uv x metres along, y metres up) up 0.15 m, a footway verge of the
+ *   sidewalk width (CM.sidewalk 1 band, uv as the curb band, kind bits 0 so
+ *   no tactile line) and a concrete skirt down to the ground, so the road
+ *   never shows a raw edge or the carved terrain trench beside it.
+ * - Parallel roads whose carriageways meet or overlap by up to 1.5 m (two
+ *   chains of one boulevard): a raised median between them, kerbs both
+ *   sides and a precast top (CM.curb 1), stopping 8 m short of either
+ *   strip end; built by the lower chain index only.
+ * - Strip ends with no junction plate (dead ends; lab junctions with hidden
+ *   arms): a kerb and skirt across the end.
+ */
+function roadEdges(
+  L: CityLayout,
+  geom: RoadGeom,
+  m: CMesh,
+  land: Landing,
+  ci: number,
+  pts: Vec2[],
+  hs: number[],
+  along: number[],
+  ends: [boolean, boolean],
+) {
+  const hf = L.terrain.heights;
+  const c = L.chains[ci];
+  const w = ROAD_WIDTH[c.kind];
+  const kerb = packMat(CM.curb);
+  const precast = packMat(CM.curb, 1);
+  const vw = Math.min(SIDEWALK[c.kind], 2.5) + 0.3;
+  const band = packMat(CM.sidewalk, 1);
+  const bandAux = Math.min(255, Math.round(vw / 0.02)) << 8;
+  const n = pts.length;
+  const len = along[n - 1];
+  const dirAt = (i: number): Vec2 => {
+    const a = pts[Math.max(0, i - 1)];
+    const b = pts[Math.min(n - 1, i + 1)];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+  };
+  for (const side of [1, -1]) {
+    const edge = offsetLine(pts, (side * w) / 2);
+    type Kind = 'open' | 'median' | null;
+    const kinds: Kind[] = [];
+    const med: {c: Vec2; o: Vec2; mw: number; h: number}[] = [];
+    for (let i = 0; i < n; i++) {
+      const d = dirAt(i);
+      // Outward: left of the chain for side +1 (offsetLine's +).
+      const o: Vec2 = [-d[1] * side, d[0] * side];
+      const e = edge[i];
+      const px = e[0] + o[0] * 0.7;
+      const pz = e[1] + o[1] * 0.7;
+      const elevated =
+        hs[i] - Math.max(hf.sample(pts[i][0], pts[i][1]), SEA_LEVEL) > 2.5;
+      let k: Kind = null;
+      const bi = land.blockAt(px, pz);
+      const other = land.otherRoad(e[0], e[1], ci, 1.6);
+      if (elevated || (bi >= 0 && !L.hidden?.blocks[bi])) k = null;
+      else if (other) {
+        const oc = L.chains[other.ci];
+        const par = Math.abs(other.dir[0] * d[0] + other.dir[1] * d[1]);
+        // Signed distance from this edge to the other's near edge, outward.
+        const t =
+          (other.p[0] - e[0]) * o[0] +
+          (other.p[1] - e[1]) * o[1] -
+          ROAD_WIDTH[oc.kind] / 2;
+        if (
+          par > 0.96 &&
+          t > -1.5 &&
+          t < 1.6 &&
+          ci < other.ci &&
+          along[i] > 8 &&
+          along[i] < len - 8
+        ) {
+          k = 'median';
+          const mw = Math.max(0.9, Math.abs(t) + 0.5);
+          med[i] = {
+            c: [e[0] + (o[0] * t) / 2, e[1] + (o[1] * t) / 2],
+            o,
+            mw,
+            h: hs[i],
+          };
+        }
+      } else if (!land.onPlate(px, pz)) k = 'open';
+      kinds.push(k);
+    }
+    // Runs of each kind (at least two samples).
+    for (let i = 0; i < n;) {
+      const k = kinds[i];
+      let j = i;
+      while (j + 1 < n && kinds[j + 1] === k) j++;
+      if (k && j > i) {
+        if (k === 'open') verge(i, j);
+        else median(i, j);
+      }
+      i = j + 1;
+    }
+    function verge(i0: number, i1: number) {
+      let pk = -1;
+      for (let i = i0; i <= i1; i++) {
+        const d = dirAt(i);
+        const o: Vec2 = [-d[1] * side, d[0] * side];
+        const e = edge[i];
+        const h = hs[i];
+        const top = h + 0.15;
+        const f: Vec2 = [e[0] + o[0] * vw, e[1] + o[1] * vw];
+        const g = Math.min(hf.sample(f[0], f[1]), top) - 0.3;
+        const nIn: Vec3 = [-o[0], 0, -o[1]];
+        const nOut: Vec3 = [o[0], 0, o[1]];
+        const s = along[i];
+        const ids = [
+          m.vertex([e[0], h - 0.05, e[1]], nIn, s, 0, kerb),
+          m.vertex([e[0], top, e[1]], nIn, s, 0.2, kerb),
+          m.vertex([e[0], top, e[1]], UP, s, 0, band, bandAux),
+          m.vertex([f[0], top, f[1]], UP, s, vw, band, bandAux),
+          m.vertex([f[0], top, f[1]], nOut, s, top - g, precast),
+          m.vertex([f[0], g, f[1]], nOut, s, 0, precast),
+        ];
+        if (pk >= 0) {
+          const nn = [nIn, UP, nOut];
+          for (let q = 0; q < 3; q++) {
+            const a = pk + q * 2;
+            const b = ids[q * 2];
+            m.triFacing(a, b, b + 1, nn[q]);
+            m.triFacing(a, b + 1, a + 1, nn[q]);
+          }
+        }
+        pk = ids[0];
+      }
+    }
+    function median(i0: number, i1: number) {
+      let pk = -1;
+      for (let i = i0; i <= i1; i++) {
+        const {c: mc, o, mw, h} = med[i];
+        const top = h + 0.15;
+        const A: Vec2 = [mc[0] - (o[0] * mw) / 2, mc[1] - (o[1] * mw) / 2];
+        const B: Vec2 = [mc[0] + (o[0] * mw) / 2, mc[1] + (o[1] * mw) / 2];
+        const nA: Vec3 = [-o[0], 0, -o[1]];
+        const nB: Vec3 = [o[0], 0, o[1]];
+        const s = along[i];
+        const ids = [
+          m.vertex([A[0], h - 0.05, A[1]], nA, s, 0, kerb),
+          m.vertex([A[0], top, A[1]], nA, s, 0.2, kerb),
+          m.vertex([A[0], top, A[1]], UP, s, 0, band, bandAux),
+          m.vertex([mc[0], top, mc[1]], UP, s, mw / 2, band, bandAux),
+          m.vertex([mc[0], top, mc[1]], UP, s, mw / 2, band, bandAux),
+          m.vertex([B[0], top, B[1]], UP, s, 0, band, bandAux),
+          m.vertex([B[0], top, B[1]], nB, s, 0.2, kerb),
+          m.vertex([B[0], h - 0.05, B[1]], nB, s, 0, kerb),
+        ];
+        if (pk >= 0) {
+          const nn = [nA, UP, UP, nB];
+          for (let q = 0; q < 4; q++) {
+            const a = pk + q * 2;
+            const b = ids[q * 2];
+            m.triFacing(a, b, b + 1, nn[q]);
+            m.triFacing(a, b + 1, a + 1, nn[q]);
+          }
+        }
+        pk = ids[0];
+        // Noses: the run's ends closed across.
+        if (i === i0 || i === i1) {
+          const d = dirAt(i);
+          const sg = i === i0 ? -1 : 1;
+          const nn: Vec3 = [d[0] * sg, 0, d[1] * sg];
+          m.quad(
+            [
+              [A[0], h - 0.05, A[1]],
+              [B[0], h - 0.05, B[1]],
+              [B[0], top, B[1]],
+              [A[0], top, A[1]],
+            ],
+            nn,
+            [
+              [0, 0],
+              [mw, 0],
+              [mw, 0.2],
+              [0, 0.2],
+            ],
+            kerb,
+          );
+        }
+      }
+    }
+  }
+  // Strip ends without a plate: kerb and skirt across the end.
+  for (const end of [0, 1] as const) {
+    if (!ends[end]) continue;
+    const i = end === 0 ? 0 : n - 1;
+    const d = dirAt(i);
+    const sg = end === 0 ? -1 : 1;
+    const out: Vec2 = [d[0] * sg, d[1] * sg];
+    const l: Vec2 = [-d[1], d[0]];
+    const h = hs[i];
+    const P = (u: number, y: number, f = 0): Vec3 => [
+      pts[i][0] + (l[0] * u * w) / 2 + out[0] * f,
+      y,
+      pts[i][1] + (l[1] * u * w) / 2 + out[1] * f,
+    ];
+    const g = Math.min(hf.sample(pts[i][0], pts[i][1]), h) - 0.3;
+    m.quad(
+      [P(-1, h - 0.05), P(1, h - 0.05), P(1, h + 0.15), P(-1, h + 0.15)],
+      [-out[0], 0, -out[1]],
+      [
+        [0, 0],
+        [w, 0],
+        [w, 0.2],
+        [0, 0.2],
+      ],
+      kerb,
+    );
+    m.quad(
+      [
+        P(-1, h + 0.15),
+        P(1, h + 0.15),
+        P(1, h + 0.15, 0.3),
+        P(-1, h + 0.15, 0.3),
+      ],
+      UP,
+      [
+        [0, 0],
+        [w, 0],
+        [w, 0.3],
+        [0, 0.3],
+      ],
+      precast,
+    );
+    m.quad(
+      [P(-1, h + 0.15, 0.3), P(1, h + 0.15, 0.3), P(1, g, 0.3), P(-1, g, 0.3)],
+      [out[0], 0, out[1]],
+      [
+        [0, h + 0.15 - g],
+        [w, h + 0.15 - g],
+        [w, 0],
+        [0, 0],
+      ],
+      precast,
+    );
+  }
+}
+
 function roads(
   L: CityLayout,
   geom: RoadGeom,
@@ -223,6 +492,20 @@ function roads(
   // The rendered terrain (lowered under the roads), for keeping plates above.
   const ground = new Heightfield(hf.size, hf.cell, settled);
   const land = landing(L, geom);
+  // Chain end -> junction; a junction gets no plate when at most one of its
+  // arms is shown (the lab's site edge: the plate would be a jagged apron
+  // over the hidden arms' mouths), and those chain ends get an end kerb.
+  const endJunction = new Map<number, number>();
+  L.junctions.forEach((j, ji) =>
+    j.arms.forEach(a => endJunction.set(a.chain * 2 + a.end, ji)),
+  );
+  const noPlate = (ji: number) =>
+    !!L.hidden &&
+    L.junctions[ji].arms.filter(a => !L.hidden!.chains[a.chain]).length <= 1;
+  const plateless = (ci: number, end: number) => {
+    const ji = endJunction.get(ci * 2 + end) ?? -1;
+    return ji < 0 || noPlate(ji);
+  };
   L.chains.forEach((c, ci) => {
     if (L.hidden?.chains[ci] || geom.absorbed[ci]) return;
     const [s0, s1] = geom.setbacks[ci];
@@ -264,6 +547,10 @@ function roads(
       // Lanes, and the chain seed for the shader's resurfacing sections.
       LANES[c.kind] | ((hash2(ci, 0x5eed) & 0xffffff) << 8),
     );
+    roadEdges(L, geom, m, land, ci, pts, hs, along, [
+      plateless(ci, 0),
+      plateless(ci, 1),
+    ]);
     // Bridge deck structure where the road is well above the ground.
     const elevated = pts.map(
       (q, i) => hs[i] - Math.max(hf.sample(q[0], q[1]), SEA_LEVEL) > 2.5,
@@ -484,7 +771,7 @@ function roads(
   // kerb-return fillets and the strip edges.
   geom.junctions.forEach((jg, ji) => {
     const j = L.junctions[ji];
-    if (L.hidden?.junctions[ji]) return;
+    if (L.hidden?.junctions[ji] || noPlate(ji)) return;
     const mat = packMat(
       CM.asphaltPlain,
       (hash2(ji, 7) & 0xff) | (j.signal ? 0x100 : 0),
@@ -724,6 +1011,7 @@ function fillMesh(
   mat: number,
   lift: number,
   uvOf?: (p: Vec2) => [number, number, number],
+  yOf?: (p: Vec2) => number,
 ) {
   const cache = new Map<string, number>();
   const vid = (q: FillPt) => {
@@ -732,7 +1020,11 @@ function fillMesh(
     if (v === undefined) {
       const [u, w, aux] = uvOf ? uvOf(q.p) : [q.p[0], q.p[1], 0];
       v = m.vertex(
-        [q.p[0], q.h ?? hf.sample(q.p[0], q.p[1]) + lift, q.p[1]],
+        [
+          q.p[0],
+          q.h ?? (yOf ? yOf(q.p) : hf.sample(q.p[0], q.p[1]) + lift),
+          q.p[1],
+        ],
         UP,
         u,
         w,
@@ -1163,11 +1455,21 @@ function fallbackBlock(
       d = Math.min(d, pointSegment(q, ring[i], ring[(i + 1) % ring.length])[0]);
     return d;
   };
+  // Kerb height above the road beside it (as blocks() does), so a sliver
+  // between two roads (a boulevard's median, a traffic island) stands as a
+  // kerbed island instead of lying flush with (or under) the asphalt.
+  const level = (q: Vec2) => {
+    const g = hf.sample(q[0], q[1]) + lift;
+    const r = roadside(q);
+    if (!r) return {y: g, hr: g - lift - 0.25};
+    const y = r.h + CURB_UP;
+    return Math.abs(y - g) > 0.6 ? {y: g, hr: g - lift - 0.25} : {y, hr: r.h};
+  };
   fillMesh(
     m,
     hf,
     gridFill(
-      pts.map(p => ({p, h: hf.sample(p[0], p[1]) + lift})),
+      pts.map(p => ({p, h: level(p).y})),
       10,
     ),
     packMat(CM.sidewalk, 1),
@@ -1176,12 +1478,10 @@ function fallbackBlock(
       const r = roadside(q);
       return [0, edgeDist(q), (r ? r.kind & 3 : 1) | (125 << 8)];
     },
+    q => level(q).y,
   );
   const orient = polygonArea(ring) > 0 ? 1 : -1;
-  const tops = pts.map(p => {
-    const g = hf.sample(p[0], p[1]);
-    return {p, y: g + lift, hr: g - 0.25};
-  });
+  const tops = pts.map(p => ({p, ...level(p)}));
   tops.push(tops[0]);
   curbStrip(m, tops, orient);
 }
@@ -2322,7 +2622,7 @@ export function buildBase(L: CityLayout): BaseGeometry {
     mesh: m,
     piers,
     lights: lights.data,
-    landUse: landUse(L, mask, L.hidden ? roadMask(L, true) : undefined),
+    landUse: landUse(L, mask, L.hidden ? roadMask(L, true, geom) : undefined),
     roadMask: mask,
     geom,
     terrainHeights: settled,
@@ -2377,6 +2677,21 @@ export interface Landing {
     s: number;
     side: number;
   } | null;
+  /** Index of the block whose curb polygon holds (x, z), or -1. */
+  blockAt(x: number, z: number): number;
+  /** On a junction plate's cover polygon. */
+  onPlate(x: number, z: number): boolean;
+  /**
+   * The chain other than `own` (not hidden by the lab, not absorbed) whose
+   * carriageway is nearest (x, z) within ROAD_WIDTH/2 + `pad`: its index,
+   * distance d from its centre line, unit direction and centre-line point.
+   */
+  otherRoad(
+    x: number,
+    z: number,
+    own: number,
+    pad: number,
+  ): {ci: number; d: number; dir: Vec2; p: Vec2} | null;
 }
 
 const LAND_CELL = 16;
@@ -2512,11 +2827,53 @@ export function landing(L: CityLayout, geom: RoadGeom): Landing {
     }
     return best;
   };
+  const blockAt = (x: number, z: number) => {
+    for (const bi of at(blockGrid, x, z))
+      if (pointInPolygon([x, z], L.blocks[bi].curb)) return bi;
+    return -1;
+  };
+  const onPlate = (x: number, z: number) => {
+    for (const k of at(plates, x, z))
+      if (pointInPolygon([x, z], covers[k])) return true;
+    return false;
+  };
+  const otherRoad = (x: number, z: number, own: number, pad: number) => {
+    let best: ReturnType<Landing['otherRoad']> = null;
+    let be = Infinity;
+    for (const v of at(segs, x, z)) {
+      const ci = Math.floor(v / 4096);
+      if (ci === own || L.hidden?.chains[ci] || geom.absorbed[ci]) continue;
+      const c = L.chains[ci];
+      const i = v % 4096;
+      const a = c.pts[i];
+      const b = c.pts[i + 1];
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(
+        0,
+        Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / l2),
+      );
+      const px = a[0] + dx * t;
+      const pz = a[1] + dz * t;
+      const d = Math.hypot(px - x, pz - z);
+      const e = d - ROAD_WIDTH[c.kind] / 2;
+      if (e < pad && e < be) {
+        be = e;
+        const l = Math.sqrt(l2);
+        best = {ci, d, dir: [dx / l, dz / l], p: [px, pz]};
+      }
+    }
+    return best;
+  };
   const out: Landing = {
     onCarriageway,
     onSidewalk,
     ok: (x, z, own) => onSidewalk(x, z) && !onCarriageway(x, z, own),
     nearest,
+    blockAt,
+    onPlate,
+    otherRoad,
   };
   landings.set(L, out);
   return out;
@@ -2606,6 +2963,9 @@ export function signalSpots(
 ) {
   const j = L.junctions[ji];
   if (!j.signal || L.hidden?.junctions[ji]) return;
+  // Lab site edge: no plate (see roads()), no signals.
+  if (L.hidden && j.arms.filter(a => !L.hidden!.chains[a.chain]).length <= 1)
+    return;
   const jg = geom.junctions[ji];
   const land = landing(L, geom);
   jg.arms.forEach((a, k) => {

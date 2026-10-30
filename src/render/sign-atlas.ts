@@ -6,6 +6,9 @@ import {
   ATLAS_H,
   ATLAS_W,
   BRAND_WORDS,
+  GUIDE_FACES,
+  SIGN,
+  type GuideFace,
   HORIZONTAL_WORDS,
   STATION_NAMES,
   signColor,
@@ -267,6 +270,152 @@ function paintBillboard(
   g.restore();
 }
 
+// Guide sign colours (sRGB). signMat shows a billboard cell at 0.6 of its
+// linear colour by day (floodlit at night, as lit guide signs are), so the
+// blue is painted a little lighter than the 0, 80, 160 of the standard.
+const GUIDE_BLUE = 'rgb(18, 92, 182)';
+const GUIDE_WHITE = 'rgb(246, 246, 242)';
+
+/**
+ * One road guide sign face in (x, y, w, h): a 4 px blue margin (the panel
+ * edge), a rounded white border, then the face. Advance-direction faces: a
+ * crossroads arrow (straight shaft, cross bar with arrowheads to the arms
+ * present), the destinations ahead / left / right as kanji over romaji, a
+ * national-route shield (blue shield, white outline and number) on the
+ * shaft, a metropolitan-route hexagon on an arm, and the cross street's
+ * name in a white box. Distance faces: three rows of kanji over romaji with
+ * the distance in km.
+ */
+function paintGuideSign(
+  g: OffscreenCanvasRenderingContext2D,
+  f: GuideFace,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+) {
+  g.save();
+  g.beginPath();
+  g.rect(x, y, w, h);
+  g.clip();
+  g.fillStyle = GUIDE_BLUE;
+  g.fillRect(x, y, w, h);
+  g.strokeStyle = GUIDE_WHITE;
+  g.lineWidth = 3;
+  g.beginPath();
+  g.roundRect(x + 5, y + 5, w - 10, h - 10, 7);
+  g.stroke();
+  g.fillStyle = GUIDE_WHITE;
+  g.textBaseline = 'middle';
+  const text = (
+    s: string,
+    tx: number,
+    ty: number,
+    size: number,
+    align: CanvasTextAlign,
+    maxW: number,
+    weight = 'bold',
+  ) => {
+    if (!s) return;
+    g.textAlign = align;
+    g.font = `${weight} ${size}px ${FONT}`;
+    g.fillText(s, tx, ty, maxW);
+  };
+  const dest = (
+    d: [string, string],
+    tx: number,
+    ty: number,
+    align: CanvasTextAlign,
+    maxW: number,
+  ) => {
+    text(d[0], tx, ty, 21, align, maxW);
+    text(d[1], tx, ty + 17, 11, align, maxW, '600');
+  };
+  if (f.kind === 'dist') {
+    f.rows.forEach(([k, r, km], i) => {
+      const ry = y + 22 + i * 36;
+      text(k, x + 14, ry, 22, 'left', w * 0.5);
+      text(r, x + 14, ry + 15, 10, 'left', w * 0.5, '600');
+      text(`${km}`, x + w - 46, ry + 4, 26, 'right', w * 0.3);
+      text('km', x + w - 14, ry + 9, 13, 'right', 30);
+    });
+    g.restore();
+    return;
+  }
+  // Crossroads arrow: shaft and head, cross bar and its heads.
+  const cx = x + w / 2;
+  const by = y + h * 0.62;
+  const top = y + 40;
+  const shaft = 11;
+  const bar = 8;
+  g.fillRect(cx - shaft / 2, top + 8, shaft, y + h - 9 - (top + 8));
+  g.beginPath();
+  g.moveTo(cx, top - 6);
+  g.lineTo(cx + 13, top + 12);
+  g.lineTo(cx - 13, top + 12);
+  g.closePath();
+  g.fill();
+  const lx = x + w * 0.24;
+  const rx = x + w * 0.76;
+  const head = (tx: number, dir: number) => {
+    g.beginPath();
+    g.moveTo(tx - dir * 12, by);
+    g.lineTo(tx + dir * 4, by - 11);
+    g.lineTo(tx + dir * 4, by + 11);
+    g.closePath();
+    g.fill();
+  };
+  if (f.t & 1) {
+    g.fillRect(lx, by - bar / 2, cx - lx, bar);
+    head(lx, 1);
+  }
+  if (f.t & 2) {
+    g.fillRect(cx, by - bar / 2, rx - cx, bar);
+    head(rx, -1);
+  }
+  // Destinations: ahead over the arrowhead, left / right over their arms.
+  dest(f.ahead, cx, y + 17, 'center', w * 0.6);
+  if (f.t & 1) dest(f.left, x + 12, by - 30, 'left', w * 0.36);
+  if (f.t & 2) dest(f.right, x + w - 12, by - 30, 'right', w * 0.36);
+  // National route shield on the shaft below the bar.
+  const sy = by + 25;
+  g.beginPath();
+  g.moveTo(cx - 12, sy - 11);
+  g.lineTo(cx + 12, sy - 11);
+  g.lineTo(cx + 12, sy + 2);
+  g.quadraticCurveTo(cx + 10, sy + 9, cx, sy + 13);
+  g.quadraticCurveTo(cx - 10, sy + 9, cx - 12, sy + 2);
+  g.closePath();
+  g.fillStyle = GUIDE_BLUE;
+  g.fill();
+  g.lineWidth = 2;
+  g.stroke();
+  g.fillStyle = GUIDE_WHITE;
+  text(f.route, cx, sy - 1, f.route.length > 2 ? 10 : 13, 'center', 20);
+  // Metropolitan route hexagon (white, blue number) under one arm.
+  const hx = f.t & 1 ? lx + 26 : rx - 26;
+  g.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const px = hx + Math.cos(a) * 14;
+    const py = by + 22 + Math.sin(a) * 10;
+    if (i) g.lineTo(px, py);
+    else g.moveTo(px, py);
+  }
+  g.closePath();
+  g.fill();
+  g.fillStyle = GUIDE_BLUE;
+  text(f.metro, hx, by + 23, 10, 'center', 22);
+  // Cross street name: white box, blue lettering, under the other arm.
+  const nx = f.t & 1 ? (f.t & 2 ? rx - 22 : cx + 50) : lx + 22;
+  const nw = 50;
+  g.fillStyle = GUIDE_WHITE;
+  g.fillRect(nx - nw / 2, by + 13, nw, 16);
+  g.fillStyle = GUIDE_BLUE;
+  text(f.street[0], nx, by + 21.5, 11, 'center', nw - 4);
+  g.restore();
+}
+
 export function paintSignAtlas(): OffscreenCanvas {
   const canvas = new OffscreenCanvas(ATLAS_W, ATLAS_H);
   const g = canvas.getContext('2d', {willReadFrequently: true})!;
@@ -329,10 +478,17 @@ export function paintSignAtlas(): OffscreenCanvas {
   // shapes, so they stay crisp in the mip chain and read from across the
   // street): a bold colour field, one big shape, the brand name in heavy
   // outlined type and a tagline bar.
-  for (let k = 0; k < 8; k++) {
+  for (let k = 0; k < SIGN.billboard.count; k++) {
     const [x, y, w, h] = signRect(48 + k);
     paintBillboard(g, k, x, y, w, h);
   }
+  // Road guide signs, four 256x128 faces per guide cell.
+  GUIDE_FACES.forEach((f, k) => {
+    const [x, y, w, h] = signRect(SIGN.guide.first + (k >> 2));
+    const sw = w / 2;
+    const sh = h / 2;
+    paintGuideSign(g, f, x + (k & 1) * sw, y + ((k >> 1) & 1) * sh, sw, sh);
+  });
   // Square cube signs (projecting light boxes): one or two big glyphs, in a
   // circle or a plain square, or a short Latin word.
   const SQUARE_TEXT = [
