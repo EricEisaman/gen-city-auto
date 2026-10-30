@@ -37,6 +37,16 @@ export const Mat = {
   screen: 14,
   /** Painted brake calliper (non-emissive red). */
   caliper: 18,
+  /** Cabin headliner: matte fabric of constant albedo. */
+  headliner: 19,
+  /** Soft-touch dashboard / upper door-card plastic with a fine filtered grain. */
+  softTouch: 20,
+  /** Satin metallic interior trim (inserts, vent surrounds). */
+  satin: 21,
+  /** Leather (steering wheel rim, armrests, gear knob); tinted with the seats. */
+  leather: 22,
+  /** Centre-console touch screen (dim emissive UI). */
+  display: 23,
 } as const;
 export type MatId = (typeof Mat)[keyof typeof Mat];
 

@@ -757,7 +757,7 @@ export function buildGreenhouse(
     segU: 6,
     segV: 18,
     doubleSided: true,
-    backMat: Mat.seat,
+    backMat: Mat.headliner,
   });
   // Headliner trim: closes the seam between the glass top and the roof liner from inside.
   const trim: Vec3[][] = top.map((t, k) => {
@@ -775,7 +775,7 @@ export function buildGreenhouse(
       add(add(t, mul(inward, 0.06)), [0, 0.004, 0]),
     ];
   });
-  kit.sheet(new Sheet(trim, -1, {u: 1}), Mat.interior, {
+  kit.sheet(new Sheet(trim, -1, {u: 1}), Mat.headliner, {
     mirror: true,
     segU: 1,
     segV: 40,

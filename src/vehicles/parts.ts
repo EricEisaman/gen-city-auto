@@ -180,56 +180,143 @@ export function wheelMesh(
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
-/** Steering wheel in its local frame: ring in the x/y plane, column along +z. */
+/**
+ * Steering wheel in its local frame: ring in the x/y plane, column along +z,
+ * driver on the -z side. Leather rim with an oval section and thumb rests,
+ * three tapered spokes with satin inserts and buttons, an airbag boss and a
+ * shroud back to the column.
+ */
 export function steeringWheelMesh(
   radius = 0.185,
   mat: number = Mat.plastic,
 ): Mesh {
-  const m = emptyMesh();
-  const ring = circle([radius, 0, 0], [1, 0, 0], [0, 0, 1], 0.016);
-  tessellate(m, revolve(ring, [0, 0, 0], [0, 0, 1]), mat, {
-    segU: 10,
-    segV: 36,
+  const kit = new Kit();
+  const m = kit.mesh;
+  // Rim: exact oval section (a scaled rational circle) revolved about z.
+  const sec = circle([0, 0, 0], [1, 0, 0], [0, 0, 1], 1);
+  const oval = makeCurve(
+    sec.points.map(p => [radius + p[0] * 0.0135, 0, p[2] * 0.0175] as Vec3),
+    sec.degree,
+    sec.weights,
+    sec.knots,
+  );
+  tessellate(m, revolve(oval, [0, 0, 0], [0, 0, 1]), Mat.leather, {
+    segU: 12,
+    segV: 64,
     flip: true,
   });
-  // Hub and three spokes (left, right, bottom).
-  const hub = makeCurve(
-    [
-      [0.06, 0, 0.03],
-      [0.065, 0, 0.0],
-      [0.05, 0, -0.025],
-      [0, 0, -0.03],
-    ],
-    2,
-  );
-  tessellate(m, revolve(hub, [0, 0, 0], [0, 0, 1]), mat, {segU: 4, segV: 16});
-  for (const a of [0, Math.PI, -Math.PI / 2]) {
+  // Thumb rests just above the side spokes, on the inside of the rim.
+  for (const a of [0.42, Math.PI - 0.42]) {
+    blob(
+      kit,
+      [Math.cos(a) * (radius - 0.008), Math.sin(a) * (radius - 0.008), 0],
+      [0.012, 0.034, 0.0185],
+      Mat.leather,
+      {
+        n: 2.4,
+        m: 2.4,
+        segU: 10,
+        segV: 6,
+        xf: p => place(p, [0, 0, 0], 0, 0, a),
+      },
+    );
+  }
+  // Spokes: rounded-rectangle sections from the boss to the rim.
+  const spoke = (a: number, w0: number, w1: number) => {
     const ca = Math.cos(a),
       sa = Math.sin(a);
     const rows: Vec3[][] = [];
-    for (const r of [0.05, radius * 0.6, radius - 0.01]) {
-      const w = a === -Math.PI / 2 ? 0.03 : 0.022;
-      const z = lerp(-0.01, 0.0, r / radius);
-      const pt = (t: number, dz: number): Vec3 => [
-        r * ca - t * sa,
-        r * sa + t * ca,
+    const N = 5;
+    for (let k = 0; k <= N; k++) {
+      const t = k / N;
+      const r = lerp(0.05, radius - 0.006, t);
+      const w = lerp(w0, w1, t * t * (3 - 2 * t));
+      const z = lerp(0.012, 0.0, t);
+      const d = lerp(0.011, 0.008, t);
+      const pt = (q: number, dz: number): Vec3 => [
+        r * ca - q * sa,
+        r * sa + q * ca,
         z + dz,
       ];
+      // Closed loop: front face (toward the driver, -z) then back.
       rows.push([
-        pt(-w, 0.008),
-        pt(-w, -0.008),
-        pt(0, -0.012),
-        pt(w, -0.008),
-        pt(w, 0.008),
-        pt(0, 0.012),
-        pt(-w, 0.008),
+        pt(0, -d),
+        pt(w * 0.8, -d),
+        pt(w, -d * 0.4),
+        pt(w, d * 0.4),
+        pt(w * 0.8, d),
+        pt(0, d),
+        pt(-w * 0.8, d),
+        pt(-w, d * 0.4),
+        pt(-w, -d * 0.4),
+        pt(-w * 0.8, -d),
+        pt(0, -d),
       ]);
     }
-    tessellate(m, loftPoints(rows, {degreeU: 2, degreeV: 2}), mat, {
-      segU: 6,
-      segV: 2,
+    tessellate(m, loftPoints(rows, {degreeU: 3, degreeV: 3}), mat, {
+      segU: 16,
+      segV: 5,
     });
+  };
+  spoke(-0.12, 0.034, 0.016);
+  spoke(Math.PI + 0.12, 0.034, 0.016);
+  spoke(-Math.PI / 2, 0.042, 0.02);
+  // Satin inserts and switch pads on the side spokes.
+  for (const sx of [1, -1]) {
+    const a = sx > 0 ? -0.12 : Math.PI + 0.12;
+    const r = 0.095;
+    blob(
+      kit,
+      [Math.cos(a) * r, Math.sin(a) * r, -0.004],
+      [0.032, 0.006, 0.006],
+      Mat.satin,
+      {n: 4, m: 3, segU: 12, segV: 3, xf: p => place(p, [0, 0, 0], 0, 0, a)},
+    );
+    for (const dy of [0.013, -0.013]) {
+      const r2 = 0.083;
+      blob(
+        kit,
+        [
+          Math.cos(a) * r2 - Math.sin(a) * dy,
+          Math.sin(a) * r2 + Math.cos(a) * dy,
+          -0.008,
+        ],
+        [0.009, 0.006, 0.004],
+        Mat.rubber,
+        {n: 4, m: 3, segU: 10, segV: 3, xf: p => place(p, [0, 0, 0], 0, 0, a)},
+      );
+    }
   }
+  // Airbag boss (soft rounded pad) with a satin badge.
+  blob(kit, [0, -0.008, 0.004], [0.072, 0.058, 0.024], Mat.softTouch, {
+    n: 5,
+    m: 3.2,
+    segU: 16,
+    segV: 6,
+    taper: t => [lerp(1.0, 0.9, t), lerp(1.0, 0.9, t)],
+  });
+  blob(kit, [0, 0.002, -0.0205], [0.017, 0.009, 0.0025], Mat.satin, {
+    n: 2,
+    m: 2.5,
+    segU: 10,
+    segV: 3,
+  });
+  // Shroud from the back of the boss to the column.
+  const shroud = makeCurve(
+    [
+      [0, 0, 0.1],
+      [0.032, 0, 0.1],
+      [0.045, 0, 0.07],
+      [0.06, 0, 0.035],
+      [0.062, 0, 0.022],
+    ],
+    3,
+  );
+  tessellate(m, revolve(shroud, [0, 0, 0], [0, 0, 1]), Mat.plastic, {
+    segU: 6,
+    segV: 24,
+    flip: true,
+  });
   return m;
 }
 
@@ -256,7 +343,7 @@ export function dial(kit: Kit, center: Vec3, r: number, pitch: number) {
     const q = xf([Math.cos(a) * r, Math.sin(a) * r, -0.004]);
     ring.push([q[0] + center[0], q[1] + center[1], q[2] + center[2]]);
   }
-  tube(kit, ring, 0.0045, Mat.chrome, {along: 20, seg: 4});
+  tube(kit, ring, 0.0045, Mat.satin, {along: 20, seg: 4});
   const nx = place([r * 0.4, r * 0.15, -0.006], [0, 0, 0], pitch);
   blob(
     kit,
