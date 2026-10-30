@@ -145,6 +145,11 @@
     -> in progress: tiled facades now use a normal-mapped Japanese facade-tile layer (half-bond,
        recessed grout, glazed faces with per-tile tone and gloss); rendered/concrete walls use the
        concrete layer. Windows already had a 22 cm parallax reveal.
+    -> round 7: windows sit in 30-45 cm reveals that cast real sun shadows (lintel, sides, sill) and floor
+       ledges shadow the wall below at every distance; glass is dark and reflective with per-pane tilt;
+       AO is much stronger (new 35 cm crease scale); the tonemap stretches each frame to full contrast.
+       Shopfronts have aluminium frames, garment racks and restaurant counters behind the glass; roofs
+       carry AC banks, skylights, ducts and membrane/concrete panels. Please re-check.
     
 [x] Roads look flat, dull, splotchy, gray.
     Nothing like an actual road. Sidewalk, train tracks, they all look worse than PS2 era.
