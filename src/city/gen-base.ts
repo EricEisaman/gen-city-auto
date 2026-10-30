@@ -703,7 +703,7 @@ function junctionMarkings(
     const run = (from: Vec2, to: Vec2): Vec2 => {
       const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
       const k = len > 2 ? 2 / len : 1;
-      return [lerp(to[0], from[0], k), lerp(to[1], from[1], k)];
+      return [lerp(from[0], to[0], k), lerp(from[1], to[1], k)];
     };
     seg(run(a0, P), a0);
     const ka = Math.max(8, Math.ceil((T * 1.6) / 0.5));
@@ -4825,7 +4825,7 @@ export const SIGNAL_LUM = {h: 9.5, reach: 2.5, far: 6.5} as const;
  * light down the approach, leaving the box the darkest place on the road
  * at night). Every pole has a head at SIGNAL_LUM.reach (`pool` false: a
  * directed throw toward the centre); on two diagonal poles of each box
- * the arm reaches on over the box to a second head (`pool` true: a round
+ * with an avenue or arterial arm the arm reaches on over the box to a second head (`pool` true: a round
  * pool, kind 0) up to SIGNAL_LUM.far out, stopping 3 m short of the
  * centre. Shared by the tile props, the base light list and the tree
  * clearance.
@@ -4850,7 +4850,8 @@ export function signalLums(
   ];
   cb(head(SIGNAL_LUM.reach), dir, SIGNAL_LUM.reach, false);
   const far = Math.min(SIGNAL_LUM.far, dl - 3);
-  if (((k + hash2(ji, 0x1a4)) & 1) === 0 && far > SIGNAL_LUM.reach + 1.5)
+  const big = L.junctions[ji].arms.some(a => L.chains[a.chain].kind >= 2);
+  if (big && ((k + hash2(ji, 0x1a4)) & 1) === 0 && far > SIGNAL_LUM.reach + 1.5)
     cb(head(far), dir, far, true);
 }
 

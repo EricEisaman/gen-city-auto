@@ -6615,10 +6615,10 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
     // Far LOD: LOD0's crown mass kept (round 4's eight loose cards read as
     // spindly palm fronds in shell-day): a closed low-poly shell of the
     // ellipsoid in the same leaf material (its leaf-texture alpha opens
-    // small gaps onto its own darker far side) and four of LOD0's cards
-    // breaking the outline. 42 vertices.
-    crownShell(m, c, rx * 0.88, ry * 0.88, S.flare, aux, sp);
-    crownCards(m, c, rx, ry, S.flare, 4, h * 0.12, aux, lr, sp, 0.75);
+    // small gaps onto its own darker far side) and three of LOD0's cards
+    // breaking the outline. 32 vertices, as before.
+    crownShell(m, c, rx * 0.9, ry * 0.9, S.flare, aux, sp);
+    crownCards(m, c, rx, ry, S.flare, 3, h * 0.13, aux, lr, sp, 0.75);
     return;
   }
   // A full rounded crown (Tokyo street zelkova / ginkgo, pruned into a dome
@@ -6651,8 +6651,8 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
 }
 
 /**
- * LOD1 crown mass: a closed six-sided, four-ring ellipsoid shell (radii rx,
- * ry; flare as crownCards) in the leaf material, both windings, 26
+ * LOD1 crown mass: a closed six-sided, three-ring ellipsoid shell (radii
+ * rx, ry; flare as crownCards) in the leaf material, both windings, 20
  * vertices. uv alternates 0.32 / 0.68 per column and ring, so each face
  * maps the dense middle of the leaf texture (mostly opaque, a few gaps);
  * normals are the ellipsoid's bent up like the cards'.
@@ -6687,7 +6687,7 @@ function crownShell(
       aux,
     );
   };
-  const rows = [-0.72, -0.2, 0.32, 0.78];
+  const rows = [-0.62, 0.08, 0.7];
   const ring = rows.map((u, r) =>
     Array.from({length: N}, (_, i) =>
       vert(
@@ -6707,7 +6707,7 @@ function crownShell(
   for (let i = 0; i < N; i++) {
     const j = (i + 1) % N;
     two(bottom, ring[0][i], ring[0][j]);
-    two(top, ring[3][i], ring[3][j]);
+    two(top, ring[rows.length - 1][i], ring[rows.length - 1][j]);
     for (let r = 0; r + 1 < rows.length; r++) {
       // Rings staggered by half a column (odd rows): zig-zag strip.
       const lo = ring[r];
@@ -8715,8 +8715,9 @@ function hedges(
  * - Intended look (judge round 4): cast iron, metal ~0.8, rough ~0.5, a
  *   tread / chequer normal, a rust and dirt ring at the edge, a stencilled
  *   glyph; wet in rain.
- * The lid sits 3 mm over the band's actual surface (bandSurfaceAt) inside
- * a 12 mm dark ring (CM.paint 0x91, 2 mm up), no sides.
+ * The lid sits 3 mm over the band's actual surface (bandSurfaceAt), no
+ * sides and no separate frame: the shader draws the dark seating gap in
+ * the lid's outer ~12 mm (and the frame ring inside it).
  */
 const WALK_COVER_MAT = packMat(CM.hedge, 2);
 
@@ -8729,8 +8730,8 @@ const WALK_COVER_MAT = packMat(CM.hedge, 2);
  * and boulevards, beyond the tactile line on lanes. Hash-placed (no tile
  * RNG draws); kept 9 m (avenues 5 m) from junction mouths, clear of tree
  * pits, 1 m from lamp poles and
- * utility poles, on sidewalk only (landing). LOD0 only, 12 vertices each
- * (round 37).
+ * utility poles, on sidewalk only (landing). LOD0 only, 4 vertices each
+ * (round 11).
  */
 function walkCovers(
   ctx: TileContext,
@@ -8829,13 +8830,13 @@ function walkCovers(
       };
       const aux =
         ((kind | (round ? 4 : 0) | ((hs >>> 18) << 3)) & 0xffff) << 16;
-      const ring = packMat(CM.paint, 0x91);
       // Outline (unit offsets, counter-clockwise from above): the lid's
-      // corners or a 12-gon.
+      // corners or a 10-gon. No separate seating ring: the shader draws
+      // the dark gap in the lid's outer ~12 mm (budget).
       const shape: Vec2[] = round
-        ? Array.from({length: 12}, (_, i): Vec2 => [
-            Math.cos((i / 12) * Math.PI * 2),
-            Math.sin((i / 12) * Math.PI * 2),
+        ? Array.from({length: 10}, (_, i): Vec2 => [
+            Math.cos((i / 10) * Math.PI * 2),
+            Math.sin((i / 10) * Math.PI * 2),
           ])
         : [
             [-1, -1],
@@ -8843,7 +8844,6 @@ function walkCovers(
             [1, 1],
             [-1, 1],
           ];
-      const G = 0.012;
       const lid = shape.map(([a, b]) =>
         m.vertex(
           Y(a * ha, b * hc, 0.003),
@@ -8861,30 +8861,6 @@ function walkCovers(
       } else {
         m.triFacing(lid[0], lid[1], lid[2], UP);
         m.triFacing(lid[0], lid[2], lid[3], UP);
-      }
-      // The dark seating ring round the lid (not under it: no overlap to
-      // z-fight at range).
-      const r0 = shape.map(([a, b]) =>
-        m.vertex(Y(a * ha, b * hc, 0.002), UP, 0, 0, ring),
-      );
-      const g = round ? 1 + G / ha : 1;
-      const r1 = shape.map(([a, b]) =>
-        m.vertex(
-          Y(
-            round ? a * ha * g : a * (ha + G),
-            round ? b * hc * g : b * (hc + G),
-            0.002,
-          ),
-          UP,
-          1,
-          1,
-          ring,
-        ),
-      );
-      for (let i = 0; i < shape.length; i++) {
-        const j = (i + 1) % shape.length;
-        m.triFacing(r0[i], r1[i], r1[j], UP);
-        m.triFacing(r0[i], r1[j], r0[j], UP);
       }
     }
     s += step;
@@ -9179,16 +9155,22 @@ export function buildTile(
           0.16,
           packMat(CM.paint, 0x90),
         );
-        // The head as a plain dark box (its backplate's size) hanging
-        // under the arm end, facing the approach: 20 vertices.
+        // The head as a plain dark slab (its backplate's size) hanging
+        // under the arm end, facing the approach and back: 8 vertices.
         const hx = p[0] + armDir[0] * (reach - 0.7);
         const hz = p[2] + armDir[1] * (reach - 0.7);
-        m.box(
-          [hx, y - 0.12, hz],
-          [0.76, 0.34, 0.1],
-          packMat(CM.paint, 0x91),
-          Math.atan2(armDir[1], -armDir[0]),
-        );
+        const H = (u: number, v: number, f: number): Vec3 => [
+          hx + armDir[0] * u * 0.76 + armDir[1] * f,
+          y - 0.12 + v * 0.34,
+          hz + armDir[1] * u * 0.76 - armDir[0] * f,
+        ];
+        for (const f of [0.1, -0.1])
+          m.quad(
+            [H(-1, -1, f), H(1, -1, f), H(1, 1, f), H(-1, 1, f)],
+            [armDir[1] * Math.sign(f), 0, -armDir[0] * Math.sign(f)],
+            uv01,
+            packMat(CM.paint, 0x91),
+          );
       });
     }
 
