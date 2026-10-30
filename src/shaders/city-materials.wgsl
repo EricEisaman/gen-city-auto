@@ -2650,7 +2650,7 @@ fn rdVoronoiEdge(x: vec2f) -> vec2f {
 // aged surface carries a block-crack network (1-2 % of the area is tar),
 // plus the odd long wandering crack. Coverage-conserving at range.
 fn rdCrackNet(q: vec2f, foot: f32) -> f32 {
-  let zone = smoothstep(0.42, 0.54, valueNoise(q * 0.07 + 4.0));
+  let zone = smoothstep(0.47, 0.58, valueNoise(q * 0.07 + 4.0));
   let lone = smoothstep(0.62, 0.7, valueNoise(q * 0.05 + 21.0));
   if (zone + lone < 0.01) { return 0.0; }
   // Mean tar coverage, for footprints too big to resolve a crack.
