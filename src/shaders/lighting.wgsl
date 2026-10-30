@@ -537,7 +537,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var color = vec3f(0.0);
   // Sun.
   if (frame.sunDir.w > 0.0) {
-    let sh = shadow(world, n, vd) * cloudShadow(world) * sunVis;
+    // A little AO on direct light too, so sunlit inside corners read.
+    let sh = shadow(world, n, vd) * cloudShadow(world) * sunVis * mix(1.0, ao, 0.25);
     color += brdf(n, v, frame.sunDir.xyz, albedo, f0, rough, metal) * frame.sunColor.rgb * sh * 1.35;
     if (cls == CLASS_FOLIAGE) {
       // Cheap translucency for leaves.
@@ -594,7 +595,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (cls == CLASS_WATER) { refl = normalize(vec3f(refl.x, max(refl.y, 0.015), refl.z)); }
   var env = skyRadiance(normalize(vec3f(refl.x, max(refl.y, 0.02), refl.z)));
   // Overcast skies reflect grey cloud, not the clear-sky LUT.
-  env = mix(env, frame.skyAmbient.rgb * 1.3 + frame.cityGlow.rgb, clamp(frame.weather.x * 1.3 - 0.3, 0.0, 1.0));
+  env = mix(env, frame.skyAmbient.rgb * 0.85 + frame.cityGlow.rgb, clamp(frame.weather.x * 1.3 - 0.3, 0.0, 1.0));
   // Below the horizon reflections see the city: darken toward ground ambient.
   // Open water reflects the sky down to the horizon.
   let reflLo = select(0.15, 0.01, cls == CLASS_WATER);

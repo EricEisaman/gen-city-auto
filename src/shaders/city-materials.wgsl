@@ -360,6 +360,37 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
       var inside = interior(vec2f(lx, ly), vec2f(st.bay, st.floorH), 6.0, n, T, V, cellSeed, false, 0u);
       var glow = vec3f(1.0, 0.85, 0.6) * 0.2;
+      // Aluminium shopfront frame: mullions every ~1.8 m and a transom.
+      let mw = st.bay / max(1.0, round(st.bay / 1.8));
+      let mx = lx - floor(lx / mw) * mw;
+      let tr = st.floorH * 0.62;
+      if (min(mx, mw - mx) < 0.035 || abs(ly - tr) < 0.03 || ly < 0.22) {
+        s.albedo = vec3f(0.5, 0.51, 0.52);
+        s.metal = 0.8;
+        s.rough = 0.35;
+        return s;
+      }
+      let ndvP = max(-dot(V, n), 0.05);
+      let vP = vec2f(dot(V, T), V.y) / ndvP;
+      if (shopType == 2u) {
+        // Boutique: garments on two rails behind the glass (parallax planes),
+        // lit by warm track lights.
+        for (var r = 0; r < 2; r++) {
+          let depth = 1.2 + f32(r) * 1.6;
+          let q = vec2f(lx, ly) + vP * depth;
+          let gw = 0.09;
+          let gid = floor(q.x / gw);
+          let gh = hash21(vec2f(gid, f32(r) * 17.0 + f32(shopSeed % 53u)));
+          let bottom = mix(0.45, 0.9, gh);
+          if (q.y > bottom && q.y < 1.75 && fract(q.x / 0.9 + f32(r) * 0.37) < 0.7 && fract(q.x / gw) > 0.12) {
+            let cloth = mix(vec3f(0.08), 0.35 + 0.35 * cos(6.2831 * (gh * 0.7 + vec3f(0.0, 0.25, 0.55) + f32(shopSeed % 7u) * 0.1)), 0.8);
+            inside = cloth * (1.0 - 0.3 * f32(r)) * mix(0.35, 1.0, smoothstep(bottom, bottom + 0.6, q.y)) * mix(0.45, 1.1, night);
+            break;
+          }
+          if (abs(q.y - 1.78) < 0.02) { inside = vec3f(0.5); break; }
+        }
+        glow = vec3f(1.0, 0.8, 0.55) * 0.35;
+      }
       if (shopType == 0u) {
         // Konbini: bright cool interior, colored band across the top.
         // Gondola shelves stocked with packaging, traced as parallax planes
@@ -405,9 +436,23 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
           return s;
         }
       } else if (shopType == 1u) {
-        // Restaurant: warm light, noren curtain over the top of the door.
+        // Restaurant: warm light, a wooden counter with diners' backs, pendant
+        // lamps, and a noren curtain over the top of the door.
         inside *= 1.4;
         glow = vec3f(1.0, 0.6, 0.3) * 0.5;
+        let qc = vec2f(lx, ly) + vP * 2.2;
+        if (qc.y < 1.0) {
+          inside = vec3f(0.32, 0.18, 0.09) * (0.8 + 0.2 * step(0.5, fract(qc.x * 3.0))) * mix(0.5, 1.4, night);
+          if (qc.y > 0.95) { inside = vec3f(0.55, 0.38, 0.22) * mix(0.6, 1.6, night); }
+        }
+        let qd = vec2f(lx, ly) + vP * 1.4;
+        let sx = fract(qd.x / 0.75) - 0.5;
+        if (hash21(vec2f(floor(qd.x / 0.75), f32(shopSeed % 41u))) > 0.45 && qd.y < 1.35 - abs(sx) * 0.5 && abs(sx) < 0.17 && qd.y > 0.45) {
+          inside = vec3f(0.06, 0.05, 0.05);
+        }
+        let ql = vec2f(lx, ly) + vP * 1.8;
+        let lp = vec2f(fract(ql.x / 1.2) - 0.5, ql.y - 2.15);
+        if (length(lp * vec2f(1.0, 1.6)) < 0.14) { inside = vec3f(1.0, 0.7, 0.4) * mix(1.5, 5.0, night); }
         if (ly > st.floorH * 0.5 && ly < st.floorH * 0.7 && fract(lx * 2.2) > 0.06) {
           let norenC = array<vec3f, 3>(vec3f(0.08, 0.1, 0.25), vec3f(0.5, 0.08, 0.06), vec3f(0.85, 0.8, 0.7))[shopSeed % 3u];
           s.albedo = norenC;
