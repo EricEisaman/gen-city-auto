@@ -5,6 +5,8 @@
 //   rows 1408..1535  station name boards   512x128,  4 x 1 =  4 (ids 44..47)
 //   rows 1536..2047  billboards            512x256,  4 x 2 =  8 (ids 48..55)
 //                    (ids 56..71 wrap onto the billboards; gen-base uses them)
+//                    of which ids 54, 55 hold road guide signs (GUIDE_FACES):
+//                    four 256x128 faces each, so billboards use 48..53.
 //   rows 2048..2559  square cube signs     256x256,  8 x 2 = 16 (ids 72..87)
 
 export const ATLAS_W = 2048;
@@ -13,7 +15,9 @@ export const SIGN = {
   vertical: {first: 0, count: 32},
   horizontal: {first: 32, count: 12},
   station: {first: 44, count: 4},
-  billboard: {first: 48, count: 8},
+  billboard: {first: 48, count: 6},
+  /** Road guide signs, four faces per cell (see guideFace). */
+  guide: {first: 54, count: 2},
   square: {first: 72, count: 16},
 } as const;
 
@@ -34,6 +38,137 @@ export function signRect(id: number): [number, number, number, number] {
   }
   const k = (id - 72) % 16;
   return [(k % 8) * 256, 2048 + Math.floor(k / 8) * 256, 256, 256];
+}
+
+/**
+ * Road guide sign faces painted into the guide cells (sign-atlas.ts
+ * paintGuideSign), 256x128 each, four per cell (2 x 2): the overhead
+ * advance-direction signs (方面及び方向の予告, kind 'dir': blue field, white
+ * border, a crossroads arrow with destinations ahead / left / right in
+ * kanji over romaji, route shields on the arms) and the post-junction
+ * direction-and-distance signs (kind 'dist': three destinations with km).
+ * `t` = arms present, as on a T junction: 1 left, 2 right, 3 both.
+ *
+ * Shader contract: the guide panel's face is M_SIGN with id SIGN.guide
+ * (54, 55) and uv over one quarter of the cell (guideFace), so today it
+ * takes signMat's billboard branch (albedo 0.6 x atlas colour by day,
+ * floodlit from the top edge at night, as lit guide signs are). A branch
+ * of its own for ids 54..55 (retroreflective sheeting: no flood, a faint
+ * nightLight() glow) is the shader's call; the back stays CM.roadSign
+ * 16 | 0x100.
+ */
+export type GuideFace =
+  | {
+      kind: 'dir';
+      ahead: [string, string];
+      left: [string, string];
+      right: [string, string];
+      route: string;
+      metro: string;
+      street: [string, string];
+      t: number;
+    }
+  | {kind: 'dist'; rows: [string, string, number][]};
+export const GUIDE_FACES: GuideFace[] = [
+  {
+    kind: 'dir',
+    ahead: ['新宿', 'Shinjuku'],
+    left: ['池袋', 'Ikebukuro'],
+    right: ['渋谷', 'Shibuya'],
+    route: '20',
+    metro: '317',
+    street: ['明治通り', 'Meiji-dori'],
+    t: 3,
+  },
+  {
+    kind: 'dir',
+    ahead: ['上野', 'Ueno'],
+    left: ['王子', 'Oji'],
+    right: ['銀座', 'Ginza'],
+    route: '4',
+    metro: '305',
+    street: ['春日通り', 'Kasuga-dori'],
+    t: 3,
+  },
+  {
+    kind: 'dir',
+    ahead: ['品川', 'Shinagawa'],
+    left: ['六本木', 'Roppongi'],
+    right: ['新橋', 'Shimbashi'],
+    route: '15',
+    metro: '415',
+    street: ['外堀通り', 'Sotobori-dori'],
+    t: 3,
+  },
+  {
+    kind: 'dir',
+    ahead: ['中野', 'Nakano'],
+    left: ['高田馬場', 'Takadanobaba'],
+    right: ['', ''],
+    route: '246',
+    metro: '302',
+    street: ['山手通り', 'Yamate-dori'],
+    t: 1,
+  },
+  {
+    kind: 'dir',
+    ahead: ['東京駅', 'Tokyo Sta.'],
+    left: ['', ''],
+    right: ['赤坂', 'Akasaka'],
+    route: '1',
+    metro: '405',
+    street: ['靖国通り', 'Yasukuni-dori'],
+    t: 2,
+  },
+  {
+    kind: 'dir',
+    ahead: ['浅草', 'Asakusa'],
+    left: ['秋葉原', 'Akihabara'],
+    right: ['日本橋', 'Nihombashi'],
+    route: '6',
+    metro: '316',
+    street: ['昭和通り', 'Showa-dori'],
+    t: 3,
+  },
+  {
+    kind: 'dist',
+    rows: [
+      ['新宿', 'Shinjuku', 3],
+      ['中野', 'Nakano', 6],
+      ['八王子', 'Hachioji', 38],
+    ],
+  },
+  {
+    kind: 'dist',
+    rows: [
+      ['渋谷', 'Shibuya', 2],
+      ['品川', 'Shinagawa', 7],
+      ['横浜', 'Yokohama', 29],
+    ],
+  },
+];
+/** Number of advance-direction faces (the rest are distance faces). */
+export const GUIDE_DIR = 6;
+
+/**
+ * Sign id and uv rectangle [u0, v0, u1, v1] (uv 0..1 over the cell, v down)
+ * of guide face `k`. Faces sit 2 x 2 in a cell; the uv keeps 0.4 % clear of
+ * the quarter lines so fract() in signMat never wraps.
+ */
+export function guideFace(k: number): {
+  id: number;
+  uv: [number, number, number, number];
+} {
+  const i =
+    ((k % GUIDE_FACES.length) + GUIDE_FACES.length) % GUIDE_FACES.length;
+  const sub = i & 3;
+  const u0 = (sub & 1) * 0.5;
+  const v0 = (sub >> 1) * 0.5;
+  const e = 0.004;
+  return {
+    id: SIGN.guide.first + (i >> 2),
+    uv: [u0 + e, v0 + e, u0 + 0.5 - e, v0 + 0.5 - e],
+  };
 }
 
 export const SHOP_WORDS = [

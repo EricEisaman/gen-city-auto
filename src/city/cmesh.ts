@@ -16,6 +16,11 @@ import type {Vec2, Vec3} from '../math/vec.ts';
 export const CM = {
   road: 0,
   sidewalk: 1,
+  /**
+   * Kerb faces (param 0; uv x metres along, y metres up). Param 1: precast
+   * concrete of planter kerbs, tree-pit frames, verge skirts and median
+   * tops (same uv; curbMat may tint it apart from kerb stone).
+   */
   curb: 2,
   facade: 3,
   roof: 4,
@@ -23,11 +28,17 @@ export const CM = {
   metal: 6,
   sign: 7,
   foliage: 8,
+  /** Tree trunks: uv x metres around, y metres up; aux = the tree's hash. */
   bark: 9,
   grass: 10,
   lamp: 11,
   concrete: 12,
   rail: 13,
+  /**
+   * Signal lamps: lamp | group << 2 | phase << 3 (| 0x800 upper ped lamp).
+   * Lamp 3 (pedestrian) is on the pictogram geometry only (the lit figure,
+   * uv 0..1 over the 0.34 m lens square); the lens around it is paint 0x91.
+   */
   signal: 14,
   frame: 15,
   paint: 16,

@@ -777,21 +777,29 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       let dir = normalize(vec3f(sin(a), -0.12, cos(a)));
       lc *= smoothstep(0.9, 0.97, dot(-l, dir));
     } else if (L.kind < 0.5) {
-      // Street lights point down. Road luminaires (kind > 0.01 carries the
-      // road axis: 0.05 + 0.4 * angle / pi) throw wide along the road: the
-      // along-road part of the light vector is squashed before the cone
-      // test, so pools stretch ~2.2:1 and join their neighbours.
-      var lq = l;
-      var c0 = 0.45;
-      var c1 = 0.85;
+      // Street lights point down, a windowed elliptical pool in direction
+      // space (horizontal offset over drop): road luminaires (kind > 0.01
+      // carries the road axis: 0.05 + 0.4 * angle / pi) reach 1.5 pole
+      // heights along the road and 0.9 across it; junction luminaires
+      // (kind 0) a round pool of 1.1. Outside the pool only a little spill.
+      // Each luminaire's colour temperature varies a little (warm/cool).
+      var e2 = 0.0;
+      let lyc = max(l.y, 0.02);
       if (L.kind > 0.01) {
         let axis = (L.kind - 0.05) / 0.4 * PI;
-        let ra = vec3f(cos(axis), 0.0, sin(axis));
-        lq = normalize(l - ra * dot(l, ra) * 0.55);
-        c0 = 0.25;
-        c1 = 0.8;
+        let ra = vec2f(cos(axis), sin(axis));
+        let pa = dot(l.xz, ra) / (lyc * 1.5);
+        let pc = dot(l.xz, vec2f(-ra.y, ra.x)) / (lyc * 0.9);
+        e2 = pa * pa + pc * pc;
+      } else {
+        e2 = dot(l.xz, l.xz) / (lyc * lyc * 1.21);
       }
-      lc *= mix(0.03, 1.0, smoothstep(c0, c1, lq.y)) * (140.0 / 60.0);
+      let pool = select(0.0, pow(clamp(1.0 - e2, 0.0, 1.0), 1.5), l.y > 0.0);
+      let ht = hash21(floor(L.pos.xz * 0.37));
+      let temp = mix(vec3f(1.06, 0.97, 0.86), vec3f(0.93, 0.99, 1.08), ht);
+      // Junction luminaires stay the strongest: the box is the best-lit
+      // place on the road.
+      lc *= temp * mix(0.025, 1.0, pool) * select(85.0 / 60.0, 120.0 / 60.0, L.kind <= 0.01);
     }
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     // Point lights cast no shadows: the vehicle contact term stands in under cars.
