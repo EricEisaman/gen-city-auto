@@ -45,7 +45,7 @@ await ensureDir(outDir);
 
 const q = new URLSearchParams({lab: asset, pick, timespeed: '0', ui: '0', size: `${width}x${height}`});
 if (kind) q.set('kind', kind);
-for (const k of ['station', 'ctx', 'city', 'seed']) if (opt(k)) q.set(k, opt(k));
+for (const k of ['station', 'ctx', 'city', 'seed', 'debug']) if (opt(k)) q.set(k, opt(k));
 
 let failed = false;
 await withServer(async base => {

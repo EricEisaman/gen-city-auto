@@ -205,8 +205,118 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
   return canvas;
 }
 
+// Tenant lettering: the cut-vinyl names office and zakkyo tenants stick on
+// their upper-floor windows, one big character per pane (カ|ラ|オ|ケ across
+// four windows), with a phone-number strip below. Painted as a white-on-black
+// mask into the sign atlas's alpha channel (unused by the colour signs):
+//   rows    0..2047  glyph cells 128x128, 16 x 16: word w (of VINYL_WORDS)
+//                    has its k-th character in cell w * 8 + k
+//   rows 2048..2559  strips 512x64, 4 x 8 = 32: phone numbers, notices
+// city-materials.wgsl vinyl() reads it; VINYL_LEN is generated from here.
+export const VINYL_WORDS = [
+  'カラオケ',
+  '歯科',
+  '麻雀',
+  '英会話',
+  '整骨院',
+  '不動産',
+  '学習塾',
+  '美容室',
+  '内科',
+  '眼科',
+  '皮膚科',
+  '鍼灸院',
+  '囲碁',
+  '雀荘',
+  '居酒屋',
+  '司法書士',
+  '税理士',
+  '事務所',
+  '空室',
+  'テナント',
+  'ネイル',
+  'エステ',
+  'ヨガ',
+  '整体',
+  '塾',
+  '写真館',
+  'ダンス',
+  '中国語',
+  '個別指導',
+  '金券',
+  '質',
+  '占い',
+];
+const VINYL_GLYPH = 128;
+const VINYL_STRIP_W = 512;
+const VINYL_STRIP_H = 64;
+
+/** WGSL constants matching the vinyl mask layout (prepended to the city shader). */
+export function vinylWgsl(): string {
+  const lens = VINYL_WORDS.map(w => `${[...w].length}u`).join(', ');
+  const n = VINYL_WORDS.length;
+  return [
+    `const VINYL_WORDS = ${n}u;`,
+    `const VINYL_LEN = array<u32, ${n}>(${lens});`,
+  ].join('\n');
+}
+
+/** The vinyl lettering mask (white on black), laid out as described above. */
+export function paintVinylMask(seed = 7): OffscreenCanvas {
+  const canvas = new OffscreenCanvas(ATLAS_W, ATLAS_H);
+  const g = canvas.getContext('2d')!;
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, ATLAS_W, ATLAS_H);
+  g.fillStyle = '#fff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const G = VINYL_GLYPH;
+  const cols = ATLAS_W / G;
+  g.font = `bold ${G * 0.78}px ${FONT}`;
+  VINYL_WORDS.forEach((word, w) => {
+    [...word].slice(0, 8).forEach((ch, k) => {
+      const cell = w * 8 + k;
+      const x = (cell % cols) * G;
+      const y = Math.floor(cell / cols) * G;
+      g.fillText(ch, x + G / 2, y + G / 2 + G * 0.03);
+    });
+  });
+  const rng = new Rng(seed);
+  const digits = (n: number) =>
+    Array.from({length: n}, () => rng.int(0, 10)).join('');
+  const notes = [
+    '空室あり',
+    'テナント募集',
+    '受付中',
+    '予約制',
+    'OPEN 10:00-22:00',
+    '営業中',
+    'WiFi完備',
+    '初回無料',
+  ];
+  const sw = VINYL_STRIP_W;
+  const sh = VINYL_STRIP_H;
+  for (let k = 0; k < 32; k++) {
+    const x = (k % 4) * sw;
+    const y = 2048 + Math.floor(k / 4) * sh;
+    const prefix = ['TEL ', '☎ ', ''][k % 3];
+    const text =
+      k < 24
+        ? `${prefix}0${rng.int(3, 4)}-${digits(4)}-${digits(4)}`
+        : notes[k - 24];
+    const size = Math.min(
+      sh * 0.72,
+      (sw * 0.92) / Math.max(4, [...text].length * 0.62),
+    );
+    g.font = `bold ${size}px ${FONT}`;
+    g.fillText(text, x + sw / 2, y + sh / 2 + sh * 0.03, sw * 0.92);
+  }
+  return canvas;
+}
+
 export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
   const canvas = paintSignAtlas();
+  const mask = paintVinylMask();
   // Mipmapped so distant sign text filters instead of shimmering (the
   // shader clamps the level so neighbouring signs never bleed in).
   const levels = 5;
@@ -220,19 +330,30 @@ export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
       GPUTextureUsage.COPY_DST |
       GPUTextureUsage.RENDER_ATTACHMENT,
   });
+  const scale = (from: OffscreenCanvas, w: number, h: number) => {
+    const c = new OffscreenCanvas(w, h);
+    const cg = c.getContext('2d')!;
+    cg.imageSmoothingQuality = 'high';
+    cg.drawImage(from, 0, 0, w, h);
+    return c;
+  };
   let src: OffscreenCanvas = canvas;
+  let msrc: OffscreenCanvas = mask;
   for (let l = 0; l < levels; l++) {
     const w = ATLAS_W >> l,
       h = ATLAS_H >> l;
     if (l > 0) {
-      const c = new OffscreenCanvas(w, h);
-      const cg = c.getContext('2d')!;
-      cg.imageSmoothingQuality = 'high';
-      cg.drawImage(src, 0, 0, w, h);
-      src = c;
+      src = scale(src, w, h);
+      msrc = scale(msrc, w, h);
     }
+    // Colour from the sign atlas, alpha from the vinyl mask (ImageData is
+    // unpremultiplied, so the colour survives under zero alpha).
+    const img = src.getContext('2d')!.getImageData(0, 0, w, h);
+    const m = msrc.getContext('2d')!.getImageData(0, 0, w, h).data;
+    const d = img.data;
+    for (let i = 3; i < d.length; i += 4) d[i] = m[i - 3];
     device.queue.copyExternalImageToTexture(
-      {source: src},
+      {source: img},
       {texture: tex, mipLevel: l},
       [w, h],
     );
