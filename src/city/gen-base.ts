@@ -507,13 +507,14 @@ function plateAt(tris: Vec3[][], x: number, z: number): number | null {
 /**
  * Markings inside a signalized junction box (Tokyo practice), as paint
  * ribbons 12 mm over the plate (`BOX_PAINT`, 15 cm wide):
- * - right-turn guides (右折導流線): from each avenue approach's inner lane, a
- *   pair of dashed curves (1.5 m on / 1.5 m off) bounding the turn path just
- *   inside the junction centre to the inner departure lane on the right;
- * - the right-turn waiting box (右折待ち): that path drawn solid with a cross
- *   bar at each end where the turner waits for oncoming traffic;
- * - lane lines carried across the box (2 m on / 2 m off) between straight
- *   opposite avenue arms.
+ * - right-turn guides (右折導流線): from each avenue approach's inner lane to
+ *   the inner departure lane of the arm on its right, a straight run in, an
+ *   arc just inside the junction centre and a run out; the turn's inner
+ *   edge dotted (1 m on / 2 m off);
+ * - the right-turn waiting box (右折待ち): the last 5 m of the run in as a
+ *   solid lane-wide rectangle, where turners wait for oncoming traffic;
+ * - lane lines carried across the box (2 m on / 3 m off) to the opposite
+ *   arm most in line with the approach (within 3 m), for avenues.
  * Arm frame: `dir` out of the junction, `l` its left; the approach lanes
  * are on +l (the road shader's x > 0 at a chain start, x < 0 at its end).
  * A merged cluster (`members`, lead first) is marked as one box.
@@ -1075,6 +1076,19 @@ function roads(
     );
     // Interior vertices never dip under the carved terrain (which follows
     // the nearest road, not the plate's interpolation).
+    // aux: the plate centre in quarter metres (shader round 3: oil and
+    // rubber gather round it), the cluster's centroid for a merged one.
+    let pc: Vec2 = j.p;
+    if (jg.low && jg.plate.length) {
+      pc = [0, 0];
+      for (const q of jg.plate) {
+        pc[0] += q[0] / jg.plate.length;
+        pc[1] += q[1] / jg.plate.length;
+      }
+    }
+    const paux =
+      ((Math.round(pc[0] * 4) + 32768) & 0xffff) |
+      (((Math.round(pc[1] * 4) + 32768) & 0xffff) << 16);
     const vert = (q: Vec2, h: number, rim = false) =>
       m.vertex(
         [q[0], rim ? h : Math.max(h, ground.sample(q[0], q[1]) + 0.07), q[1]],
@@ -1082,6 +1096,7 @@ function roads(
         q[0],
         q[1],
         mat,
+        paux,
       );
     const n = jg.plate.length;
     if (n >= 3 && !jg.low) {
@@ -1149,7 +1164,7 @@ function roads(
               );
           }
           y = Math.max(y, ground.sample(p[0], p[2]) + 0.07);
-          v = m.vertex([p[0], y, p[2]], UP, p[0], p[2], mat);
+          v = m.vertex([p[0], y, p[2]], UP, p[0], p[2], mat, paux);
           cache.set(key, v);
         }
         return v;
@@ -1166,7 +1181,7 @@ function roads(
     }
     for (const s of jg.slivers) {
       const ids = s.pts.map((q, i) =>
-        m.vertex([q[0], s.h[i], q[1]], UP, q[0], q[1], mat),
+        m.vertex([q[0], s.h[i], q[1]], UP, q[0], q[1], mat, paux),
       );
       for (let i = 1; i + 1 < ids.length; i++)
         m.triFacing(ids[0], ids[i], ids[i + 1], UP);
@@ -3951,26 +3966,36 @@ export function avenueTreeS(
   return r;
 }
 
+/**
+ * Directed road luminaire light kind (shader round 3): -(0.05 + 0.9 *
+ * fract(angle / 2pi)) with `dir` the horizontal throw direction; the pool
+ * is pushed forward along it and cut off behind the pole. Still < 0.5 =
+ * street light.
+ */
+function directedKind(dir: Vec2) {
+  const a = Math.atan2(dir[1], dir[0]) / (Math.PI * 2);
+  return LightKind.street - (0.05 + 0.9 * (a - Math.floor(a)));
+}
+
 function streetLights(L: CityLayout, geom: RoadGeom, lights: LightList) {
   const hf = L.terrain.heights;
-  streetLightSpots(L, geom, hf, (p, dir, kind, sodium, angle) => {
+  streetLightSpots(L, geom, hf, (p, dir, kind, sodium) => {
     const reach = kind >= 2 ? 2.2 : 1.2;
     const h = kind >= 2 ? 9 : 6.5;
-    // Kind carries the road axis for an elongated pool (S7): 0.05 + 0.4 *
-    // fract(angle / pi), undirected; still < 0.5 = street light.
-    const a = angle / Math.PI;
     lights.add(
       [p[0] + dir[0] * reach, p[1] + h - 0.4, p[2] + dir[1] * reach],
       kind >= 2 ? 20 : 14,
       sodium ? SODIUM : LED,
-      LightKind.street + 0.05 + 0.4 * (a - Math.floor(a)),
+      directedKind(dir),
     );
   });
   // Junction luminaires (round pools, kind exactly 0), brighter than the
   // arterial lights so the box is the best-lit place on the road.
   const s = 1.3;
+  // Each throws down its approach (the arm's outward direction), lighting
+  // the queue up to the stop line.
   L.junctions.forEach((_, ji) =>
-    signalSpots(L, geom, hf, ji, (p, armDir) => {
+    signalSpots(L, geom, hf, ji, (p, armDir, _reach, k) => {
       lights.add(
         [
           p[0] + armDir[0] * SIGNAL_LUM.reach,
@@ -3979,7 +4004,7 @@ function streetLights(L: CityLayout, geom: RoadGeom, lights: LightList) {
         ],
         24,
         [LED[0] * s, LED[1] * s, LED[2] * s],
-        LightKind.street,
+        directedKind(geom.junctions[ji].arms[k].dir),
       );
     }),
   );

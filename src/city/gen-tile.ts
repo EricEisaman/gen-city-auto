@@ -6616,7 +6616,7 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
   // crown's height (the species' spread and taper set how far out), so the
   // silhouette breaks into clumps with sky between them instead of one
   // even ball of cards.
-  const n = 4 + (aux % 3);
+  const n = 4 + (aux % 2);
   const rAvg = h * (S.r0 + S.r1) * 0.5;
   const y0 = p[1] + trunkH + rAvg * 0.6;
   const span = h * S.step * 0.9;
@@ -6845,15 +6845,21 @@ function blob(
 
 /** How far street furniture extends below the sidewalk so slopes show no gap. */
 const SINK = 0.3;
+/** CM.metal param: galvanised street-light column (shader pole streaks). */
+const LAMP_METAL = 0x10;
+/** CM.paint param: grey signal / sign column (streaks, dirt, stickers). */
+const POLE_PAINT = 0x93;
 
 /**
  * Foot of a steel street pole of radius r at paving point p (LOD0), one
  * lathe of `sides`: a concrete footing collar (CM.concrete) 29 cm across
  * standing 4 cm proud of the paving, the 0.4 m base flange and a flared
- * base cover over the bottom 0.6 m (the pole's `mat`). `full` adds four
+ * base cover over the bottom 0.6 m (the column's `mat`). `full` adds four
  * anchor nuts on the flange (dark paint 0x91 squares), a handhole door
  * facing `back` (unit 2D) at 0.95 m and a clamp band at each of `bands`
- * (heights above the paving). About 70 vertices, 130 when full.
+ * (heights above the paving), these two in `plain` (not the column's
+ * material: its uv-driven foot dirt would land on them). About 70
+ * vertices, 130 when full.
  * Lathe uv: u = metres around, v = metres up the profile (collar from 0,
  * metal from 0); the pole's own cylinder: u metres around, v metres up
  * from SINK under the paving.
@@ -6863,6 +6869,7 @@ function poleFoot(
   p: Vec3,
   r: number,
   mat: number,
+  plain: number,
   sides: number,
   back: Vec2,
   bands: number[],
@@ -6936,11 +6943,11 @@ function poleFoot(
   m.box(
     [p[0] + back[0] * (r + 0.008), p[1] + 0.95, p[2] + back[1] * (r + 0.008)],
     [0.055, 0.12, 0.012],
-    mat,
+    plain,
     Math.atan2(back[0], back[1]),
   );
   for (const y of bands)
-    m.cylinder([p[0], p[1] + y, p[2]], r + 0.02, 0.08, sides, mat, false);
+    m.cylinder([p[0], p[1] + y, p[2]], r + 0.02, 0.08, sides, plain, false);
 }
 
 function streetLight(
@@ -6963,7 +6970,11 @@ function streetLight(
     // Distant tiles: the pole and arm as one bent tube (widened to a
     // minimum on-screen width) and the lamp head as its lit underside and
     // its top, 20 vertices instead of 42.
-    m.tube([[p[0], p[1] - SINK, p[2]], top, head], 0.13, packMat(CM.metal));
+    m.tube(
+      [[p[0], p[1] - SINK, p[2]], top, head],
+      0.13,
+      packMat(CM.metal, LAMP_METAL),
+    );
     const r: Vec3 = [dir[1], 0, -dir[0]];
     const H = (x: number, z: number, y: number): Vec3 => [
       head[0] + r[0] * x + dir[0] * z,
@@ -6993,19 +7004,23 @@ function streetLight(
     0.09,
     h + SINK,
     kind >= 2 ? 8 : 6,
-    packMat(CM.metal),
+    packMat(CM.metal, LAMP_METAL),
     false,
   );
-  poleFoot(
-    m,
-    p,
-    0.09,
-    packMat(CM.metal),
-    kind >= 2 ? 8 : 6,
-    [-dir[0], -dir[1]],
-    [2.3],
-    kind >= 2,
-  );
+  // Avenue lights get the footing, flange and nuts and handhole (budget:
+  // the 6.5 m lamps of narrow streets are the bulk of all poles).
+  if (kind >= 2)
+    poleFoot(
+      m,
+      p,
+      0.09,
+      packMat(CM.metal, LAMP_METAL),
+      packMat(CM.metal),
+      8,
+      [-dir[0], -dir[1]],
+      [],
+      true,
+    );
   m.beam(top, head, 0.05, 0.05, packMat(CM.metal));
   m.box(
     [head[0], head[1] - 0.12, head[2]],
@@ -7285,17 +7300,30 @@ function signal(
   cabinet: boolean,
 ) {
   const grey = packMat(CM.paint, 0x90);
+  // Column: the shader's pole paint (streaks, foot dirt, sticker scraps
+  // by cylinder uv, y metres up from the sunk foot).
+  const column = packMat(CM.paint, POLE_PAINT);
   m.cylinder(
     [p[0], p[1] - SINK, p[2]],
     0.12,
     SIGNAL_LUM.h + 0.25 + SINK,
     12,
-    grey,
+    column,
     false,
   );
   // Footing, flange and handhole on the side away from the road; clamp
   // bands where the pedestrian head and push button are strapped on.
-  poleFoot(m, p, 0.12, grey, 12, [-armDir[0], -armDir[1]], [2.45, 3.15], true);
+  poleFoot(
+    m,
+    p,
+    0.12,
+    column,
+    grey,
+    12,
+    [-armDir[0], -armDir[1]],
+    [2.45, 3.15],
+    true,
+  );
   const top: Vec3 = [p[0], p[1] + 5.8, p[2]];
   const end: Vec3 = [
     p[0] + armDir[0] * reach,
@@ -7427,7 +7455,7 @@ function guideSign(
     0.18,
     7.6 + SINK,
     lod === 0 ? 8 : 4,
-    grey,
+    packMat(CM.paint, POLE_PAINT),
     lod === 0,
   );
   const pc: Vec3 = [
@@ -7513,9 +7541,15 @@ function regSign(
   square: boolean,
   h: number,
 ) {
-  const grey = packMat(CM.paint, 0x90);
   const top = h + (square ? 0.75 : 0.32);
-  m.cylinder([p[0], p[1] - SINK, p[2]], 0.03, top + SINK, 5, grey, true);
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.03,
+    top + SINK,
+    5,
+    packMat(CM.paint, POLE_PAINT),
+    true,
+  );
   const c: Vec3 = [p[0] + f[0] * 0.04, p[1] + h, p[2] + f[1] * 0.04];
   disc(m, c, f, 0.3, 12, packMat(CM.roadSign, kind));
   disc(
