@@ -3156,9 +3156,9 @@ fn concreteDetail(world: vec3f, n: vec3f, t: ptr<function, vec3f>, b: ptr<functi
 // pixel, so a distant stain keeps its mean instead of flickering.
 fn runStain(ux: f32, uy: f32, x0: f32, y0: f32, w: f32, len: f32, fp: f32) -> f32 {
   let k = clamp((uy - y0) / len, 0.0, 1.0);
-  let hw = w * 0.5 * mix(1.0, 0.5, k);
+  let hw = w * 0.5 * mix(1.0, 0.65, k);
   let ew = max(hw, fp);
-  let prof = 1.0 - smoothstep(ew * 0.3, ew, abs(ux - x0));
+  let prof = 1.0 - smoothstep(ew * 0.55, ew * 1.1, abs(ux - x0));
   let fall = pow(1.0 - k, 0.7) * smoothstep(y0 - 0.06 - fp, y0 + 0.06, uy);
   return prof * fall * (hw / ew);
 }
@@ -3208,7 +3208,7 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
   let tone = mix(0.93, 1.05, hashuf((seed * 0x2c1b3c6du) ^ u32(i32(bent) + 65536)));
   let tex = mix(1.0, d.b * 2.0, 0.45) * mix(0.75, 1.0, d.a);
   // Warm grey, 0.40 (not the generic 0.5, which blows out at golden hour).
-  var a = vec3f(0.40, 0.39, 0.37) * tone * tex;
+  var a = vec3f(0.38, 0.37, 0.35) * tone * tex;
   s.rough = 0.85;
   var stain = 0.0;
   var porous = 0.6;
