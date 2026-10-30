@@ -213,6 +213,7 @@ type Rgb = [number, number, number];
 const INK: Record<string, Rgb> = {
   black: [0.012, 0.012, 0.014],
   white: [0.86, 0.86, 0.83],
+  unlitWhite: [0.6, 0.6, 0.58],
   red: [0.78, 0.025, 0.02],
   yellow: [0.98, 0.68, 0.02],
   blue: [0.015, 0.08, 0.5],
@@ -240,7 +241,7 @@ export const SIGN_WAYS: [Rgb, Rgb, Rgb, number][] = [
   [INK.navy, INK.white, INK.yellow, SIGN_STYLE.box],
   [INK.yellow, INK.blue, INK.blue, SIGN_STYLE.painted],
   [INK.white, INK.yellow, INK.red, SIGN_STYLE.box],
-  [INK.white, INK.white, INK.steel, SIGN_STYLE.channel],
+  [INK.unlitWhite, INK.white, INK.steel, SIGN_STYLE.channel],
   [INK.charcoal, INK.neonRed, INK.neonRed, SIGN_STYLE.neon],
   [INK.charcoal, INK.neonPink, INK.neonCyan, SIGN_STYLE.neon],
   [INK.charcoal, INK.orange, INK.steel, SIGN_STYLE.channel],

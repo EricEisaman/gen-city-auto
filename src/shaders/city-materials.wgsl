@@ -2831,7 +2831,11 @@ fn shopSign(
   rect: vec4f, id: u32, param: u32, fabric: bool,
 ) -> Surf {
   var s = s0;
-  let w = SIGN_WAYS[(id * 5u + ((param >> 10u) & 15u)) & 15u];
+  var wi = (id * 5u + ((param >> 10u) & 15u)) & 15u;
+  // Cloth is printed: the lit-letter looks (channel, neon) become light-box
+  // colourways, so a white-on-white scheme never blanks a banner.
+  if (fabric && SIGN_WAYS[wi].style != 0u && SIGN_WAYS[wi].style != 3u) { wi = (wi + 4u) & 15u; }
+  let w = SIGN_WAYS[wi];
   var col = mix(w.bg, w.edge, m.g);
   col = mix(col, w.fg, m.r);
   if (fabric) {
@@ -2865,6 +2869,8 @@ fn shopSign(
       let su = clamp(hx / (2.0 * o) * rect.z * 0.012 / lu, -1.5, 1.5) * relief;
       let sv = clamp(hy / (2.0 * o) * rect.w * 0.012 / lv, -1.5, 1.5) * relief;
       s.normal = normalize(n - dPdu / lu * su - dPdv / lv * sv);
+      // The letters' returns read as a dark rim (most on channel letters).
+      s.ao = 1.0 - min(length(vec2f(su, sv)), 1.0) * 0.45;
     }
   }
   let gl = gloomLight();
