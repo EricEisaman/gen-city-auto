@@ -842,26 +842,71 @@ fn carParkMat(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
   return s;
 }
 
+// Sign atlas (src/city/signs.ts): 2048x2560. param = id | flags << 8:
+// 0x100 fabric (unlit cloth), 0x200 striped awning canvas.
 fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   var s = defaultSurf(n);
   let id = param & 0xffu;
+  let fabric = (param & 0x100u) != 0u;
+  if ((param & 0x200u) != 0u) {
+    // Awning canvas: stripes of the shop color and off-white along u, a
+    // little sag shading across v.
+    let col = signPalette(id);
+    let st = step(0.5, fract(uv.x * 0.5));
+    s.albedo = mix(col * 0.55, vec3f(0.72, 0.7, 0.66), st) * (0.8 + 0.2 * sin(uv.y * 3.14159));
+    s.rough = 0.9;
+    // Back-lit by the shop at night: a faint translucent glow.
+    s.emissive = s.albedo * 0.08 * nightLight();
+    return s;
+  }
   var rect: vec4f;
   if (id < 32u) {
     rect = vec4f(f32(id % 16u) * 128.0, f32(id / 16u) * 512.0, 128.0, 512.0);
   } else if (id < 48u) {
     let k = id - 32u;
     rect = vec4f(f32(k % 4u) * 512.0, 1024.0 + f32(k / 4u) * 128.0, 512.0, 128.0);
-  } else {
+  } else if (id < 72u) {
     let k = (id - 48u) % 8u;
     rect = vec4f(f32(k % 4u) * 512.0, 1536.0 + f32(k / 4u) * 256.0, 512.0, 256.0);
+  } else {
+    let k = (id - 72u) % 16u;
+    rect = vec4f(f32(k % 8u) * 256.0, 2048.0 + f32(k / 8u) * 256.0, 256.0, 256.0);
   }
   let f = fract(uv);
-  let px = rect.xy + vec2f(mix(2.0, rect.z - 2.0, f.x), mix(2.0, rect.w - 2.0, f.y));
-  let c = textureSampleLevel(signAtlas, linearSampler, px / 2048.0, 0.0).rgb;
+  // Mip level from the uv footprint, capped so the inset keeps neighbouring
+  // signs from bleeding in.
+  let dx = dUvX * rect.zw;
+  let dy = dUvY * rect.zw;
+  let lod = clamp(0.5 * log2(max(dot(dx, dx), dot(dy, dy))), 0.0, 3.0);
+  let inset = 2.0 * exp2(lod);
+  let px = rect.xy + vec2f(mix(inset, rect.z - inset, f.x), mix(inset, rect.w - inset, f.y));
+  let c = textureSampleLevel(signAtlas, linearSampler, px / vec2f(2048.0, 2560.0), lod).rgb;
+  if (fabric) {
+    // Printed cloth: matte, lit only by the scene (a faint glow at night
+    // from shop light behind it).
+    s.albedo = c * 0.75;
+    s.rough = 0.9;
+    s.emissive = c * 0.06 * nightLight();
+    return s;
+  }
   s.albedo = c * 0.6;
   s.rough = 0.3;
   s.emissive = c * c * 1.2 * mix(0.25, 4.5, nightLight());
   return s;
+}
+
+// Linear sign color, matching signColor() in src/city/signs.ts.
+fn signPalette(id: u32) -> vec3f {
+  switch ((id * 7u + (id >> 3u)) % 8u) {
+    case 0u: { return vec3f(1.0, 0.15, 0.1); }
+    case 1u: { return vec3f(1.0, 0.75, 0.1); }
+    case 2u: { return vec3f(0.2, 0.9, 1.0); }
+    case 3u: { return vec3f(1.0, 0.25, 0.7); }
+    case 4u: { return vec3f(0.3, 1.0, 0.35); }
+    case 5u: { return vec3f(1.0, 1.0, 0.95); }
+    case 6u: { return vec3f(0.35, 0.4, 1.0); }
+    default: { return vec3f(1.0, 0.45, 0.05); }
+  }
 }
 
 fn screenMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
@@ -910,6 +955,21 @@ fn screenMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   return s;
 }
 
+// Street tree species (src/city/gen-tile.ts TREE): 0 zelkova (green),
+// 1 ginkgo (yellow-green, some trees turned gold), 2 columnar (dark
+// blue-green). h varies the tone per tree.
+fn leafTint(species: u32, h: f32) -> vec3f {
+  switch (species) {
+    case 1u: {
+      let gold = step(0.6, h);
+      return mix(mix(vec3f(0.16, 0.2, 0.035), vec3f(0.26, 0.27, 0.04), h / 0.6),
+                 mix(vec3f(0.42, 0.32, 0.03), vec3f(0.5, 0.38, 0.05), (h - 0.6) / 0.4), gold);
+    }
+    case 2u: { return mix(vec3f(0.045, 0.1, 0.045), vec3f(0.08, 0.15, 0.06), h); }
+    default: { return mix(vec3f(0.07, 0.15, 0.035), vec3f(0.17, 0.24, 0.06), h); }
+  }
+}
+
 fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> Surf {
   let id = matWord & 0xffu;
   let param = matWord >> 8u;
@@ -939,8 +999,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     case M_METAL: { s.albedo = vec3f(0.42, 0.43, 0.45); s.metal = 0.8; s.rough = 0.45; }
     case M_SIGN: { s = signMat(n, uv, param); }
     case M_FOLIAGE: {
-      let h = hashuf(aux);
-      s.albedo = mix(vec3f(0.08, 0.16, 0.04), vec3f(0.16, 0.24, 0.06), h) * (0.7 + 0.5 * valueNoise(world.xz * 2.0 + world.y));
+      s.albedo = leafTint(param, hashuf(aux)) * (0.7 + 0.5 * valueNoise(world.xz * 2.0 + world.y));
       s.rough = 0.85;
       // The inner crown core sits in the shade of the leaf cards around it.
       s.ao = clamp(0.3 + 0.3 * n.y, 0.0, 1.0);
@@ -948,12 +1007,18 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.cls = CLASS_FOLIAGE;
     }
     case M_LEAVES: {
-      let l = textureSampleLevel(leafTex, linearSampler, uv, 0.0);
-      let h = hashuf(aux);
-      let tint = mix(vec3f(0.07, 0.15, 0.035), vec3f(0.17, 0.24, 0.06), h);
-      s.albedo = tint * (0.6 + 0.8 * l.r);
+      // Filtered at the same mip as the alpha test so leaf shading does not
+      // sparkle at range.
+      let dx = dUvX * 256.0;
+      let dy = dUvY * 256.0;
+      let lod = clamp(0.5 * log2(max(dot(dx, dx), dot(dy, dy))), 0.0, 8.0);
+      let l = textureSampleLevel(leafTex, linearSampler, uv, lod);
+      // Per-cluster tone shift (world cell) breaks up flat single-color crowns.
+      let cell = hash31(floor(world * 0.8));
+      s.albedo = leafTint(param, hashuf(aux)) * (0.6 + 0.8 * l.r) * (0.85 + 0.3 * cell);
       s.rough = 0.8;
-      s.ao = clamp(0.5 + 0.5 * n.y, 0.3, 1.0);
+      // Leaves are never fully occluded: light scatters through the crown.
+      s.ao = clamp(0.6 + 0.4 * n.y, 0.45, 1.0);
       s.cls = CLASS_FOLIAGE;
     }
     case M_BARK: { s.albedo = vec3f(0.16, 0.11, 0.08); s.rough = 0.95; }

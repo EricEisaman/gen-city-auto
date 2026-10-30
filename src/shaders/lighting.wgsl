@@ -574,6 +574,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     // Point lights cast no shadows: the vehicle contact term stands in under cars.
     color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
+    if (cls == CLASS_FOLIAGE) {
+      // Two-sided leaves: street and sign light scatters through the crown
+      // (a soft non-directional fill) and transmits through back-lit cards,
+      // so canopies glow at night instead of going black on the far side.
+      color += albedo * (0.2 + 0.6 * max(dot(-n, l), 0.0)) * lc * atten * (60.0 / PI) * 0.4;
+    }
   }
   // Ambient: hemisphere sky + ground bounce.
   var skyVis = 1.0;

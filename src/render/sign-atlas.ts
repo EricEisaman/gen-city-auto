@@ -3,7 +3,8 @@
 
 import {Rng} from '../math/random.ts';
 import {
-  ATLAS_SIZE,
+  ATLAS_H,
+  ATLAS_W,
   BRAND_WORDS,
   SHOP_WORDS,
   STATION_NAMES,
@@ -62,10 +63,10 @@ function paintSign(g: OffscreenCanvasRenderingContext2D, id: number, rng: Rng) {
 }
 
 export function paintSignAtlas(seed = 1): OffscreenCanvas {
-  const canvas = new OffscreenCanvas(ATLAS_SIZE, ATLAS_SIZE);
+  const canvas = new OffscreenCanvas(ATLAS_W, ATLAS_H);
   const g = canvas.getContext('2d')!;
   g.fillStyle = '#000';
-  g.fillRect(0, 0, ATLAS_SIZE, ATLAS_SIZE);
+  g.fillRect(0, 0, ATLAS_W, ATLAS_H);
   const rng = new Rng(seed);
   // Vertical shop signs: characters stacked top to bottom.
   for (let id = 0; id < 32; id++) {
@@ -151,24 +152,91 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
       y + h * 0.75,
     );
   }
+  // Square cube signs (projecting light boxes): one or two big glyphs, in a
+  // circle or a plain square, or a short Latin word.
+  const SQUARE_TEXT = [
+    'P',
+    '24H',
+    'BAR',
+    '酒',
+    '湯',
+    '薬',
+    '寿司',
+    '質',
+    '茶',
+    'ATM',
+    '肉',
+    '鮨',
+    'NEW',
+    '麺',
+    '占',
+    'OPEN',
+  ];
+  for (let k = 0; k < 16; k++) {
+    const id = 72 + k;
+    const {x, y, w, h, textCol} = paintSign(g, id, rng);
+    const text = SQUARE_TEXT[k];
+    const n = [...text].length;
+    if (k % 3 === 0) {
+      // Disc logo.
+      g.shadowBlur = 0;
+      g.beginPath();
+      g.arc(x + w / 2, y + h / 2, w * 0.36, 0, Math.PI * 2);
+      g.fillStyle = textCol;
+      g.fill();
+      g.fillStyle =
+        textCol === '#ffffff' || textCol === '#101010'
+          ? css(signColor(id), 0.6)
+          : '#0b0b10';
+    }
+    const size =
+      n === 1 ? h * 0.62 : n === 2 ? h * 0.4 : (w * 0.8) / (n * 0.62);
+    g.font = `bold ${size}px ${FONT}`;
+    if (n === 2 && /[^ -~]/.test(text)) {
+      // Two kanji stacked, as on a corner light box.
+      [...text].forEach((ch, i) =>
+        g.fillText(ch, x + w / 2, y + h * (0.3 + i * 0.4)),
+      );
+    } else {
+      g.fillText(text, x + w / 2, y + h / 2 + size * 0.04);
+    }
+    g.restore();
+  }
   return canvas;
 }
 
 export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
   const canvas = paintSignAtlas();
+  // Mipmapped so distant sign text filters instead of shimmering (the
+  // shader clamps the level so neighbouring signs never bleed in).
+  const levels = 5;
   const tex = device.createTexture({
     label: 'signs/atlas',
-    size: [ATLAS_SIZE, ATLAS_SIZE],
+    size: [ATLAS_W, ATLAS_H],
     format: 'rgba8unorm-srgb',
+    mipLevelCount: levels,
     usage:
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.COPY_DST |
       GPUTextureUsage.RENDER_ATTACHMENT,
   });
-  device.queue.copyExternalImageToTexture({source: canvas}, {texture: tex}, [
-    ATLAS_SIZE,
-    ATLAS_SIZE,
-  ]);
+  let src: OffscreenCanvas = canvas;
+  for (let l = 0; l < levels; l++) {
+    const w = ATLAS_W >> l,
+      h = ATLAS_H >> l;
+    if (l > 0) {
+      const c = new OffscreenCanvas(w, h);
+      const cg = c.getContext('2d')!;
+      cg.imageSmoothingQuality = 'high';
+      cg.drawImage(src, 0, 0, w, h);
+      src = c;
+    }
+    device.queue.copyExternalImageToTexture(
+      {source: src},
+      {texture: tex, mipLevel: l},
+      [w, h],
+    );
+  }
   return tex;
 }
 
@@ -200,8 +268,33 @@ export function createLeafTexture(device: GPUDevice): GPUTexture {
     g.fill();
     void r;
   }
-  // Mip chain (the shader rescales alpha per level to keep crown coverage).
+  // Mip chain with coverage-preserving alpha: averaged alpha drifts toward
+  // the mean leaf density, so an alpha test at 0.5 would thin distant crowns
+  // out (or fill them in). Scale each level's alpha so the fraction of texels
+  // passing 0.5 matches the top level.
   const levels = Math.log2(size) + 1;
+  const coverage = (a: Uint8ClampedArray, k: number) => {
+    let n = 0;
+    for (let i = 3; i < a.length; i += 4) if (a[i] * k >= 127.5) n++;
+    return n / (a.length / 4);
+  };
+  const target = coverage(g.getImageData(0, 0, size, size).data, 1);
+  const preserve = (c: OffscreenCanvas, s: number): OffscreenCanvas => {
+    const img = c.getContext('2d')!.getImageData(0, 0, s, s);
+    const d = img.data;
+    let lo = 0.5,
+      hi = 8;
+    for (let it = 0; it < 18; it++) {
+      const mid = (lo + hi) / 2;
+      if (coverage(d, mid) < target) lo = mid;
+      else hi = mid;
+    }
+    const k = (lo + hi) / 2;
+    for (let i = 3; i < d.length; i += 4) d[i] = Math.min(255, d[i] * k);
+    const out = new OffscreenCanvas(s, s);
+    out.getContext('2d')!.putImageData(img, 0, 0);
+    return out;
+  };
   const tex = device.createTexture({
     label: 'trees/leaf cards',
     size: [size, size],
@@ -223,7 +316,7 @@ export function createLeafTexture(device: GPUDevice): GPUTexture {
       src = c;
     }
     device.queue.copyExternalImageToTexture(
-      {source: src},
+      {source: l > 0 ? preserve(src, s) : src},
       {texture: tex, mipLevel: l},
       [s, s],
     );
