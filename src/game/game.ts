@@ -186,6 +186,10 @@ export class Game {
     this.buildLightSprites();
     this.traffic.target = this.opts.lab ? 0 : this.opts.traffic;
     this.trains = new Trains(city.summary.layout.elevated, this.vehicles);
+    // The rail lab parks one train at the site for scale.
+    const labTrain = city.summary.lab?.train;
+    if (labTrain !== undefined) this.trains.park(labTrain);
+    else if (this.opts.lab) this.trains.trains = [];
     this.helis = new AmbientHelis(
       city.summary.layout.hubs,
       this.vehicles,
@@ -702,7 +706,7 @@ export class Game {
       this.trains!.draw(lightsOn);
       this.helis!.draw(this.time, lightsOn);
       this.peds!.draw();
-    }
+    } else this.trains!.draw(lightsOn);
     this.vehicles.finish();
     this.lastCam = cam;
     this.rain.intensity = this.weather.state.rain;

@@ -634,6 +634,7 @@ function elevatedStructures(
   mask: Uint8Array,
   m: CMesh,
   lights: LightList,
+  solid: Solid,
 ) {
   const hf = L.terrain.heights;
   const onRoad = (q: Vec2) => {
@@ -685,10 +686,14 @@ function elevatedStructures(
     fallback();
   };
   L.elevated.forEach((e, ei) => {
-    if (e.kind === 'rail') railViaduct(e, ei, hf, onRoad, pier, m, lights);
+    if (e.kind === 'rail')
+      railViaduct(e, ei, hf, onRoad, pier, m, lights, solid);
     else expressway(e, hf, pier, m, lights);
   });
 }
+
+/** Records a camera-solid box (centre, half extents, yaw). */
+type Solid = (c: Vec3, h: Vec3, yaw: number) => void;
 
 type Pier = (
   self: Elevated,
@@ -810,6 +815,12 @@ export const GALV = 0x8000;
 /** CM.paint params: plate girder over roads (| seed8, 0x80 = board face). */
 export const RAIL_GIRDER = 0x500;
 export const INSULATOR = 0xf9;
+/**
+ * CM.screen param on station departure boards (| station index & 0xff);
+ * uv 0..1 over the board face. Until the shader draws timetable rows it
+ * renders as an ad screen.
+ */
+export const DEPARTURE = 0x100;
 /** Railhead top above the deck top (trains.ts sits cars on it). */
 export const RAIL_TOP = 0.37;
 
@@ -824,6 +835,7 @@ function railViaduct(
   pier: Pier,
   m: CMesh,
   lights: LightList,
+  solid: Solid,
 ) {
   const pts = e.pts;
   const hs = e.heights;
@@ -849,6 +861,19 @@ function railViaduct(
   for (const si of e.stations)
     for (let i = si - 7; i < si + 7; i++)
       if (e.loop || (i >= 0 && i < segs)) station[W(i) % segs] = 1;
+  // Stair wells down to the concourse: one platform segment per side
+  // (bit 1 = side -1, bit 2 = side +1), off the station centre.
+  const stairOf = new Uint8Array(segs);
+  const stairSeg = (si: number, side: number) => si + (side < 0 ? -3 : 2);
+  for (const si of e.stations)
+    for (const side of [-1, 1]) {
+      const k = stairSeg(si, side);
+      if (e.loop || (k >= 0 && k < segs))
+        stairOf[W(k) % segs] |= side < 0 ? 1 : 2;
+    }
+  // Lit strip under the coping on some 120 m stretches (per side).
+  const glowOf = (i: number, s: number) =>
+    railHash(ei + 303, Math.floor(i / 10) * 2 + (s > 0 ? 1 : 0)) < 0.3;
   // Girder spans: segments touching a road point (bent to bent).
   const girder = new Int32Array(segs).fill(-1);
   for (let i = 0; i < segs; i++) {
@@ -918,7 +943,20 @@ function railViaduct(
         E(L(4.0, 1.2), L(4.0, 0), -s, 0, pf, 'v');
         E(L(4.0, 1.2), L(3.75, 1.2), 0, -1, pf, 'h');
         E(L(3.75, 1.45), L(3.75, 1.2), -s, 0, pf, 'v');
-        E(L(3.75, 1.45), L(9.55, 1.45), 0, 1, conc(RC_PLATFORM), 'plat');
+        if (stairOf[i] & (s < 0 ? 1 : 2)) {
+          // Stair well (5.4 .. 7.6) through the platform, walled down to
+          // the slab soffit, with a 1.05 m balustrade on both long sides.
+          const pl = conc(RC_PLATFORM);
+          const sw = conc(RC_STATION);
+          E(L(3.75, 1.45), L(5.3, 1.45), 0, 1, pl, 'plat');
+          E(L(5.3, 2.5), L(5.3, 1.45), -s, 0, sw, 'v');
+          E(L(5.3, 2.5), L(5.4, 2.5), 0, 1, sw, 'h');
+          E(L(5.4, 2.5), L(5.4, -1.2), s, 0, pf, 'v');
+          E(L(7.6, 2.5), L(7.6, -1.2), -s, 0, pf, 'v');
+          E(L(7.6, 2.5), L(7.7, 2.5), 0, 1, sw, 'h');
+          E(L(7.7, 2.5), L(7.7, 1.45), s, 0, sw, 'v');
+          E(L(7.7, 1.45), L(9.55, 1.45), 0, 1, pl, 'plat');
+        } else E(L(3.75, 1.45), L(9.55, 1.45), 0, 1, conc(RC_PLATFORM), 'plat');
         const fence = conc(RC_SOUNDWALL | RC_GLAZED);
         E(L(9.55, 2.65), L(9.55, 1.45), -s, 0, fence, 'v');
         E(L(9.55, 2.65), L(9.7, 2.65), 0, 1, fence, 'h');
@@ -938,13 +976,26 @@ function railViaduct(
           const sw = conc(wall);
           E(L(4.95, 1.25), L(5.04, 1.25), 0, 1, pa, 'h');
           E(L(5.04, 2.75), L(5.04, 1.25), -s, 0, sw, 'v');
-          E(L(5.04, 2.75), L(5.16, 2.75), 0, 1, sw, 'h');
+          // Precast coping cap over the panels, 4-5 cm proud each side.
+          E(L(4.99, 2.87), L(4.99, 2.74), -s, 0, pa, 'v');
+          E(L(4.99, 2.87), L(5.21, 2.87), 0, 1, pa, 'h');
+          E(L(5.21, 2.87), L(5.21, 2.74), s, 0, pa, 'v');
           E(L(5.16, 2.75), L(5.16, 1.25), s, 0, sw, 'v');
           E(L(5.16, 1.25), L(5.43, 1.25), 0, 1, pa, 'h');
         } else E(L(4.95, 1.25), L(5.43, 1.25), 0, 1, pa, 'h');
         E(L(5.43, 1.25), L(5.43, 1.13), s, 0, pa, 'v');
         E(L(5.43, 1.13), L(5.2, 1.13), 0, -1, pa, 'h');
         E(L(5.2, 1.13), L(5.2, -0.9), s, 0, conc(RC_FASCIA), 'v');
+        // LED strip under the coping lip (lamp faces down: lit at night).
+        if (glowOf(i, s))
+          E(L(5.23, 1.1), L(5.4, 1.1), 0, -1, packMat(CM.lamp, 1), 'h');
+        if (s < 0) {
+          // Signal/power cable trough hung on the outer fascia.
+          const tq = conc(RC_TROUGH);
+          E(L(5.2, 0.3), L(5.5, 0.3), 0, 1, tq, 'h');
+          E(L(5.5, 0.3), L(5.5, -0.06), s, 0, tq, 'v');
+          E(L(5.5, -0.06), L(5.2, -0.06), 0, -1, tq, 'h');
+        }
       }
       const beam = conc(RC_BEAM);
       if (g < 0) {
@@ -969,13 +1020,13 @@ function railViaduct(
     return out;
   };
 
-  // Emit the deck in chunks of 4 segments (one gantry bay, an expansion
-  // joint at each end), each cross-section edge as a strip whose vertices
-  // are shared along the chunk. The first vertex of every triangle sits at
+  // Emit the deck in chunks of 8 segments (two gantry bays, about 96 m,
+  // small enough for tight cluster bounds), each cross-section edge as a
+  // strip whose vertices are shared along the chunk. The first vertex of every triangle sits at
   // the segment's start point, so flat aux (the bent seed) is per segment.
   const edgeKey = (x: Edge) => `${x.a}|${x.b}|${x.mat}|${x.nl}`;
-  for (let c0 = 0; c0 < segs; c0 += 4) {
-    const c1 = Math.min(segs, c0 + 4);
+  for (let c0 = 0; c0 < segs; c0 += 8) {
+    const c1 = Math.min(segs, c0 + 8);
     const per: Edge[][] = [];
     for (let i = c0; i < c1; i++) per.push(edgesOf(i));
     const done = per.map(es => es.map(() => false));
@@ -1058,8 +1109,86 @@ function railViaduct(
       );
   }
 
-  // Bents: an RC rigid frame (two columns and a transverse beam) under
-  // every point off the roads; heavier ones flank each girder span.
+  // Chamfered column: four faces whose corners are bevelled by CH; the
+  // bevels reuse the faces' vertices, so they shade as a rounded arris (16
+  // vertices, fewer than a box). `plinth`: a footing collar 8 cm proud up
+  // to 0.3 m above the ground, with a weathered top. UV as CMesh.box (u
+  // around, v = metres above y0). Logged as a camera solid.
+  const CH = 0.07;
+  const column = (
+    c: Vec2,
+    y0: number,
+    y1: number,
+    hw: number,
+    g: number,
+    yaw: number,
+    mat: number,
+    aux: number,
+    plinth: boolean,
+  ) => {
+    solid([c[0], (y0 + y1) / 2, c[1]], [hw, (y1 - y0) / 2, hw], yaw);
+    const cs = Math.cos(yaw);
+    const sn = Math.sin(yaw);
+    const N: Vec2[] = [
+      [cs, -sn],
+      [sn, cs],
+      [-cs, sn],
+      [-sn, -cs],
+    ];
+    const rings: Vec2[] = plinth
+      ? [
+          [y0, hw + 0.08],
+          [g + 0.3, hw + 0.08],
+          [g + 0.36, hw],
+          [y1, hw],
+        ]
+      : [
+          [y0, hw],
+          [y1, hw],
+        ];
+    const ids = rings.map(([y, w]) => {
+      const r: number[] = [];
+      for (let k = 0; k < 4; k++) {
+        const nk = N[k];
+        const nv: Vec3 = [nk[0], 0, nk[1]];
+        for (const [t, o] of [
+          [N[(k + 3) & 3], 0],
+          [N[(k + 1) & 3], 2 * (hw - CH)],
+        ] as [Vec2, number][])
+          r.push(
+            m.vertex(
+              [
+                c[0] + nk[0] * w + t[0] * (w - CH),
+                y,
+                c[1] + nk[1] * w + t[1] * (w - CH),
+              ],
+              nv,
+              k * 2 * hw + o,
+              y - y0,
+              mat,
+              aux,
+            ),
+          );
+      }
+      return r;
+    });
+    for (let j = 0; j + 1 < ids.length; j++)
+      for (let q = 0; q < 8; q++) {
+        const k = q >> 1;
+        const a = N[k];
+        const b = q & 1 ? N[(k + 1) & 3] : N[k];
+        const f: Vec3 = [a[0] + b[0], 0, a[1] + b[1]];
+        const r0 = ids[j];
+        const r1 = ids[j + 1];
+        m.triFacing(r0[q], r0[(q + 1) & 7], r1[(q + 1) & 7], f);
+        m.triFacing(r0[q], r1[(q + 1) & 7], r1[q], f);
+      }
+  };
+  const pipe = packMat(CM.paint, 0x90);
+
+  // Bents: an RC rigid frame (two chamfered columns and a haunched
+  // transverse beam) under every point off the roads; heavier ones with a
+  // full cap, bearing shelves and pads flank each girder span.
   let bentNo = 0;
   for (let i = 0; i < n; i++) {
     if (road[i]) continue;
@@ -1068,10 +1197,9 @@ function railViaduct(
     const top = hs[i] - 0.4;
     if (top - 1.9 - (ground - 1) < 0.5) continue;
     const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
-    const flank =
-      (i < segs && girder[i] >= 0) || (i > 0 && girder[W(i - 1) % segs] >= 0)
-        ? 1
-        : 0;
+    const gAfter = i < segs && girder[i] >= 0;
+    const gBefore = i > 0 && girder[W(i - 1) % segs] >= 0;
+    const flank = gAfter || gBefore ? 1 : 0;
     const no = bentNo++;
     const inStation =
       (i < segs && station[i] === 1) ||
@@ -1096,88 +1224,145 @@ function railViaduct(
         if (inStation) {
           const o: Vec2 = [q[0] + l[0] * s * 8.2, q[1] + l[1] * s * 8.2];
           const go = hf.sample(o[0], o[1]);
-          const ho = hs[i] - 1.2 - (go - 1);
-          if (ho > 0.5)
-            m.box(
-              [o[0], go - 1 + ho / 2, o[1]],
-              [0.5, ho / 2, 0.5],
-              conc(RC_COLUMN | rs),
+          if (hs[i] - 1.2 - go > 0.5)
+            column(
+              o,
+              go - 1,
+              hs[i] - 1.2,
+              0.5,
+              go,
               yaw,
+              conc(RC_COLUMN | rs),
               sd,
+              rs !== 0,
             );
         }
-        const cTop = hs[i] - (flank ? 2.6 : 2.3);
+        const cTop = hs[i] - (flank ? 3.0 : 2.3);
         const h = cTop - (g - 1);
         const hw = flank ? 0.6 : 0.5;
         if (h > 0.5)
-          m.box(
-            [c[0], g - 1 + h / 2, c[1]],
-            [hw, h / 2, hw],
+          column(
+            c,
+            g - 1,
+            cTop,
+            hw,
+            g,
+            yaw,
             conc(RC_COLUMN | rs),
+            sd,
+            rs !== 0,
+          );
+        // Drain downpipe on every 2nd bent, alternate sides: a clamp
+        // bracket to the column and a gully box at its foot.
+        if (no % 2 === 0 && s === (no % 4 === 0 ? 1 : -1) && h > 2) {
+          const o = hw + 0.12;
+          const dp: Vec3 = [c[0] + d[0] * o, g + 0.25, c[1] + d[1] * o];
+          m.cylinder(dp, 0.1, cTop - dp[1], 6, pipe, false);
+          for (const y of [(g + cTop) / 2]) {
+            m.tube(
+              [
+                [c[0] + d[0] * (hw - 0.02), y, c[1] + d[1] * (hw - 0.02)],
+                [c[0] + d[0] * (o + 0.12), y, c[1] + d[1] * (o + 0.12)],
+              ],
+              0.025,
+              pipe,
+            );
+          }
+          m.box(
+            [dp[0] + d[0] * 0.05, g + 0.08, dp[2] + d[1] * 0.05],
+            [0.26, 0.16, 0.24],
+            conc(RC_TROUGH),
             yaw,
             sd,
+            true,
+            true,
           );
-        // Drain downpipe on every 2nd bent, alternate sides.
-        if (no % 2 === 0 && s === (no % 4 === 0 ? 1 : -1) && h > 2) {
-          const dp: Vec3 = [
-            c[0] + d[0] * (hw + 0.12),
-            g - 0.3,
-            c[1] + d[1] * (hw + 0.12),
-          ];
-          m.cylinder(dp, 0.1, cTop - dp[1], 6, packMat(CM.paint, 0x90), false);
         }
       }
       const bm = conc(RC_BEAM | roadside);
       if (flank) {
         // Full-width cap: also closes the edge beam and girder ends.
-        const c = P(i, 0, -1.5);
-        m.box(c, [4.5, 1.1, 0.5], bm, yaw, sd, false);
+        const c = P(i, 0, -1.7);
+        m.box(c, [4.5, 1.3, 0.5], bm, yaw, sd, false);
+        // Bearing shelf under each girder end, elastomeric pads on it under
+        // every web.
+        for (const f of [-1, 1]) {
+          if (!(f > 0 ? gAfter : gBefore)) continue;
+          const at = (o: number, y: number, a: number): Vec3 => {
+            const p = P(i, o, y);
+            return [p[0] + d[0] * f * a, p[1], p[2] + d[1] * f * a];
+          };
+          m.box(at(0, -2.88, 0.78), [4.5, 0.12, 0.28], bm, yaw, sd, false);
+          for (const o of [-4.4, -3.4, 3.4, 4.4])
+            m.box(
+              at(o, -2.71, 0.85),
+              [0.2, 0.05, 0.15],
+              packMat(CM.frame),
+              yaw,
+            );
+        }
       } else {
         // Transverse beam between the edge beams (its ends and top hide
-        // inside them): two faces and a soffit.
-        const y0 = -0.4,
-          y1 = -2.3,
-          hw = 3.45;
-        for (const f of [-1, 1]) {
-          const A = (o: number, y: number): Vec3 => {
-            const p = P(i, o, y);
-            return [p[0] + d[0] * f * 0.4, p[1], p[2] + d[1] * f * 0.4];
-          };
-          m.quad(
-            [A(-hw, y0), A(hw, y0), A(hw, y1), A(-hw, y1)],
-            [d[0] * f, 0, d[1] * f],
-            [
-              [-hw, 0],
-              [hw, 0],
-              [hw, y0 - y1],
-              [-hw, y0 - y1],
-            ],
-            bm,
-            sd,
-          );
-        }
-        const B = (o: number, f: number): Vec3 => {
-          const p = P(i, o, y1);
+        // inside them): two faces and a soffit, haunched 0.35 m deeper
+        // over the last 0.95 m at each column.
+        const y0 = -0.4;
+        const y1 = -2.3;
+        const hw = 3.45;
+        const hx = 2.5;
+        const hy = y1 - 0.35;
+        const A = (o: number, y: number, f: number): Vec3 => {
+          const p = P(i, o, y);
           return [p[0] + d[0] * f * 0.4, p[1], p[2] + d[1] * f * 0.4];
         };
-        m.quad(
-          [B(-hw, -1), B(hw, -1), B(hw, 1), B(-hw, 1)],
-          [0, -1, 0],
-          [
-            [-hw, 0],
-            [hw, 0],
-            [hw, 0.8],
-            [-hw, 0.8],
-          ],
-          bm,
-          sd,
-        );
+        for (const f of [-1, 1]) {
+          const nf: Vec3 = [d[0] * f, 0, d[1] * f];
+          const v = (o: number, y: number) =>
+            m.vertex(A(o, y, f), nf, o, y0 - y, bm, sd);
+          const [a, b, c, dd, ee, ff] = [
+            v(-hw, y0),
+            v(hw, y0),
+            v(hw, hy),
+            v(hx, y1),
+            v(-hx, y1),
+            v(-hw, hy),
+          ];
+          m.triFacing(a, b, dd, nf);
+          m.triFacing(a, dd, ee, nf);
+          m.triFacing(b, c, dd, nf);
+          m.triFacing(a, ee, ff, nf);
+        }
+        const sl = Math.hypot(0.35, hw - hx);
+        const sideN = (o: number): Vec3 => {
+          if (Math.abs(o) < hw - 0.01) return [0, -1, 0];
+          const t = 0.35 / sl;
+          const c = (hw - hx) / sl;
+          // The haunch underside faces down and in, toward the centre.
+          return [-l[0] * Math.sign(o) * t, -c, -l[1] * Math.sign(o) * t];
+        };
+        const row = (f: number) =>
+          [-hw, -hx, hx, hw].map((o, k) =>
+            m.vertex(
+              A(o, k === 0 || k === 3 ? hy : y1, f),
+              sideN(k === 0 ? -hw : k === 3 ? hw : 0),
+              o,
+              f > 0 ? 0.8 : 0,
+              bm,
+              sd,
+            ),
+          );
+        const r0 = row(-1);
+        const r1 = row(1);
+        for (let k = 0; k < 3; k++) {
+          const nd: Vec3 = k === 1 ? [0, -1, 0] : sideN(k === 0 ? -hw : hw);
+          m.triFacing(r0[k], r0[k + 1], r1[k + 1], nd);
+          m.triFacing(r0[k], r1[k + 1], r1[k], nd);
+        }
       }
       // Under-deck LED: at the bents flanking road crossings, and every 4th
       // other bent with headroom.
       if (flank || (no % 4 === 2 && hs[i] - ground > 6)) {
-        const u = P(i, 0, flank ? -2.66 : -2.36);
-        m.box(u, [0.5, 0.06, 0.2], packMat(CM.lamp, 1), yaw);
+        const u = P(i, 0, flank ? -3.06 : -2.36);
+        m.box(u, [0.5, 0.06, 0.2], packMat(CM.lamp, 1), yaw, 0, false);
         lights.add([u[0], u[1] - 0.4, u[2]], 18, LED, LightKind.street);
       }
     });
@@ -1192,9 +1377,10 @@ function railViaduct(
 
   // Continuous lines through every point: railheads, catenary wires, the
   // cable conduit.
-  const line = (f: (k: number) => Vec3, r: number, mat: number) => {
+  const line = (f: (k: number) => Vec3, r: number, mat: number, step = 1) => {
     const ps: Vec3[] = [];
-    for (let k = 0; k <= segs; k++) ps.push(f(k));
+    for (let k = 0; k <= segs; k += step) ps.push(f(k));
+    if (segs % step) ps.push(f(segs));
     m.tube(ps, r, mat);
   };
   for (const c of [-2.1, 2.1])
@@ -1223,9 +1409,9 @@ function railViaduct(
   for (const c of [-2.1, 2.1]) {
     line(k => P(k, c + stag(k), CW), 0.007, packMat(CM.wire, 1));
     line(k => P(k, c + stag(k), MW - 0.5 * sag(k)), 0.008, packMat(CM.wire, 2));
-    // Droppers at the bents between gantries.
+    // Droppers at mid-bay bents (every 24 m).
     for (let k = 0; k < segs; k++) {
-      if (isGantry(k)) continue;
+      if (isGantry(k) || k % 2) continue;
       m.tube(
         [P(k, c + stag(k), CW), P(k, c + stag(k), MW - 0.5 * sag(k))],
         0.004,
@@ -1234,9 +1420,9 @@ function railViaduct(
     }
   }
   for (const s of [-1, 1]) {
-    line(k => P(k, s * 4.8, 9.0 - 0.6 * sag(k)), 0.012, packMat(CM.wire, 2));
+    // Feeders: a point every 2nd bent is enough for their sag.
+    line(k => P(k, s * 4.8, 9.0 - 0.6 * sag(k)), 0.012, packMat(CM.wire, 2), 2);
   }
-  line(k => P(k, 4.47, -1.2), 0.06, packMat(CM.paint, 0x90));
 
   for (let i = 0; i < n; i++) {
     if (!isGantry(i)) continue;
@@ -1252,115 +1438,481 @@ function railViaduct(
     for (let k = 0; k <= 12; k++)
       zz.push(P(i, -4.8 + k * 0.8, k % 2 ? 8.6 : 7.9));
     m.tube(zz, 0.035, galv);
+    const ins = packMat(CM.paint, INSULATOR);
     for (const c of [-2.1, 2.1]) {
+      // Drop pole outboard of the track, hung from the bottom chord on an
+      // insulator; a messenger support arm, and a registration arm on a
+      // hinge insulator whose tip is the contact wire's support point (the
+      // same staggered point the wire polyline passes through).
       const st = stag(i);
-      m.tube([P(i, c, 7.5), P(i, c, 6.9), P(i, c + st * 2.5, 6.9)], 0.04, galv);
-      m.tube([P(i, c, 7.9), P(i, c, 7.5)], 0.07, packMat(CM.paint, INSULATOR));
+      const sg = Math.sign(c);
+      const xd = c + sg * 0.9;
+      m.tube([P(i, xd, 7.9), P(i, xd, 7.45)], 0.065, ins);
+      m.tube([P(i, xd, 7.45), P(i, xd, CW + 0.55)], 0.04, galv);
+      m.tube([P(i, xd, MW), P(i, c + st, MW)], 0.03, galv);
+      m.tube([P(i, xd, CW + 0.55), P(i, xd, CW + 0.22)], 0.055, ins);
+      m.tube([P(i, xd, CW + 0.22), P(i, c + st, CW)], 0.025, galv);
       // Signal heads every 24 points (288 bent units), facing the trains
-      // that approach on this track (left-hand running).
+      // that approach on this track (left-hand running). Both lamps lit
+      // (hash aspect: green over yellow, yellow over yellow, red over red).
       if (i % 24 === 0) {
         const d = fr[i].d;
         const f = c < 0 ? -1 : 1;
-        const hp = P(i, c + (c < 0 ? -1.3 : 1.3), 7.55);
+        const hp = P(i, c + sg * 1.45, 7.45);
         m.box(hp, [0.15, 0.35, 0.1], packMat(CM.frame), yaw);
         const a = railHash(ei * 3 + (c < 0 ? 1 : 2), i);
-        const aspect = a < 0.7 ? 4 : a < 0.9 ? 5 : 3;
-        for (const [dy, mat] of [
-          [0.15, packMat(CM.lamp, aspect)],
-          [-0.15, packMat(CM.frame)],
+        const [up, lo] = a < 0.7 ? [4, 5] : a < 0.9 ? [5, 5] : [3, 3];
+        for (const [dy, asp] of [
+          [0.15, up],
+          [-0.15, lo],
         ] as [number, number][])
           m.box(
             [hp[0] + d[0] * f * 0.11, hp[1] + dy, hp[2] + d[1] * f * 0.11],
             [0.06, 0.06, 0.02],
-            mat,
+            packMat(CM.lamp, asp),
             yaw,
           );
       }
     }
   }
 
-  // Stations: canopies on posts over the raised side platforms, a name
-  // board, and a stair tower down to the street.
+  // Night fittings and small deck furniture.
+  const cool: Vec3 = [0.8, 0.92, 1.0];
+  const lamp = packMat(CM.lamp, 1);
+  const mid = (i: number, t: number, o: number, y: number): Vec3 => {
+    const a = P(i, o, y);
+    const b = P(i + 1, o, y);
+    return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+  };
+  for (let i = 0; i < segs; i++) {
+    const len = dist2(pts[i], pts[W(i + 1)]) || 1;
+    const t0 = 0.5 - 0.6 / len;
+    const t1 = 0.5 + 0.6 / len;
+    // Fluorescent fitting under the centre soffit in every bay; a light in
+    // every 2nd bay with headroom.
+    m.quad(
+      [
+        mid(i, t0, -0.07, -0.47),
+        mid(i, t1, -0.07, -0.47),
+        mid(i, t1, 0.07, -0.47),
+        mid(i, t0, 0.07, -0.47),
+      ],
+      [0, -1, 0],
+      [
+        [0, 0],
+        [1.2, 0],
+        [1.2, 0.14],
+        [0, 0.14],
+      ],
+      lamp,
+    );
+    const c = mid(i, 0.5, 0, -0.6);
+    if (i % 2 === 1 && c[1] - hf.sample(c[0], c[2]) > 5)
+      lights.add(c, 11, cool, LightKind.station);
+    const st = station[i] === 1;
+    // Walkway lamp every 3rd bay, alternating sides, on a bracket off the
+    // parapet / soundwall (mid-bay, clear of masts and bents).
+    if (!st && i % 3 === 1) {
+      const s = Math.floor(i / 3) & 1 ? 1 : -1;
+      const wy = wallOf(i) ? 2.3 : 1.25;
+      m.tube(
+        [
+          mid(i, 0.5, s * 5.0, wy),
+          mid(i, 0.5, s * 5.0, 2.6),
+          mid(i, 0.5, s * 4.6, 2.6),
+        ],
+        0.03,
+        galv,
+      );
+      // Lamp head: a short bar along the track (its lower faces glow).
+      m.tube(
+        [
+          mid(i, 0.5 - 0.22 / len, s * 4.6, 2.54),
+          mid(i, 0.5 + 0.22 / len, s * 4.6, 2.54),
+        ],
+        0.06,
+        lamp,
+      );
+      lights.add(mid(i, 0.5, s * 4.6, 2.3), 9, LED, LightKind.station);
+    }
+    // Brackets under the outer cable trough, every 4th bay.
+    if (!st && i % 4 === 2) {
+      const d = fr[i].d;
+      m.quad(
+        [
+          mid(i, 0.5, -5.2, -0.06),
+          mid(i, 0.5, -5.46, -0.06),
+          mid(i, 0.5, -5.25, -0.42),
+          mid(i, 0.5, -5.2, -0.42),
+        ],
+        [d[0], 0, d[1]],
+        [
+          [0, 0],
+          [0.26, 0],
+          [0.05, 0.36],
+          [0, 0.36],
+        ],
+        galv,
+      );
+    }
+    // Rail joint plates (fishplates) on the field side of the outer rails
+    // every 16 bays.
+    if (i % 16 === 4) {
+      const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
+      for (const o of [-2.63, 2.63])
+        m.box(
+          mid(i, 0.5, o + Math.sign(o) * 0.055, 0.26),
+          [0.015, 0.05, 0.4],
+          packMat(CM.metal, RAIL_WEB),
+          yaw,
+          0,
+          true,
+          true,
+        );
+    }
+  }
+
+  // Stations: a low canopy on T-frames over each raised side platform
+  // (fascia with a light-box strip and name boards), stairs down through
+  // the platform, platform furniture, and a glazed concourse under the
+  // deck (or a stair tower beside it where the ground below is road).
   const PL = 1.45;
+  const CY = PL + 3.2;
+  const metal = packMat(CM.metal);
+  const fasciaM = packMat(CM.paint, 0xd0);
+  const flat = (
+    a: Vec3,
+    b: Vec3,
+    c: Vec3,
+    d: Vec3,
+    nrm: Vec3,
+    w: number,
+    h: number,
+    mat: number,
+  ) =>
+    m.quad(
+      [a, b, c, d],
+      nrm,
+      [
+        [0, 0],
+        [w, 0],
+        [w, h],
+        [0, h],
+      ],
+      mat,
+    );
   for (const si of e.stations) {
     const i0 = Math.max(0, si - 7);
     const i1 = Math.min(n - 1, si + 7);
+    const name = packMat(CM.sign, 64 + (si % 8));
     for (const side of [-1, 1]) {
+      const o = (x: number) => side * x;
       for (let i = i0; i < i1; i++) {
         const out: Vec3 = [fr[i].l[0] * side, 0, fr[i].l[1] * side];
-        // Canopy roof.
-        const r0 = P(i, side * 4.3, PL + 4.2),
-          r1 = P(i + 1, side * 4.3, PL + 4.2);
-        const r2 = P(i + 1, side * 10.0, PL + 4.6),
-          r3 = P(i, side * 10.0, PL + 4.6);
-        const cw = 5.7;
-        m.quad(
-          [r0, r1, r2, r3],
-          UP,
-          [
-            [0, 0],
-            [12, 0],
-            [12, cw],
-            [0, cw],
-          ],
-          packMat(CM.paint, 0xf8) /* corrugated steel canopy */,
+        const inn: Vec3 = [-out[0], 0, -out[2]];
+        const len = dist2(pts[i], pts[W(i + 1)]);
+        // Roof: 4.0 (over the platform edge) to 9.8, rising 0.3 to the
+        // back; corrugated top, steel soffit.
+        const r0 = P(i, o(4.0), CY + 0.15);
+        const r1 = P(i + 1, o(4.0), CY + 0.15);
+        const r2 = P(i + 1, o(9.8), CY + 0.45);
+        const r3 = P(i, o(9.8), CY + 0.45);
+        flat(r0, r1, r2, r3, UP, len, 5.8, packMat(CM.paint, 0xf8));
+        flat(r0, r1, r2, r3, [0, -1, 0], len, 5.8, metal);
+        // Track-side fascia 0.6 m deep, a light-box strip along its lower
+        // edge (lit face down and toward the track), back fascia 0.3 m.
+        const dn = (p: Vec3, y: number): Vec3 => [p[0], p[1] - y, p[2]];
+        flat(r1, r0, dn(r0, 0.45), dn(r1, 0.45), inn, len, 0.45, fasciaM);
+        flat(r0, r1, dn(r1, 0.45), dn(r0, 0.45), out, len, 0.45, fasciaM);
+        const b0 = dn(r0, 0.45);
+        const b1 = dn(r1, 0.45);
+        flat(
+          b1,
+          b0,
+          dn(b0, 0.2),
+          dn(b1, 0.2),
+          inn,
+          len,
+          0.2,
+          packMat(CM.lamp, 1),
         );
-        // Fascia boards along both canopy edges give it thickness.
-        const dn2 = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
-        for (const [e0, e1, s] of [
-          [r3, r2, 1],
-          [r1, r0, -1],
-        ] as [Vec3, Vec3, number][]) {
-          m.quad(
-            [e0, e1, dn2(e1), dn2(e0)],
-            [out[0] * s, 0, out[2] * s],
-            [
-              [0, 0],
-              [12, 0],
-              [12, 0.3],
-              [0, 0.3],
-            ],
-            packMat(CM.paint, 0xd0),
-          );
-        }
-        m.quad(
-          [r0, r1, r2, r3],
+        const c0 = P(i, o(4.15), CY - 0.5);
+        const c1 = P(i + 1, o(4.15), CY - 0.5);
+        flat(
+          dn(b0, 0.2),
+          dn(b1, 0.2),
+          c1,
+          c0,
           [0, -1, 0],
-          [
-            [0, 0],
-            [12, 0],
-            [12, cw],
-            [0, cw],
-          ],
-          packMat(CM.metal),
+          len,
+          0.15,
+          packMat(CM.lamp, 1),
+        );
+        flat(r2, r3, dn(r3, 0.3), dn(r2, 0.3), out, len, 0.3, fasciaM);
+        // Fluorescent line under the roof along the platform.
+        flat(
+          P(i, o(6.2), CY + 0.2),
+          P(i + 1, o(6.2), CY + 0.2),
+          P(i + 1, o(6.35), CY + 0.21),
+          P(i, o(6.35), CY + 0.21),
+          [0, -1, 0],
+          len,
+          0.15,
+          packMat(CM.lamp, 1),
+        );
+        // T-frame at every point: a centre column and a sloped arm.
+        const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
+        const post = P(i, o(6.8), PL);
+        const ph = CY + 0.1 - PL;
+        m.box(
+          [post[0], post[1] + ph / 2, post[2]],
+          [0.12, ph / 2, 0.12],
+          metal,
+          yaw,
+        );
+        m.beam(
+          P(i, o(4.05), CY + 0.08),
+          P(i, o(9.75), CY + 0.38),
+          0.08,
+          0.12,
+          metal,
         );
         if (i % 2 === 0) {
-          const post = P(i, side * 7.9, PL);
-          m.box(
-            [post[0], post[1] + 2.2, post[2]],
-            [0.12, 2.2, 0.12],
-            packMat(CM.metal),
-          );
-          lights.add(
-            [post[0], post[1] + 3.8, post[2]],
-            14,
-            LED,
-            LightKind.station,
-          );
-          m.box(
-            [post[0], post[1] + 4.0, post[2]],
-            [0.6, 0.05, 0.15],
-            packMat(CM.lamp, 1),
-          );
+          const lp = P(i, o(6.3), CY - 0.2);
+          lights.add(lp, 14, LED, LightKind.station);
         }
       }
-      // Station signboard.
-      const sgn = P(si, side * 7.9, PL + 3.2);
-      const yaw = Math.atan2(fr[si].d[0], fr[si].d[1]);
-      m.box(sgn, [1.6, 0.35, 0.06], packMat(CM.sign, 64 + (si % 8)), yaw);
+      // Hanging name boards facing the track, and a big one on the back
+      // fascia facing the street.
+      for (const k of [si - 4, si + 3]) {
+        if (k < i0 || k >= i1) continue;
+        const yaw = Math.atan2(fr[k].d[0], fr[k].d[1]);
+        const b = mid(k, 0.5, o(4.6), CY - 0.75);
+        const top = mid(k, 0.5, o(4.6), CY + 0.12)[1];
+        m.box(b, [0.05, 0.42, 2.5], name, yaw);
+        for (const f of [-1.6, 1.6])
+          m.tube(
+            [
+              [b[0] + fr[k].d[0] * f, b[1] + 0.42, b[2] + fr[k].d[1] * f],
+              [b[0] + fr[k].d[0] * f, top, b[2] + fr[k].d[1] * f],
+            ],
+            0.015,
+            metal,
+          );
+      }
+      {
+        const yaw = Math.atan2(fr[si].d[0], fr[si].d[1]);
+        const b = P(si, o(9.86), CY + 0.1);
+        m.box(b, [0.05, 0.5, 2.8], name, yaw);
+        // Perpendicular hanging sign mid-platform.
+        const h = mid(si, 0.5, o(6.8), CY - 0.45);
+        m.box(h, [1.2, 0.28, 0.05], name, yaw);
+      }
+      // Departure boards (screens) hanging over the stair heads.
+      const sk = stairSeg(si, side);
+      if (sk >= i0 && sk < i1) {
+        const yaw = Math.atan2(fr[sk].d[0], fr[sk].d[1]);
+        const d = fr[sk].d;
+        const b = mid(sk, 0.15, o(6.5), CY - 0.5);
+        m.box(b, [0.95, 0.27, 0.05], packMat(CM.frame), yaw);
+        for (const f of [-1, 1]) {
+          const fp: Vec3 = [
+            b[0] + d[0] * f * 0.051,
+            b[1],
+            b[2] + d[1] * f * 0.051,
+          ];
+          const l = fr[sk].l;
+          const A = (x: number, y: number): Vec3 => [
+            fp[0] + l[0] * x,
+            fp[1] + y,
+            fp[2] + l[1] * x,
+          ];
+          flat(
+            A(-0.9 * f, -0.22),
+            A(0.9 * f, -0.22),
+            A(0.9 * f, 0.22),
+            A(-0.9 * f, 0.22),
+            [d[0] * f, 0, d[1] * f],
+            1,
+            1,
+            packMat(CM.screen, DEPARTURE | (si & 0xff)),
+          );
+        }
+        // Stairs: ten 0.265 m risers on 0.32 m treads from the well's near
+        // end down to the slab soffit, handrails down both walls.
+        const len = dist2(pts[sk], pts[W(sk + 1)]) || 1;
+        const st = conc(RC_PLATFORM);
+        const at = (a: number, x: number, y: number) =>
+          mid(sk, a / len, o(x), y);
+        for (let k = 0; k < 10; k++) {
+          const a0 = 0.02 + k * 0.32;
+          const y = PL - (k + 1) * 0.265;
+          flat(
+            at(a0, 5.4, y + 0.265),
+            at(a0, 7.6, y + 0.265),
+            at(a0, 7.6, y),
+            at(a0, 5.4, y),
+            [d[0], 0, d[1]],
+            2.2,
+            0.265,
+            st,
+          );
+          flat(
+            at(a0, 5.4, y),
+            at(a0, 7.6, y),
+            at(a0 + 0.32, 7.6, y),
+            at(a0 + 0.32, 5.4, y),
+            UP,
+            2.2,
+            0.32,
+            st,
+          );
+        }
+        // The far end of the well walled, with the balustrade on top.
+        flat(
+          at(len - 0.02, 5.3, PL + 1.05),
+          at(len - 0.02, 7.7, PL + 1.05),
+          at(len - 0.02, 7.7, -1.2),
+          at(len - 0.02, 5.3, -1.2),
+          [-d[0], 0, -d[1]],
+          2.4,
+          3.7,
+          conc(RC_STATION),
+        );
+        flat(
+          at(len - 0.02, 5.3, PL + 1.05),
+          at(len - 0.02, 7.7, PL + 1.05),
+          at(len - 0.02, 7.7, PL),
+          at(len - 0.02, 5.3, PL),
+          [d[0], 0, d[1]],
+          2.4,
+          1.05,
+          conc(RC_STATION),
+        );
+        for (const x of [5.35, 7.65])
+          m.tube(
+            [at(0.02, x, PL + 1.12), at(len - 0.02, x, PL + 1.12)],
+            0.025,
+            galv,
+          );
+        for (const x of [5.5, 7.5])
+          m.tube(
+            [
+              at(0.02, x, PL + 0.9),
+              at(3.22, x, PL - 2.65 + 0.9),
+              at(4.2, x, PL - 2.65 + 0.9),
+            ],
+            0.022,
+            galv,
+          );
+      }
+      // Benches along the back fence and a pair of vending machines.
+      for (const [k, a] of [
+        [si - 5, 0.5],
+        [si - 1, 0.3],
+        [si + 4, 0.6],
+      ] as [number, number][]) {
+        if (k < i0 || k >= i1) continue;
+        const yaw = Math.atan2(fr[k].d[0], fr[k].d[1]);
+        m.box(
+          mid(k, a, o(8.95), PL + 0.43),
+          [0.22, 0.03, 0.9],
+          packMat(CM.paint, 0x60),
+          yaw,
+        );
+        m.box(
+          mid(k, a, o(9.2), PL + 0.62),
+          [0.03, 0.2, 0.9],
+          packMat(CM.paint, 0x60),
+          yaw,
+        );
+        m.box(mid(k, a, o(8.95), PL + 0.2), [0.2, 0.2, 0.75], metal, yaw);
+      }
+      for (const [k, v] of [
+        [si + 1, 0],
+        [si + 1, 1],
+      ] as [number, number][]) {
+        if (k < i0 || k >= i1) continue;
+        const yaw = Math.atan2(fr[k].d[0], fr[k].d[1]);
+        const c = mid(k, 0.45 + v * 0.08, o(9.15), PL + 0.9);
+        // Front (the box's +x face) toward the platform.
+        m.box(
+          c,
+          [0.38, 0.9, 0.45],
+          packMat(CM.vending, (si + v + (side > 0 ? 1 : 0)) % 3),
+          yaw + (side < 0 ? Math.PI : 0),
+        );
+      }
     }
-    // Stair tower down to the street, on whichever side and position along
-    // the platform keeps its whole footprint off the roads.
+    // Glazed concourse under the deck: two bays between the station bents,
+    // full width under both platforms, where the ground is clear of roads.
+    const span = (k: number) => {
+      if (k < si - 7 || k + 2 > si + 7 || k < 0 || k + 2 >= n) return false;
+      for (let j = k; j <= k + 2; j++)
+        for (const x of [-9.7, -4, 0, 4, 9.7]) {
+          const p = P(j, x, 0);
+          if (onRoad([p[0], p[2]])) return false;
+        }
+      return true;
+    };
+    let ck = -1;
+    for (const dk of [-1, 0, -2, 1, -3, 2, -4, 3])
+      if (ck < 0 && span(si + dk)) ck = si + dk;
+    if (ck >= 0) {
+      const a = P(ck, 0, 0);
+      const b = P(ck + 2, 0, 0);
+      const cx = (a[0] + b[0]) / 2;
+      const cz = (a[2] + b[2]) / 2;
+      const half = Math.hypot(b[0] - a[0], b[2] - a[2]) / 2;
+      const yaw = Math.atan2(b[0] - a[0], b[2] - a[2]);
+      let gnd = Infinity;
+      for (let j = ck; j <= ck + 2; j++)
+        for (const x of [-9.7, 9.7]) {
+          const p = P(j, x, 0);
+          gnd = Math.min(gnd, hf.sample(p[0], p[2]));
+        }
+      const roof = Math.min(hs[ck], hs[ck + 1], hs[ck + 2]) - 1.25;
+      const hg = Math.min(4.4, roof - gnd - 1);
+      if (hg > 2.5) {
+        // Curtain wall (RC_STATION | RC_GLAZED), solid upper band.
+        m.box(
+          [cx, gnd - 0.3 + (hg + 0.3) / 2, cz],
+          [9.75, (hg + 0.3) / 2, half],
+          conc(RC_STATION | RC_GLAZED),
+          yaw,
+          seed(ck),
+        );
+        const ub = roof - (gnd + hg);
+        m.box(
+          [cx, gnd + hg + ub / 2, cz],
+          [9.85, ub / 2, half + 0.1],
+          conc(RC_STATION),
+          yaw,
+          seed(ck),
+          false,
+        );
+        // Entrances in the middle of both long sides: a dark door recess
+        // under a steel canopy, the station name above.
+        const l = fr[ck + 1].l;
+        for (const s of [-1, 1]) {
+          const f = (x: number, y: number): Vec3 => [
+            cx + l[0] * s * x,
+            gnd + y,
+            cz + l[1] * s * x,
+          ];
+          m.box(f(9.77, 1.3), [0.02, 1.3, 2.4], packMat(CM.frame), yaw);
+          m.box(f(10.4, 2.95), [0.65, 0.07, 3.0], metal, yaw, 0, false);
+          if (ub > 1.4) m.box(f(9.9, hg + ub / 2), [0.05, 0.5, 3.2], name, yaw);
+        }
+      }
+    } else {
+      // Stair tower beside the deck, on whichever side and position along
+      // the platform keeps its whole footprint off the roads.
+      stairTower(si);
+    }
+  }
+
+  function stairTower(si: number) {
     const clear = (k: number, side: number) => {
       const c = P(k, side * (halfW + 7), 0);
       const d = fr[W(k)].d;
@@ -1729,10 +2281,18 @@ export function buildBase(L: CityLayout): BaseGeometry {
   const solids: number[] = [];
   const record = (mesh: CMesh) => {
     const box = mesh.box.bind(mesh);
-    mesh.box = (c, h, mat, yaw = 0, aux = 0, skipBottom = true) => {
+    mesh.box = (
+      c,
+      h,
+      mat,
+      yaw = 0,
+      aux = 0,
+      skipBottom = true,
+      skipBack = false,
+    ) => {
       if (h[1] >= 0.75 && Math.max(h[0], h[2]) >= 0.5)
         solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw);
-      box(c, h, mat, yaw, aux, skipBottom);
+      box(c, h, mat, yaw, aux, skipBottom, skipBack);
     };
     return () => {
       mesh.box = box;
@@ -1742,7 +2302,9 @@ export function buildBase(L: CityLayout): BaseGeometry {
   const unP = record(piers);
   roads(L, geom, m, lights, piers);
   blocks(L, m);
-  elevatedStructures(L, mask, m, lights);
+  elevatedStructures(L, mask, m, lights, (c, h, yaw) =>
+    solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw),
+  );
   unM();
   unP();
   streetLights(L, geom, lights);

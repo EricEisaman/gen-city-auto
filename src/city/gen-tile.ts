@@ -7162,6 +7162,24 @@ function deckFloor(L: CityLayout) {
   return g;
 }
 
+/**
+ * Utility poles and wire spans under a viaduct or expressway: true when the
+ * line a -> b (ground points) keeps `h` metres of headroom under every deck
+ * it passes, sampled every 2 m. Spans that would run into a deck are left
+ * out (the poles either side become dead ends) instead of ending mid-air at
+ * the fascia.
+ */
+function clearOfDecks(ctx: TileContext, a: Vec3, b: Vec3, h: number) {
+  const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[2] - a[2]) / 2));
+  for (let k = 0; k <= n; k++) {
+    const t = k / n;
+    const y = lerp(a[1], b[1], t);
+    if (deckClearance(ctx, lerp(a[0], b[0], t), lerp(a[2], b[2], t), y) < h)
+      return false;
+  }
+  return true;
+}
+
 /** Height available above ground before hitting an elevated deck. */
 function deckClearance(ctx: TileContext, x: number, z: number, ground: number) {
   const size = ctx.layout.params.size;
@@ -7347,11 +7365,11 @@ export function buildTile(
         const z = q.p[1] + l[1] * off;
         const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
         const here = inTile(p[0], p[2]);
-        if (here && lod === 0) {
+        if (here && lod === 0 && clearOfDecks(ctx, p, p, 10.2)) {
           utilityPole(m, p);
           serviceDrops(m, p, fronts);
         }
-        if (prev && lod === 0 && here) {
+        if (prev && lod === 0 && here && clearOfDecks(ctx, prev, p, 9.3)) {
           for (const dy of [9.05, 8.5, 8.0])
             wireSag(
               m,

@@ -88,6 +88,23 @@ export class Trains {
     }
   }
 
+  /**
+   * Asset lab: keep one train, standing still with its front at arc length
+   * `s` of line 0 (for scale in the screenshots).
+   */
+  park(s: number) {
+    this.trains = this.trains.filter(t => t.line === 0).slice(0, 1);
+    for (const tr of this.trains) {
+      tr.s = s;
+      tr.dir = 1;
+      tr.speed = 0;
+      tr.dwell = 1e9;
+    }
+    // Twice, so the previous-frame matrices match (no motion vectors).
+    this.update(0);
+    this.update(0);
+  }
+
   /** Track centerline point at arc length `s`. */
   private at(line: Line, s: number): Vec3 {
     const {e, arc, total} = line;

@@ -67,6 +67,11 @@ export interface LabInfo {
   views: Record<string, LabView>;
   /** The `orbit` preset circles `center` at `radius`, eye at `height`. */
   orbit: {center: Vec3; radius: number; height: number; fov: number};
+  /**
+   * Rail: arc length (on elevated line 0) of the front of a train parked
+   * at the site for scale (game.ts parks one there; trains stay still).
+   */
+  train?: number;
 }
 
 /** What isolate() chose; labInfo() turns it into camera presets. */
@@ -446,16 +451,98 @@ export function isolate(L: CityLayout, spec: LabSpec): Isolated {
       dist2(centroid(b.curb), F) < R &&
       b.curb.some(q => closestOnPolyline(e.pts, q).d < 60),
   );
-  return {
-    layout: {
-      ...L,
-      buildings: spec.ctx ? keepBuildings(mask.blocks) : [],
-      elevated: [e],
-      hidden: mask,
-    },
-    site: {asset: 'rail', line: 0, s: site.s, station: site.station},
-    label: `rail line ${site.line} at ${site.s.toFixed(0)} m${site.station >= 0 ? ' (station)' : ''}`,
+  const railSite: Site = {
+    asset: 'rail',
+    line: 0,
+    s: site.s,
+    station: site.station,
   };
+  const label = `rail line ${site.line} at ${site.s.toFixed(0)} m${site.station >= 0 ? ' (station)' : ''}`;
+  if (!spec.ctx)
+    return {
+      layout: {...L, buildings: [], elevated: [e], hidden: mask},
+      site: railSite,
+      label,
+    };
+  // In context: drop the buildings that stand between a camera preset and
+  // the viaduct (the presets depend on the line alone).
+  const alone: Isolated = {
+    layout: {...L, buildings: [], elevated: [e], hidden: mask},
+    site: railSite,
+    label,
+  };
+  const near = keepBuildings(mask.blocks);
+  const blocked = railOccluders(e, site.s, near, labInfo(alone, geom, []));
+  const ctxB = near.filter(o => !blocked.has(o));
+  return {
+    layout: {...L, buildings: ctxB, elevated: [e], hidden: mask},
+    site: railSite,
+    label: `${label} (+${ctxB.length} around, ${blocked.size} cut)`,
+  };
+}
+
+/**
+ * Rail lab context: buildings that hide the viaduct from a camera preset.
+ * Sight lines run from each preset's eye to the deck centreline (girder
+ * bottom, coping and catenary heights) at points along the stretch that
+ * preset frames; any building they pass through below its roof is cut, as
+ * is one the eye stands in. `along` looks down the track, so its targets
+ * lie ahead; `under` sees nothing but the underside and is skipped.
+ */
+function railOccluders(
+  e: Elevated,
+  s0: number,
+  near: Building[],
+  info: LabInfo,
+): Set<Building> {
+  const arc = arcOf(e.pts);
+  const boxes = near.map(o => ({o, box: bbox(o.footprint, 0.3)}));
+  const out = new Set<Building>();
+  const views = {...info.views};
+  delete views.under;
+  delete views.shell;
+  const hit = (p: Vec2, py: number) => {
+    for (const {o, box} of boxes)
+      if (
+        !out.has(o) &&
+        p[0] >= box[0] &&
+        p[0] <= box[2] &&
+        p[1] >= box[1] &&
+        p[1] <= box[3] &&
+        py < o.base + o.height + 0.5 &&
+        pointInPolygon(p, o.footprint)
+      )
+        out.add(o);
+  };
+  for (const [name, v] of Object.entries(views)) {
+    const E = v.eye;
+    const T = v.target;
+    // The stretch of line the preset frames: around the arc length nearest
+    // its target, wider the farther the eye.
+    const sT = arc[closestOnPolyline(e.pts, [T[0], T[2]]).i];
+    const dist = Math.hypot(T[0] - E[0], T[2] - E[2]);
+    const span = name === 'along' ? 0 : clamp(dist * 0.6, 30, 90);
+    // Every 10 m, so no building fits between two sight lines.
+    const ss: number[] = [];
+    if (name === 'along') for (let d = 10; d <= 150; d += 10) ss.push(s0 + d);
+    else for (let d = -span; d <= span; d += 10) ss.push(sT + d);
+    for (const s of ss) {
+      const A = along(e, arc, s);
+      for (const y of [A.h - 2.4, A.h + 1.3, A.h + 8]) {
+        const dx = A.p[0] - E[0];
+        const dz = A.p[1] - E[2];
+        // Stop short of the deck edge (the viaduct itself).
+        const len = Math.hypot(dx, dz);
+        const end = Math.max(0, len - 5.5) / (len || 1);
+        const n = Math.ceil(len / 0.5);
+        for (let k = 0; k <= n; k++) {
+          const t = (k / n) * end;
+          hit([E[0] + dx * t, E[2] + dz * t], E[1] + (y - E[1]) * t);
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /** Building lab context radius (neighbour centroids, metres). */
@@ -586,6 +673,7 @@ export function labInfo(
   ];
   let orbit: LabInfo['orbit'];
   let focus: Vec3;
+  let train: number | undefined;
   if (site.asset === 'building') {
     const b = L.buildings[site.building];
     const fp = b.footprint;
@@ -821,8 +909,9 @@ export function labInfo(
     );
     const ahead = along(e, arc, site.s + 60);
     views.along = look(v3(A.p, H + 5), v3(ahead.p, ahead.h + 1), 1.05);
-    views.mid = look(from(F, rot(l, 0.7), 120, gF + 30), F);
-    views.far = look(from(F, rot(l, 0.5), 300, gF + 60), F);
+    views.mid = look(from(F, rot(l, 0.7), 120, gF + 30), F, 0.8);
+    // Far: a long lens, so the viaduct is more than a sliver at 300 m.
+    views.far = look(from(F, rot(l, 0.5), 300, gF + 45), F, 0.5);
     views.shell = {...views.far, lod1: true};
     // Station: from the street, 3/4 onto the platforms.
     const si =
@@ -846,6 +935,10 @@ export function labInfo(
       views.station = look(v3(sp, g(sp) + 1.7), v3(S.p, S.h - 1), 1.05);
     }
     orbit = {center: F, radius: 110, height: gF + 35, fov: 1.0};
+    // A train for scale: stopped along the platforms at a station, else
+    // with its rear 25 m ahead of the section (in the along view and the
+    // edge of the side view).
+    train = site.station >= 0 ? arc[site.station] + 80 : site.s + 185;
   }
   const a0 = 0.3;
   views.orbit = look(
@@ -857,5 +950,12 @@ export function labInfo(
     orbit.center,
     orbit.fov,
   );
-  return {asset: site.asset, label: iso.label, focus, views, orbit};
+  return {
+    asset: site.asset,
+    label: iso.label,
+    focus,
+    views,
+    orbit,
+    ...(train !== undefined ? {train} : {}),
+  };
 }
