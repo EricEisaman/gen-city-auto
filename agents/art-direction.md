@@ -1,5 +1,218 @@
 # Gen City Auto: art direction
 
+## Round 7 direction
+
+Reviewed: the 12 matrix shots in `test/out/shots/`, extra views in `test/out/ad/` (`dusk-raised.png`, `street-up.png`,
+`mid.png`, `mid-ao.png`, `crop1.png`, `crop2.png`), `city-materials.wgsl` (`facadeMat`, `interior`, `curtainWall`, `cityMaterial`),
+`lighting.wgsl` (`main`, `ssr`, `cityReflection`), `post.wgsl` (`exposure`, `fsTonemap`), `ao.wgsl`, `surface.wgsl`,
+`gen-tile.ts` (`building`, `band`, `fins`), `layout.ts`, `gen-base.ts` (`blocks`) and `camera.ts`.
+
+**Why it still looks flat.** Most of the earlier direction (AgX, histogram metering, window reveal parallax, interior
+mapping, detail normals, ledges, canyon sky visibility) is now in the code. The flatness that remains comes from four
+measurable things, not from missing micro normal maps:
+
+1. **Compressed tonal range.** Luma percentiles of the matrix (sRGB 0 to 255): the day shots have p98 = 140 to 165 and
+   p2 = 17 to 80 (`01` 25/158, `03` 45/146, `09` 79/142, `12` 75/140). Nothing in a day frame gets near white, and the
+   blacks are lifted. Mean saturation is 0.08 to 0.21. AAA day frames span about 8 to 240.
+2. **No sun shadowing at the scale of windows and floors.** The reveal parallax shades reveal faces by their normal, but
+   nothing casts a shadow. Lintels don't shadow the glass, and ledges don't shadow the wall below. At 7 cm per texel the
+   cascades can't resolve 18 cm ledges. Windows read as dark rectangles painted on the wall (`test/out/ad/crop2.png`).
+3. **AO is nearly invisible.** `test/out/ad/mid-ao.png` (`debug=8`) is about 0.9 everywhere, including roof-to-wall and
+   wall-to-wall corners.
+4. **Punched-window glass is one flat blue-grey.** The daytime interior is lit by `skyAmbient * 0.35`, so every room is
+   blue, and every pane has the same normal, so every pane reflects the same patch of sky.
+
+Two matrix shots are also broken outright by the camera. Fixing them is the cheapest gain in the whole list.
+
+Normal or parallax mapping at texture scale (grout, aggregate) is item 8. It is worth doing, but at 1280×720 it changes
+less than items 3 and 6, which do the same job (light and shadow showing relief) at the scale of windows and floors.
+
+### R7-1. Fix the two broken director framings (about 1 h; `05-dusk.png`, `10-storm.png`)
+
+**File:** `src/game/camera.ts`.
+
+- `05-dusk.png` is shot from under the river. The `train` case in `directedRaw` puts the eye at `ground(x, z) + 1.6`,
+  and `ground` returns the riverbed (`hf.sample`), here -3.84 m, so the eye is at y = -2.24. The same view from y = 4 is a
+  good shot (`test/out/ad/dusk-raised.png`). Fixes:
+  - In `badEye(e)`, add `if (isWater(this.net.hf, e[0], e[2]) && e[1] < SEA_LEVEL + 1.5) return true;` (import
+    `isWater` and `SEA_LEVEL` from `src/city/terrain.ts`).
+  - In `ground()` inside `directedRaw`, return `Math.max(..., isWater(hf, x, z) ? SEA_LEVEL + 1.2 : -Infinity)`, so every
+    shot type stands on the water surface rather than the riverbed.
+  - In `directed()`, the "never below ground" clamp gets the same `SEA_LEVEL + 1.2` floor.
+- `10-storm.png`: the `orbit` case has no building collision, so a radius-8 orbit swings to within 1 m of a wall and half
+  the frame is a blurry wall. In `case 'orbit'`, after computing `eye`:
+  `for (let rr = rad; rr >= 4.5; rr -= 0.5) { eye = at(rr); if (no push from this.net.collideBuildings(eye, 2.5)) break; }`.
+  If even 4.5 collides, flip `s.side` and advance `s.a += 0.8`. In `badEye`, raise the clearance from
+  `collideBuildings(e, 1.2)` to `2.5`.
+- Matrix guard (`test/puppeteer/shots.mjs`): reject a capture whose `eye[1]` is below `SEA_LEVEL + 1`.
+
+### R7-2. Contrast and white point: use the full display range (about 2 h; all 12 shots)
+
+**File:** `src/shaders/post.wgsl`, functions `exposure` and `fsTonemap`.
+
+a) **`exposure`:** the 64-bin histogram is already built. In the `li == 0` reduction, also find the 1st and 99.5th
+percentile bins and convert them to EV: `ev = (b + 0.5) / 64 * 16 - 10`. Store them in the unused `expo.pad0` and
+`expo.pad1`, smoothed at the same rate as `cur`. The `Exposure` struct already has those two slots.
+
+b) **`fsTonemap`:** after `var m = agx(c);`, add an adaptive levels stretch:
+```
+let E = tmExpo.value;
+let dLo = agx(vec3f(exp2(tmExpo.pad0) * E)).g;   // display value of the 1st percentile
+let dHi = agx(vec3f(exp2(tmExpo.pad1) * E)).g;   // display value of the 99.5th percentile
+let gain = clamp(0.94 / max(dHi - dLo, 0.05), 1.0, mix(1.45, 1.12, night));
+let lo = min(dLo, 0.09);                          // never pull blacks up, at most 0.09 down
+m = clamp((m - lo) * gain + 0.015, vec3f(0.0), vec3f(1.0));
+```
+Then raise the punch: `pow(m, 1.12)` becomes `pow(m, mix(1.22, 1.12, night))`, and saturation becomes
+`mix(1.12, 1.15, night) * mix(1.0, 0.85, rainK)`. Daytime colour is currently grey: mean saturation 0.13 in `01`.
+
+c) **Acceptance** (luma of the matrix PNGs; measure with the snippet in the Appendix): day and golden p2 ≤ 15,
+p98 ≥ 215, p50 between 95 and 120; rain p2 ≤ 35; night p98 ≥ 230 with p50 unchanged (about 33). Re-check that `07` and
+`08` neon cores don't flatten to a block. If they do, lower the night gain cap to 1.05.
+
+### R7-3. Facade self-shadowing: a sun-visibility channel in the G-buffer (about 4 h; `02`, `04`, `10`, `03`, `12`, `test/out/ad/crop1.png`, `crop2.png`)
+
+This is the parallax-with-self-shadow the user is asking for, at the scale where it is visible: windows, floors and
+mullions.
+
+**Plumbing** (`src/shaders/surface.wgsl` and `lighting.wgsl`):
+- Add `sunVis: f32` to `Surf` (default 1.0 in `defaultSurf`).
+- In `writeG`, `o.emissive.a = f32(s.cls) + clamp(s.sunVis, 0.0, 1.0) * 0.75`. The target is rgba16float, so the step
+  near 5.0 is about 0.004, which is plenty.
+- In `lighting.wgsl` `main`, `cls = u32(floor(em.a + 1e-3))` and `sunVis = fract(em.a) / 0.75`. `main` is the only
+  reader of `gEmissive`. Multiply the sun term (`let sh = shadow(...) * cloudShadow(world) * sunVis;`), the moon term
+  and the clear-coat glint by `sunVis`. Ambient is untouched.
+
+**Tangent-space sun** (in `facadeMat`, next to `V` and `T`):
+`let L = frame.sunDir.xyz; let nl = dot(L, n); let sT = vec2f(dot(L, T), L.y) / max(nl, 0.08);`
+If `nl <= 0`, skip all of this: the wall is already self-shadowed by N·L.
+
+1. **Window recess** (the window branch of `facadeMat`). Deepen the reveal from `0.22` to `D = select(0.30, 0.45,
+   st.family == 2u)` and use `D` in both the view parallax and here. A glass point `g` at depth `D`, or a reveal hit at
+   its own depth `z`, is sunlit only if its ray to the sun leaves through the opening:
+   `let e = g + sT * D; let inside = min(min(e.x - wx0, wx1 - e.x), min(e.y - sill, wy1 - e.y));`
+   `s.sunVis = smoothstep(-0.015, 0.02, inside);`
+   For reveal faces, compute the view-ray hit depth `z = D * t` where the parallax ray crosses the rect edge, and test
+   with `e = hit2D + sT * z`. That gives a hard lintel shadow across the top of every pane and a side-reveal wedge.
+   Also set `s.ao = 0.55` on reveal faces (currently 1.0).
+2. **Floor-ledge shadow band** (all wall pixels, all LODs). The geometric ledge (`gen-tile.ts` `building`,
+   `band(..., base + f*floorH + 0.06, 0.18, 0.12)`) has its underside at the next floor's `ly = 0`. A wall point at
+   `ly` is `h = st.floorH - ly` below it and is shadowed when `h < P * sT.y` with `P = 0.18` (`0.40` for the
+   `st.family == 4u` and podium styles):
+   `s.sunVis = min(s.sunVis, smoothstep(P * min(sT.y, 6.0) - 0.04, P * min(sT.y, 6.0) + 0.04, h));`
+   This gives every floor a crisp shadow line that moves with the sun, at LOD1 too, where the ledge geometry doesn't
+   exist.
+3. **Piers** (`family == 2u`). The pier band already tilts the normal. Add the cast shadow onto the window: shadowed if
+   `lx + sT.x * 0.45 < wx0 || lx + sT.x * 0.45 > wx1` (same `smoothstep` penumbra).
+4. **`curtainWall`**. Mullions and transoms project `Dm = 0.12` m. Shadowed if `lx + sT.x * Dm` falls outside
+   `[0.06, bay - 0.06]`, or if `ly - 0.95 + sT.y * Dm < 0` just above the spandrel. Thin, crisp dark lines on the sun
+   side of every mullion are what makes a tower read as glass panels, not a texture.
+
+**Acceptance:** in `mid.png` and `02` at 09:00 to 15:00, every lit punched window shows a dark band 5 to 15% of its
+height under the lintel, and every lit wall shows a dark line under each slab. Check that no wall facing away from the
+sun changes.
+
+### R7-4. Glass that reads as glass (about 3 h; `02`, `04`, `12`, `test/out/ad/street-up.png`, `11`)
+
+**Files:** `src/shaders/city-materials.wgsl` (`interior`, the `facadeMat` window branch), `src/shaders/lighting.wgsl` `main`.
+
+- **Daylit rooms are dark and neutral, not sky-blue.** In `interior`, change `var light = frame.skyAmbient.rgb * 0.35;`
+  to `var light = vec3f(luminance(frame.skyAmbient.rgb)) * vec3f(1.0, 0.95, 0.88) * 0.14;`, and the depth falloff
+  `mix(1.0, 0.6, ...)` to `mix(1.0, 0.35, ...)`. A real room seen from the street by day is 5 to 10× darker than the
+  facade, so the reflection must dominate. The lit-room night term stays as it is.
+- **Per-pane tilt.** `curtainWall` has it; punched windows don't. In the window branch, after the mullion test:
+  `let wob = (hash22(vec2f(bayIdx, floorIdx) + f32(aux & 1023u)) - 0.5) * 0.035;`
+  `s.normal = normalize(n + T * wob.x + vec3f(0.0, wob.y, 0.0));`
+  Neighbouring panes then reflect different sky and city, which is the strongest "this is glass" cue at distance.
+- **SSR on glass nearby.** In `main`, the SSR gate excludes `CLASS_GLASS`. Allow it when `dist < 150.0`:
+  `(cls != CLASS_GLASS || dist < 150.0)`. Keep `cityReflection` as the fallback beyond that and off-screen. Street-level
+  windows then reflect the street, cars and signs (the Spider-Man look).
+- **Spec occlusion in the recess.** Multiply the glass `env` by `mix(0.5, 1.0, s.ao)`, already written by the reveal.
+- **Acceptance:** in `02` and `street-up.png`, adjacent windows differ visibly in brightness, and windows on the
+  shaded side read near-black with sky reflections, not mid-blue.
+
+### R7-5. Big flat horizontals: bare blocks and giant roofs (about 3 h; `01`, `03`, `09`, `12`)
+
+About a quarter of every aerial matrix shot is a featureless grey plane. One is the two bare blocks beside the viaduct
+in `01`, `03` and `09`. The other is the 100 m+ roofs on the right of the same shots and in `12`.
+
+- **Bare blocks** (`src/city/layout.ts`, after the building pass that drops lots near rail
+  (`nearRail([cx, cz], 14) || fp.some(q => nearRail(q, 7))`)): compute each block's footprint coverage. If it is under
+  12% and the block area is over 800 m², set `park = true` on that block. `gen-base.ts` `blocks()` then uses
+  `CM.grass` instead of `CM.sidewalk`, and the existing park-tree pass in `gen-tile.ts` `buildTile` plants it. Make 1 in 3
+  of these blocks a surface car park instead: `CM.asphalt` plus 2.5 × 5 m stall lines (a new `param` bit in `roadMat`:
+  `fract(local.x / 2.5) < 0.04` white at 0.5 albedo) and parked cars from the traffic spawner. Bare sidewalk material
+  must never cover more than 400 m² in one piece.
+- **Big roofs** (`gen-tile.ts` `building`, roof clutter for midrise and podium caps). Scale the clutter with roof area:
+  `units = clamp(round(area / 120), 4, 40)` in 2-row grids. On roofs over 1500 m² also add 2 to 4 skylight strips
+  (`CM.glass`, 2 × 12 m, 0.4 m high) and a 3 × 3 × 3 m stair core.
+- **`M_ROOF` material** (`city-materials.wgsl` `cityMaterial`): add membrane sheet macro-variation, sheets of 1.0 × 10 m:
+  `albedo *= 0.92 + 0.16 * hash21(floor(world.xz / vec2f(1.0, 10.0)))`. Add darker 1 cm seams and drain stains:
+  `albedo *= 1.0 - 0.25 * smoothstep(0.6, 0.0, length(fract(world.xz / 18.0) - 0.5))`. That gives large roofs a readable
+  scale from the helicopter.
+
+### R7-6. Make ambient occlusion visible (about 2 h; `test/out/ad/mid-ao.png`, `01`, `03`, `12`, `02`)
+
+**Files:** `src/shaders/ao.wgsl` `main`, `src/shaders/lighting.wgsl` `main`, `city-materials.wgsl` `facadeMat`.
+
+- In `ao.wgsl`, the result `1 - occ / total * 1.35` saturates at about 0.9 in corners. Change it to
+  `ao = pow(clamp(1.0 - occ / max(total, 1.0), 0.0, 1.0), 2.2)`. Add a third, tighter crease scale: radius `0.35` m,
+  6 samples, weight 1.0, so window reveals, kerbs and the roof-to-parapet line get contact darkening.
+- In `lighting.wgsl` `main`, add a small direct-light micro-occlusion: `sh *= mix(1.0, ao, 0.25)`. That is the
+  Frostbite and UE trick that makes sunlit inside corners read.
+- Wall-base AO in `facadeMat`: `s.ao *= mix(0.55, 1.0, smoothstep(0.0, 1.2, uv.y))`. This is an occlusion term on top of
+  the existing grime albedo. Under-cornice AO: `s.ao *= mix(0.7, 1.0, smoothstep(0.0, 0.6, h))`, using the `h` from
+  R7-3.
+- **Acceptance:** `debug=8` on the `mid.png` view shows 0.35 to 0.55 in roof-to-wall corners and 0.6 to 0.7 at street
+  level in canyons.
+
+### R7-7. Rain: no white blotches on roofs, darker overcast reflections (about 1 h; `09-day-rain.png`, `10-storm.png`)
+
+`09` looks snowed-on: `applyWetness` puts glossy fbm puddles over every roof, and they reflect a bright overcast term
+(`skyAmbient * 1.3`), so they read as white patches on dark wet roofs.
+
+- In `city-materials.wgsl` `cityMaterial`, `M_ROOF` calls `applyWetness(&s, world, n.y, 0.4)`. Pass `n.y * 0.3` for the
+  flatness, so roofs get small ponds near drains, not continents.
+- In `surface.wgsl` `applyWetness`, add a damp gradient around each puddle:
+  `rough = mix(rough, 0.12, smoothstep(edge - 0.15, edge, puddleNoise) * wet)`. That removes the hard cut-out edge.
+- In `lighting.wgsl` `main`, the overcast env `frame.skyAmbient.rgb * 1.3 + frame.cityGlow.rgb` becomes `* 0.85`.
+  Overcast sky reflected in water is about the brightness of the sky near the horizon, not above it.
+- **Acceptance:** `09` p98 stays under 150 while p2 drops below 35 (with R7-2), and no puddle reads brighter than the
+  wet road around it from an aerial view.
+
+### R7-8. Texture-scale relief: parallax occlusion on detail layers (about 4 h; `02`, `10`, `11`, `street-up.png` close surfaces)
+
+**Files:** `src/shaders/city-materials.wgsl` (new `detailPom` next to `detailAt`; used by `facadeMat` tiled walls,
+`sidewalkMat`, the `M_CURB` and `M_CONCRETE` cases, and `roadMat`).
+
+- **Height** is the detail layer's cavity channel `A`: 1 is the top surface, 0 is a groove or pore.
+- **`detailPom(p, dx, dy, tile, layer, vT, depthM) -> vec2f`**: steep parallax with `N = 8` steps plus one linear refine
+  between the last two steps. `vT` is the tangent-space view divided by `max(ndv, 0.15)`, the same vector the reveal code
+  uses. The step offset is `vT * depthM / N`. Fade `depthM` to 0 over 8 to 25 m with `smoothstep(25.0, 8.0, dist)`, and
+  skip the loop beyond that.
+  - Depths: wall tile grout `0.006`, brick `0.012`, pavers `0.010`, curb blocks `0.02`, asphalt `0.004`.
+  - Sample albedo, normal and cavity at the returned offset coordinates.
+- **Self-shadow** feeds R7-3's channel. From the hit, take 4 steps toward the sun (`sT` from R7-3, step
+  `depthM / 4`), then `s.sunVis *= 1.0 - clamp(maxRise * 4.0, 0.0, 0.6)`. Grout lines on the sun-facing side of each tile
+  go dark and the opposite edges catch light.
+- **Normal strength.** Raise the tiled wall `detailNormal` strength from `1.0` to `1.6` and pavers from `1.0` to `1.4`
+  within 20 m, fading back with distance via `bumpFade`. Specular then breaks up across tile faces. Set the per-tile
+  roughness `mix(0.25, 0.85, 1 - A)`, so glazed tile faces glint and the grout stays matte.
+- **Acceptance:** in `10-storm.png` (after R7-1) and on the near sidewalk in `02`, tile and paver edges show a lit edge
+  and a shadowed edge that both swap sides when the sun moves from 09:00 to 15:00.
+
+**Noted, not ranked** (fix after the eight above): the car interior in `11-first-person.png` is untextured grey (add
+`vehicle.wgsl` leather and plastic grain plus 0.04 albedo). The road edge where it meets the terrain on the bridge
+approach in `12` is a sawtooth (`terrain.wgsl`: blend the road mask with a 1.5 m `smoothstep`, not per-cell).
+
+**Appendix: measuring luma percentiles.** The R7-2 numbers came from decoding the PNGs in Node: `zlib.inflateSync` on the
+`IDAT` chunks, PNG un-filtering, luma `0.299r + 0.587g + 0.114b` over rows 60 to 600 (excluding the HUD), sorted, then
+p2, p10, p50, p90 and p98. Re-run it on each new matrix.
+
+---
+
+# Previous rounds
+
 Reviewed: `test/out/shots/*.png` (all 12), `src/shaders/{post,lighting,city-materials,surface,common,vehicle,ao,atmosphere}.wgsl`,
 `src/world/sky.ts`, `src/render/renderer.ts` (frame setup), `src/city/gen-tile.ts` (`building`, `buildTile`),
 `src/city/gen-base.ts` (`streetLights`, `streetLightSpots`).
