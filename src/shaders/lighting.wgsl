@@ -675,7 +675,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     env = mix(env, r.rgb, r.a * smoothstep(1200.0, 700.0, dist));
   }
   // Glass deep in a window recess sees less sky.
-  if (cls == CLASS_GLASS) { env *= mix(0.5, 1.0, a.a); }
+  // A water film on wet glass makes it more of a mirror.
+  if (cls == CLASS_GLASS) { env *= mix(0.5, 1.0, a.a) * (1.0 + 0.5 * frame.weather.z); }
   var specOcc = ao * ao;
   color += min(env * Fa * specOcc * (1.0 - contactOcc), vec3f(6.0));
   if (cls == CLASS_VEHICLE && metal < 0.95) {
