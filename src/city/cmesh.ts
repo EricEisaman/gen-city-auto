@@ -3,6 +3,10 @@
 // Vertex format (32 bytes, read with vertex pulling in WGSL):
 //   pos: f32x3, normal: u32 (octahedral unorm16x2), uv: f32x2, mat: u32, aux: u32
 // mat = material id (low 8 bits) | parameter (high 24 bits).
+// aux: material-specific. For TUBE_MATS (wire, frame, paint, metal) the low
+// 16 bits are the tube radius in 0.5 mm units, written by tube() and 0 on
+// every other primitive (vertex() clears them); city.wgsl's vs widens such
+// tubes to a minimum on-screen width. The high 16 bits stay free (seed).
 //
 // Meshes are split into clusters of at most 128 triangles / 255 vertices. Each
 // triangle is stored as one u32 holding three 8-bit cluster-local indices.
@@ -39,6 +43,10 @@ export const CM = {
   carPark: 26,
 } as const;
 
+/** Materials whose aux low 16 bits carry a tube radius (see header). */
+const TUBE_MATS =
+  (1 << CM.wire) | (1 << CM.frame) | (1 << CM.paint) | (1 << CM.metal);
+
 export const VERTEX_BYTES = 32;
 export const VERTEX_WORDS = 8;
 export const CLUSTER_TRIS = 128;
@@ -70,6 +78,8 @@ export class CMesh {
   vcount = 0;
   idx: Uint32Array;
   icount = 0;
+  /** Set while tube() emits its rings (they keep their radius in aux). */
+  private inTube = false;
 
   constructor(vcap = 4096, icap = 8192) {
     const buf = new ArrayBuffer(vcap * VERTEX_BYTES);
@@ -98,6 +108,8 @@ export class CMesh {
   }
 
   vertex(p: Vec3, n: Vec3, u: number, v: number, mat: number, aux = 0) {
+    const id = mat & 0xff;
+    if (!this.inTube && id < 32 && (TUBE_MATS >>> id) & 1) aux &= 0xffff0000;
     this.growV(1);
     const o = this.vcount * VERTEX_WORDS;
     this.f32[o] = p[0];
@@ -266,7 +278,11 @@ export class CMesh {
 
   /**
    * Box spanning segment a->b (a thick line), e.g. wires, rails, girders.
-   * `hide`: a direction (say into a wall) whose facing side is not drawn.
+   * `w` and `hgt` are half the section's width and height. `hide`: a
+   * direction (say into a wall) whose facing side is not drawn. `chamfer`
+   * (metres) bevels the section's corners at 45 degrees, so the edges catch
+   * a highlight line (corners next to a hidden side stay square). uv: u =
+   * metres along, v = metres across each face.
    */
   beam(
     a: Vec3,
@@ -276,6 +292,7 @@ export class CMesh {
     mat: number,
     aux = 0,
     hide?: Vec3,
+    chamfer = 0,
   ) {
     // Thin square bars are drawn as a tube of the same section (half the
     // vertices; at a few cm nobody can tell the corners are smooth).
@@ -297,28 +314,69 @@ export class CMesh {
       r[2] * f[0] - r[0] * f[2],
       r[0] * f[1] - r[1] * f[0],
     ];
-    const P = (p: Vec3, sx: number, sy: number): Vec3 => [
-      p[0] + r[0] * sx * w + u[0] * sy * hgt,
-      p[1] + r[1] * sx * w + u[1] * sy * hgt,
-      p[2] + r[2] * sx * w + u[2] * sy * hgt,
+    // Section offsets (x along r, y along u) in metres.
+    const P = (p: Vec3, x: number, y: number): Vec3 => [
+      p[0] + r[0] * x + u[0] * y,
+      p[1] + r[1] * x + u[1] * y,
+      p[2] + r[2] * x + u[2] * y,
     ];
-    const sides: [number, number, number, number, Vec3][] = [
-      [1, -1, 1, 1, r],
-      [1, 1, -1, 1, u],
-      [-1, 1, -1, -1, [-r[0], -r[1], -r[2]]],
-      [-1, -1, 1, -1, [-u[0], -u[1], -u[2]]],
+    // The four sides (+r, +u, -r, -u) as start/end corners, going around.
+    const sides: [number, number, number, number][] = [
+      [w, -hgt, w, hgt],
+      [w, hgt, -w, hgt],
+      [-w, hgt, -w, -hgt],
+      [-w, -hgt, w, -hgt],
     ];
-    for (const [x0, y0, x1, y1, n] of sides) {
-      if (hide && n[0] * hide[0] + n[1] * hide[1] + n[2] * hide[2] > 0.7)
-        continue;
+    const hidden = sides.map(([x0, y0, x1, y1]) => {
+      if (!hide) return false;
+      const nx = (y1 - y0) / (Math.abs(y1 - y0) || 1);
+      const ny = (x0 - x1) / (Math.abs(x0 - x1) || 1);
+      const n = [
+        r[0] * nx + u[0] * ny,
+        r[1] * nx + u[1] * ny,
+        r[2] * nx + u[2] * ny,
+      ];
+      return n[0] * hide[0] + n[1] * hide[1] + n[2] * hide[2] > 0.7;
+    });
+    const c = Math.min(chamfer, w * 0.9, hgt * 0.9);
+    // Profile points: each side's ends pulled in by c where its corner with
+    // the next / previous side is bevelled.
+    const prof: [number, number, boolean][] = [];
+    for (let i = 0; i < 4; i++) {
+      const [x0, y0, x1, y1] = sides[i];
+      const l = Math.hypot(x1 - x0, y1 - y0);
+      const tx = (x1 - x0) / l;
+      const ty = (y1 - y0) / l;
+      const bevIn = c > 0 && !hidden[i] && !hidden[(i + 3) & 3];
+      const bevOut = c > 0 && !hidden[i] && !hidden[(i + 1) & 3];
+      const s0 = bevIn ? c : 0;
+      const s1 = bevOut ? c : 0;
+      prof.push([x0 + tx * s0, y0 + ty * s0, hidden[i]]);
+      prof.push([x1 - tx * s1, y1 - ty * s1, !bevOut]);
+    }
+    // Edges of the profile: k even = a side, k odd = a corner (a bevel when
+    // its two points differ).
+    for (let k = 0; k < 8; k++) {
+      const [x0, y0, skip] = prof[k];
+      const [x1, y1] = prof[(k + 1) & 7];
+      if (skip) continue;
+      const el = Math.hypot(x1 - x0, y1 - y0);
+      if (el < 1e-5) continue;
+      const nx = (y1 - y0) / el;
+      const ny = (x0 - x1) / el;
+      const n: Vec3 = [
+        r[0] * nx + u[0] * ny,
+        r[1] * nx + u[1] * ny,
+        r[2] * nx + u[2] * ny,
+      ];
       this.quad(
         [P(a, x0, y0), P(b, x0, y0), P(b, x1, y1), P(a, x1, y1)],
         n,
         [
           [0, 0],
           [len, 0],
-          [len, 1],
-          [0, 1],
+          [len, el],
+          [0, el],
         ],
         mat,
         aux,
@@ -331,9 +389,15 @@ export class CMesh {
    * turned 45 degrees with radial normals, so it shades like a cylinder.
    * Joints share their ring: 4 vertices per point instead of a beam's 16 per
    * segment. uv: u = metres along, v = 0..1 around. No end caps.
+   * Wire, frame, paint and metal tubes store r in aux (see the header) so
+   * the vertex shader can keep them at least ~0.7 px wide.
    */
   tube(pts: Vec3[], r: number, mat: number, aux = 0) {
     if (pts.length < 2) return;
+    const id = mat & 0xff;
+    if (id < 32 && (TUBE_MATS >>> id) & 1)
+      aux = (aux & 0xffff0000) | Math.min(0xffff, Math.round(r * 2000));
+    this.inTube = true;
     const rings: number[] = [];
     let u = 0;
     for (let i = 0; i < pts.length; i++) {
@@ -392,6 +456,7 @@ export class CMesh {
         this.triFacing(a, c, d, m);
       }
     }
+    this.inTube = false;
   }
 
   /** Vertical cylinder (n sides) from y0 to y1. */

@@ -30,7 +30,17 @@ struct VOut {
   @location(2) uv: vec2f,
   @location(3) @interpolate(flat) mat: u32,
   @location(4) @interpolate(flat) aux: u32,
+  // Pixel coverage of a widened thin tube (1 = solid).
+  @location(5) cov: f32,
 };
+
+// Wire (20), frame (15), paint (16) and metal (6) tubes carry their radius
+// in aux bits 0-15 (0.5 mm units, 0 = not a tube; see cmesh.ts). A tube
+// thinner than MIN_TUBE_PX pixels is pushed out along its radial normal to
+// that width and drawn with hashed partial coverage (TAA turns it into a
+// thin continuous line instead of dashes).
+const MIN_TUBE_PX = 0.7;
+const TUBE_MATS = (1u << 6u) | (1u << 15u) | (1u << 16u) | (1u << 20u);
 
 fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
   let c = clusters[visible[ii]];
@@ -53,10 +63,24 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
     o.pos = vec4f(2.0, 2.0, 2.0, 1.0);
     return o;
   }
-  let p = vec3f(v.px, v.py, v.pz);
+  var p = vec3f(v.px, v.py, v.pz);
   o.pos = frame.viewProj * vec4f(p, 1.0);
-  o.world = p;
   o.normal = octDecode(v.n);
+  o.cov = 1.0;
+  let id = v.mat & 0xffu;
+  let r = f32(v.aux & 0xffffu) * 0.0005;
+  if (id < 32u && ((TUBE_MATS >> id) & 1u) == 1u && r > 0.0) {
+    // World size of one pixel at this depth (projected radius r covers
+    // r * proj[1][1] * h / (2 w) pixels).
+    let px = 2.0 * max(o.pos.w, 1e-3) / (frame.proj[1][1] * frame.resolution.y);
+    let rMin = MIN_TUBE_PX * px;
+    if (r < rMin) {
+      p += o.normal * (rMin - r);
+      o.pos = frame.viewProj * vec4f(p, 1.0);
+      o.cov = r / rMin;
+    }
+  }
+  o.world = p;
   o.uv = vec2f(v.u, v.v);
   o.mat = v.mat;
   o.aux = v.aux;
@@ -96,6 +120,8 @@ fn leafCutout(i: VOut) {
   dUvX = dpdx(i.uv);
   dUvY = dpdy(i.uv);
   leafCutout(i);
+  // Widened thin tubes: hashed coverage, gone below 8 % of a pixel.
+  if (i.cov < 1.0 && (i.cov < 0.08 || i.cov <= leafDither(i.pos.xy))) { discard; }
   var n = normalize(i.normal);
   if (!ff && (i.mat & 0xffu) != 25u) { n = -n; }
   let s = cityMaterial(i.world, n, i.uv, i.mat, i.aux);

@@ -168,7 +168,16 @@ function parapet(m: CMesh, poly: Vec2[], y: number, h: number, mat: number) {
   for (let i = 0; i < poly.length; i++) {
     const a = poly[i];
     const b = poly[(i + 1) % poly.length];
-    m.beam([a[0], y + h / 2, a[1]], [b[0], y + h / 2, b[1]], 0.18, h / 2, mat);
+    m.beam(
+      [a[0], y + h / 2, a[1]],
+      [b[0], y + h / 2, b[1]],
+      0.18,
+      h / 2,
+      mat,
+      0,
+      undefined,
+      CHAMFER,
+    );
   }
 }
 
@@ -279,6 +288,10 @@ function signPanel(
 }
 
 /** Facade zones (param bits 13-15), FZ_* in city-materials.wgsl. */
+/** Bevel on LOD0 ledges, bands, slabs and coping (a highlight line). */
+const CHAMFER = 0.02;
+/** Bevel on the building's own convex vertical corners (LOD0). */
+const CORNER_BEVEL = 0.03;
 const FZ = {body: 0, base: 1, lobby: 2, crown: 3, core: 4, trim: 5} as const;
 /** Facade roles of footprint edges (param bits 21-22). */
 const ROLE = {front: 0, street: 1, party: 2, rear: 3} as const;
@@ -553,6 +566,117 @@ function edgeQuad(
   );
 }
 
+/**
+ * LOD0 surround of a punched opening that the facade shader paints on an
+ * unbroken wall (the stair glass-block windows): a precast frame standing
+ * FRAME_D proud of the wall plane (`out`) around [s0, s1] x [y0, y1], and a
+ * chamfered precast sill under it with end caps. The shader draws the
+ * recess inside the opening; this supplies the silhouette, the shadow-map
+ * and AO response at grazing angles. 16 quads.
+ */
+const FRAME_D = 0.05;
+const FRAME_W = 0.06;
+function openingFrame(
+  m: CMesh,
+  e: FacadeEdge,
+  out: number,
+  s0: number,
+  s1: number,
+  y0: number,
+  y1: number,
+  mat: number,
+) {
+  const D = FRAME_D;
+  const W = FRAME_W;
+  const P = (s: number, o: number, y: number) => edgeAt(e, s, out + o, y);
+  const al = e.along;
+  const nAl: Vec3 = [-al[0], 0, -al[2]];
+  const quad = (p: Vec3[], n: Vec3, w: number, h: number) =>
+    m.quad(
+      p,
+      n,
+      [
+        [0, 0],
+        [w, 0],
+        [w, h],
+        [0, h],
+      ],
+      mat,
+    );
+  const yt = y1 + W;
+  // Jambs: inner face (into the opening), front, outer face.
+  for (const [s, si, so] of [
+    [s0, 1, -1],
+    [s1, -1, 1],
+  ] as const) {
+    const sx = s + so * W;
+    quad(
+      [P(s, 0, y0), P(s, D, y0), P(s, D, y1), P(s, 0, y1)],
+      si > 0 ? al : nAl,
+      D,
+      y1 - y0,
+    );
+    quad(
+      [P(s, D, y0), P(sx, D, y0), P(sx, D, yt), P(s, D, yt)],
+      e.n,
+      W,
+      yt - y0,
+    );
+    quad(
+      [P(sx, 0, y0), P(sx, D, y0), P(sx, D, yt), P(sx, 0, yt)],
+      so > 0 ? al : nAl,
+      D,
+      yt - y0,
+    );
+  }
+  // Head: soffit, front, top.
+  quad(
+    [P(s0, 0, y1), P(s1, 0, y1), P(s1, D, y1), P(s0, D, y1)],
+    [0, -1, 0],
+    s1 - s0,
+    D,
+  );
+  quad(
+    [P(s0, D, y1), P(s1, D, y1), P(s1, D, yt), P(s0, D, yt)],
+    e.n,
+    s1 - s0,
+    W,
+  );
+  quad(
+    [P(s0 - W, 0, yt), P(s1 + W, 0, yt), P(s1 + W, D, yt), P(s0 - W, D, yt)],
+    UP,
+    s1 - s0 + 2 * W,
+    D,
+  );
+  // Sill: 9 cm out, 7 cm deep, past the jambs, chamfered, capped.
+  const sa = s0 - W - 0.05;
+  const sb = s1 + W + 0.05;
+  const SD = 0.09;
+  const SH = 0.07;
+  m.beam(
+    P(sa, SD / 2, y0 - SH / 2),
+    P(sb, SD / 2, y0 - SH / 2),
+    SD / 2,
+    SH / 2,
+    mat,
+    0,
+    [-e.n[0], 0, -e.n[2]],
+    CHAMFER,
+  );
+  quad(
+    [P(sa, 0, y0 - SH), P(sa, SD, y0 - SH), P(sa, SD, y0), P(sa, 0, y0)],
+    nAl,
+    SD,
+    SH,
+  );
+  quad(
+    [P(sb, 0, y0 - SH), P(sb, SD, y0 - SH), P(sb, SD, y0), P(sb, 0, y0)],
+    al,
+    SD,
+    SH,
+  );
+}
+
 /** Horizontal band around a polygon (ledge / cornice), pushed out by `depth`. */
 function band(
   m: CMesh,
@@ -578,6 +702,9 @@ function band(
       depth * 0.5,
       thick * 0.5,
       mat,
+      0,
+      undefined,
+      CHAMFER,
     );
   }
 }
@@ -630,8 +757,9 @@ function coping(m: CMesh, poly: Vec2[], y: number, lod: number) {
       y + h,
       lerp(a[1], c[1], t) + n[2] * 0.07,
     ];
+    const C = CHAMFER;
     m.quad(
-      [D(-ex, -0.08), D(1 + ex, -0.08), D(1 + ex, 0.06), D(-ex, 0.06)],
+      [D(-ex, -0.08), D(1 + ex, -0.08), D(1 + ex, 0.06 - C), D(-ex, 0.06 - C)],
       n,
       [
         [0, 0],
@@ -657,11 +785,28 @@ function coping(m: CMesh, poly: Vec2[], y: number, lod: number) {
       [
         T(-ex, -0.27, 0.06),
         T(1 + ex, -0.27, 0.06),
-        T(1 + ex, 0.07, 0.06),
-        T(-ex, 0.07, 0.06),
+        T(1 + ex, 0.07 - C, 0.06),
+        T(-ex, 0.07 - C, 0.06),
       ],
       UP,
       uvc,
+      packMat(CM.metal),
+    );
+    // 45-degree bevel between the cap and the drip face.
+    m.quad(
+      [
+        T(-ex, 0.07, 0.06 - C),
+        T(1 + ex, 0.07, 0.06 - C),
+        T(1 + ex, 0.07 - C, 0.06),
+        T(-ex, 0.07 - C, 0.06),
+      ],
+      [n[0] * Math.SQRT1_2, Math.SQRT1_2, n[2] * Math.SQRT1_2],
+      [
+        [0, 0],
+        [len, 0],
+        [len, C * Math.SQRT2],
+        [0, C * Math.SQRT2],
+      ],
       packMat(CM.metal),
     );
     m.quad(
@@ -2675,6 +2820,65 @@ export function building(
     ((aux & ~0xff) |
       clamp(Math.round((mainTop + CROWN_H - vOff) * 4), 0, 255)) >>>
     0;
+  // Whether wall i of `es` is drawn up to y1 (party and rear walls flush
+  // against a taller neighbour are not).
+  const drawn = (es: FacadeEdge[], i: number, y1: number) =>
+    es[i].len >= 0.05 &&
+    !(
+      es === edges &&
+      es[i].role >= ROLE.party &&
+      (flush[i] ?? -Infinity) >= y1 + 0.05
+    );
+  // LOD0: the convex vertical corner at the end of wall i is cut by a
+  // CORNER_BEVEL bevel (both walls drawn, plain corner piers on both sides,
+  // no stair core at the corner).
+  const bevelEnd = (es: FacadeEdge[], i: number, y1: number) => {
+    if (lod > 0) return false;
+    const j = (i + 1) % es.length;
+    const e = es[i];
+    const f = es[j];
+    if (!drawn(es, i, y1) || !drawn(es, j, y1)) return false;
+    if (!isNaN(e.core) && e.core > 0) return false;
+    if (!isNaN(f.core) && f.core === 0) return false;
+    if (e.len - e.f1 < 3 * CORNER_BEVEL || f.f0 < 3 * CORNER_BEVEL)
+      return false;
+    return e.along[0] * f.along[2] - e.along[2] * f.along[0] > 0.3;
+  };
+  // The bevel quad at the end of wall i, over [y0, y1].
+  const bevelQuad = (
+    es: FacadeEdge[],
+    i: number,
+    y0: number,
+    y1: number,
+    u: number,
+    vo: number,
+    mat: number,
+    qa: number,
+  ) => {
+    const e = es[i];
+    const f = es[(i + 1) % es.length];
+    const p = edgeAt(e, e.len - CORNER_BEVEL, 0, 0);
+    const q = edgeAt(f, CORNER_BEVEL, 0, 0);
+    const nl = Math.hypot(e.n[0] + f.n[0], e.n[2] + f.n[2]) || 1;
+    const w = Math.hypot(q[0] - p[0], q[2] - p[2]);
+    m.quad(
+      [
+        [p[0], y0, p[2]],
+        [q[0], y0, q[2]],
+        [q[0], y1, q[2]],
+        [p[0], y1, p[2]],
+      ],
+      [(e.n[0] + f.n[0]) / nl, 0, (e.n[2] + f.n[2]) / nl],
+      [
+        [u, y0 - vo],
+        [u + w, y0 - vo],
+        [u + w, y1 - vo],
+        [u, y1 - vo],
+      ],
+      mat,
+      qa,
+    );
+  };
   const storeys = (
     es: FacadeEdge[],
     y0: number,
@@ -2711,16 +2915,18 @@ export function building(
       const solid = fmat(e, zone, true);
       if (hasCore) {
         const lobbyHere = zone === FZ.base;
+        // (LOD0: its outer corners are bevelled, see the core sides below.)
+        const cb = lod > 0 ? 0 : CORNER_BEVEL;
         edgeQuad(
           m,
           e,
-          e.core,
-          e.core + CORE_W,
+          e.core + cb,
+          e.core + CORE_W - cb,
           y0,
           y1,
           lod > 0 ? 0 : CORE_OUT,
-          0,
-          CORE_W,
+          cb,
+          CORE_W - cb,
           lobbyHere ? base : vo,
           fmat(e, lobbyHere ? FZ.lobby : FZ.core, false),
           qa,
@@ -2733,8 +2939,40 @@ export function building(
       }
       const pier = solid;
       const uEnd = e.u0 + e.count * bay;
-      edgeQuad(m, e, sA, e.f0, y0, y1, 0, e.u0 - e.f0 + sA, e.u0, vo, pier, qa);
-      edgeQuad(m, e, e.f1, sB, y0, y1, 0, uEnd, uEnd + sB - e.f1, vo, pier, qa);
+      // Corner bevels (the walls stop short of the corner by CORNER_BEVEL).
+      const bE = bevelEnd(es, i, y1);
+      const bS = bevelEnd(es, (i + es.length - 1) % es.length, y1);
+      const sA2 = sA + (bS ? CORNER_BEVEL : 0);
+      const sB2 = sB - (bE ? CORNER_BEVEL : 0);
+      edgeQuad(
+        m,
+        e,
+        sA2,
+        e.f0,
+        y0,
+        y1,
+        0,
+        e.u0 - e.f0 + sA2,
+        e.u0,
+        vo,
+        pier,
+        qa,
+      );
+      edgeQuad(
+        m,
+        e,
+        e.f1,
+        sB2,
+        y0,
+        y1,
+        0,
+        uEnd,
+        uEnd + sB2 - e.f1,
+        vo,
+        pier,
+        qa,
+      );
+      if (bE) bevelQuad(es, i, y0, y1, uEnd + sB2 - e.f1, vo, pier, qa);
       const hole =
         lob && lob.edge === i ? lob : blank?.edge === i ? blank : null;
       const cuts = hole
@@ -2784,25 +3022,15 @@ export function building(
     let u = 0;
     for (const [i, e] of es.entries()) {
       const cm = fmat(e, FZ.crown, true);
-      if (!(
-        es === edges &&
-        e.role >= ROLE.party &&
-        (flush[i] ?? -Infinity) >= y0 + CROWN_H + 0.05
-      ))
-        edgeQuad(
-          m,
-          e,
-          0,
-          e.len,
-          y0,
-          y0 + CROWN_H,
-          0,
-          u,
-          u + e.len,
-          base,
-          cm,
-          aux,
-        );
+      const y1 = y0 + CROWN_H;
+      if (drawn(es, i, y1)) {
+        const bS = bevelEnd(es, (i + es.length - 1) % es.length, y1);
+        const bE = bevelEnd(es, i, y1);
+        const s0 = bS ? CORNER_BEVEL : 0;
+        const s1 = e.len - (bE ? CORNER_BEVEL : 0);
+        edgeQuad(m, e, s0, s1, y0, y1, 0, u + s0, u + s1, base, cm, aux);
+        if (bE) bevelQuad(es, i, y0, y1, u + s1, base, cm, aux);
+      }
       u += e.len;
     }
     coping(m, poly, y0 + CROWN_H, lod);
@@ -2906,6 +3134,35 @@ export function building(
   storeys(edges, base + GROUND_H, mainTop, FZ.body, vOff, null, solidTo);
   // (Distant shells skip the terrace parapet under a stepped top floor.)
   if (!(stepPoly && lod > 0)) crown(edges, fp, mainTop);
+  // Stairwell glass-block windows outside the core: city-materials paints
+  // them (stairBay) in one bay in ~11 of the body floors, on every wall
+  // but party walls, for midrise, pencil and apartment kinds whose window
+  // style is punched (not ribbon, not family 3). LOD0 gives each the same
+  // precast surround as the core's (openingFrame).
+  const kindI = KIND_INDEX[b.kind];
+  if (lod === 9 && (kindI === 2 || kindI === 3 || kindI === 5)) {
+    const win = facadeWindows(b.style, kindI);
+    const hw = Math.min(0.45, bay * 0.3);
+    edges.forEach((e, i) => {
+      if (e.role === ROLE.party || e.count === 0) return;
+      if (e.role <= ROLE.street && (win.strip || win.family === 3)) return;
+      if (!drawn(edges, i, mainTop)) return;
+      const b0 = Math.round(e.u0 / bay);
+      for (let j = 0; j < e.count; j++) {
+        if ((b0 + j + 1000 + (aux >>> 4)) % 11 !== 0) continue;
+        // Window centre and half width in metres along the wall (the
+        // field's uv is stretched by e.k).
+        const sm = e.f0 + (j + 0.5) * (bay / e.k);
+        const hm = hw / e.k;
+        for (let f = 1; f <= bodyFloors - setF; f++) {
+          const y = vOff + f * H + 0.3 * H;
+          if (vOff + f * H < solidTo[i] - 1e-3) continue;
+          if (y + 1.2 + FRAME_W > mainTop) break;
+          openingFrame(m, e, 0, sm - hm, sm + hm, y, y + 1.2, concrete);
+        }
+      }
+    });
+  }
   // Ad on an exposed party wall (quieter blocks, where it stands clear of
   // the neighbours): a printed vinyl or a lit billboard in a steel frame
   // high on the wall. The panel is drawn at every LOD (it reads from afar).
@@ -2998,58 +3255,49 @@ export function building(
           [e.core + CORE_W, 1],
         ]) {
       const q = (out: number, y: number) => edgeAt(e, s, out, y);
+      const o1 = CORE_OUT - CORNER_BEVEL;
       m.quad(
-        [q(0, b.low), q(CORE_OUT, b.low), q(CORE_OUT, mainTop), q(0, mainTop)],
+        [q(0, b.low), q(o1, b.low), q(o1, mainTop), q(0, mainTop)],
         [e.along[0] * dir, 0, e.along[2] * dir],
         [
           [0, b.low - base],
-          [CORE_OUT, b.low - base],
-          [CORE_OUT, mainTop - base],
+          [o1, b.low - base],
+          [o1, mainTop - base],
           [0, mainTop - base],
+        ],
+        sideMat,
+        aux,
+      );
+      // The bevel on its outer corner (a highlight line up the strip).
+      const r = (y: number) => edgeAt(e, s - dir * CORNER_BEVEL, CORE_OUT, y);
+      const bw = CORNER_BEVEL * Math.SQRT2;
+      m.quad(
+        [q(o1, b.low), r(b.low), r(mainTop), q(o1, mainTop)],
+        [
+          (e.along[0] * dir + e.n[0]) * Math.SQRT1_2,
+          0,
+          (e.along[2] * dir + e.n[2]) * Math.SQRT1_2,
+        ],
+        [
+          [o1, b.low - base],
+          [o1 + bw, b.low - base],
+          [o1 + bw, mainTop - base],
+          [o1, mainTop - base],
         ],
         sideMat,
         aux,
       );
     }
     if (lod === 0) {
-      // The stair windows up the core (facadeRole FZ_CORE: 0.9 x 1.2 m, one
-      // per floor) get a deep bevelled precast sill and a drip hood, so
-      // they sit in the wall instead of reading as stickers on it.
+      // The stair windows up the core (city-materials stairBay: 0.9 x 1.2 m
+      // from 0.3 floor heights up, one per floor) get a precast surround
+      // and sill, so they sit in the wall instead of reading as stickers.
       const sc = e.core + CORE_W / 2;
-      const trim = packMat(CM.concrete);
-      const uv1: Vec2[] = [
-        [0, 0],
-        [1, 0],
-        [1, 1],
-        [0, 1],
-      ];
+      const hw = Math.min(0.45, CORE_W * 0.3);
       for (let f = 1; f <= bodyFloors; f++) {
-        const y = base + GROUND_H + (f - 1) * H + 0.55 * (H - 1.2);
-        if (y + 1.3 > upperTop) break;
-        const Q = (ds: number, out: number, dy: number) =>
-          edgeAt(e, sc + ds, CORE_OUT + out, y + dy);
-        m.quad(
-          [
-            Q(-0.58, 0.16, -0.1),
-            Q(0.58, 0.16, -0.1),
-            Q(0.58, 0, 0),
-            Q(-0.58, 0, 0),
-          ],
-          [e.n[0] * 0.53, 0.85, e.n[2] * 0.53],
-          uv1,
-          trim,
-        );
-        m.quad(
-          [
-            Q(-0.55, 0.12, 1.24),
-            Q(0.55, 0.12, 1.24),
-            Q(0.55, 0, 1.36),
-            Q(-0.55, 0, 1.36),
-          ],
-          [e.n[0] * 0.7, 0.7, e.n[2] * 0.7],
-          uv1,
-          trim,
-        );
+        const y = vOff + f * H + 0.3 * H;
+        if (y + 1.2 + FRAME_W > upperTop) break;
+        if (lod === 9) openingFrame(m, e, CORE_OUT, sc - hw, sc + hw, y, y + 1.2, concrete);
       }
     }
     let depth = 4.5;
@@ -3208,6 +3456,7 @@ export function building(
           concrete,
           0,
           [-e.n[0], 0, -e.n[2]],
+          CHAMFER,
         );
       }
     }
@@ -3245,6 +3494,7 @@ export function building(
           concrete,
           0,
           [-e.n[0], 0, -e.n[2]],
+          CHAMFER,
         );
       if (lod === 0)
         edgeQuad(
@@ -3270,6 +3520,7 @@ export function building(
         concrete,
         0,
         [-e.n[0], 0, -e.n[2]],
+        CHAMFER,
       );
       if (ar.chance(0.5))
         acUnit(
@@ -3336,8 +3587,13 @@ export function building(
           uvq,
           sillMat,
         );
-        // Soffit lip over the head: its underside and drip face.
+        // Soffit lip over the head: its underside and drip face, uv in
+        // metres on the wall's grid (a 0..1 v squeezed a whole tile course
+        // into the 9 cm face).
         if (headY < H - 0.14) {
+          const v0 = y + headY + 0.02 - vOff;
+          const ua = e.u0 + (s0 - e.f0) * e.k;
+          const ub = e.u0 + (s1 - e.f0) * e.k;
           m.quad(
             [
               Q(s0, 0, headY + 0.02),
@@ -3346,7 +3602,12 @@ export function building(
               Q(s0, 0.14, headY + 0.02),
             ],
             down,
-            uvq,
+            [
+              [ua, v0],
+              [ub, v0],
+              [ub, v0 - 0.14],
+              [ua, v0 - 0.14],
+            ],
             lipMat,
             aux,
           );
@@ -3358,7 +3619,12 @@ export function building(
               Q(s0, 0.14, headY + 0.11),
             ],
             e.n,
-            uvq,
+            [
+              [ua, v0],
+              [ub, v0],
+              [ub, v0 + 0.09],
+              [ua, v0 + 0.09],
+            ],
             lipMat,
             aux,
           );
