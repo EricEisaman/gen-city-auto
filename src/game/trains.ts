@@ -155,7 +155,7 @@ export class Trains {
         const left: Vec2 = [d[1], -d[0]];
         const p: Vec3 = [
           q.p[0] + left[0] * 2.1,
-          q.p[1] + 0.25,
+          q.p[1] + 0.37, // RAIL_TOP (gen-base.ts): railhead top
           q.p[2] + left[1] * 2.1,
         ];
         c.prev.set(c.model);
