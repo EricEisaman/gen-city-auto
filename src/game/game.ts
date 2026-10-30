@@ -434,7 +434,7 @@ export class Game {
     const dof: Record<string, number> = {
       // Shallow focus only where it reads as a lens choice (long lens,
       // close-ups); everyday angles stay sharp.
-      telephoto: 0.8,
+      telephoto: 0.35,
       side: 0.15,
       wheel: 0.5,
     };

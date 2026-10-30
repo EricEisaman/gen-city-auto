@@ -55,8 +55,10 @@ fn applyWetness(s: ptr<function, Surf>, world: vec3f, flatness: f32, porous: f32
   let wet = frame.weather.z;
   if (wet <= 0.001) { return; }
   let puddleNoise = fbm2(world.xz * 0.12) * 0.7 + valueNoise(world.xz * 0.9) * 0.3;
-  let edge = 0.58 - wet * 0.3;
-  let puddle = smoothstep(edge, 0.7 - wet * 0.3, puddleNoise) * flatness * wet;
+  // Even in a downpour only about half the road pools; the crown stays
+  // merely wet so the aggregate breaks the reflections up.
+  let edge = 0.58 - wet * 0.18;
+  let puddle = smoothstep(edge, 0.7 - wet * 0.18, puddleNoise) * flatness * wet;
   // Damp margin: soaked, darker, semi-gloss ground grading into each puddle,
   // so its border isn't a hard cut-out.
   let margin = smoothstep(edge - 0.15, edge, puddleNoise) * flatness * wet;
