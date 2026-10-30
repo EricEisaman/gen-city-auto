@@ -384,7 +384,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
           let gh = hash21(vec2f(gid, f32(r) * 17.0 + f32(shopSeed % 53u)));
           let bottom = mix(0.45, 0.9, gh);
           if (q.y > bottom && q.y < 1.75 && fract(q.x / 0.9 + f32(r) * 0.37) < 0.7 && fract(q.x / gw) > 0.12) {
-            let cloth = mix(vec3f(0.08), 0.35 + 0.35 * cos(6.2831 * (gh * 0.7 + vec3f(0.0, 0.25, 0.55) + f32(shopSeed % 7u) * 0.1)), 0.8);
+            let cf = smoothstep(0.015, 0.06, max(length(dWorldX), length(dWorldY)));
+            let cloth = mix(mix(vec3f(0.08), 0.35 + 0.35 * cos(6.2831 * (gh * 0.7 + vec3f(0.0, 0.25, 0.55) + f32(shopSeed % 7u) * 0.1)), 0.8), vec3f(0.3, 0.28, 0.27), cf);
             inside = cloth * (1.0 - 0.3 * f32(r)) * mix(0.35, 1.0, smoothstep(bottom, bottom + 0.6, q.y)) * mix(0.45, 1.1, night);
             break;
           }
@@ -411,7 +412,10 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
             let pw = mix(0.08, 0.16, hash21(vec2f(row, f32(r) + f32(shopSeed % 31u))));
             let pid = floor(q.x / pw);
             let ph = hash21(vec2f(pid, row * 7.0 + f32(r) * 13.0 + f32(shopSeed % 97u)));
-            let pack = mix(vec3f(0.85, 0.82, 0.75), 0.5 + 0.5 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), 0.75);
+            // Products shrink below a pixel at a distance: fade to the
+            // average shelf tone instead of shimmering pastel stripes.
+            let pf = smoothstep(0.015, 0.06, max(length(dWorldX), length(dWorldY)));
+            let pack = mix(mix(vec3f(0.85, 0.82, 0.75), 0.5 + 0.5 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), 0.75), vec3f(0.5, 0.48, 0.45), pf);
             let gapX = fract(q.x / pw) < 0.08;
             let fill = fy > 0.1 && fy < 0.1 + mix(0.55, 0.85, ph) && !gapX;
             shelf = select(vec3f(0.12), pack, fill);
@@ -649,7 +653,9 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   // The line keeps its width in noise units; once a pixel covers more than
   // that, it widens to the pixel but fades so coverage is conserved (never
   // a thick black web in the distance).
-  let crack = abs(valueNoise(world.xz * 0.45 + 3.0) - 0.5);
+  // Domain-warped so the line wanders jaggedly like a real crack.
+  let cw = vec2f(valueNoise(world.xz * 2.3), valueNoise(world.xz * 2.3 + 17.0)) - 0.5;
+  let crack = abs(valueNoise(world.xz * 0.45 + 3.0 + cw * 0.35) - 0.5);
   let crackW = 0.006;
   let fw = max(crackW, foot * 0.45);
   let tar = (1.0 - smoothstep(fw * 0.5, fw * 1.5, crack)) * (crackW / fw)
