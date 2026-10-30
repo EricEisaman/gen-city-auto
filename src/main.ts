@@ -16,6 +16,10 @@ async function main() {
     canvas.style.width = `${size[1]}px`;
     canvas.style.height = `${size[2]}px`;
   }
+  // ui=0 hides the overlays (clean screenshots and videos).
+  if (params.get('ui') === '0')
+    for (const id of ['hud', 'stats', 'help', 'toolbar'])
+      document.getElementById(id)!.style.visibility = 'hidden';
   resizeToCss(canvas);
   const gpu = await initGpu(canvas);
   const spawn = params.get('spawn')?.split(',').map(Number) as

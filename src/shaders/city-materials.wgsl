@@ -510,6 +510,7 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   s.albedo = vec3f(0.14, 0.137, 0.133) * (0.88 + 0.24 * drift) * (dd.b * 2.0) * mix(0.55, 1.0, dd.a);
   s.rough = 0.86 + (1.0 - dd.a) * 0.1 - (dd.b - 0.5) * 0.15;
   s.cls = CLASS_GROUND;
+  let foot = max(length(dWorldX), length(dWorldY));
   // Utility-cut patches: newer, darker asphalt with a crisp seam.
   let pc = floor(world.xz / 9.0);
   let ph = hash21(pc);
@@ -518,13 +519,20 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   let pHi = vec2f(0.15 + ph * 0.7);
   if (ph > 0.8 && all(pf > pLo) && all(pf < pHi)) {
     let e = min(min(pf.x - pLo.x, pHi.x - pf.x), min(pf.y - pLo.y, pHi.y - pf.y)) * 9.0;
-    s.albedo *= select(0.78, 0.45, e < 0.05);
+    // The dark seam fades out once it is thinner than a pixel.
+    let seam = (1.0 - step(0.05, e)) * clamp(0.05 / max(foot, 1e-4), 0.0, 1.0);
+    s.albedo *= mix(0.78, 0.45, seam);
     s.rough -= 0.06;
   }
   // Sealed cracks: thin glossy tar lines.
+  // The line keeps its width in noise units; once a pixel covers more than
+  // that, it widens to the pixel but fades so coverage is conserved (never
+  // a thick black web in the distance).
   let crack = abs(valueNoise(world.xz * 0.45 + 3.0) - 0.5);
-  let crackW = 0.004 + 0.45 * max(length(dWorldX), length(dWorldY));
-  let tar = (1.0 - smoothstep(crackW * 0.5, crackW * 1.5, crack)) * smoothstep(0.55, 0.7, valueNoise(world.xz * 0.09));
+  let crackW = 0.006;
+  let fw = max(crackW, foot * 0.45);
+  let tar = (1.0 - smoothstep(fw * 0.5, fw * 1.5, crack)) * (crackW / fw)
+    * smoothstep(0.55, 0.7, valueNoise(world.xz * 0.09));
   s.albedo = mix(s.albedo, vec3f(0.03), tar * 0.8);
   s.rough = mix(s.rough, 0.4, tar);
   let oil = smoothstep(0.78, 0.92, valueNoise(world.xz * 0.6)) * valueNoise(world.xz * 3.0);
@@ -714,7 +722,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), rd, 0.6);
       s.albedo *= mix(0.75, 1.1, hashuf(h ^ 9u));
       s.rough = 0.9;
-      applyWetness(&s, world, n.y, 0.4);
+      applyWetness(&s, world, 0.0, 0.4);
     }
     case M_METAL: { s.albedo = vec3f(0.42, 0.43, 0.45); s.metal = 0.8; s.rough = 0.45; }
     case M_SIGN: { s = signMat(n, uv, param); }
@@ -773,7 +781,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.albedo *= 1.0 - 0.25 * smoothstep(0.55, 0.8, valueNoise(vec2f((world.x + world.z) * 0.4, world.y * 0.08)));
       if (n.y < -0.5) { s.albedo *= 0.6; }
       s.rough = 0.85;
-      applyWetness(&s, world, max(n.y, 0.0), 0.5);
+      applyWetness(&s, world, 0.0, 0.5);
     }
     case M_RAIL: {
       let x = uv.x;
@@ -794,7 +802,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
           s.rough = 0.85;
         }
       }
-      applyWetness(&s, world, 1.0, 0.5);
+      applyWetness(&s, world, 0.0, 0.5);
     }
     case M_SIGNAL: {
       let lamp = param & 3u;
@@ -807,14 +815,14 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       if (state == lamp) { s.emissive = cols[lamp] * mix(6.0, 14.0, night); } else { s.emissive = cols[lamp] * 0.03; }
     }
     case M_FRAME: { s.albedo = vec3f(0.08); s.metal = 0.6; s.rough = 0.4; }
-    case M_PAINT: { s.albedo = paintColor(param); s.rough = 0.5; s.metal = 0.1; applyWetness(&s, world, max(n.y, 0.0), 0.0); }
+    case M_PAINT: { s.albedo = paintColor(param); s.rough = 0.5; s.metal = 0.1; applyWetness(&s, world, 0.0, 0.0); }
     case M_SCREEN: { s = screenMat(n, uv, param); }
     case M_TILE: {
       let h = hashu(param * 13u + 1u);
       let cols = array<vec3f, 4>(vec3f(0.12, 0.13, 0.16), vec3f(0.35, 0.18, 0.12), vec3f(0.18, 0.22, 0.3), vec3f(0.3, 0.3, 0.3));
       s.albedo = cols[h % 4u] * (0.8 + 0.2 * step(0.5, fract(uv.y * 4.0)));
       s.rough = 0.55;
-      applyWetness(&s, world, 0.5, 0.0);
+      applyWetness(&s, world, 0.0, 0.0);
     }
     case M_WIRE: { s.albedo = vec3f(0.02); s.rough = 0.6; }
     case M_VENDING: {

@@ -909,7 +909,7 @@ export function generateLayout(
           gap: lerp(0.6, 0.15, dens),
           merge: lerp(0.1, 0.12, dens),
         };
-    const lotsHere: Lot[] = [];
+    let lotsHere: Lot[] = [];
     splitLots(
       rng,
       clean,
@@ -917,6 +917,18 @@ export function generateLayout(
       rule,
       lotsHere,
     );
+    // Buildings too close to a viaduct are dropped later; a big tower lot
+    // touching one would leave the whole block bare, so split it finely.
+    if (big && lotsHere.some(l => l.poly.some(q => nearRail(q, 7)))) {
+      lotsHere = [];
+      splitLots(
+        new Rng(hash2(Math.round(cx), Math.round(cz)) ^ seed),
+        clean,
+        clean.map(() => true),
+        {width: [6, 12], depth: 22, gap: 0.2, merge: 0.1},
+        lotsHere,
+      );
+    }
     for (const lot of lotsHere) lots.push({lot, park: false});
   }
 

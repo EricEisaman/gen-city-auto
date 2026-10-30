@@ -45,7 +45,8 @@ fn writeG(s: Surf, world: vec3f, fragPos: vec4f) -> GOut {
 }
 
 // Rain wetness on a surface: darken albedo, smooth roughness, add puddles on
-// flat ground.
+// flat ground. Roofs, decks and rails pass flatness 0: they only get damp
+// (puddles there read as bright snow from the air).
 fn applyWetness(s: ptr<function, Surf>, world: vec3f, flatness: f32, porous: f32) {
   let wet = frame.weather.z;
   if (wet <= 0.001) { return; }
