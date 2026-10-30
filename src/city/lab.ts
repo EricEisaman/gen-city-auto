@@ -509,7 +509,8 @@ function railOccluders(
         p[0] <= box[2] &&
         p[1] >= box[1] &&
         p[1] <= box[3] &&
-        py < o.base + o.height + 0.5 &&
+        // Roof parapets, tanks and plant stand above the roof height.
+        py < o.base + o.height + 2.5 &&
         pointInPolygon(p, o.footprint)
       )
         out.add(o);
@@ -517,6 +518,16 @@ function railOccluders(
   for (const [name, v] of Object.entries(views)) {
     const E = v.eye;
     const T = v.target;
+    // Buildings crowding the eye (a camera against a wall or a parapet).
+    for (const {o, box} of boxes)
+      if (
+        E[0] > box[0] - 10 &&
+        E[0] < box[2] + 10 &&
+        E[2] > box[1] - 10 &&
+        E[2] < box[3] + 10 &&
+        o.base + o.height + 2.5 > E[1] - 4
+      )
+        out.add(o);
     // The stretch of line the preset frames: around the arc length nearest
     // its target, wider the farther the eye.
     const sT = arc[closestOnPolyline(e.pts, [T[0], T[2]]).i];
