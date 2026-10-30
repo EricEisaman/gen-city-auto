@@ -1110,11 +1110,13 @@ export class FreeCamera {
   yaw = 0;
   pitch = -0.2;
   speed = 30;
+  fov = 1.0;
 
-  setPose(p: Vec3, yaw: number, pitch: number) {
+  setPose(p: Vec3, yaw: number, pitch: number, fov = 1.0) {
     this.pos = [...p];
     this.yaw = yaw;
     this.pitch = pitch;
+    this.fov = fov;
   }
 
   update(dt: number, input: Input): CamOut {
@@ -1145,7 +1147,7 @@ export class FreeCamera {
     return {
       eye: [...this.pos],
       target: [this.pos[0] + f[0], this.pos[1] + f[1], this.pos[2] + f[2]],
-      fov: 1.0,
+      fov: this.fov,
       near: 0.3,
       interior: false,
     };
