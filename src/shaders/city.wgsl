@@ -159,7 +159,14 @@ fn leafCutout(i: VOut) {
   if (i.cov >= 0.0 && i.cov < 1.0 && (i.cov < 0.08 || i.cov <= leafDither(i.pos.xy))) { discard; }
   var n = normalize(i.normal);
   if (!ff && (i.mat & 0xffu) != 25u) { n = -n; }
+  // A widened (sub-pixel) overhead-line wire: each pixel used to sample one
+  // facet of the diamond section, so its sharp metal highlight flipped
+  // pixel to pixel along the line (a speckled rope at 10-30 m). Shade it as
+  // its pixel-mean instead: a view-facing normal, a broad lobe.
+  let subWire = i.cov < 0.0 && (i.mat & 0xffu) == 20u;
+  if (subWire) { n = normalize(frame.camPos.xyz - i.world); }
   var s = cityMaterial(i.world, n, i.uv, i.mat, i.aux);
+  if (subWire) { s.rough = max(s.rough, 0.6); }
   // Solid min-width lamp line: its light spread over the widened pixels
   // (energy-preserving: the same mean light as the old sub-pixel dashes).
   if (i.cov < 0.0) { s.emissive *= -i.cov; }
