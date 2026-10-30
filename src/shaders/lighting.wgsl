@@ -808,24 +808,38 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
           ra = vec2f(-ad.y, ad.x);
           fwd = ad;
           ht = hash11(floor(fract(arm / PI) * 24.0) + 0.5);
-          // House side of the pole: the luminaire's cut-off.
-          back = smoothstep(-0.55, -0.2, dot(q, ad));
+          // House side of the pole: the luminaire's cut-off (back-throw
+          // 40 % of the forward lobe, gone a third of a pole height back).
+          let fq = dot(q, ad);
+          back = mix(0.4, 1.0, smoothstep(-0.15, 0.25, fq)) * smoothstep(-0.6, -0.3, fq);
         }
-        let qq = q - fwd * 0.35;
+        // Asymmetric Type II/III lobe: thrown forward half a pole height,
+        // reaching further forward than back.
+        let qq = q - fwd * 0.5;
+        let fa = dot(qq, fwd);
         let pa = dot(qq, ra) / 1.5;
-        let pc = dot(qq, vec2f(-ra.y, ra.x)) / 0.9;
+        let pc = dot(qq, vec2f(-ra.y, ra.x)) / select(0.9, select(0.6, 1.0, fa > 0.0), L.kind < 0.0);
         e2 = pa * pa + pc * pc;
       } else {
-        e2 = dot(q, q) / (1.05 * 1.05);
+        // Junction luminaires: a wide round pool (1.7 pole heights) so the
+        // four corners' overlap carries the middle of the box: the
+        // junction is the best-lit place on the road.
+        e2 = dot(q, q) / (1.7 * 1.7);
       }
       let w1 = clamp(1.0 - e2, 0.0, 1.0);
-      let pool = select(0.0, (0.65 * exp(-e2 * 7.0) + 0.35 * w1 * w1 * w1) * back, l.y > 0.0);
-      let temp = mix(vec3f(1.08, 0.96, 0.82), vec3f(0.9, 0.98, 1.1), ht);
+      var pool = select(0.0, (0.65 * exp(-e2 * 7.0) + 0.35 * w1 * w1 * w1) * back, l.y > 0.0);
+      if (abs(L.kind) <= 0.01) { pool = select(0.0, 0.45 * exp(-e2 * 9.0) + 0.55 * w1 * w1, l.y > 0.0); }
+      // Road luminaires: peak 25 % lower (pools, not floodlit discs).
+      if (L.kind < -0.01) { pool *= 0.75; }
+      // Arterial heads (the long-reach 20 m lights on avenues and
+      // boulevards) are cool 4000-5000 K LED; side-street ones warmer.
+      let arterial = L.radius > 17.0;
+      let temp = select(mix(vec3f(1.1, 0.95, 0.78), vec3f(1.04, 0.97, 0.88), ht), mix(vec3f(0.95, 0.98, 1.06), vec3f(0.99, 0.99, 1.0), ht), arterial);
       // Foliage scatters what reaches its outer leaves: a softer cut-off.
       let spill = select(0.02, 0.15, cls == CLASS_FOLIAGE);
       // Junction luminaires stay the strongest: the box is the best-lit
       // place on the road. Road luminaires 30 % below the old peak.
-      lc *= temp * mix(spill, 1.0, pool) * select(60.0 / 60.0, 105.0 / 60.0, L.kind == 0.0);
+      lc *= temp * mix(spill, 1.0, pool) * select(60.0 / 60.0, 120.0 / 60.0, L.kind == 0.0);
     } else if (L.kind > 2.5 && L.kind < 3.5) {
       // Fittings (soffit fluorescents, bracket and bulkhead lamps) hang under
       // a slab or hood and cast no shadow here: nothing much above the

@@ -3,10 +3,13 @@
 // Vertex format (32 bytes, read with vertex pulling in WGSL):
 //   pos: f32x3, normal: u32 (octahedral unorm16x2), uv: f32x2, mat: u32, aux: u32
 // mat = material id (low 8 bits) | parameter (high 24 bits).
-// aux: material-specific. For TUBE_MATS (wire, frame, paint, metal) the low
-// 16 bits are the tube radius in 0.5 mm units, written by tube() and 0 on
+// aux: material-specific. For TUBE_MATS (wire, frame, paint, metal, lamp) the
+// low 16 bits are the tube radius in 0.5 mm units, written by tube() and 0 on
 // every other primitive (vertex() clears them); city.wgsl's vs widens such
-// tubes to a minimum on-screen width. The high 16 bits stay free (seed).
+// tubes to a minimum on-screen width: hashed partial coverage for most, a
+// solid ~1.2 px line for overhead-line wires (CM.wire params != 0) and lamp
+// tubes (whose light is scaled by the true coverage). The high 16 bits stay
+// free (seed).
 //
 // Meshes are split into clusters of at most 128 triangles / 255 vertices. Each
 // triangle is stored as one u32 holding three 8-bit cluster-local indices.
@@ -60,7 +63,11 @@ export const CM = {
 
 /** Materials whose aux low 16 bits carry a tube radius (see header). */
 const TUBE_MATS =
-  (1 << CM.wire) | (1 << CM.frame) | (1 << CM.paint) | (1 << CM.metal);
+  (1 << CM.wire) |
+  (1 << CM.frame) |
+  (1 << CM.paint) |
+  (1 << CM.metal) |
+  (1 << CM.lamp);
 
 export const VERTEX_BYTES = 32;
 export const VERTEX_WORDS = 8;
@@ -404,8 +411,8 @@ export class CMesh {
    * turned 45 degrees with radial normals, so it shades like a cylinder.
    * Joints share their ring: 4 vertices per point instead of a beam's 16 per
    * segment. uv: u = metres along, v = 0..1 around. No end caps.
-   * Wire, frame, paint and metal tubes store r in aux (see the header) so
-   * the vertex shader can keep them at least ~0.7 px wide.
+   * Wire, frame, paint, metal and lamp tubes store r in aux (see the
+   * header) so the vertex shader can keep them at least ~1 px wide.
    */
   tube(pts: Vec3[], r: number, mat: number, aux = 0) {
     if (pts.length < 2) return;

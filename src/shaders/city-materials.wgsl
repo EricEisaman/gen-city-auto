@@ -146,6 +146,8 @@ fn paintColor(p: u32) -> vec3f {
   if (p == 0x90u) { return vec3f(0.45, 0.46, 0.45); }
   if (p == 0x91u) { return vec3f(0.06, 0.06, 0.06); }
   if (p == 0x92u) { return vec3f(0.8, 0.55, 0.04); }
+  // Rail line colour (station bands): JR-style green.
+  if (p == 0x0cu) { return vec3f(0.06, 0.46, 0.26); }
   if (p == 0x80u) { return vec3f(0.5, 0.5, 0.5); }
   if (p >= 0xd0u && p < 0xf0u) { return vec3f(0.62, 0.62, 0.6); }
   let h = hashu(p * 2654435761u);
@@ -2610,7 +2612,7 @@ fn asphaltSurf(world: vec3f, n: vec3f, p: vec3f, foot: f32, dd: ptr<function, ve
 // Lay sealed-crack tar of coverage c on a surface: glossy black sealant
 // (albedo ~0.04, rough ~0.25), so the lines catch the sky at grazing angles.
 fn rdApplyTar(s: ptr<function, Surf>, c: f32) {
-  (*s).albedo = mix((*s).albedo, vec3f(0.04, 0.039, 0.037), c);
+  (*s).albedo = mix((*s).albedo, vec3f(0.06, 0.058, 0.055), c);
   (*s).rough = mix((*s).rough, 0.25, c);
   rdTar = max(rdTar, c);
 }
@@ -2689,7 +2691,16 @@ fn rdCrackNet(q: vec2f, foot: f32) -> f32 {
 // the wheel paths of the oldest stretches. `ck` = how cracked this surface
 // is (0 fresh .. 1 old). Line footprints are measured across each line (the
 // screen rate of uv.x for longitudinal, of uv.y for transverse ones).
+// Paint-erosion halo of the last rdRoadCracks call: 1 within ~2 cm of a
+// crack (ragged), so markings flake away either side of it.
+var<private> rdNearC: f32;
+
+fn rdNearLine(d: f32, w: f32, n: f32) -> f32 {
+  return 1.0 - smoothstep(w * 0.5, w * 0.5 + 0.008 + 0.03 * n, d);
+}
+
 fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: i32, seed: u32, ck: f32, foot: f32) -> f32 {
+  rdNearC = 0.0;
   if (ck <= 0.0) { return 0.0; }
   // Mean coverage for footprints too coarse to resolve a crack.
   let mean = 0.006 * ck;
@@ -2699,8 +2710,10 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
   let fpT = max(length(vec2f(dUvX.y, dUvY.y)), 1e-4);
   let ax = abs(x);
   var c = 0.0;
-  // Width wanders 3-6 cm along each crack.
-  let w = 0.03 + 0.03 * valueNoise(vec2f(x * 1.3, along * 1.3) + 5.0);
+  // Width wanders 1.5-7 cm along each crack (two scales), and each run
+  // tapers to a hairline over its last metre.
+  let w = (0.03 + 0.03 * valueNoise(vec2f(x * 1.3, along * 1.3) + 5.0)) * (0.45 + 0.75 * valueNoise(vec2f(x * 7.0, along * 7.0) + 2.0));
+  let en = valueNoise(vec2f(x, along) * 30.0);
   // Longitudinal, wheel paths: runs of 3-12 m in 9 m cells.
   {
     let cell = floor(along / 9.0);
@@ -2709,9 +2722,11 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
     if (rdH(seed, hk, 80) < 0.5 * ck) {
       let s0 = cell * 9.0 + 6.0 * rdH(seed, hk, 81);
       let s1 = s0 + 3.0 + 9.0 * rdH(seed, hk, 82);
-      let span = smoothstep(s0, s0 + 0.3, along) * (1.0 - smoothstep(s1 - 0.3, s1, along));
+      let span = smoothstep(s0, s0 + 1.0, along) * (1.0 - smoothstep(s1 - 1.0, s1, along));
       let wander = (valueNoise(vec2f(along * 0.7, f32(hk))) - 0.5) * 0.3 + (valueNoise(vec2f(along * 4.0, f32(hk) + 3.0)) - 0.5) * 0.05;
-      c = max(c, rdCrackLine(abs(abs(o) - 0.85 - wander), w, fpL) * span);
+      let dd = abs(abs(o) - 0.85 - wander);
+      c = max(c, rdCrackLine(dd, w * (0.25 + 0.75 * span), fpL) * smoothstep(0.0, 0.3, span));
+      rdNearC = max(rdNearC, rdNearLine(dd, w, en) * smoothstep(0.0, 0.3, span));
     }
   }
   // Longitudinal, paving joints (lane lines and the crown): long runs.
@@ -2722,9 +2737,11 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
     if (rdH(seed, hk, 83) < 0.55 * ck) {
       let s0 = cell * 14.0 + 4.0 * rdH(seed, hk, 84);
       let s1 = s0 + 6.0 + 10.0 * rdH(seed, hk, 85);
-      let span = smoothstep(s0, s0 + 0.3, along) * (1.0 - smoothstep(s1 - 0.3, s1, along));
+      let span = smoothstep(s0, s0 + 1.0, along) * (1.0 - smoothstep(s1 - 1.0, s1, along));
       let wander = (valueNoise(vec2f(along * 0.5, f32(hk) + 9.0)) - 0.5) * 0.16 + (valueNoise(vec2f(along * 5.0, f32(hk))) - 0.5) * 0.04;
-      c = max(c, rdCrackLine(abs(ax - jx - 0.12 - wander), w, fpL) * span);
+      let dd = abs(ax - jx - 0.12 - wander);
+      c = max(c, rdCrackLine(dd, w * (0.25 + 0.75 * span), fpL) * smoothstep(0.0, 0.3, span));
+      rdNearC = max(rdNearC, rdNearLine(dd, w, en) * smoothstep(0.0, 0.3, span));
     }
   }
   // Transverse: one per 5-10 m cell on old surface, across 30-100 % of the
@@ -2736,9 +2753,11 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
       let t0 = cell * 7.5 + 0.8 + 5.9 * rdH(seed, hk, 87);
       let x0 = mix(-1.0, 0.4, rdH(seed, hk, 88)) * hw;
       let x1 = x0 + mix(0.3, 1.6, rdH(seed, hk, 89)) * hw;
-      let span = smoothstep(x0, x0 + 0.2, x) * (1.0 - smoothstep(x1 - 0.2, x1, x));
+      let span = smoothstep(x0, x0 + 0.8, x) * (1.0 - smoothstep(x1 - 0.8, x1, x));
       let wander = (valueNoise(vec2f(x * 0.9, f32(hk) + 1.0)) - 0.5) * 0.35 + (valueNoise(vec2f(x * 6.0, f32(hk) + 2.0)) - 0.5) * 0.05 + x * (rdH(seed, hk, 90) - 0.5) * 0.08;
-      c = max(c, rdCrackLine(abs(along - t0 - wander), w, fpT) * span);
+      let dd = abs(along - t0 - wander);
+      c = max(c, rdCrackLine(dd, w * (0.25 + 0.75 * span), fpT) * smoothstep(0.0, 0.3, span));
+      rdNearC = max(rdNearC, rdNearLine(dd, w, en) * smoothstep(0.0, 0.3, span));
     }
   }
   // Alligator blocks in the wheel paths of the oldest stretches.
@@ -2750,6 +2769,7 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
       let warp = vec2f(valueNoise(q * 3.1), valueNoise(q * 3.1 + 17.0)) - 0.5;
       let v = rdVoronoiEdge(q / 0.32 + warp * 0.2);
       c = max(c, paintLine(v.x * 0.32, 0.025, foot) * band * zone * (1.0 - smoothstep(0.025, 0.05, foot)));
+      rdNearC = max(rdNearC, rdNearLine(v.x * 0.32, 0.025, en) * band * zone);
     }
   }
   return mix(mean, c, fade);
@@ -2978,7 +2998,14 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let a1 = 22.0 + 12.0 * rdH(seed, side, 42);
     let c = rdCov(rdBox(vec2f(ax - (inner + ec - 0.075) * 0.5, a - (7.0 + a1) * 0.5), vec2f((ec - 0.075 - inner) * 0.5, (a1 - 7.0) * 0.5)), 1.0, foot);
     if (c > 0.0) {
-      surfCol = mix(vec3f(0.3, 0.11, 0.08), s.albedo, 0.15 + 0.35 * track);
+      // Calcined-bauxite chips in resin: a dull brick red (weathered,
+      // dusty), mottled chip by chip and in broad patches, and worn
+      // through to the grey asphalt down the wheel paths.
+      let mott = (dd.b * 2.0 - 1.0) * 1.6 + 0.25 * (valueNoise(world.xz * 0.9 + 4.0) - 0.5) + 0.1 * (valueNoise(world.xz * 7.0) - 0.5);
+      let red = vec3f(0.225, 0.108, 0.088) * clamp(1.0 + mott, 0.6, 1.4);
+      let wornS = valueNoise(vec2f(o * 5.0, along * 0.25) + 31.0);
+      let worn = clamp(0.06 + 0.95 * track * (0.6 + 0.6 * wornS) + 0.2 * smoothstep(0.6, 0.8, valueNoise(world.xz * 0.6 + 8.0)), 0.0, 0.92);
+      surfCol = mix(red, s.albedo, worn);
       surfCov = c;
       surfRough = 0.93;
     }
@@ -3196,6 +3223,8 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     var wear = (1.0 - 0.95 * hole) * select(1.0, 0.88, ageHost > 0.6);
     let poke = mix(smoothstep(0.35, 0.95, dd.a), 0.8, smoothstep(0.01, 0.04, foot));
     wear *= mix(0.75, 1.0, poke);
+    // Paint flakes away for a ragged 1-3 cm either side of a crack.
+    wear *= 1.0 - 0.9 * rdNearC;
     paintCov = cov * wear;
     // Dirty thermoplastic: off-white ~0.72, yellow; grimier on old
     // sections; paint residue left in the pores of the worn holes.
@@ -3211,6 +3240,9 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     s.albedo = mix(s.albedo, col, paintCov);
     s.rough = mix(s.rough, 0.45, paintCov);
     s.metal = 0.0;
+    // Thermoplastic fills the aggregate: a smooth skin over the bump (on a
+    // wet road the bumped paint glittered pixel by pixel).
+    s.normal = normalize(mix(s.normal, n, paintCov * 0.8));
     // Raised 2-3 mm edge: the normal leans outward across the AA band, and
     // the worn holes' rims.
     if (dist < 30.0 && cov < 0.999) {
@@ -3221,7 +3253,7 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       s.normal = normalize(s.normal + (T * bevDir.x + B * bevDir.y) * tilt);
     }
     // Glass beads: a few glossy 3 mm cells, close up.
-    let bead = step(0.98, hash21(floor(world.xz / 0.003))) * smoothstep(0.006, 0.002, foot);
+    let bead = step(0.98, hash21(floor(world.xz / 0.003))) * smoothstep(0.006, 0.002, foot) * (1.0 - frame.weather.z);
     s.rough = mix(s.rough, 0.15, bead * paintCov);
     // Retroreflection: at night, headlights near the eye light the beads
     // back toward a viewer at driving height.
@@ -3235,7 +3267,7 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   // Crack sealant runs on over coloured surfacing and paint.
   {
     let t = rdTar * max(surfCov, paintCov);
-    s.albedo = mix(s.albedo, vec3f(0.04, 0.039, 0.037), t);
+    s.albedo = mix(s.albedo, vec3f(0.06, 0.058, 0.055), t);
     s.rough = mix(s.rough, 0.25, t);
     paintCov *= 1.0 - rdTar;
   }
@@ -3411,11 +3443,24 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let tw = rdTar * frame.weather.z * (1.0 - gutterC);
     s.albedo = mix(s.albedo, vec3f(0.018), tw * 0.7);
     s.rough = mix(s.rough, 0.06, tw);
-    rdPuddle(&s, world, n, puddle, margin);
+    rdPuddle(&s, world, n, puddle * (1.0 - surfCov), margin * (1.0 - surfCov));
+    if (surfCov > 0.0) {
+      // Coloured surfacing: the resin-bound chips drain, so it is a satin
+      // wet everywhere with water lying in 0.5-3 m patches (filled flush:
+      // flat and glossy), low-passed so it never speckles chip by chip.
+      let wp = valueNoise(world.xz * 0.45 + 3.0) * 0.65 + valueNoise(world.xz * 1.3 + 7.0) * 0.35;
+      let pw = smoothstep(0.45, 0.62, wp) * frame.weather.z;
+      s.rough = mix(s.rough, mix(0.5, 0.14, pw), surfCov * frame.weather.z);
+      s.normal = normalize(mix(s.normal, n, surfCov * mix(0.7, 1.0, pw)));
+      // Resin surfacing soaks up less than open asphalt: it stays red.
+      s.albedo *= mix(1.0, mix(1.45, 1.15, pw), surfCov * frame.weather.z);
+    }
     // Wet markings stay legible.
     let lum = max(max(s.albedo.r, s.albedo.g), s.albedo.b);
     s.albedo = mix(s.albedo, s.albedo * max(1.0, 0.6 / max(lum, 0.01)), paintCov);
-    s.rough = mix(s.rough, max(s.rough, 0.15), paintCov);
+    // Wet paint is satin, not mirror: clamp its gloss so pixel-sized
+    // chip / bead / hole cells don't flicker, and the more so with range.
+    s.rough = mix(s.rough, max(s.rough, mix(0.28, 0.4, smoothstep(0.004, 0.03, foot))), max(paintCov, cov * 0.8));
   }
   return s;
 }
@@ -3444,19 +3489,23 @@ fn junctionMat(world: vec3f, n: vec3f, param: u32, aux: u32) -> Surf {
   {
     let cell = floor(world.xz / 9.0);
     let hc = hash22(cell * 1.37 + vec2f(f32(jh), 3.0));
-    if (hash21(cell + 41.0) < 0.35) {
+    if (hash21(cell + 41.0) < 0.3) {
+      // Trench cuts run square to the streets (a quarter turn at most, no
+      // odd rotations that read as a dropped decal), and none in the
+      // middle of the box, where the crowned surface is one pour.
       let hs = vec2f(0.5 + 0.8 * hc.x, 0.5 + 1.1 * hc.y);
-      let ang = hash21(cell + 17.0) * 3.1416;
       let ctr = (cell + 0.5) * 9.0 + (hash22(cell + 5.0) - 0.5) * (9.0 - 2.0 * length(hs) - 0.4);
       let d = world.xz - ctr;
-      let r = vec2f(dot(d, vec2f(cos(ang), sin(ang))), dot(d, vec2f(-sin(ang), cos(ang))));
-      pSd = rdBox(r, hs);
+      let r = select(d, d.yx, hash21(cell + 17.0) < 0.5);
+      let rcen = select(1e3, distance(ctr, cxz), hasC);
+      pSd = select(rdBox(r, hs), 1e3, rcen < 5.0);
     }
   }
   let pAc = rdCov(pSd, 1.0, foot);
-  let ageP = select(age + 0.4, age - 0.42, age > 0.5);
+  // Patches are a newer contract, but a weathered one: a step, not a hole.
+  let ageP = select(age + 0.3, age - 0.25, age > 0.5);
   var ap = mix(asphaltParams(age), asphaltParams(ageP), pAc);
-  ap.x *= 1.0 - 0.1 * pAc;
+  ap.x *= 1.0 - 0.04 * pAc;
   var dd: vec4f;
   var s = asphaltSurf(world, n, ap, foot, &dd);
   // Every movement crosses the box: the whole surface carries the rubber
@@ -3472,13 +3521,11 @@ fn junctionMat(world: vec3f, n: vec3f, param: u32, aux: u32) -> Surf {
     s.albedo = mix(s.albedo, vec3f(0.035), seam);
     s.rough = mix(s.rough, 0.25, seam);
   }
-  // Sealed cracks: block cracking and long cracks over the whole box (the
-  // most cracked asphalt on the road), not on the fresh patches.
-  rdApplyTar(&s, rdCrackNet(world.xz, foot) * (1.0 - pAc));
   // Turning paths: tyre rubber arcs, in pairs 1.7 m apart (the wheels),
-  // polished and darkened.
+  // polished and darkened; `wheel` is the broad band they sweep.
   let base = floor(world.xz / 40.0);
   var scuff = 0.0;
+  var wheel = 0.0;
   for (var j = 0; j < 2; j++) {
     for (var i = 0; i < 2; i++) {
       let cell = base + vec2f(f32(i), f32(j)) - select(vec2f(0.0), vec2f(1.0), fract(world.xz / 40.0) < vec2f(0.5));
@@ -3492,25 +3539,44 @@ fn junctionMat(world: vec3f, n: vec3f, param: u32, aux: u32) -> Surf {
       let lq = length(q);
       let st = 0.7 + 0.6 * valueNoise(vec2f(ang * R * 0.3, lq * 2.0));
       scuff = max(scuff, max(paintLine(abs(lq - R), 0.45, foot), paintLine(abs(lq - R - 1.7), 0.45, foot)) * arc * st);
+      wheel = max(wheel, (1.0 - smoothstep(0.6, 1.8, abs(lq - R - 0.85))) * arc);
     }
   }
+  // Through movements: the box's own wheel paths, broad soft bands in
+  // world noise (where the approaches' lanes run on across it).
+  wheel = max(wheel, smoothstep(0.55, 0.7, valueNoise(world.xz * 0.18 + vec2f(f32(jh), 2.0))));
+  // Sealed cracks: block cracking and long cracks where the wheels work
+  // the box (about 60 % fewer than an even net), not on the fresh patches.
+  let crackKeep = smoothstep(0.42, 0.52, max(wheel, valueNoise(world.xz * 0.22 + vec2f(5.0, f32(jh))) * 0.92));
+  rdApplyTar(&s, rdCrackNet(world.xz, foot) * (1.0 - pAc) * crackKeep);
   s.albedo *= 1.0 - 0.28 * scuff;
   s.rough -= 0.12 * scuff;
-  // Oil drips and stains: blotches in ~30 % of 2.5 m cells (more round
-  // the centre), each a dark glossy ellipse with a soft halo.
+  // Oil drips: elongated smears along the direction of travel (toward the
+  // centre down the approaches, round the arcs on the turns), in ~30 % of
+  // 3.5 m cells (more round the centre): a dark glossy head where a car
+  // stood and dripped, a streaky tail dragged out by tyres, a soft halo.
   {
-    let cell = floor(world.xz / 2.5);
-    let pr = select(0.12, 0.08 + 0.5 * exp(-rc * rc / 30.0), hasC);
+    let cell = floor(world.xz / 3.5);
+    let pr = select(0.2, 0.16 + 0.5 * exp(-rc * rc / 40.0), hasC);
     if (hash21(cell + 91.0) < pr) {
-      let ctr = (cell + 0.25 + 0.5 * hash22(cell + 13.0)) * 2.5;
+      let ctr = (cell + 0.36 + 0.28 * hash22(cell + 13.0)) * 3.5;
+      let rad = select(normalize(world.xz - cxz + 1e-3), vec2f(1.0, 0.0), !hasC);
+      let tng = select(rad, vec2f(-rad.y, rad.x), hash21(cell + 3.0) < 0.35);
       let d = world.xz - ctr;
-      let rad = 0.25 + 0.45 * hash21(cell + 7.0);
-      let e = length(d * vec2f(1.0, 0.6 + 0.6 * hash21(cell + 2.0))) / rad;
-      let edge = (valueNoise(world.xz * 6.0) - 0.5) * 0.4;
-      let blot = 1.0 - smoothstep(0.6, 1.0, e + edge);
-      let halo = 1.0 - smoothstep(1.0, 1.8, e);
-      s.albedo *= (1.0 - 0.45 * blot) * (1.0 - 0.12 * halo);
-      s.rough -= 0.25 * blot;
+      let u = dot(d, tng);
+      let v = dot(d, vec2f(-tng.y, tng.x));
+      let len = 0.5 + 0.7 * hash21(cell + 7.0);
+      let wid = 0.15 + 0.2 * hash21(cell + 2.0);
+      let along = clamp(u / len, -1.0, 1.0);
+      // Width tapers from the head (u < 0) to the tail; streaky lengthways.
+      let ww = wid * mix(1.0, 0.35, along * 0.5 + 0.5) * (0.8 + 0.4 * valueNoise(vec2f(u * 3.0, 1.0)));
+      let streak = 0.55 + 0.45 * valueNoise(vec2f(u * 1.5, v * 28.0));
+      let body = (1.0 - smoothstep(0.75, 1.0, length(vec2f(u / len, v / max(ww, 0.02)))));
+      let head = 1.0 - smoothstep(0.4, 1.0, length(vec2f((u + len * 0.6) / (wid * 1.2), v / wid)));
+      let halo = 1.0 - smoothstep(0.8, 1.8, length(vec2f(u / (len * 1.2), v / (wid * 2.5))));
+      let oil = max(body * streak * 0.85, head);
+      s.albedo *= (1.0 - 0.55 * oil) * (1.0 - 0.14 * halo);
+      s.rough -= 0.25 * oil;
     }
   }
   // Right-turn waiting area round the centre: rubber and oil haze.
@@ -3560,37 +3626,70 @@ fn paversSurf(world: vec3f, n: vec3f) -> Surf {
   let grey = vec3f(0.42, 0.413, 0.4) * (0.955 + 0.09 * hash21(floor(world.xz / 60.0) + 5.0));
   let base = select(select(grey, vec3f(0.46, 0.41, 0.36), zone < 0.3), vec3f(0.38, 0.33, 0.3), zone < 0.1);
   s.albedo = base * (d.b * 2.0) * mix(0.55, 1.0, d.a) * (0.95 + 0.1 * valueNoise(world.xz * 0.3));
-  // Foot-traffic grime.
-  s.albedo *= 1.0 - 0.12 * smoothstep(0.5, 0.8, valueNoise(world.xz * 0.15 + 9.0));
+  // Foot-traffic grime, and 0.5-2 m spill / damp stains (darker, a little
+  // brown) here and there.
+  s.albedo *= 1.0 - 0.14 * smoothstep(0.5, 0.8, valueNoise(world.xz * 0.15 + 9.0));
+  let spill = smoothstep(0.72, 0.84, valueNoise(world.xz * 0.6 + 31.0) * 0.8 + valueNoise(world.xz * 3.1) * 0.2);
+  s.albedo = mix(s.albedo, s.albedo * vec3f(0.84, 0.81, 0.78), spill);
   s.rough = 0.8 + (1.0 - d.a) * 0.15;
   s.cls = CLASS_GROUND;
   s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), d, 1.0);
-  // Per-paver tone (+-8 %) and set (a slight tilt), on the 200 x 100 mm
-  // running bond of the detail layer; ~1.5 % are replacements from another
-  // batch (cleaner or darker, smoother). Averages out with range.
+  // Per-paver tone (+-11 %, a faint warm/cool cast), roughness (+-0.1) and
+  // set (a slight tilt), on the 200 x 100 mm running bond of the detail
+  // layer; ~2 % are replacements from another batch (cleaner and paler, a
+  // darker grey or a pinker block). The tone holds until a paver is under
+  // ~2 px (area footprint: at eye level the along-view footprint alone
+  // killed it within 10 m), then averages out.
   let foot = max(length(dWorldX), length(dWorldY));
-  let pk = 1.0 - smoothstep(0.03, 0.08, foot);
-  if (pk > 0.0) {
-    let row = floor(world.z / 0.1);
-    let col = floor((world.x + select(0.0, 0.1, fract(row * 0.5) > 0.25)) / 0.2);
-    let ph = hash22(vec2f(col, row) + 0.37);
-    var tone = 0.92 + 0.16 * ph.x;
-    let rep = hash21(vec2f(col, row) * 1.31 + 7.7);
-    if (rep < 0.015) {
-      tone = select(1.14, 0.8, rep < 0.006);
-      s.rough -= 0.08;
-    }
-    s.albedo *= mix(1.0, tone, pk);
-    let tilt = (hash22(vec2f(col, row) + 3.1) - 0.5) * 0.08 * pk;
-    s.normal = normalize(s.normal + vec3f(tilt.x, 0.0, tilt.y));
-    // Old chewing gum: flattened grey-black discs, 1-2 cm, sparse.
-    let gq = world.xz / 0.45;
+  let fa = sqrt(length(dWorldX) * length(dWorldY));
+  let pk = 1.0 - smoothstep(0.05, 0.12, fa);
+  let row = floor(world.z / 0.1);
+  let odd = fract(row * 0.5) > 0.25;
+  let col = floor((world.x + select(0.0, 0.1, odd)) / 0.2);
+  let cid = vec2f(col, row);
+  let ph = hash22(cid + 0.37);
+  var tone = vec3f(0.89 + 0.22 * ph.x) * vec3f(1.0 + 0.03 * (ph.y - 0.5), 1.0, 1.0 - 0.03 * (ph.y - 0.5));
+  var pr = (hash21(cid * 0.71 + 3.3) - 0.5) * 0.2;
+  let rep = hash21(cid * 1.31 + 7.7);
+  if (rep < 0.02) {
+    let rt = hash21(cid + 51.0);
+    tone = select(select(vec3f(1.2, 1.17, 1.12), vec3f(1.12, 0.96, 0.86), rt < 0.35), vec3f(0.72, 0.72, 0.74), rt < 0.15);
+    pr = -0.12;
+  }
+  s.albedo *= mix(vec3f(1.0), tone, pk);
+  s.rough += pr * pk;
+  // Joints: 3 mm of dark sand and grit (coverage-conserving at range,
+  // so the bond still reads as a fine grid), a 1-2 mm bevel either side.
+  let lx = fract((world.x + select(0.0, 0.1, odd)) / 0.2);
+  let ly = fract(world.z / 0.1);
+  let ex = min(lx, 1.0 - lx) * 0.2;
+  let ey = min(ly, 1.0 - ly) * 0.1;
+  let ed = min(ex, ey);
+  let jt = paintLine(ed, 0.004, foot);
+  s.albedo *= 1.0 - 0.5 * jt;
+  s.ao *= 1.0 - 0.35 * jt;
+  let det = 1.0 - smoothstep(0.003, 0.01, foot);
+  if (det > 0.0) {
+    let bv = (1.0 - smoothstep(0.002, 0.006, ed)) * det;
+    let ox = select(-1.0, 1.0, lx > 0.5);
+    let oz = select(-1.0, 1.0, ly > 0.5);
+    let bdir = select(vec3f(0.0, 0.0, oz), vec3f(ox, 0.0, 0.0), ex < ey);
+    s.normal = normalize(s.normal + bdir * bv * 0.7);
+  }
+  let tilt = (hash22(cid + 3.1) - 0.5) * 0.08 * pk;
+  s.normal = normalize(s.normal + vec3f(tilt.x, 0.0, tilt.y));
+  // Old chewing gum: flattened discs 1.5-3 cm, mostly grey-black, some
+  // pale grey; sparse, coverage-conserving at range.
+  if (fa < 0.03) {
+    let gq = world.xz / 0.35;
     let gc = floor(gq);
-    if (hash21(gc + 19.3) < 0.05) {
-      let gr = length(fract(gq) - 0.5 - (hash22(gc + 2.0) - 0.5) * 0.6) * 0.45;
-      let gum = (1.0 - smoothstep(0.006, 0.012 + 0.006 * hash21(gc), gr)) * (1.0 - smoothstep(0.004, 0.012, foot));
-      s.albedo = mix(s.albedo, vec3f(0.16, 0.155, 0.15), gum * 0.85);
-      s.rough = mix(s.rough, 0.6, gum);
+    if (hash21(gc + 19.3) < 0.1) {
+      let rr = 0.008 + 0.008 * hash21(gc);
+      let gr = length(fract(gq) - 0.5 - (hash22(gc + 2.0) - 0.5) * 0.6) * 0.35;
+      let gum = rdCov(gr - rr, rr * 2.0, foot) * (1.0 - smoothstep(0.015, 0.03, fa));
+      let gcol = select(vec3f(0.13, 0.125, 0.12), vec3f(0.5, 0.49, 0.47), hash21(gc + 8.0) < 0.3);
+      s.albedo = mix(s.albedo, gcol, gum * 0.9);
+      s.rough = mix(s.rough, 0.55, gum);
     }
   }
   return s;
@@ -3633,13 +3732,40 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   {
     let wy0 = min(tc + 0.35, bw - 0.4);
     let wb = smoothstep(wy0, wy0 + 0.5, y) * (1.0 - smoothstep(bw - 0.6, bw - 0.2, y));
-    let wv = 0.6 + 0.4 * valueNoise(vec2f(uv.x * 0.15, 3.0));
-    s.albedo *= 1.0 - 0.1 * wb * wv;
-    s.rough -= 0.1 * wb * wv;
+    let wv = 0.55 + 0.45 * valueNoise(vec2f(uv.x * 0.15, 3.0)) + 0.15 * (valueNoise(uv * vec2f(0.8, 2.5)) - 0.5);
+    s.albedo *= 1.0 - 0.2 * wb * wv;
+    s.albedo *= mix(vec3f(1.0), vec3f(0.97, 0.96, 0.95), wb);
+    s.rough -= 0.14 * wb * wv;
+    // Dirt banked against the frontage (the 30 cm along the walk's back
+    // edge, swept there and never washed) and against the kerb top: darker,
+    // a little brown, ragged at its edge, grit packed into the joints.
+    let rag = valueNoise(vec2f(uv.x * 2.2, 5.0)) * 0.6 + valueNoise(vec2f(uv.x * 9.0, y * 6.0)) * 0.4;
+    let backD = (1.0 - smoothstep(0.04 + 0.2 * rag, 0.12 + 0.3 * rag, bw - y)) * (0.4 + 0.6 * valueNoise(vec2f(uv.x * 0.7, 11.0)));
+    let kerbD = (1.0 - smoothstep(0.22 + 0.12 * rag, 0.38 + 0.18 * rag, y)) * step(0.18, y);
+    let dirt = max(backD * 0.7, kerbD * 0.8);
+    s.albedo = mix(s.albedo, s.albedo * vec3f(0.66, 0.62, 0.56), dirt * (0.75 + 0.25 * rag));
+    s.rough += 0.06 * dirt;
     if (kind >= 2u) {
       let post = 1.0 - smoothstep(0.03, 0.12, abs(fract(uv.x / 2.0) - 0.5) * 2.0);
       let fence = (1.0 - smoothstep(0.03, 0.09, abs(y - 0.36))) * (0.35 + 0.65 * post) * smoothstep(0.3, 0.6, valueNoise(vec2f(uv.x * 1.3, 2.0)));
       s.albedo = mix(s.albedo, s.albedo * vec3f(0.78, 0.62, 0.48), fence * 0.7);
+      // Drip stains under the guard-fence rail: a rusty-dark ring every
+      // 15-40 cm where water falls off it, each 4-9 cm, drying paler inside.
+      let dq = uv.x / 0.25;
+      let dc = floor(dq);
+      let dh = hash22(vec2f(dc, 17.0));
+      if (dh.x < 0.6) {
+        let dp = vec2f((fract(dq) - 0.5 - (dh.y - 0.5) * 0.5) * 0.25, y - 0.36 - (hash21(vec2f(dc, 4.0)) - 0.5) * 0.06);
+        let dr = length(dp * vec2f(1.0, 1.3)) / (0.02 + 0.025 * dh.y);
+        let ring = (1.0 - smoothstep(0.7, 1.1, dr + 0.25 * (valueNoise(dp * 60.0) - 0.5))) * mix(0.55, 1.0, smoothstep(0.3, 0.9, dr));
+        s.albedo = mix(s.albedo, s.albedo * vec3f(0.62, 0.55, 0.48), ring * 0.8);
+      }
+    }
+    if (plant) {
+      // Soil splash and drips off the planting strip onto the pavers
+      // either side of its edging.
+      let sp = max(1.0 - smoothstep(0.0, 0.18 + 0.12 * rag, y - 1.25), 0.0) * step(1.25, y);
+      s.albedo = mix(s.albedo, s.albedo * vec3f(0.7, 0.62, 0.52), sp * (0.5 + 0.5 * valueNoise(uv * 14.0)));
     }
   }
   let night = nightLight();
@@ -3649,17 +3775,22 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
     if (tcov > 0.0) {
       // Four raised linear bars per 300 mm tile, running along the walk.
       let bar = abs(fract((y - tc + 0.15) / 0.075) - 0.5) * 0.075;
-      let det = 1.0 - smoothstep(0.004, 0.012, foot);
+      // Bars run along the walk: their detail lives across it, so fade by
+      // the screen rate of uv.y, not the isotropic footprint (looking down
+      // the walk the bars hold for metres more).
+      let fpY = length(vec2f(dUvX.y, dUvY.y));
+      let det = 1.0 - smoothstep(0.008, 0.025, fpY);
       let joint = paintLine(rdDash(uv.x, 0.3, 0.0), 0.006, foot);
       let yel = vec3f(0.78, 0.6, 0.08) * (1.0 - 0.3 * joint) * (0.95 + 0.1 * valueNoise(uv * 3.0));
       s.albedo = mix(s.albedo, yel, tcov);
       s.rough = mix(s.rough, 0.6, tcov);
-      let slope = sign(fract((y - tc + 0.15) / 0.075) - 0.5) * smoothstep(0.012, 0.022, bar) * 0.9;
+      let slope = sign(fract((y - tc + 0.15) / 0.075) - 0.5) * smoothstep(0.012, 0.022, bar) * 1.6;
       s.normal = normalize(mix(s.normal, normalize(n + B * slope * det), tcov));
-      // Grit in the grooves between the bars, sunlit tops worn paler.
+      // Grit in the grooves between the bars, sunlit tops worn paler; the
+      // grooves' mean darkness stays at range.
       let groove = 1.0 - smoothstep(0.016, 0.026, bar);
-      s.albedo *= mix(1.0, mix(1.06, 0.55, groove), tcov * det);
-      s.ao = mix(s.ao, mix(1.0, 0.55, groove * det), tcov);
+      s.albedo *= mix(1.0, mix(mix(1.12, 0.4, groove), 0.8, 1.0 - det), tcov);
+      s.ao = mix(s.ao, mix(mix(1.0, 0.35, groove), 0.75, 1.0 - det), tcov);
     }
   }
   // Crossing apron: warning dot blocks, 0.6 m deep behind the curb top.
@@ -3668,18 +3799,19 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
     if (acov > 0.0) {
       let q = (fract(vec2f(uv.x, y - 0.18) / 0.06) - 0.5) * 0.06;
       let dot = 1.0 - smoothstep(0.011, 0.014, length(q));
-      let det = 1.0 - smoothstep(0.004, 0.012, foot);
+      let det = 1.0 - smoothstep(0.007, 0.02, foot);
       let joint = max(paintLine(rdDash(uv.x, 0.3, 0.0), 0.006, foot), paintLine(rdDash(y - 0.18, 0.3, 0.0), 0.006, foot));
       s.albedo = mix(s.albedo, vec3f(0.78, 0.6, 0.08) * (1.0 - 0.3 * joint) * mix(1.0, 1.08, dot * det), acov);
       s.rough = mix(s.rough, 0.6, acov);
       // Domes: rim slopes lean out, the dome top flat; grit round each foot.
       let rq = length(q);
       let rim = smoothstep(0.004, 0.011, rq) * dot;
-      let qn = normalize(q + 1e-5) * rim * det * 1.1;
+      let qn = normalize(q + 1e-5) * rim * det * 1.8;
       s.normal = normalize(s.normal + (T * qn.x + B * qn.y) * acov);
-      let foot2 = (1.0 - dot) * (1.0 - smoothstep(0.014, 0.02, rq));
-      s.albedo *= mix(1.0, 0.6, foot2 * det * acov);
-      s.ao = mix(s.ao, mix(1.0, 0.5, foot2 * det), acov);
+      let foot2 = (1.0 - dot) * (1.0 - smoothstep(0.014, 0.022, rq));
+      s.albedo *= mix(1.0, mix(mix(1.0, 0.4, foot2), 0.82, 1.0 - det), acov);
+      s.albedo *= mix(1.0, mix(1.0, 1.1, dot * det), acov);
+      s.ao = mix(s.ao, mix(mix(1.0, 0.35, foot2), 0.75, 1.0 - det), acov);
     }
   }
   // Planting strip: soil and mulch up close, the hedge-top green at range
@@ -3711,8 +3843,12 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
       let st = fract(uv.x);
       let l0 = 0.05 + 0.4 * hash11(blk * 3.7);
       let sl = 0.2 + 0.5 * hash11(blk * 5.3);
-      let streak = 0.6 + 0.4 * valueNoise(vec2f(uv.x * 30.0, y * 8.0));
-      let scuffM = rdCov(abs(st - l0 - sl * 0.5) - sl * 0.5, 0.3, foot) * (1.0 - smoothstep(0.03, 0.07, y)) * streak;
+      // A soft, irregular rubber smear: ends feathered over 10-20 cm, its
+      // inner edge wandering, streaky along the rub.
+      let streak = 0.5 + 0.5 * valueNoise(vec2f(uv.x * 30.0, y * 8.0));
+      let ends = smoothstep(0.0, 0.15, st - l0) * (1.0 - smoothstep(sl - 0.2, sl, st - l0));
+      let reach = 0.03 + 0.05 * valueNoise(vec2f(uv.x * 6.0, 3.0 + blk));
+      let scuffM = ends * (1.0 - smoothstep(reach * 0.4, reach, y)) * streak;
       col *= 1.0 - 0.6 * scuffM;
     }
     // Chipped arris: notches knocked out of the outer edge (rougher, the
@@ -3764,13 +3900,40 @@ fn curbMat(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
     let sl = 0.25 + 0.5 * hash11(blk * 6.1);
     let st = fract(uv.x);
     let streak = 0.5 + 0.5 * valueNoise(vec2f(uv.x * 25.0, uv.y * 30.0));
-    let sc = rdCov(abs(st - l0 - sl * 0.5) - sl * 0.5, 0.25, foot) * (1.0 - smoothstep(0.08, 0.14, uv.y)) * smoothstep(0.0, 0.03, uv.y) * streak;
+    let ends = smoothstep(0.0, 0.15, st - l0) * (1.0 - smoothstep(sl - 0.2, sl, st - l0));
+    let top = 0.07 + 0.07 * valueNoise(vec2f(uv.x * 5.0, 7.0 + blk));
+    let sc = ends * (1.0 - smoothstep(top * 0.5, top, uv.y)) * smoothstep(0.0, 0.03, uv.y) * streak;
     s.albedo *= 1.0 - 0.65 * sc;
   }
   s.normal = detailNormal(n, t, b, d, 0.8);
   s.rough = 0.75;
   applyWetness(&s, world, max(n.y, 0.0), 0.5);
   return s;
+}
+
+// Clipped-hedge leaf sprays: the max of soft domes (radius ~0.75 cell) on a
+// jittered unit lattice at q; returns (height 0-1, d height / dq).
+fn hedgeClusters(q: vec2f) -> vec3f {
+  let ip = floor(q);
+  let fq = fract(q);
+  var best = vec3f(0.0);
+  for (var j = -1; j <= 1; j++) {
+    for (var i = -1; i <= 1; i++) {
+      let g = vec2f(f32(i), f32(j));
+      let hp = hash22(ip + g);
+      let r = g + 0.15 + 0.7 * hp - fq;
+      let rad = 0.6 + 0.35 * hash21(ip + g + 3.7);
+      let t = 1.0 - dot(r, r) / (rad * rad);
+      if (t > 0.0) {
+        let hgt = t * t * (0.75 + 0.25 * hp.y);
+        if (hgt > best.x) {
+          // d/dq of t^2 = 2 t * (2 r / rad^2) (r = c - q, so dr/dq = -1).
+          best = vec3f(hgt, 4.0 * t * r / (rad * rad) * (0.75 + 0.25 * hp.y));
+        }
+      }
+    }
+  }
+  return best;
 }
 
 // Planting-strip hedge (param 0, box uv in metres) and cast-iron tree grate
@@ -3796,64 +3959,59 @@ fn hedgeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     applyWetness(&s, world, 0.1, 0.0);
     return s;
   }
-  // Clipped box/azalea: a lumpy mass of leaf clumps (two cell scales,
-  // each clump domed: lit crown, dark gaps between), dark and bare-ish at
-  // the base, a fringe of light yellow-green new growth at the top and on
-  // the clump tips.
+  // Clipped box/azalea: a smooth, softly swelling clipped mass (0.3-1 m
+  // lumps, low-frequency shading only: no cells) covered in ~5 cm leaf
+  // clusters (two octaves of noise in albedo and normal: lit tips, dark
+  // gaps), dark and bare-ish at the base, light new growth on top.
   let h = uv.y;
   let isTop = n.y > 0.7;
   // Face coordinates: the box uv on the sides, world xz on the top.
   let fp = select(uv, world.xz, isTop);
   let foot = max(length(dWorldX), length(dWorldY));
-  let det = 1.0 - smoothstep(0.02, 0.08, foot);
+  let det = 1.0 - smoothstep(0.012, 0.05, foot);
   var T: vec3f;
   var B: vec3f;
   if (isTop) { T = vec3f(1.0, 0.0, 0.0); B = vec3f(0.0, 0.0, 1.0); }
   else { T = normalize(vec3f(-n.z, 0.0, n.x) + vec3f(1e-5, 0.0, 0.0)); B = vec3f(0.0, 1.0, 0.0); }
-  var dome = vec2f(0.0);
-  var shade = 0.0;
-  var tip = 0.0;
-  for (var k = 0; k < 2; k++) {
-    let sc = select(9.0, 3.5, k == 1);
-    let q = fp * sc + f32(k) * 7.7;
-    let ip = floor(q);
-    var md = 8.0;
-    var mr = vec2f(0.0);
-    for (var j = -1; j <= 1; j++) {
-      for (var i = -1; i <= 1; i++) {
-        let g = vec2f(f32(i), f32(j));
-        let r = g + hash22(ip + g) - fract(q);
-        let d = dot(r, r);
-        if (d < md) { md = d; mr = r; }
-      }
-    }
-    let r = sqrt(md);
-    let wgt = select(0.45, 0.55, k == 1);
-    shade += wgt * smoothstep(0.35, 0.75, r);
-    tip += wgt * (1.0 - smoothstep(0.0, 0.4, r));
-    dome += -mr * wgt * 1.2;
+  // Low-frequency swell and its slope (finite differences, 5 cm).
+  let sp = fp + vec2f(3.1, 7.7);
+  let sw = valueNoise(sp * 1.4) * 0.7 + valueNoise(sp * 3.3) * 0.3;
+  let swx = valueNoise((sp + vec2f(0.05, 0.0)) * 1.4) * 0.7 + valueNoise((sp + vec2f(0.05, 0.0)) * 3.3) * 0.3;
+  let swy = valueNoise((sp + vec2f(0.0, 0.05)) * 1.4) * 0.7 + valueNoise((sp + vec2f(0.0, 0.05)) * 3.3) * 0.3;
+  let gS = vec2f(swx - sw, swy - sw) / 0.05;
+  // Leaf clusters: two octaves (~6 cm and ~2.5 cm) of overlapping soft
+  // domes on jittered, rotated lattices (round sprays, no grid, no cell
+  // facets), faded to their mean with range.
+  var leaf = 0.5;
+  var gL = vec2f(0.0);
+  if (det > 0.0) {
+    let c1 = hedgeClusters(fp * 16.0);
+    let c2 = hedgeClusters(mat2x2f(0.8, -0.6, 0.6, 0.8) * fp * 40.0 + 7.3);
+    leaf = mix(0.5, c1.x * 0.7 + c2.x * 0.3, det);
+    gL = (c1.yz * 16.0 * 0.7 + (transpose(mat2x2f(0.8, -0.6, 0.6, 0.8)) * c2.yz) * 40.0 * 0.3) * det;
   }
-  let fine = valueNoise(fp * 40.0);
-  shade = mix(0.35, shade, det);
-  tip = mix(0.3, tip, det);
-  var col = mix(vec3f(0.05, 0.1, 0.035), vec3f(0.1, 0.19, 0.055), 0.4 + 0.6 * fine * (1.0 - shade));
-  // Each 6.5 m planting (and each plant in it, softly) its own green:
-  // bluer box, yellower azalea, a tired brownish one now and then.
+  let lit = smoothstep(0.15, 0.7, leaf);
+  var col = mix(vec3f(0.035, 0.07, 0.028), vec3f(0.1, 0.19, 0.06), lit) * (0.85 + 0.3 * sw);
+  // Each 6.5 m planting its own green: bluer box, yellower azalea, a
+  // tired brownish one now and then.
   let seg = hash21(floor(world.xz / 6.5) + 0.5);
   let hj = vec3f(1.0 + 0.25 * (seg - 0.5), 1.0, 1.0 - 0.45 * (seg - 0.5)) * (0.88 + 0.24 * hash21(floor(world.xz / 6.5) + 9.0));
   col *= mix(hj, hj * vec3f(1.25, 1.0, 0.8), step(0.9, seg));
   // New growth: yellow-green tips on top and the upper edge of the sides.
   let topness = select(smoothstep(0.35, 0.68, h), 1.0, isTop);
-  col = mix(col, vec3f(0.25, 0.32, 0.08), smoothstep(0.45, 0.85, tip * topness + 0.25 * fine * topness) * 0.85);
-  s.albedo = col * (1.0 - 0.45 * shade);
-  // Bulge and clump domes in the normal.
+  col = mix(col, vec3f(0.22, 0.3, 0.08), smoothstep(0.55, 0.85, leaf * topness + 0.15 * sw) * 0.7 * topness);
+  s.albedo = col;
+  // Shading: the clipped top rolls over, the swell tilts the faces gently,
+  // the clusters break it up up close.
   let top = smoothstep(0.58, 0.7, h);
   var nn = n + vec3f(0.0, top * 0.6 * (1.0 - n.y), 0.0);
-  nn += (T * dome.x + B * dome.y) * 0.6 * det;
+  nn += (T * gS.x + B * gS.y) * 0.08;
+  nn -= (T * gL.x + B * gL.y) * 0.012;
   s.normal = normalize(nn);
-  // AO: dark at the base where the mass is old wood and shade, gaps darker.
-  let baseAo = select(mix(0.25, 1.0, smoothstep(0.0, 0.55, h)), 1.0, isTop);
-  s.ao = baseAo * (1.0 - 0.5 * shade);
+  // AO: ~0.5 at the base where the mass is old wood and shade; gaps
+  // between clusters darker.
+  let baseAo = select(mix(0.5, 1.0, smoothstep(0.0, 0.5, h)), 1.0, isTop);
+  s.ao = baseAo * (1.0 - 0.45 * (1.0 - lit) * det - 0.12 * (1.0 - det));
   s.rough = 0.8;
   s.cls = CLASS_FOLIAGE;
   return s;
@@ -4442,9 +4600,11 @@ fn screenMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
 fn leafTint(species: u32, h: f32) -> vec3f {
   switch (species) {
     case 1u: {
-      let gold = step(0.6, h);
-      return mix(mix(vec3f(0.16, 0.2, 0.035), vec3f(0.26, 0.27, 0.04), h / 0.6),
-                 mix(vec3f(0.42, 0.32, 0.03), vec3f(0.5, 0.38, 0.05), (h - 0.6) / 0.4), gold);
+      // Ginkgo: a fresh mid green in season; one tree in ten already
+      // turning gold.
+      let gold = step(0.9, h);
+      return mix(mix(vec3f(0.085, 0.17, 0.04), vec3f(0.14, 0.23, 0.05), h / 0.9),
+                 mix(vec3f(0.36, 0.3, 0.04), vec3f(0.45, 0.35, 0.05), (h - 0.9) / 0.1), gold);
     }
     case 2u: { return mix(vec3f(0.045, 0.1, 0.045), vec3f(0.08, 0.15, 0.06), h); }
     default: { return mix(vec3f(0.06, 0.145, 0.04), vec3f(0.12, 0.22, 0.065), h); }
@@ -4522,17 +4682,26 @@ fn roadPole(world: vec3f, n: vec3f, uv: vec2f, base: vec3f, metal: f32) -> Surf 
   let foot = max(length(dWorldX), length(dWorldY));
   let gy = uv.y - POLE_SINK;
   let st = valueNoise(vec2f(uv.x * 14.0, uv.y * 0.35)) * 0.7 + valueNoise(vec2f(uv.x * 40.0, uv.y * 1.5)) * 0.3;
-  s.albedo = base * (0.9 + 0.16 * st);
+  s.albedo = base * (0.86 + 0.24 * st);
   s.metal = metal;
-  s.rough = 0.35 + 0.15 * st;
-  // Run-off grime from the top joint and arm, fading down.
-  s.albedo *= 1.0 - 0.12 * smoothstep(0.5, 0.8, st);
+  // Roughness in broad vertical bands: weathered matte where the run-off
+  // goes, the original sheen between (0.3-0.75).
+  s.rough = 0.3 + 0.45 * smoothstep(0.3, 0.75, st);
+  // Run-off grime streaks from the top joint, arm and fittings: dark
+  // vertical runs 2-6 cm wide, strongest high up and thinning down.
+  let rs = valueNoise(vec2f(uv.x * 22.0, uv.y * 0.12 + 3.0));
+  let runs = smoothstep(0.55, 0.8, rs) * (0.55 + 0.45 * valueNoise(vec2f(uv.x * 22.0, uv.y * 0.9)));
+  s.albedo *= 1.0 - 0.38 * runs - 0.1 * smoothstep(0.5, 0.8, st);
+  s.albedo = mix(s.albedo, s.albedo * vec3f(1.0, 0.92, 0.8), runs * 0.5);
+  s.rough = mix(s.rough, 0.8, runs * 0.7);
   if (abs(n.y) < 0.6) {
-    // Bottom 0.5 m: road splash and dog-height dirt, brown-grey, ragged top.
-    let dTop = 0.35 + 0.2 * valueNoise(vec2f(uv.x * 9.0, 2.0));
-    let dirt = 1.0 - smoothstep(dTop - 0.15, dTop, gy);
-    s.albedo = mix(s.albedo, vec3f(0.17, 0.15, 0.12) * (0.8 + 0.4 * st), dirt * 0.8);
-    s.rough = mix(s.rough, 0.85, dirt);
+    // Bottom 0.5 m: road splash and dog-height dirt, brown-grey, ragged
+    // top, with splash flecks above it.
+    let dTop = 0.4 + 0.2 * valueNoise(vec2f(uv.x * 9.0, 2.0));
+    let dirt = 1.0 - smoothstep(dTop - 0.2, dTop, gy);
+    let fleck = smoothstep(0.62, 0.72, valueNoise(vec2f(uv.x, gy) * 45.0)) * (1.0 - smoothstep(dTop, dTop + 0.35, gy)) * (1.0 - smoothstep(0.004, 0.012, foot));
+    s.albedo = mix(s.albedo, vec3f(0.14, 0.125, 0.1) * (0.8 + 0.4 * st), max(dirt * 0.9, fleck * 0.6));
+    s.rough = mix(s.rough, 0.9, max(dirt, fleck * 0.5));
     s.metal = mix(s.metal, 0.0, dirt);
     // Stickers at 1.1-1.9 m: in ~30 % of 12 cm cells, a 4-9 cm scrap.
     if (gy > 1.05 && gy < 1.95 && foot < 0.02) {
@@ -4732,6 +4901,49 @@ fn deckStains(ux: f32, uy: f32, y0: f32, seed: u32, fp: f32) -> f32 {
   return clamp(st * 1.45, 0.0, 1.0);
 }
 
+// Fascia drain spout (uv.y, metres down from the fascia top under the
+// coping lip): the geometry's spout leaves the face at 0.09..0.22.
+const SCUPPER_Y = 0.17;
+
+// Crisp drip stain hanging from a scupper at (x0, y0) in face metres (y
+// down): a hard-topped dark tongue as wide as the spout, then 3-7 rivulet
+// fingers of different lengths, hard-edged, each fading out through noise,
+// inside a faint fanning halo. The fingers drop to their mean once they
+// are under ~1.5 px; the head and halo keep the read at any range.
+fn scupperDrip(ux: f32, uy: f32, x0: f32, y0: f32, w: f32, len: f32, sd: f32, fp: f32) -> f32 {
+  let dy = uy - y0;
+  if (dy < -0.1 - fp || dy > len * 1.2 + 0.3) { return 0.0; }
+  let fw = max(fp, 1e-3);
+  let k = clamp(dy / len, 0.0, 1.0);
+  let dx = ux - x0;
+  let top = smoothstep(-fw * 0.5, fw * 0.5, dy);
+  // Head: 15-35 cm of solid stain under the spout, widening a little.
+  let headL = len * 0.05 + 0.1;
+  let hw = w * 0.5 * (1.0 + 0.6 * clamp(dy / headL, 0.0, 1.0));
+  let head = (1.0 - smoothstep(hw - fw * 0.5, hw + fw * 0.5, abs(dx))) * (1.0 - smoothstep(headL * 0.7, headL * 1.3 + fw, dy + 0.08 * (valueNoise(vec2f(dx * 9.0, sd)) - 0.5)));
+  // Fingers: cells across the spread, one rivulet each.
+  let spread = w * 0.5 * (1.0 + 1.1 * k);
+  let cw = max(w * 0.35, 0.12);
+  let ci = floor(dx / cw);
+  var fing = 0.0;
+  for (var j = -1; j <= 1; j++) {
+    let c = ci + f32(j);
+    let hc = hash21(vec2f(c, sd));
+    if (hc < 0.2) { continue; }
+    let cx = (c + 0.5) * cw + (fract(hc * 13.0) - 0.5) * cw * 0.6;
+    if (abs(cx) > spread + cw) { continue; }
+    let fl = len * mix(0.5, 1.0, fract(hc * 7.3)) * (1.0 - 0.5 * smoothstep(0.3, 1.0, abs(cx) / max(spread, 1e-3)));
+    let fk = clamp(dy / fl, 0.0, 1.0);
+    let wob = (valueNoise(vec2f(uy * 2.5, c * 3.1 + sd)) - 0.5) * cw * 0.5;
+    let fhw = cw * mix(0.6, 0.35, fk) * mix(0.7, 1.2, fract(hc * 29.0));
+    let prof = 1.0 - smoothstep(fhw - fw * 0.5, fhw + fw * 0.5, abs(dx - cx - wob));
+    let fade = (1.0 - 0.15 * fk) * (1.0 - smoothstep(0.6, 1.0, fk + 0.3 * (valueNoise(vec2f(c * 5.7 + sd, uy * 3.0)) - 0.5)));
+    fing = max(fing, prof * fade * min(1.0, fhw * 2.0 / (fw * 1.5)) * mix(0.75, 1.0, fract(hc * 41.0)));
+  }
+  let halo = 0.4 * (1.0 - smoothstep(spread * 0.5, spread + fw, abs(dx) + 0.1 * spread * (valueNoise(vec2f(dx * 4.0, uy * 2.0 + sd)) - 0.5))) * pow(1.0 - k, 1.2);
+  return top * clamp(max(max(head, fing), halo), 0.0, 1.0);
+}
+
 // A cement repair patch on a face (1 = inside), on ~35 % of bents: a
 // rectangle 0.8-3 m wide with ragged edges while they resolve.
 fn repairPatch(ux: f32, uy: f32, x0: f32, x1: f32, y0: f32, y1: f32, hp: u32, fu: vec2f, fp: f32) -> f32 {
@@ -4876,8 +5088,9 @@ fn stationHall(local: vec2f, h: f32, N: vec3f, T: vec3f, V: vec3f, seed: u32, fp
   let hit = ro + rd * t;
   var c: vec3f;
   if (t == tz) {
-    // Back wall: 0.6 m panels.
-    c = vec3f(0.58, 0.58, 0.55) * (1.0 - 0.25 * fine * max(jointCov(hit.x / 0.6, 0.02, 0.02), jointCov(hit.y / 0.6, 0.02, 0.02)));
+    // Back wall: 0.6 m panels, a mid grey (the room is lit from the
+    // ceiling: the wall is never as bright as the tubes).
+    c = vec3f(0.36, 0.36, 0.34) * (1.0 - 0.25 * fine * max(jointCov(hit.x / 0.6, 0.02, 0.02), jointCov(hit.y / 0.6, 0.02, 0.02)));
     // Posters between the stairs, framed.
     let pxp = fract((hit.x + sd * 0.7) / 3.0) * 3.0;
     let poster = step(0.6, pxp) * step(pxp, 1.5) * step(1.0, hit.y) * step(hit.y, 2.3);
@@ -4892,28 +5105,35 @@ fn stationHall(local: vec2f, h: f32, N: vec3f, T: vec3f, V: vec3f, seed: u32, fp
     }
     // Stair flight rising along x (one flight per 9 m of wall), its
     // stringer a dark diagonal and a steel handrail 0.9 m above it.
-    let sx = fract((hit.x + hashuf(seed) * 9.0) / 9.0) * 9.0;
-    let sy = hit.y - sx * 0.55 + 1.2;
-    c = mix(c, vec3f(0.18, 0.18, 0.2), step(abs(sy), 0.2));
-    c = mix(c, vec3f(0.35, 0.36, 0.38), step(sy, -0.2) * step(-1.4, sy) * 0.6);
-    c = mix(c, vec3f(0.55, 0.57, 0.6), step(abs(sy - 0.9), 0.03) * fine);
+    // Only some 9 m cells have a flight (by hash), each rising its own way.
+    let scell = floor((hit.x + hashuf(seed) * 9.0) / 9.0);
+    let hst = hash21(vec2f(scell, sd + 41.0));
+    if (hst < 0.4) {
+      let sx0 = fract((hit.x + hashuf(seed) * 9.0) / 9.0) * 9.0;
+      let sx = select(sx0, 9.0 - sx0, hst < 0.2);
+      let sy = hit.y - sx * 0.55 + 1.2 + fract(hst * 17.0) * 0.8;
+      c = mix(c, vec3f(0.1, 0.1, 0.11), step(abs(sy), 0.2));
+      c = mix(c, vec3f(0.2, 0.21, 0.22), step(sy, -0.2) * step(-1.4, sy) * 0.6);
+      c = mix(c, vec3f(0.4, 0.42, 0.45), step(abs(sy - 0.9), 0.03) * fine);
+    }
     // Wayfinding sign: yellow on dark.
     let wx = fract(hit.x / 4.8) * 4.8;
     let wsg = step(1.0, wx) * step(wx, 2.2) * step(abs(hit.y - (roomH - 0.45)), 0.13);
     c = mix(c, vec3f(0.06, 0.06, 0.07), wsg);
     c = mix(c, vec3f(1.0, 0.82, 0.1) * 1.4, wsg * step(0.55, valueNoise(vec2f(wx * 14.0, hit.y * 20.0))) * fine);
     // Light falls off away from the ceiling.
-    c *= mix(0.6, 1.0, clamp(hit.y / roomH, 0.0, 1.0));
+    c *= mix(0.45, 1.0, clamp(hit.y / roomH, 0.0, 1.0));
   } else if (rd.y > 0.0) {
     // Ceiling panels with fluorescent rows running along the hall.
-    c = vec3f(0.42, 0.43, 0.44) * (1.0 - 0.3 * fine * jointCov(hit.x / 0.6, 0.02, 0.03));
+    // (The ceiling round the tubes is lit by them: brighter near each row.)
     let row = abs(fract(hit.z / 1.8) - 0.5) * 1.8;
+    c = vec3f(0.26, 0.27, 0.28) * (1.0 - 0.3 * fine * jointCov(hit.x / 0.6, 0.02, 0.03)) * (0.75 + 0.5 * (1.0 - smoothstep(0.1, 0.6, row)));
     c = mix(c, vec3f(1.75, 1.85, 1.95), 1.0 - smoothstep(0.07, 0.11, row));
   } else {
     // Floor: grey terrazzo with the tube rows mirrored in it, darker toward
     // the glass.
     let row = abs(fract(hit.z / 1.8) - 0.5) * 1.8;
-    c = vec3f(0.4, 0.39, 0.37) * mix(0.6, 1.0, hit.z / depth) + vec3f(0.18) * (1.0 - smoothstep(0.08, 0.25, row));
+    c = vec3f(0.17, 0.165, 0.155) * mix(0.6, 1.0, hit.z / depth) + vec3f(0.09) * (1.0 - smoothstep(0.08, 0.25, row));
   }
   return c * vec3f(0.93, 0.97, 1.0);
 }
@@ -4978,11 +5198,15 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
   // Large soft weathering blotches (world space, so they run across joints).
   let blot = fbm2(vec2f(world.x * 0.11 + world.z * 0.07, world.y * 0.22 + world.z * 0.05) + f32(seed & 0x3fu) * 0.37);
   // Warm grey, ~0.37 (not the generic 0.5, which blows out at golden hour).
-  var a = vec3f(0.38, 0.37, 0.35) * tone * hue * tex * mix(0.8, 1.06, blot);
+  // (The fascia, the biggest surface in a street view, keeps only a trace
+  // of them: there it read as a soft blurry blotch field. Its variety
+  // comes from crisp formwork panels and stains instead.)
+  let fasciaV = vert && role == RC_FASCIA;
+  var a = vec3f(0.38, 0.37, 0.35) * tone * hue * tex * mix(select(0.8, 0.9, fasciaV), 1.04, blot);
   s.rough = 0.85;
   // A field of faint vertical weathering streaks on every vertical face
   // (falls back to its mean once the streaks are under ~3 px).
-  if (vert && role <= RC_PARAPET) {
+  if (vert && role <= RC_PARAPET && !fasciaV) {
     let sx = ux + select(0.0, f32(seed & 0xffu) * 1.7, role == RC_COLUMN);
     let f1 = 1.0 - smoothstep(0.08, 0.2, fp);
     let sf = smoothstep(0.5, 0.85, valueNoise(vec2f(sx * 2.2, uy * 0.22 + 3.0))) * smoothstep(0.25, 0.7, valueNoise(vec2f(sx * 0.45, uy * 0.4 + 9.0)));
@@ -5001,11 +5225,69 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
   switch (role) {
     case RC_FASCIA: {
       if (vert) {
-        // Coping drip band under the lip.
-        a *= 1.0 - 0.3 * bandF(uy, -1.0, 0.25, fp);
-        stain = deckStains(ux, uy, 0.12, seed, fp);
+        // Board-formed face (uv.x bent units ~ metres): 1.2 x 0.9 m plywood
+        // panels (10 per span, rows break at 0.16 and at deck level 1.06),
+        // each its own tone; thin dark, rougher joint lines with a pale
+        // grout fin beside them; a tie-hole grid; a mottled finer octave.
+        let sdf = f32(seed & 0xffu);
+        let py = uy - 0.16;
+        let pnl = vec2f(floor(ux / 1.2), floor(py / 0.9));
+        let hpl = hash21(pnl + vec2f(sdf * 0.71, 3.0));
+        // Release-oil bloom: each panel a touch darker toward one edge.
+        let pq = vec2f(fract(ux / 1.2), fract(py / 0.9));
+        a *= mix(0.89, 1.03, hpl) * (1.0 - 0.06 * select(pq.x, 1.0 - pq.x, fract(hpl * 9.0) < 0.5));
+        // Rain wash per panel column: each 1.2 m strip of the pour
+        // weathers its own way, darker toward the foot, crisp at the joints.
+        let hcol = hash21(vec2f(pnl.x, sdf + 7.0));
+        a *= 1.0 - mix(0.0, 0.16, hcol * hcol) * smoothstep(0.2, 2.0, uy);
+        let f1 = 1.0 - smoothstep(0.03, 0.09, fp);
+        let f2 = 1.0 - smoothstep(0.008, 0.025, fp);
+        let mott = (valueNoise(vec2f(ux, uy) * vec2f(3.0, 4.0) + sdf) - 0.5) * f1 + (valueNoise(vec2f(ux, uy) * 13.0 + sdf * 1.3) - 0.5) * 0.6 * f2;
+        a *= 1.0 + 0.16 * mott;
+        let jv = jointCov(ux / 1.2, fu.x / 1.2, 0.02 / 1.2);
+        let jh = jointCov(py / 0.9, fu.y / 0.9, 0.02 / 0.9) * step(-0.05, py);
+        let jl = max(jv, jh);
+        let fin = max(jointCov((ux - 0.03) / 1.2, fu.x / 1.2, 0.015 / 1.2), jointCov((py - 0.03) / 0.9, fu.y / 0.9, 0.015 / 0.9) * step(0.0, py));
+        a *= (1.0 - 0.4 * jl) * (1.0 + 0.12 * fin * (1.0 - jl));
+        s.rough = mix(s.rough, 0.95, jl);
+        // Tie holes, 0.6 x 0.45 m: dark 3.5 cm cones with a paler mortar plug
+        // ring, filtered to their area mean; one in six bleeds rust.
+        let tc = vec2f(floor(ux / 0.6), floor(py / 0.45));
+        let tq = (fract(vec2f(ux / 0.6, py / 0.45)) - 0.5) * vec2f(0.6, 0.45);
+        let tr = length(tq);
+        let tw = max(fp, 1e-3);
+        let hole = (1.0 - smoothstep(0.018 - tw * 0.5, 0.018 + tw * 0.5, tr)) * min(1.0, (0.018 * 0.018) / (tw * tw) * 1.6);
+        let plug = (1.0 - smoothstep(0.03 - tw * 0.5, 0.03 + tw * 0.5, tr)) * min(1.0, (0.03 * 0.03) / (tw * tw)) * f1;
+        let hth = hash21(tc + sdf * 0.37 + 11.0);
+        if (py > 0.0) {
+          a *= (1.0 + 0.1 * plug) * (1.0 - 0.75 * hole);
+          if (hth < 0.17) {
+            let rr = runStain(tq.x, tq.y, 0.0, 0.02, 0.05, mix(0.2, 0.6, fract(hth * 37.0)), fp);
+            a = mix(a, vec3f(0.24, 0.17, 0.12), 0.5 * rr * f1);
+          }
+        }
+        // Coping shadow band: a crisp darker 16 cm under the lip, then dirt
+        // washed down from it fading over half a metre.
+        a *= 1.0 - 0.35 * bandF(uy, -1.0, 0.1, fu.y) - 0.14 * (1.0 - smoothstep(0.1, 0.55, uy)) * (1.0 - bandF(uy, -1.0, 0.1, fu.y));
+        // Scupper near mid-span (x0 = gen-base scupperU(): 12 i + 6 +-0.9):
+        // a crisp drip stain from right under the spout, size and length
+        // hashed per span; coping drips and the old joint run-off, fainter.
+        let hsc = hashu((seed * 0x9e3779b1u) ^ u32(i32(bent) + 65536));
+        let scx = bent * 12.0 + 6.0 + (hashuf(hsc ^ 0x22u) - 0.5) * 1.8;
+        let scl = mix(1.0, 1.9, hashuf(hsc ^ 0x11u));
+        var dr = scupperDrip(ux, uy, scx, SCUPPER_Y, mix(0.25, 0.45, hashuf(hsc)), scl, f32(hsc & 0xffu), fp) * mix(0.8, 1.0, hashuf(hsc ^ 0x33u));
+        // Coping drips: 1-3 per span where the lip's drip groove has
+        // clogged, full-height crisp runs from under the coping shadow.
+        for (var q = 0u; q < 4u; q++) {
+          let hk = hashu(hsc ^ (0x2b3u + q * 0x95u));
+          if (q > 0u && hashuf(hk ^ 4u) < 0.4) { continue; }
+          var xk = bent * 12.0 + 0.8 + hashuf(hk) * 10.4;
+          xk += select(0.0, 1.2, abs(xk - scx) < 0.6);
+          dr = max(dr, mix(0.75, 1.0, hashuf(hk ^ 1u)) * scupperDrip(ux, uy, xk, 0.16, mix(0.15, 0.35, hashuf(hk ^ 2u)), mix(1.7, 2.8, hashuf(hk ^ 3u)), f32(hk & 0xffu) + 31.0, fp));
+        }
+        stain = max(min(1.0, dr * 1.35), 0.35 * deckStains(ux + 6.0, uy, 0.12, seed ^ 0x3a7u, fp));
         // Soot / traffic grime settling toward the slab's lower edge.
-        a *= mix(1.0, 0.82, smoothstep(0.9, 2.3, uy) * (0.6 + 0.4 * blot));
+        a *= mix(1.0, 0.82, smoothstep(0.9, 2.0, uy) * (0.6 + 0.4 * blot));
         // Bent joints: 2 cm sealed gaps on uv.x = 0 mod 12, and white
         // efflorescence crusting along and fanning below half of them (from
         // the deck cold joint), plus a lime run from some scuppers.
@@ -5017,12 +5299,6 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
           let ef = fanStreak(ux, uy, j * 12.0 + (hashuf(hj ^ 8u) - 0.5) * 0.2, mix(0.3, 1.1, hashuf(hj ^ 9u)), mix(0.25, 0.6, hashuf(hj ^ 3u)), mix(0.6, 1.8, hashuf(hj ^ 4u)), f32(hj & 0xffu) + 50.0, fp);
           let crust = mix(1.0, smoothstep(0.35, 0.65, valueNoise(vec2f(ux, uy) * 11.0)), 1.0 - smoothstep(0.01, 0.03, fp));
           a = mix(a, vec3f(0.72, 0.71, 0.67), clamp(0.8 * ef * mix(0.6, 1.0, crust) + 0.5 * jc * step(uy, 1.6), 0.0, 1.0));
-        }
-        // Formwork panel lines (0.9 m) and tie holes (0.6 x 0.45 m), close up only.
-        if (fine > 0.0) {
-          let fl = jointCov(uy / 0.9, fu.y / 0.9, 0.012 / 0.9);
-          let th = length((fract(vec2f(ux / 0.6, uy / 0.45)) - 0.5) * vec2f(0.6, 0.45));
-          a *= 1.0 - fine * (0.15 * fl + 0.4 * (1.0 - smoothstep(0.01, 0.016, th)));
         }
       } else if (n.y < -0.5) {
         let sp = soffitPattern(uv, seed, fp, fu);
@@ -5178,11 +5454,17 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       }
     }
     case RC_TROUGH: {
-      // 1 m precast lids with dark 1 cm gaps; one in 15 a newer tone.
+      // 1 m precast lids, darker and greener than the rims (damp, mossy),
+      // each rocked a little (its own tone), one in 15 a newer one; the
+      // joints are 2.5 cm dark gaps (prefiltered, they hold to ~30 m),
+      // and through 1 in 40 the black cable bundle shows.
       let lid = floor(ux);
       let hl = hashuf((seed * 0x1b873593u) ^ u32(i32(lid) + 65536));
-      a *= select(1.0, select(1.18, 0.82, hl < 0.033), hl < 0.066) * mix(0.9, 1.06, fract(hl * 37.0));
-      a *= 1.0 - 0.6 * jointCov(ux, fu.x, 0.01);
+      if (n.y > 0.5) { a = vec3f(0.27, 0.278, 0.258) * tex * mix(0.88, 1.06, blot); }
+      a *= select(1.0, select(1.25, 0.8, hl < 0.033), hl < 0.066) * mix(0.84, 1.08, fract(hl * 37.0));
+      let lj = jointCov(ux, fu.x, 0.025);
+      a *= 1.0 - 0.7 * lj;
+      if (fract(hl * 53.0) < 0.025) { a = mix(a, vec3f(0.02), bandF(fract(ux + 0.5) - 0.5, -0.03, 0.03, fu.x)); }
       if (n.y > 0.5) {
         // Walkway lids: boot-worn dark centre line, and they pond in rain.
         a *= 1.0 - 0.15 * smoothstep(0.6, 0.85, valueNoise(world.xz * 0.9 + 3.0));
@@ -5197,9 +5479,9 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       let slab = vec2f(floor(x / 0.6), floor(uy / 0.6));
       let hsl = hash21(slab + f32(seed & 0xffu) * 0.13);
       a = vec3f(0.42, 0.41, 0.39) * tex * mix(0.9, 1.07, hsl) * select(1.0, 0.86, fract(hsl * 17.0) < 0.1);
-      let jx = jointCov(x / 0.6, fu.x / 0.6, 0.012 / 0.6);
-      let jy = jointCov(uy / 0.6, fu.y / 0.6, 0.012 / 0.6);
-      a *= 1.0 - 0.5 * max(jx, jy);
+      let jx = jointCov(x / 0.6, fu.x / 0.6, 0.016 / 0.6);
+      let jy = jointCov(uy / 0.6, fu.y / 0.6, 0.016 / 0.6);
+      a *= 1.0 - 0.58 * max(jx, jy);
       // Worn walking band, and chewing-gum / drip spots.
       a *= 1.0 - 0.14 * bandF(x, 1.4, 3.0, 0.6) * (0.7 + 0.3 * valueNoise(vec2f(x * 2.0, uy * 0.3)));
       let gum = smoothstep(0.82, 0.86, valueNoise(vec2f(x, uy) * 9.0)) * fine;
@@ -5222,7 +5504,7 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         uvDirs(&tu, &tv);
         let q = fract(vec2f(x - 0.8, uy) / 0.075) - 0.5;
         let r = length(q);
-        let vis = 1.0 - smoothstep(0.02, 0.05, fp);
+        let vis = 1.0 - smoothstep(0.03, 0.065, fp);
         let w = min(fp / 0.075 * 0.6, 0.3);
         let dome = 1.0 - smoothstep(0.26 - w, 0.33 + w, r);
         let slope = smoothstep(0.1, 0.3, r) * dome;
@@ -5233,7 +5515,7 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         let ht = hash21(tb + 3.7);
         // Blocks: most a faded ochre, a few fresh replacements.
         var ya = select(vec3f(0.8, 0.6, 0.06), vec3f(0.92, 0.72, 0.04), ht < 0.15) * mix(0.88, 1.05, d.a);
-        ya *= mix(0.8, 1.0 - 0.6 * ring - 0.35 * (1.0 - dome) + 0.2 * cap, vis);
+        ya *= mix(0.78, 1.0 - 0.65 * ring - 0.5 * (1.0 - dome) + 0.25 * cap, vis);
         ya *= 1.0 - 0.6 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.012 / 0.3), jointCov((x - 0.8) / 0.3, fu.x / 0.3, 0.012 / 0.3));
         // Boot-scuffed grey wear on the dots, black tyre / sole marks.
         ya = mix(ya, vec3f(0.4, 0.38, 0.33), 0.4 * smoothstep(0.55, 0.8, valueNoise(vec2f(x * 4.0, uy * 0.6))));
@@ -5290,7 +5572,12 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         // but at room level (walls ~0.35, tubes ~1.1 at night), not a
         // blown-out lightbox; a few panes carry a frosted privacy film.
         let film = select(1.0, 0.55, hp < 0.12 && h < 1.6);
-        s.emissive = hall * film * (1.0 - mull) * (1.0 - kick) * mix(0.28, 0.6, nightLight());
+        // Mullions and the transom shade the room just behind them (and
+        // their deep reveals cut the light at a grazing view).
+        let dm = min(abs(fract(ux / 1.5 + 0.5) - 0.5) * 1.5, abs(h - 2.4));
+        let msh = mix(0.45, 1.0, smoothstep(0.03, 0.3, dm));
+        // Capped at room level: ~2.5x the lit facade, not a light box.
+        s.emissive = min(hall, vec3f(1.2)) * film * msh * mix(0.45, 1.0, step(0.18, hp2)) * (1.0 - mull) * (1.0 - kick) * mix(0.26, 0.13, nightLight());
         porous = 0.0;
       } else if (vert) {
         // Box UV: uv.y = metres above the tower base. Pale precast panels
@@ -5315,7 +5602,7 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
           uvDirs(&tu, &tv);
           let V = normalize(world - frame.camPos.xyz);
           let hall = stationHall(vec2f(ux, ly - 2.5), 0.8, n, tu, V, seed, fp);
-          s.emissive = hall * (1.0 - mull) * gl * mix(0.25, 0.6, nightLight());
+          s.emissive = min(hall, vec3f(1.2)) * (1.0 - mull) * gl * mix(0.24, 0.13, nightLight());
         }
         porous = 0.3;
       }
@@ -5331,22 +5618,36 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         let hpn = hashu((seed * 0x1b56c4e9u) ^ u32(i32(pid) + 65536));
         // (Tone per panel between two posts; hpn's cells straddle a post.)
         let hpp = hashu((seed * 0x3c6ef372u) ^ u32(i32(floor(ux / 2.0)) + 65536));
-        let ptone = mix(0.78, 1.08, hashuf(hpp)) * select(vec3f(1.0), vec3f(1.05, 1.02, 0.9), hashuf(hpp ^ 2u) < 0.25);
+        // Panel type by hash: most the ribbed grey original, ~18 % a later
+        // replacement in another tone with a finer, shallower rib, and (off
+        // ~16 % clear polycarbonate (full height).
+        // The stretch's mix is a geometry param ((param >> 7) & 3: bit 0
+        // clear panels ~1 in 4, bit 1 replaced panels ~1 in 6).
+        let pmix = (param >> 7u) & 3u;
+        let ptype = hashuf(hpp ^ 0x7au);
+        let clear = (pmix & 1u) != 0u && ptype < 0.25;
+        let repl = (pmix & 2u) != 0u && ptype >= 0.25 && ptype < 0.25 + 1.0 / 6.0;
+        let ptone = mix(0.92, 1.08, hashuf(hpp)) * select(vec3f(1.0), vec3f(1.05, 1.02, 0.9), hashuf(hpp ^ 2u) < 0.25)
+          * select(vec3f(1.0), select(vec3f(1.22, 1.19, 1.08), vec3f(0.78, 0.86, 0.96), hashuf(hpp ^ 3u) < 0.5), repl);
         // Trapezoid rib profile, 0.2 m pitch: a lit upper chamfer, a flat
         // crest, a shadowed lower chamfer and a flat valley. Normals while the
         // ribs resolve, their mean shading after.
         let ribK = 1.0 - smoothstep(0.012, 0.04, fu.y);
-        let rf = fract(uy / 0.2);
-        let up = bandF(rf, 0.0, 0.14, fu.y / 0.2);
-        let dn = bandF(rf, 0.5, 0.64, fu.y / 0.2);
-        a = vec3f(0.44, 0.45, 0.43) * ptone * mix(1.0, d.b * 2.0, 0.25) * mix(0.95, 1.0 + 0.1 * up - 0.22 * dn, ribK);
-        s.normal = normalize(n + tv * (dn - up) * 0.9 * ribK);
+        let rp = select(0.2, 0.1, repl);
+        let rf = fract(uy / rp);
+        let up = bandF(rf, 0.0, 0.14, fu.y / rp);
+        let dn = bandF(rf, 0.5, 0.64, fu.y / rp);
+        let rd = select(1.0, 0.55, repl);
+        a = vec3f(0.44, 0.45, 0.43) * ptone * mix(1.0, d.b * 2.0, 0.25) * mix(0.95, 1.0 + (0.1 * up - 0.22 * dn) * rd, ribK);
+        s.normal = normalize(n + tv * (dn - up) * 0.9 * rd * ribK);
         s.rough = 0.6;
         // Top-down grime: dust settles on the cap and washes down the panel
         // face; darker under the cap, streaked per panel.
         let px = (fract(ux / 2.0 + 0.5) - 0.5) * 2.0;
         let ptop = select(0.0, 0.62, glazed);
-        a *= mix(0.68, 1.0, smoothstep(ptop, ptop + 0.6, uy) * (0.75 + 0.25 * blot));
+        // (Its depth and strength per panel: a replaced panel is cleaner.)
+        let tg = mix(0.25, 0.9, hashuf(hpp ^ 0x41u));
+        a *= mix(mix(0.62, 0.85, hashuf(hpp ^ 0x42u) * 0.6 + select(0.0, 0.4, repl)), 1.0, smoothstep(ptop, ptop + tg, uy) * (0.75 + 0.25 * blot));
         var gs = 0.0;
         for (var q = 0u; q < 3u; q++) {
           let hq = hashu(hpn ^ (0x77u + q * 0x13u));
@@ -5381,8 +5682,28 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
           s.rough = mix(s.rough, mix(0.07, 0.45, fr), gk);
           s.normal = normalize(mix(s.normal, n, gk));
         }
-        // Dirt toward the base (wall ~1.5 m high).
+        // Clear polycarbonate panel: a dark smoked sheet that shows what is
+        // behind it dimly (the sky and the catenary over the wall, from the
+        // street; the city across, from the track), scuffed, grimy at the
+        // foot, with a horizontal frame bar at mid-height.
+        if (clear) {
+          let V = normalize(world - frame.camPos.xyz);
+          let behind = mix(frame.groundAmbient.rgb * 0.8 + frame.cityGlow.rgb, frame.skyAmbient.rgb, smoothstep(-0.4, 0.1, V.y));
+          let bar = bandF(uy, 0.72, 0.8, fu.y);
+          let cg = vec3f(0.045, 0.05, 0.05) * mix(0.85, 1.15, hashuf(hpp ^ 9u));
+          let ck = 1.0 - bar;
+          a = mix(a, cg, ck);
+          s.rough = mix(s.rough, 0.08, ck);
+          s.normal = normalize(mix(s.normal, n, ck));
+          s.emissive += mix(behind, vec3f(dot(behind, vec3f(0.3, 0.5, 0.2))), 0.6) * 0.3 * ck * (1.0 - smoothstep(1.1, 1.5, uy) * 0.7);
+          a = mix(a, vec3f(0.24, 0.24, 0.25), bar);
+        }
+        // Dirt toward the base (wall ~1.5 m high): splash grime rising a
+        // ragged 0.2-0.5 m from the foot, per panel.
+        let gh = mix(0.2, 0.5, hashuf(hpp ^ 0x51u));
+        let foot = smoothstep(1.5 - gh, 1.5 - gh * 0.3, uy + 0.12 * (valueNoise(vec2f(ux * 6.0, uy * 3.0)) - 0.5));
         a *= mix(1.0, 0.72, smoothstep(1.0, 1.5, uy));
+        a = mix(a, vec3f(0.16, 0.145, 0.12), 0.55 * foot);
         // H-posts, with edge normals while they resolve; rust streaks run
         // from the post tops and bolts down the post and the panel beside.
         let pc = jointCov(ux / 2.0, fu.x / 2.0, 0.15 / 2.0);
@@ -5427,6 +5748,24 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
     }
   }
   applyWetness(&s, world, flat, porous);
+  // Night bounce: the street below (lamp pools, shop fronts, headlights)
+  // and the under-deck fittings light the down- and outward-facing deck
+  // faces softly, so the fascia and soffits are not black between lamps.
+  // Warm from the sodium/LED-lit street, strongest at the fascia's foot;
+  // on the soffits it peaks under each bay's fluorescent fitting.
+  if (role == RC_FASCIA || role == RC_BEAM || (role == RC_STATION && n.y < -0.5)) {
+    let nl = nightLight();
+    if (nl > 0.0) {
+      var bk = 0.0;
+      if (n.y < -0.5) {
+        let bay = abs(fract(ux / 12.0) - 0.5) * 2.0;
+        bk = 0.06 + 0.05 * (1.0 - smoothstep(0.0, 0.7, bay));
+      } else if (vert) {
+        bk = select(0.03, mix(0.008, 0.04, smoothstep(0.1, 2.0, uy)), role == RC_FASCIA);
+      }
+      s.emissive += s.albedo * vec3f(1.0, 0.86, 0.68) * bk * nl;
+    }
+  }
   return s;
 }
 
@@ -5452,10 +5791,13 @@ fn railBed(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
   // along the line: heavier where trains brake for the station / signals).
   bal = mix(bal, vec3f(0.24, 0.14, 0.08), 0.75 * smoothstep(0.8, 0.2, abs(atx - 0.53)));
   let oilEdge = 0.36 + 0.08 * (valueNoise(vec2f(x * 2.0, uv.y * 0.7)) - 0.5);
-  let oil = (1.0 - smoothstep(oilEdge - 0.12, oilEdge + 0.06, atx)) * mix(0.65, 1.0, valueNoise(vec2f(x * 3.0, uv.y * 0.2)));
-  bal = mix(bal, vec3f(0.05, 0.042, 0.035), 0.9 * oil);
+  let oil = (1.0 - smoothstep(oilEdge - 0.12, oilEdge + 0.06, atx)) * mix(0.55, 1.0, valueNoise(vec2f(x * 3.0, uv.y * 0.2)));
+  bal = mix(bal, vec3f(0.04, 0.034, 0.028), 0.95 * oil);
   // Fresher, paler stone on the shoulders (topped up by the tamping train).
   bal = mix(bal, vec3f(0.27, 0.26, 0.245), smoothstep(1.35, 1.7, atx));
+  // The shoulder slope (|x| > 3.3): fresh pale stone, a dark silty toe.
+  bal = mix(bal, vec3f(0.31, 0.3, 0.28), smoothstep(3.25, 3.45, abs(x)) * (1.0 - smoothstep(3.7, 4.0, abs(x))));
+  bal = mix(bal, vec3f(0.12, 0.11, 0.095), smoothstep(3.75, 4.05, abs(x)));
   let stoneA = d.b * 2.0 * mix(0.3, 1.0, d.a);
   var a = bal * stoneA;
   // One stone in ten rust-stained (the detail layer is grey only).
@@ -5478,7 +5820,8 @@ fn railBed(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
     let hs = hash21(vec2f(sid, c));
     let hs2 = hash21(vec2f(sid * 1.37 + 5.0, c * 3.1));
     // Laid by hand-ish: each sleeper a few cm off pitch and a touch skewed.
-    let sy = uv.y - sid * 0.6 - (hs - 0.5) * 0.05 - (x - c) * (fract(hs * 31.0) - 0.5) * 0.04;
+    // (+-3.5 cm off pitch, +-1.5 degrees of yaw, so the rungs visibly wander.)
+    let sy = uv.y - sid * 0.6 - (hs - 0.5) * 0.07 - (x - c) * (fract(hs * 31.0) - 0.5) * 0.052;
     let ds = abs(sy);
     // Stones heaped over the sleeper ends and spilling over its edges.
     let heap = smoothstep(0.6, 0.75, d.a) * smoothstep(0.9, 1.0, atx) + smoothstep(0.7, 0.85, d.a) * 0.6 * smoothstep(0.09, 0.12, ds);
@@ -5499,13 +5842,16 @@ fn railBed(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
     // Oil soaked into the centre between the rails, ragged-edged, heavier on
     // some sleepers than others.
     let oe = 0.3 + 0.1 * (valueNoise(vec2f(x * 5.0, uv.y * 7.0)) - 0.5);
-    sa = mix(sa, vec3f(0.055, 0.045, 0.038), mix(0.45, 0.9, fract(hs * 7.0)) * (1.0 - smoothstep(oe - 0.08, oe + 0.06, atx)) * mix(0.75, 1.0, valueNoise(vec2f(x * 6.0, uv.y * 4.0))));
+    sa = mix(sa, vec3f(0.045, 0.038, 0.032), mix(0.65, 0.95, fract(hs * 7.0)) * (1.0 - smoothstep(oe - 0.08, oe + 0.06, atx)) * mix(0.75, 1.0, valueNoise(vec2f(x * 6.0, uv.y * 4.0))));
     // Rust bleeding from the fastenings and rail seats.
     let rr = 0.2 + 0.06 * (valueNoise(vec2f(x * 9.0, uv.y * 9.0 + hs * 20.0)) - 0.5);
     sa = mix(sa, vec3f(0.3, 0.14, 0.06), 0.85 * (1.0 - smoothstep(rr * 0.5, rr, abs(atx - 0.53))));
     // Rusty clips either side of each rail, and the black seat pad under it.
-    let clip = (1.0 - step(0.03, abs(abs(atx - 0.53) - 0.08))) * step(ds, 0.05);
-    sa = mix(sa, vec3f(0.16, 0.08, 0.04), clip);
+    let clip = (1.0 - step(0.035, abs(abs(atx - 0.53) - 0.085))) * step(ds, 0.055);
+    let cr = valueNoise(vec2f(x * 40.0, uv.y * 40.0) + hs * 9.0);
+    sa = mix(sa, mix(vec3f(0.2, 0.09, 0.04), vec3f(0.46, 0.22, 0.08), cr), clip);
+    // Rust run-off from each clip onto the sleeper top.
+    sa = mix(sa, vec3f(0.3, 0.15, 0.07), 0.5 * (1.0 - clip) * (1.0 - smoothstep(0.03, 0.09, abs(abs(atx - 0.53) - 0.085))) * (1.0 - smoothstep(0.05, 0.11, ds)));
     sa = mix(sa, vec3f(0.05), (1.0 - step(0.06, abs(atx - 0.53))) * step(ds, 0.1));
     // Bevel: 3 cm tilt at all four edges.
     var tu: vec3f;
@@ -5564,9 +5910,12 @@ fn railSteel(world: vec3f, n: vec3f, param: u32) -> Surf {
     // line of sky down each rail.
     let head = smoothstep(mix(0.5, 0.2, wet), mix(0.75, 0.5, wet), n.y);
     let band = smoothstep(0.88, 0.95, n.y);
-    s.albedo = mix(rust, vec3f(0.62, 0.62, 0.60) * (1.0 + 0.5 * wet), head);
-    s.metal = head;
-    s.rough = mix(0.8, mix(0.12, 0.07, band), head);
+    // Only the running band is polished; the gauge-corner shoulders are a
+    // duller, darker steel (a glossy shoulder mirrored a blue sky rim
+    // down every rail at grazing angles by day).
+    s.albedo = mix(rust, mix(vec3f(0.34, 0.33, 0.32), vec3f(0.62, 0.62, 0.60), band) * (1.0 + 0.5 * wet), head);
+    s.metal = head * mix(0.55, 1.0, band);
+    s.rough = mix(0.8, mix(0.42, 0.08, band), head);
     s.rough = mix(s.rough, mix(s.rough * 0.7, 0.05, head), wet);
     s.albedo *= 1.0 - 0.3 * wet * (1.0 - head);
   } else {
@@ -5651,8 +6000,29 @@ fn railGirder(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     var bc = mix(vec3f(0.03), vec3f(0.9, 0.7, 0.05), inner);
     bc = mix(bc, vec3f(0.85, 0.85, 0.82), panel);
     let fine = 1.0 - smoothstep(0.008, 0.02, fp);
-    let glyph = step(0.5, valueNoise(vec2f(bx * 14.0, by * 30.0))) * bandF(bx, -0.65, 0.65, fu.x) * bandF(by, -0.07, 0.07, fu.y);
-    bc = mix(bc, vec3f(0.05), glyph * fine);
+    // Clearance height "4.5m" in black on the white panel, laid out to read
+    // left-to-right from the side the face is seen from.
+    var tu: vec3f;
+    var tv: vec3f;
+    uvDirs(&tu, &tv);
+    let rgt = cross(-n, vec3f(0.0, 1.0, 0.0));
+    let gx = select(-bx, bx, dot(tu, rgt) >= 0.0);
+    let k = 0.27;
+    let gy = -by;
+    var gd = rdDigit(vec2f(gx + 0.36, gy) / k, 4u, 0.1) * k;
+    gd = min(gd, length(vec2f(gx + 0.19, gy + 0.085)) - 0.022);
+    gd = min(gd, rdDigit(vec2f(gx + 0.02, gy) / k, 5u, 0.1) * k);
+    // "m": three stems under a bar (sign-stencil style), x-height 0.12 m.
+    let mx = gx - 0.24;
+    let st = 0.025;
+    var md = min(rdSeg(vec2f(mx, gy), vec2f(-0.07, -0.097), vec2f(-0.07, 0.02)), min(rdSeg(vec2f(mx, gy), vec2f(0.0, -0.097), vec2f(0.0, 0.0)), rdSeg(vec2f(mx, gy), vec2f(0.07, -0.097), vec2f(0.07, 0.0))));
+    md = min(md, rdSeg(vec2f(mx, gy), vec2f(-0.07, 0.02), vec2f(0.07, 0.02)));
+    gd = min(gd, md - st);
+    let gw = max(fp, 0.002);
+    let glyph = (1.0 - smoothstep(-gw * 0.5, gw * 0.5, gd)) * panel;
+    // Past ~2 cm a pixel the numeral averages into the panel's grey.
+    let gfine = 1.0 - smoothstep(0.02, 0.045, fp);
+    bc = mix(bc, vec3f(0.05), mix(0.3 * panel, glyph, gfine));
     s.albedo = mix(s.albedo, bc, board);
     s.rough = mix(s.rough, 0.5, board);
     s.metal = mix(s.metal, 0.0, board);
@@ -5721,6 +6091,32 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s.rough = 0.36 + 0.14 * st;
         s.albedo *= 0.94 + 0.12 * st;
         applyWetness(&s, world, 0.0, 0.0);
+      } else if (param == 0u && n.y < -0.9) {
+        // Steel soffit seen from below (the station platform canopy: uv in
+        // metres, u along, v across): the underside of the profiled roof
+        // sheet, ribs every 0.25 m running down the slope, carried on
+        // purlins every 1.45 m across (dark steel with a shadowed flank),
+        // each sheet its own grime, dirtier toward the open track edge.
+        let fu = uvFoot();
+        let rib = jointCov(uv.x / 0.25, fu.x / 0.25, 0.4);
+        let sheet = hash21(vec2f(floor(uv.x / 1.0), floor(uv.y / 2.9)) + 5.0);
+        var c = vec3f(0.5, 0.5, 0.48) * mix(0.88, 1.05, sheet) * (1.0 - 0.22 * rib);
+        let pv = uv.y - 0.4;
+        let pur = jointCov(pv / 1.45, fu.y / 1.45, 0.1 / 1.45);
+        let pfl = jointCov((pv - 0.09) / 1.45, fu.y / 1.45, 0.07 / 1.45);
+        c *= mix(0.88, 1.0, smoothstep(0.0, 1.5, uv.y)) * (1.0 - 0.2 * smoothstep(0.55, 0.8, valueNoise(uv * vec2f(0.5, 1.5))));
+        c = mix(c, vec3f(0.22, 0.23, 0.24), pur);
+        c *= 1.0 - 0.45 * pfl;
+        s.albedo = c;
+        s.metal = 0.3;
+        s.rough = mix(0.55, 0.45, pur);
+        var tu: vec3f;
+        var tv: vec3f;
+        uvDirs(&tu, &tv);
+        let rk = 1.0 - smoothstep(0.03, 0.08, fu.x);
+        let rs = sin(uv.x / 0.25 * 6.2831853);
+        s.normal = normalize(n + tu * rs * 0.35 * rk);
+        applyWetness(&s, world, 0.0, 0.0);
       } else if ((param & METAL_TRIM) != 0u) {
         // Building trim (canopy fascia, flashing): packMat(CM.metal,
         // METAL_TRIM | (style & 0x1fff)) paints it in frameFinish's colour.
@@ -5752,16 +6148,22 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       // Per-tree hue: each tree a little bluer or yellower (second hash of
       // the tree's aux, independent of the tint pick).
       let th = hashuf(aux * 0x2c1b3c6du + 0x51u) - 0.5;
-      let hue = vec3f(1.0 + 0.35 * th, 1.0 + 0.05 * th, 1.0 - 0.5 * th);
+      let hue = vec3f(1.0 + 0.15 * th, 1.0 + 0.08 * th, 1.0 - 0.45 * th) * vec3f(0.88, 1.0, 0.95);
       // Crown interior: cards facing away from the eye are the far side of
       // the crown seen through gaps, in its own shade (~0.5x), as are the
       // downward-facing ones.
       let vdir = normalize(frame.camPos.xyz - world);
       let inner = 1.0 - smoothstep(-0.5, 0.35, dot(n, vdir));
-      s.albedo = leafTint(param, hashuf(aux)) * hue * (0.6 + 0.8 * l.r) * (0.85 + 0.3 * cell) * (1.0 - 0.3 * inner);
+      // Depth into the crown: the card normals are spherical about the
+      // crown centre, so the lower half and the side turned from the sun
+      // (and the far side seen through gaps, `inner`) are the interior,
+      // in the crown's own shade.
+      let sunSide = dot(n.xz, normalize(frame.sunDir.xz + 1e-4)) * (1.0 - nightLight());
+      let deep = clamp((1.0 - smoothstep(-0.6, 0.35, n.y)) * 0.7 + (1.0 - smoothstep(-0.7, 0.2, sunSide)) * 0.35 + inner * 0.3, 0.0, 1.0);
+      s.albedo = leafTint(param, hashuf(aux)) * hue * (0.6 + 0.8 * l.r) * (0.85 + 0.3 * cell) * (1.0 - 0.3 * inner) * (1.0 - 0.25 * deep);
       s.rough = 0.8;
       // Leaves are never fully occluded: light scatters through the crown.
-      s.ao = clamp(0.6 + 0.4 * n.y, 0.45, 1.0) * (1.0 - 0.45 * inner);
+      s.ao = clamp(0.6 + 0.4 * n.y, 0.4, 1.0) * (1.0 - 0.45 * inner) * (1.0 - 0.45 * deep);
       s.cls = CLASS_FOLIAGE;
     }
     case M_BARK: { s = barkMat(world, n, uv); }
@@ -5825,7 +6227,9 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         if (param == 6u) {
           s.emissive = led * night * (select(5.0, 45.0, n.y < -0.5)) * boost;
         } else {
-          s.emissive = led * night * 14.0 * boost;
+          // (The coping line is a solid min-width tube now: it needs only
+          // a little help at range, or it blooms out at far-night.)
+          s.emissive = led * night * 14.0 * min(boost, 2.5);
         }
       }
     }
@@ -5936,6 +6340,17 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s.albedo = vec3f(0.5, 0.52, 0.53) * (0.9 + 0.1 * rib * k) * (0.85 + 0.15 * valueNoise(uv * vec2f(0.5, 2.0)));
         s.metal = 0.3;
         s.rough = mix(0.62, 0.5, k);
+        if (n.y > 0.5) {
+          // Roof top: 0.9 m sheets, each its own weathering, dark lap
+          // lines between them, and grime silting along the low edge.
+          let fu = uvFoot();
+          let sh = hash21(vec2f(floor(uv.x / 0.9), 3.0));
+          s.albedo *= mix(0.85, 1.08, sh) * (1.0 - 0.35 * jointCov(uv.x / 0.9, fu.x / 0.9, 0.03 / 0.9));
+          let silt = 1.0 - smoothstep(0.1, 0.9 + 0.5 * valueNoise(vec2f(uv.x * 1.5, 1.0)), uv.y);
+          s.albedo = mix(s.albedo, vec3f(0.2, 0.19, 0.16), 0.6 * silt);
+          let rs = smoothstep(0.62, 0.8, valueNoise(vec2f(uv.x * 3.0, uv.y * 0.4) + 7.0));
+          s.albedo = mix(s.albedo, vec3f(0.36, 0.2, 0.1), 0.4 * rs);
+        }
       }
       applyWetness(&s, world, 0.0, 0.0);
       // Painted fixtures under a water film: a shade darker (and glossy).
