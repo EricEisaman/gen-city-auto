@@ -122,37 +122,93 @@ struct WOut {
   return o;
 }
 
-fn waveNormal(p: vec2f, t: f32, dist: f32) -> vec3f {
+// Value noise with its analytic gradient: (value, d/dx, d/dy).
+fn noiseD(p: vec2f) -> vec3f {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  let a = hash21(i);
+  let b = hash21(i + vec2f(1, 0));
+  let c = hash21(i + vec2f(0, 1));
+  let d = hash21(i + vec2f(1, 1));
+  let k = a - b - c + d;
+  return vec3f(
+    a + (b - a) * u.x + (c - a) * u.y + k * u.x * u.y,
+    du * vec2f(b - a + k * u.y, c - a + k * u.x),
+  );
+}
+
+// Surface slope of calm urban water: rotated, non-harmonic octaves of drifting
+// gradient noise (no repeating sine pattern), from 14 m swells to 30 cm
+// ripples. Octaves narrower than a few pixels are dropped and their slope
+// energy returned as roughness, so grazing and distant water turns into a
+// soft mirror instead of sparkling. Returns (slope x, slope z, extra rough).
+fn waveSlope(p: vec2f, t: f32, footprint: f32) -> vec3f {
+  let wind = frame.wind.xy;
+  let ws = length(wind);
+  let wdir = select(vec2f(0.94, 0.34), wind / ws, ws > 1e-3);
+  // Breeze strength: sunny ~0.4, storm 1.6. Rain adds chop.
+  let energy = (0.55 + 0.45 * clamp(ws, 0.0, 2.0)) * (1.0 + frame.weather.y * 0.6);
   var g = vec2f(0.0);
-  // Waves shrink below a pixel far away: flatten so the sea mirrors the horizon.
-  let fade = clamp(1.0 - dist / 3000.0, 0.15, 1.0) * mix(1.0, 0.15, smoothstep(2000.0, 8000.0, dist));
+  var lost = 0.0;
+  var wl = 14.0;
+  var amp = 0.03;
+  var ang = 0.0;
   for (var k = 0; k < 6; k++) {
-    let fk = f32(k);
-    let ang = fk * 1.7 + 0.3;
-    let dir = vec2f(cos(ang), sin(ang));
-    let freq = 0.06 * pow(1.85, fk);
-    let amp = 0.6 / pow(1.9, fk);
-    let ph = dot(dir, p) * freq + t * sqrt(9.8 * freq) * 1.2;
-    g += dir * cos(ph) * amp * freq;
+    let c = cos(ang);
+    let sn = sin(ang);
+    let rot = mat2x2f(c, sn, -sn, c);
+    // Short waves move faster relative to their size (dispersion).
+    let drift = (rot * wdir) * t * (0.35 + 0.25 * f32(k)) / wl;
+    let q = rot * p / wl + drift + vec2f(f32(k) * 17.3, f32(k) * 5.9);
+    // Fade before an octave falls below ~3 pixels.
+    let vis = smoothstep(wl * 0.35, wl * 0.12, footprint);
+    let nd = noiseD(q);
+    // d/dp of n(R p / wl) = R^T grad / wl.
+    let grad = transpose(rot) * nd.yz / wl;
+    let s = amp * wl * energy;
+    g += grad * s * vis;
+    // Slope variance this octave would have added (|grad n| ~ 1.2 / wl).
+    let slope = amp * energy * 1.2;
+    lost += (1.0 - vis) * slope * slope;
+    wl *= 0.53;
+    amp *= 0.92;
+    ang += 2.1;
   }
-  g += (vec2f(valueNoise(p * 0.8 + t * 0.3), valueNoise(p * 0.8 - t * 0.27 + 7.0)) - 0.5) * 0.25;
-  // Rain roughens the surface.
-  g += (hash22(floor(p * 6.0) + floor(t * 8.0)) - 0.5) * frame.weather.y * 0.3;
-  return normalize(vec3f(-g.x * fade, 1.0, -g.y * fade));
+  return vec3f(g, sqrt(lost));
 }
 
 @fragment fn fsWater(i: WOut) -> GOut {
-  let dist = distance(i.world, frame.camPos.xyz);
-  let n = waveNormal(i.world.xz, frame.time.x, dist);
+  let toEye = frame.camPos.xyz - i.world;
+  let dist = length(toEye);
+  // Pixel footprint on the water, stretched along the view at grazing angles.
+  let pixelAngle = 2.0 / (frame.proj[1][1] * frame.resolution.y);
+  let footprint = dist * pixelAngle / max(abs(toEye.y) / dist, 0.08);
+  let w = waveSlope(i.world.xz, frame.time.x, footprint);
+  // Raindrop rings: a fine high-frequency chop while it rains.
+  var g = w.xy;
+  if (frame.weather.y > 0.01) {
+    let rq = noiseD(i.world.xz * 3.1 + frame.time.x * vec2f(0.7, -0.5));
+    g += rq.yz * 0.012 * frame.weather.y * smoothstep(0.4, 0.1, footprint);
+  }
+  let n = normalize(vec3f(-g.x, 1.0, -g.y));
   var s = defaultSurf(n);
   let depth = frame.world.w - heightAt(i.world.xz);
-  let shallow = clamp(depth / 6.0, 0.0, 1.0);
-  s.albedo = mix(vec3f(0.06, 0.12, 0.1), vec3f(0.01, 0.035, 0.05), shallow);
-  s.rough = 0.04 + frame.weather.y * 0.1;
+  // Murky green-brown river water: the bed shows through only in the
+  // shallows at the bank, deeper water is dark absorption colour.
+  let deep = vec3f(0.018, 0.028, 0.02);
+  let murk = vec3f(0.05, 0.055, 0.035);
+  let bank = vec3f(0.11, 0.1, 0.075);
+  s.albedo = mix(murk, deep, smoothstep(0.5, 5.0, depth));
+  s.albedo = mix(s.albedo, bank, smoothstep(0.6, 0.0, depth) * 0.7);
+  // Base gloss plus the slope variance of the waves too small to draw.
+  s.rough = clamp(sqrt(0.045 * 0.045 + w.z * w.z * 4.0) + frame.weather.y * 0.06, 0.04, 0.22);
+  // Far, grazing water: a pixel spans metres of depth, so screen-space
+  // reflection rays re-hit the water itself and feed its own colour back
+  // (a dark band across the sea). Past that point the surface is glossy
+  // enough that the sky/skyline reflection alone reads right.
+  s.rough = mix(s.rough, 0.38, smoothstep(1.2, 3.5, footprint));
   s.cls = CLASS_WATER;
-  // Shore foam.
-  let foam = smoothstep(0.6, 0.0, depth) * (0.5 + 0.5 * valueNoise(i.world.xz * 2.0 + frame.time.x * 0.5));
-  s.albedo = mix(s.albedo, vec3f(0.7), foam * 0.6);
-  s.rough = mix(s.rough, 0.7, foam);
   return writeG(s, i.world, i.pos);
 }

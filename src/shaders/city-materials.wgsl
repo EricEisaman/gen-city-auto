@@ -985,13 +985,25 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     case M_CONCRETE: {
       var t: vec3f;
       var b: vec3f;
-      let d = detailTri(world, n, 2.0, DETAIL_CONCRETE, &t, &b);
+      var d: vec4f;
+      if (abs(n.y) < 0.7) {
+        // Vertical faces: map along the face itself. The axis-aligned
+        // projection stretched the detail on diagonal viaduct decks into
+        // smeared, blocky bars.
+        t = normalize(vec3f(-n.z, 0.0, n.x));
+        b = vec3f(0.0, 1.0, 0.0);
+        d = detailAt(vec2f(dot(world, t), world.y), vec2f(dot(dWorldX, t), dWorldX.y), vec2f(dot(dWorldY, t), dWorldY.y), 2.0, DETAIL_CONCRETE);
+      } else {
+        d = detailTri(world, n, 2.0, DETAIL_CONCRETE, &t, &b);
+      }
       s.normal = detailNormal(n, t, b, d, 0.8);
       // Each precast segment (10 m) gets its own pour tone; blotches stay
       // subtle so the surface reads as concrete, not noise.
       let along = dot(world, t);
       let seg = floor(along / 10.0);
-      s.albedo = vec3f(0.5, 0.49, 0.46) * mix(0.88, 1.04, hash21(vec2f(seg, floor(world.y / 6.0)))) * (0.9 + 0.1 * fbm2(world.xz * 0.3 + world.y * 0.2)) * mix(1.0, d.b * 2.0, 0.45) * mix(0.75, 1.0, d.a);
+      // (No height term in the tone hash: on a graded deck floor(y / 6)
+      // flips along diagonal lines and stair-stepped the side faces.)
+      s.albedo = vec3f(0.5, 0.49, 0.46) * mix(0.92, 1.03, hash21(vec2f(seg, 7.0))) * (0.9 + 0.1 * fbm2(world.xz * 0.3 + world.y * 0.2)) * mix(1.0, d.b * 2.0, 0.45) * mix(0.75, 1.0, d.a);
       let foot = max(length(dWorldX), length(dWorldY));
       // Segment joints (sealed, dark) and fine formwork tie lines.
       let sj = abs(fract(along / 10.0 + 0.5) - 0.5) * 10.0;
@@ -1002,10 +1014,16 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       if (abs(n.y) < 0.5) {
         // Rain run-off: dark vertical streaks hanging from the deck edge and
         // pale efflorescence below joints.
-        let col = valueNoise(vec2f(along * 1.7, 3.0)) * 0.7 + valueNoise(vec2f(along * 6.0, 9.0)) * 0.3;
+        // Each octave fades out (to its mean) before it drops below ~3 px,
+        // or distant decks alias into blocky stripes.
+        let f6 = smoothstep(0.08, 0.03, foot);
+        let f17 = smoothstep(0.3, 0.12, foot);
+        let col = mix(0.5, valueNoise(vec2f(along * 1.7, 3.0)), f17) * 0.7 + mix(0.5, valueNoise(vec2f(along * 6.0, 9.0)), f6) * 0.3;
         let len = valueNoise(vec2f(along * 0.9, world.y * 0.05));
-        let streak = smoothstep(0.55, 0.8, col) * smoothstep(0.25, 0.75, len);
-        s.albedo *= 1.0 - 0.4 * streak;
+        // Soft, low-contrast: hard thresholds on cell noise read as blocky
+        // rectangles on a 2 m deck face.
+        let streak = smoothstep(0.42, 0.9, col) * smoothstep(0.2, 0.85, len) * mix(0.35, 1.0, f17);
+        s.albedo *= 1.0 - 0.22 * streak;
         s.albedo = mix(s.albedo, vec3f(0.62, 0.61, 0.58), 0.25 * (1.0 - smoothstep(0.0, 0.5, sj)) * smoothstep(0.4, 0.7, len));
       } else {
         s.albedo *= 1.0 - 0.2 * smoothstep(0.55, 0.8, valueNoise(world.xz * 0.15));

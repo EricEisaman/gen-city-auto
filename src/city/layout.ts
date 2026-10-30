@@ -804,7 +804,7 @@ export function generateLayout(
       bridge,
     });
   }
-  carveRoads(hf, chains);
+  const flooded = carveRoads(hf, chains);
 
   // Junctions.
   const junctionOf = new Map<number, number>();
@@ -1098,6 +1098,9 @@ export function generateLayout(
   }
   progress?.('Open ground', 0.68);
   fillOpenGround(blocks, onBlock, buildings, elevated);
+  // Every seeded decision is made: give the river back the cells the road
+  // carve heaped up around bridge ends (see carveRoads).
+  restoreChannels(hf, flooded, buildings);
   progress?.('Layout done', 0.7);
   return {
     params,
@@ -1628,9 +1631,66 @@ function carveRoads(hf: Heightfield, chains: RoadChain[]) {
       }
     }
   }
+  // Original heights of river/sea cells the carve raised. Bridge approaches
+  // climb to deck height over the last stretch of bank, and their falloff
+  // band would heap an earth mound out into the water (clipping piers). The
+  // layout still sees the carved field so its seeded choices don't move;
+  // restoreChannels() digs these cells back out once layout is done, and the
+  // road deck builder spans them as bridge.
+  const flooded = new Map<number, number>();
   for (let k = 0; k < n * n; k++) {
-    if (weight[k] > 0)
-      hf.data[k] = lerp(hf.data[k], target[k] - 0.05, weight[k]);
+    if (weight[k] > 0) {
+      const h = lerp(hf.data[k], target[k] - 0.05, weight[k]);
+      // Only where the road stands high enough for gen-base to give it a
+      // deck (> 2.5 m above the water); low riverside roads keep their bank.
+      if (
+        hf.data[k] < SEA_LEVEL + 0.5 &&
+        h > hf.data[k] &&
+        target[k] > SEA_LEVEL + 2.7
+      )
+        flooded.set(k, hf.data[k]);
+      hf.data[k] = h;
+    }
+  }
+  return flooded;
+}
+
+/** Undo carveRoads' fill in the water, except under buildings. */
+function restoreChannels(
+  hf: Heightfield,
+  flooded: Map<number, number>,
+  buildings: Building[],
+) {
+  if (!flooded.size) return;
+  const n = hf.n;
+  const cell = hf.cell;
+  const S = hf.size / 2;
+  const keep = new Set<number>();
+  for (const b of buildings) {
+    let x0 = Infinity,
+      x1 = -Infinity,
+      z0 = Infinity,
+      z1 = -Infinity;
+    for (const q of b.footprint) {
+      x0 = Math.min(x0, q[0]);
+      x1 = Math.max(x1, q[0]);
+      z0 = Math.min(z0, q[1]);
+      z1 = Math.max(z1, q[1]);
+    }
+    for (
+      let gz = Math.floor((z0 + S) / cell) - 1;
+      gz <= (z1 + S) / cell + 1;
+      gz++
+    )
+      for (
+        let gx = Math.floor((x0 + S) / cell) - 1;
+        gx <= (x1 + S) / cell + 1;
+        gx++
+      )
+        if (gx >= 0 && gz >= 0 && gx < n && gz < n) keep.add(gz * n + gx);
+  }
+  for (const [k, h] of flooded) {
+    if (!keep.has(k)) hf.data[k] = Math.min(hf.data[k], h);
   }
 }
 

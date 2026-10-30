@@ -90,7 +90,7 @@ export class Game {
     touchMove: [0, 0],
   } as unknown as Input;
   /** Last camera output (for tests). */
-  lastCam: {eye: Vec3; target: Vec3} | null = null;
+  lastCam: {eye: Vec3; target: Vec3; fov: number} | null = null;
 
   constructor(gpu: Gpu, opts: GameOptions) {
     this.gpu = gpu;
@@ -297,7 +297,12 @@ export class Game {
     }
     const fc = this.opts.freecam;
     if (fc) {
-      this.freeCam.setPose([fc[0], fc[1], fc[2]], fc[3] ?? 0, fc[4] ?? 0);
+      this.freeCam.setPose(
+        [fc[0], fc[1], fc[2]],
+        fc[3] ?? 0,
+        fc[4] ?? 0,
+        fc[5] || 1.0,
+      );
       this.freeMode = true;
     }
     if (this.opts.shot) this.forceShot(this.opts.shot);
@@ -524,7 +529,11 @@ export class Game {
       const [yaw, pitch] = yawPitch(c.eye, c.target);
       u.searchParams.set(
         'freecam',
-        [...c.eye, yaw, pitch].map(v => v.toFixed(2)).join(','),
+        // Field of view only when it isn't the free camera's default, so
+        // telephoto shots reproduce at their focal length.
+        [...c.eye, yaw, pitch, ...(Math.abs(c.fov - 1) > 0.005 ? [c.fov] : [])]
+          .map(v => v.toFixed(2))
+          .join(','),
       );
     }
     u.searchParams.set('city', this.cityType);
