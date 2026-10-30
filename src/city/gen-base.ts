@@ -2823,7 +2823,7 @@ function railViaduct(
           inn,
           len,
           0.2,
-          packMat(CM.lamp, 1),
+          packMat(CM.lamp, 8),
         );
         const c0 = P(i, o(4.15), CY - 0.5);
         const c1 = P(i + 1, o(4.15), CY - 0.5);
@@ -2835,7 +2835,7 @@ function railViaduct(
           [0, -1, 0],
           len,
           0.15,
-          packMat(CM.lamp, 1),
+          packMat(CM.lamp, 8),
         );
         flat(r2, r3, dn(r3, 0.3), dn(r2, 0.3), out, len, 0.3, fasciaM);
         // Fluorescent line under the roof along the platform.
@@ -2847,7 +2847,7 @@ function railViaduct(
           [0, -1, 0],
           len,
           0.15,
-          packMat(CM.lamp, 1),
+          packMat(CM.lamp, 8),
         );
         // T-frame at every point: a centre column and a sloped arm.
         const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);

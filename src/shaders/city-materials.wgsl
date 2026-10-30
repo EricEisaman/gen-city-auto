@@ -5807,6 +5807,12 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s.emissive = cols[param - 3u] * mix(10.0, 110.0, night) * hood;
         // Distance-stable: a 15 cm lens keeps a bloom-sized point to ~500 m.
         s.emissive *= clamp(length(world - frame.camPos.xyz) / 60.0, 1.0, 6.0);
+      } else if (param == 8u) {
+        // Long linear fittings (station canopy light boxes and tube rows,
+        // packMat(CM.lamp, 8)): diffuser panels, far dimmer per area than a
+        // lamp head so a canopy-length strip doesn't blow out to a white bar.
+        s.albedo = vec3f(0.85);
+        s.emissive = vec3f(0.95, 0.97, 1.0) * night * select(0.35, 2.0, n.y < -0.5);
       } else if (param == 6u || param == 7u) {
         // Rail viaduct fittings (packMat(CM.lamp, 6): walkway lamp heads,
         // under-deck and LOD1 soffit fluorescent quads; 7: the LED strip
