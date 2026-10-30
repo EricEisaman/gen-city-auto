@@ -212,6 +212,26 @@ export class Game {
         out.push([p[0], p[1], p[2], 0.25]);
       return out;
     };
+    this.camera.setElevated(city.summary.layout.elevated);
+    this.camera.trainCars = () => {
+      // Car positions of the train nearest the player.
+      const t = this.trains!;
+      let best: Vec3[] = [];
+      let bd = Infinity;
+      for (const tr of t.trains) {
+        const m = tr.cars[Math.floor(tr.cars.length / 2)]?.model;
+        if (!m) continue;
+        const d = Math.hypot(
+          m[12] - this.player.pos[0],
+          m[14] - this.player.pos[2],
+        );
+        if (d < bd) {
+          bd = d;
+          best = tr.cars.map(c => [c.model[12], c.model[13], c.model[14]]);
+        }
+      }
+      return best;
+    };
     this.camera.trainFocus = () => {
       // Nearest train car to the player.
       const t = this.trains!;
