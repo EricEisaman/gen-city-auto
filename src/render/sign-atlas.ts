@@ -19,6 +19,18 @@ import {
 const FONT =
   '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", "Meiryo", sans-serif';
 
+/** Romaji for the station board's sub-line (STATION_NAMES). */
+const STATION_ROMAJI: Record<string, string> = {
+  新宿: 'Shinjuku',
+  渋谷: 'Shibuya',
+  池袋: 'Ikebukuro',
+  上野: 'Ueno',
+  品川: 'Shinagawa',
+  秋葉原: 'Akihabara',
+  有楽町: 'Yurakucho',
+  代々木: 'Yoyogi',
+};
+
 function css(c: [number, number, number], k = 1) {
   return `rgb(${Math.round(Math.min(1, c[0] * k) * 255)}, ${Math.round(Math.min(1, c[1] * k) * 255)}, ${Math.round(Math.min(1, c[2] * k) * 255)})`;
 }
@@ -457,22 +469,51 @@ export function paintSignAtlas(): OffscreenCanvas {
     letter(L, id, word, x + w / 2, y + h / 2, size);
     endCell(L);
   }
-  // Station name boards: white with a green line stripe (JR-style).
+  // Station name boards (JR style), one 2.4 x 0.6 m board unit per cell
+  // (213 px/m), in grey levels the shader reads as masks
+  // (railNameBoard in city-materials.wgsl): white face, black name in
+  // bold kanji with its romaji under it, and a mid-grey band (the shader
+  // paints it in the line colour) carrying the adjacent stations in white,
+  // with arrows: "◀ prev" at the left, "next ▶" at the right.
   for (let k = 0; k < 4; k++) {
     const [x, y, w, h] = signRect(44 + k);
-    g.fillStyle = '#f2f2f2';
+    const ppm = w / 2.4;
+    // Board metres (from the bottom edge) to cell pixels.
+    const Y = (m: number) => y + h - m * ppm;
+    const N = STATION_NAMES.length;
+    const name = STATION_NAMES[k % N];
+    const prev = STATION_NAMES[(k + 5) % N];
+    const next = STATION_NAMES[(k + 6) % N];
+    g.fillStyle = '#fff';
     g.fillRect(x, y, w, h);
-    g.fillStyle = ['#2e9b3a', '#e4501e', '#1f6fd1', '#9a3fb4'][k];
-    g.fillRect(x, y + h * 0.72, w, h * 0.14);
-    g.fillStyle = '#111';
-    g.textAlign = 'center';
+    g.fillStyle = '#808080';
+    g.fillRect(x, Y(0.17), w, 0.13 * ppm);
     g.textBaseline = 'middle';
-    g.font = `bold ${h * 0.45}px ${FONT}`;
-    g.fillText(
-      STATION_NAMES[(k * 3) % STATION_NAMES.length],
-      x + w / 2,
-      y + h * 0.38,
-    );
+    g.fillStyle = '#000';
+    g.textAlign = 'center';
+    g.font = `bold ${0.22 * ppm}px ${FONT}`;
+    g.fillText(name, x + w / 2, Y(0.385), w * 0.6);
+    g.font = `bold ${0.055 * ppm}px ${FONT}`;
+    g.fillText(STATION_ROMAJI[name] ?? '', x + w / 2, Y(0.225));
+    // Adjacent stations in the band, white, with arrow heads.
+    g.fillStyle = '#fff';
+    g.font = `bold ${0.085 * ppm}px ${FONT}`;
+    const by = Y(0.105);
+    const ah = 0.045 * ppm;
+    g.textAlign = 'left';
+    g.beginPath();
+    g.moveTo(x + 0.08 * ppm, by);
+    g.lineTo(x + 0.08 * ppm + ah * 1.2, by - ah);
+    g.lineTo(x + 0.08 * ppm + ah * 1.2, by + ah);
+    g.fill();
+    g.fillText(prev, x + 0.22 * ppm, by);
+    g.textAlign = 'right';
+    g.beginPath();
+    g.moveTo(x + w - 0.08 * ppm, by);
+    g.lineTo(x + w - 0.08 * ppm - ah * 1.2, by - ah);
+    g.lineTo(x + w - 0.08 * ppm - ah * 1.2, by + ah);
+    g.fill();
+    g.fillText(next, x + w - 0.22 * ppm, by);
   }
   // Billboards: flat, hard-edged poster graphics (no gradients or soft
   // shapes, so they stay crisp in the mip chain and read from across the
