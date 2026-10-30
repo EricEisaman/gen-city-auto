@@ -726,13 +726,18 @@ but these are the hooks:
 - **`MAST_PAINT` = `CM.paint 0x307`** (`PAINT_STEEL | 7`: dark green paint, chipped; seed 5 grey read as concrete) on every OHLE
   mast (light box masts, heavy H masts and cap plates): darker than the concrete. Beams, cantilever
   arms, droppers and hardware stay `GALV`. Also used on the soundwall access doors. Retune it in `paintedSteel` (seed & 3 == 3) if it reads too rusty.
-- **Coping light line removed.** Instead: one 0.5 m `CM.lamp 7` fitting (a lamp tube, r 4.5 cm, at
-  lateral 5.455, y 1.155) every **2nd span per side** (~24 m; the two sides staggered by a span), at
+- **Coping light line removed.** Instead: one 1.2 m `CM.lamp 7` fitting (0.5 m ones were sub-pixel at the far view) (a lamp tube, r 4.5 cm, at
+  lateral 5.455, y 1.155) in **every span per side** (~12 m; at every 2nd span the far-night deck line vanished), at
   a hashed spot 20-80 % into the span; ~10 % of them are dead (the same tube in `CM.paint 0x90`).
   **Shader ask:** for lamp 7 (only the coping fittings use it), 3-5x dimmer than today's `14 *
   min(boost, 2.5)` and a per-fitting warm / cool mix, e.g. `hash21(floor(world.xz / 2.0))` < 0.35 →
-  warm (1.0, 0.8, 0.55), else the cool LED (each fitting is < 0.6 m long, so a 2 m cell is one
+  warm (1.0, 0.8, 0.55), else the cool LED (each fitting is 1.2 m long, so a 2 m cell is ~one
   fitting). The lamp-1 down-facing LED strip under the lip on ~30 % of 120 m stretches is unchanged.
+- **Accent spans are now joint-bounded blocks of four** (bents 4b+2 .. 4b+6, between the cover
+  plates at `i % 4 == 2`; ~30 % of blocks, kind hashed per block, none touching a station), so every
+  accent edge sits on a plate and the shader's hard breaks only happen at joints.
+- **I-girder stiffener quads:** uv.y = metres up from the stiffener foot (0 at y 7.94, 0.72 at
+  8.66), like the box faces, so the face-height drip gate sees 0.72 m.
 - **Fascia grime seam (judge "Broken"):** the per-span seed (aux >> 16) changes at every bent, i.e.
   at **u = 12 i exactly** (every multiple of 12 in bent units) on every `RC_FASCIA` / `RC_RECESS` /
   fillet face and the coping lip outer face. Only `i % 4 == 2` (u = 48k + 24) carries an expansion-

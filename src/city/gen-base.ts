@@ -2329,12 +2329,16 @@ function railViaduct(
   // Lit strip under the coping on some 120 m stretches (per side).
   const glowOf = (i: number, s: number) =>
     railHash(ei + 303, Math.floor(i / 10) * 2 + (s > 0 ? 1 : 0)) < 0.3;
-  // Accent spans (RC_ACCENT_SHIFT): one span in each run of five, at a
-  // hashed position, with a hashed kind 1..3.
+  // Accent spans (RC_ACCENT_SHIFT): whole joint-bounded blocks of four
+  // spans (bents 4b + 2 .. 4b + 6, between the expansion-joint cover
+  // plates at i % 4 == 2, where the shader keeps its hard span breaks),
+  // about three blocks in ten, with a hashed kind 1..3; never a block
+  // touching a station.
   const accentOf = (i: number) => {
-    if (station[i]) return 0;
-    const b = Math.floor(i / 5);
-    if (i - b * 5 !== Math.floor(railHash(ei + 1201, b) * 5)) return 0;
+    const b = Math.floor((i - 2) / 4);
+    if (railHash(ei + 1201, b) >= 0.3) return 0;
+    for (let k = 4 * b + 2; k < 4 * b + 6; k++)
+      if (station[W(k) % segs]) return 0;
     return 1 + Math.floor(railHash(ei + 1202, b) * 3);
   };
   // Girder spans: segments touching a road point (bent to bent).
@@ -3525,9 +3529,9 @@ function railViaduct(
   }
   // Coping lights: discrete LED fittings on the coping lip's outer face,
   // not one continuous tube (that read as a km-long neon stripe, "Tron, not
-  // Tokyo"). One 0.5 m fitting (CM.lamp 7, a solid min-width lamp tube, so
-  // each is a dot at range) every 2nd span per side (~24 m, the two sides
-  // staggered) at a hashed spot in the span, about one
+  // Tokyo"). One 1.2 m fitting (CM.lamp 7, a solid min-width lamp tube, so
+  // each is a dot at range) in every span per side (~12 m; at 24 m the
+  // far-night deck line vanished) at a hashed spot in the span, about one
   // in ten dead (an unlit dark housing, CM.paint 0x90): a dotted, slightly
   // irregular line of lights at night. Warm / cool and dimming are the
   // shader's (see asset-direction-rail.md §7, round 7).
@@ -3535,10 +3539,9 @@ function railViaduct(
     if (station[k]) continue;
     const len = dist2(pts[k], pts[W(k + 1)]) || 12;
     for (const s of [-1, 1]) {
-      if ((k + (s > 0 ? 1 : 0)) % 2) continue;
       const h = railHash(ei + 1301, k * 2 + (s > 0 ? 1 : 0));
       const t = 0.2 + 0.6 * railHash(ei + 1302, k * 2 + (s > 0 ? 1 : 0));
-      const dt = 0.25 / len;
+      const dt = 0.6 / len;
       const a = P(k, s * 5.455, 1.155);
       const b = P(k + 1, s * 5.455, 1.155);
       const at = (u: number): Vec3 => [
@@ -3590,11 +3593,13 @@ function railViaduct(
         };
         const ll = fr[i].l;
         const ln: Vec3 = [ll[0], 0, ll[1]];
+        // uv.y metres up from the stiffener's foot (box faces' convention:
+        // the shader gates its drips on the face height).
         const uv: Vec2[] = [
-          [0, 0],
-          [0.18, 0],
-          [0.18, 0.72],
           [0, 0.72],
+          [0.18, 0.72],
+          [0.18, 0],
+          [0, 0],
         ];
         for (const g of [-1, 1]) {
           const nn: Vec3 = [ln[0] * g, 0, ln[2] * g];
