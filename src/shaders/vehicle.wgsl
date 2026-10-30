@@ -116,9 +116,10 @@ fn vehicleSurf(i: VOut, n: vec3f, fw: f32) -> Surf {
     }
     case 19u: {
       // Headliner: clean matte fabric of constant albedo.
-      s.albedo = vec3f(0.05, 0.049, 0.048);
+      // Dark neutral grey: in shade it reads as charcoal, not muddy brown.
+      s.albedo = vec3f(0.07, 0.072, 0.078);
       s.rough = 0.95;
-      s.ao = 0.75;
+      s.ao = 0.6;
     }
     case 20u: {
       // Soft-touch plastic: dashboard and upper door cards, a fine grain.
