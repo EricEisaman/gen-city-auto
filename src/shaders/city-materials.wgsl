@@ -3567,7 +3567,8 @@ fn carParkMat(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
 }
 
 // Sign atlas (src/city/signs.ts): 2048x2560. param = id | flags << 8:
-// 0x100 fabric (unlit cloth), 0x200 striped awning canvas.
+// 0x100 fabric (unlit cloth), 0x200 striped awning canvas; bits 10-13 a shop
+// sign colourway offset (see shopSign).
 fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   var s = defaultSurf(n);
   let id = param & 0xffu;
@@ -3608,6 +3609,9 @@ fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   let inset = min(vec2f(2.0 * exp2(lodC)) + 0.5 * (abs(dx) + abs(dy)) * exp2(min(3.0 - lod, 0.0)), rect.zw * 0.1);
   let px = rect.xy + mix(inset, rect.zw - inset, f);
   let c = atlasGrad(px, dx, dy, lod).rgb;
+  if (id < 44u || id >= 72u) {
+    return shopSign(s, n, c, px, dx, dy, lod, rect, id, param, fabric);
+  }
   if (fabric) {
     // Printed cloth: matte, lit only by the scene (a faint glow at night
     // from shop light behind it).
@@ -3630,6 +3634,91 @@ fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
     return s;
   }
   s.emissive = c * c * 1.2 * mix(0.25, 4.5, gloomLight());
+  return s;
+}
+
+// Shop signs: the atlas cell holds masks (R lettering, G frame ring and
+// letter outlines, B bevel height; src/render/sign-atlas.ts), painted in one
+// of the SIGN_WAYS colourways (src/city/signs.ts) picked by the id and the
+// building's offset in param bits 10-13.
+fn shopSign(
+  s0: Surf, n: vec3f, m: vec3f, px: vec2f, dx: vec2f, dy: vec2f, lod: f32,
+  rect: vec4f, id: u32, param: u32, fabric: bool,
+) -> Surf {
+  var s = s0;
+  var wi = (id * 5u + ((param >> 10u) & 15u)) & 15u;
+  // Cloth is printed: the lit-letter looks (channel, neon) become light-box
+  // colourways, so a white-on-white scheme never blanks a banner.
+  if (fabric && SIGN_WAYS[wi].style != 0u && SIGN_WAYS[wi].style != 3u) { wi = (wi + 4u) & 15u; }
+  let w = SIGN_WAYS[wi];
+  var col = mix(w.bg, w.edge, m.g);
+  col = mix(col, w.fg, m.r);
+  if (fabric) {
+    // Printed cloth: matte, lit only by the scene (a faint glow at night
+    // from shop light behind it).
+    s.albedo = col * 0.75;
+    s.rough = 0.9;
+    s.emissive = col * 0.06 * nightLight();
+    return s;
+  }
+  // Raised lettering: a bevel normal from the height mask's slope, fading
+  // out once a texel no longer covers a few pixels.
+  var relief = 0.35;
+  if (w.style == 1u) { relief = 1.0; }
+  else if (w.style == 2u) { relief = 0.8; }
+  else if (w.style == 3u) { relief = 0.5; }
+  relief *= 1.0 - smoothstep(0.5, 2.0, lod);
+  if (relief > 0.0) {
+    let o = exp2(clamp(lod, 0.0, 3.0)) * 1.5;
+    let hx = atlasGrad(px + vec2f(o, 0.0), dx, dy, lod).b - atlasGrad(px - vec2f(o, 0.0), dx, dy, lod).b;
+    let hy = atlasGrad(px + vec2f(0.0, o), dx, dy, lod).b - atlasGrad(px - vec2f(0.0, o), dx, dy, lod).b;
+    // World tangents along the cell's u and v (metres per unit uv) from the
+    // screen derivatives.
+    let det = dUvX.x * dUvY.y - dUvX.y * dUvY.x;
+    if (abs(det) > 1e-12) {
+      let dPdu = (dWorldX * dUvY.y - dWorldY * dUvX.y) / det;
+      let dPdv = (dWorldY * dUvX.x - dWorldX * dUvY.x) / det;
+      let lu = max(length(dPdu), 1e-4);
+      let lv = max(length(dPdv), 1e-4);
+      // 12 mm of relief per unit of mask; slopes in metres per metre.
+      let su = clamp(hx / (2.0 * o) * rect.z * 0.012 / lu, -1.5, 1.5) * relief;
+      let sv = clamp(hy / (2.0 * o) * rect.w * 0.012 / lv, -1.5, 1.5) * relief;
+      s.normal = normalize(n - dPdu / lu * su - dPdv / lv * sv);
+      // The letters' returns read as a dark rim (most on channel letters).
+      s.ao = 1.0 - min(length(vec2f(su, sv)), 1.0) * 0.45;
+    }
+  }
+  let gl = gloomLight();
+  switch (w.style) {
+    case 1u: {
+      // Channel letters: an unlit panel, letters lit from inside (faint by day).
+      s.albedo = col * 0.7;
+      s.rough = 0.45;
+      s.emissive = w.fg * w.fg * m.r * 1.3 * mix(0.06, 4.5, gl);
+    }
+    case 2u: {
+      // Neon tubes (lettering and frame) on a dark gloss backing, with a halo
+      // from a coarse mip of the lettering.
+      let halo = atlasGrad(px, dx * 8.0, dy * 8.0, lod + 3.0).r;
+      let tube = max(m.r, m.g);
+      s.albedo = mix(w.bg * 0.8, col * 0.5, tube);
+      s.rough = mix(0.25, 0.4, tube);
+      let glow = w.fg * m.r + w.edge * m.g * (1.0 - m.r);
+      s.emissive = (glow * 1.6 + w.fg * halo * 0.3 * (1.0 - tube)) * mix(0.12, 4.5, gl);
+    }
+    case 3u: {
+      // Painted board: unlit, a little floodlight spill at night.
+      s.albedo = col * 0.75;
+      s.rough = 0.55;
+      s.emissive = col * 0.08 * gl;
+    }
+    default: {
+      // Light box: the whole translucent face glows, dark ink stays dark.
+      s.albedo = col * 0.6;
+      s.rough = 0.3;
+      s.emissive = col * col * 1.2 * mix(0.25, 4.5, gl);
+    }
+  }
   return s;
 }
 

@@ -41,7 +41,10 @@ import {
   TENANT_NOBORI,
   TENANT_SIGNS,
   TENANT_SQUARES,
+  SIGN_WAY_SHIFT,
+  isShopSign,
   signColor,
+  signGlow,
 } from './signs.ts';
 import type {Heightfield} from './terrain.ts';
 
@@ -185,9 +188,23 @@ function parapet(m: CMesh, poly: Vec2[], y: number, h: number, mat: number) {
  * A sign panel: box whose two big faces show atlas sign `id` (id may carry
  * SIGN_* flags). With `sideId` the two end faces show that sign too (cube
  * light boxes); otherwise they are a metal frame. Distant shells (`lod` > 0)
- * get only the two sign faces (and lit cube sides), so far and shell views
- * keep their colour.
+ * get only the two sign faces (and lit cube sides, and with `shellUnder`
+ * the underside), so far and shell views keep their colour.
  */
+/**
+ * Colourway offset (SIGN_WAYS) for the shop signs of the building being
+ * generated: set from its seed at the top of building(), so each building
+ * paints the shared sign words in its own mix of colour schemes.
+ */
+let signVariant = 0;
+
+/** Sign material param for atlas id `id` (plus flags) on the current building. */
+function shopSignParam(id: number) {
+  return isShopSign(id & 0xff) && !(id & SIGN_STRIPES)
+    ? id | (signVariant << SIGN_WAY_SHIFT)
+    : id;
+}
+
 function signPanel(
   m: CMesh,
   c: Vec3,
@@ -199,6 +216,7 @@ function signPanel(
   sideId = -1,
   lod = 0,
   back = true,
+  shellUnder = false,
 ) {
   const n: Vec3 = [along[2], 0, -along[0]];
   const P = (s: number, t: number, k: number): Vec3 => [
@@ -206,7 +224,7 @@ function signPanel(
     c[1] + t * halfH,
     c[2] + along[2] * s * halfLen + n[2] * k * thick,
   ];
-  const mat = packMat(CM.sign, id);
+  const mat = packMat(CM.sign, shopSignParam(id));
   // Front (+n) and back (-n) faces carry the sign, mirrored so text reads correctly.
   m.quad(
     [P(-1, -1, 1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1)],
@@ -232,8 +250,19 @@ function signPanel(
       ],
       mat,
     );
-  if (lod > 0 && sideId < 0) return;
   const frame = packMat(CM.metal);
+  if (lod > 0 && sideId < 0) {
+    // (`shellUnder`: the underside too, so a box sign over a shopfront
+    // keeps its depth on shells.)
+    if (shellUnder)
+      m.quad(
+        [P(-1, -1, 1), P(1, -1, 1), P(1, -1, -1), P(-1, -1, -1)],
+        [0, -1, 0],
+        uv01,
+        frame,
+      );
+    return;
+  }
   if (lod === 0) {
     m.quad(
       [P(-1, 1, -1), P(1, 1, -1), P(1, 1, 1), P(-1, 1, 1)],
@@ -258,7 +287,7 @@ function signPanel(
       frame,
     );
   }
-  const side = sideId >= 0 ? packMat(CM.sign, sideId) : frame;
+  const side = sideId >= 0 ? packMat(CM.sign, shopSignParam(sideId)) : frame;
   const sideUv: Vec2[] =
     sideId >= 0
       ? [
@@ -299,6 +328,33 @@ const ROLE = {front: 0, street: 1, party: 2, rear: 3} as const;
 const GROUND_H = 4.2;
 /** Solid parapet (crown) height above the roof. */
 const CROWN_H = 1.0;
+/**
+ * The demolished neighbour's ghost on a party wall: how far the wall it
+ * stood against stands proud of the wall above its roofline, and how far
+ * short of the wall's ends the ghost relief stops.
+ */
+const GHOST_STEP = 0.025;
+const GHOST_END = 0.1;
+/** Warm white of the floodlamps over a party-wall ad (LightKind.station). */
+const FLOOD: Vec3 = [0.6, 0.5, 0.36];
+/** Warm bulkhead / security lamps on service walls (LightKind.station). */
+const WALL_LAMP: Vec3 = [0.45, 0.35, 0.22];
+
+/**
+ * Billboard design for one of a building's billboards (`slot`: 0 party-wall
+ * ad, 1 rooftop billboard, 2 billboard on a rooftop frame). Not drawn at
+ * random (8 designs repeat often): a colouring of a 28 m lattice, (i + 3j)
+ * mod 8, under which no two cells closer than about 80 m share a design, so
+ * the same ad does not turn up on the building across the street.
+ */
+const BILLBOARD_CELL = 28;
+function billboardId(b: Building, slot: number) {
+  const c = centroid(b.footprint);
+  const i = Math.floor(c[0] / BILLBOARD_CELL),
+    j = Math.floor(c[1] / BILLBOARD_CELL);
+  const n = SIGN.billboard.count;
+  return SIGN.billboard.first + ((((i + 3 * j + [0, 4, 2][slot]) % n) + n) % n);
+}
 /** Corner pier width; stair core strip width and how far it stands out. */
 const PIER = 0.6;
 const CORE_W = 2.8;
@@ -964,16 +1020,37 @@ function roofField(
     const q = at(s[0], s[1]);
     m.box([q[0], y + 1.1, q[1]], [1.5, 1.1, 3], packMat(CM.paint, 0xe1), yaw);
     if (lod === 0) {
-      const e = at(s[0] + 3, s[1]);
-      const f = at(s[0] + 3 + Math.min(10, box.hu - s[0] - 4), s[1]);
-      if (pointInPolygon(f, roof) && !(hole && pointInPolygon(f, hole)))
-        m.beam(
-          [e[0], y + 1.4, e[1]],
-          [f[0], y + 1.4, f[1]],
-          0.45,
-          0.35,
-          packMat(CM.metal),
+      // Supply duct off the handler's end: a closed run on two stands that
+      // turns down into a curbed roof penetration (it used to stop open-ended
+      // in mid air).
+      const len = Math.min(10, box.hu - s[0] - 4);
+      const f = at(s[0] + 3 + len, s[1]);
+      if (
+        len > 2 &&
+        pointInPolygon(f, roof) &&
+        !(hole && pointInPolygon(f, hole))
+      ) {
+        const dm = packMat(CM.metal);
+        const mid = at(s[0] + 3 + len / 2 - 0.2, s[1]);
+        m.box([mid[0], y + 1.4, mid[1]], [0.45, 0.35, len / 2 - 0.2], dm, yaw);
+        // Elbow down into the curb.
+        const end = at(s[0] + 3 + len - 0.45, s[1]);
+        m.box([end[0], y + 0.95, end[1]], [0.5, 0.8, 0.5], dm, yaw);
+        m.box(
+          [end[0], y + 0.15, end[1]],
+          [0.75, 0.15, 0.75],
+          packMat(CM.concrete),
+          yaw,
         );
+        for (const t of [0.3, 0.7]) {
+          const p = at(s[0] + 3 + len * t, s[1]);
+          for (const sd of [-1, 1]) {
+            const q = at(s[0] + 3 + len * t, s[1] + sd * 0.4);
+            m.beam([q[0], y, q[1]], [q[0], y + 1.05, q[1]], 0.03, 0.03, dm);
+          }
+          m.box([p[0], y + 1.03, p[1]], [0.5, 0.025, 0.04], dm, yaw);
+        }
+      }
     }
   }
   if (area > 3000) {
@@ -1251,11 +1328,12 @@ function vendingMachine(m: CMesh, p: Vec3, n: Vec3, col: number) {
     uv,
     body,
   );
-  m.quad(
-    [P(-0.5, Hc, C), P(0.5, Hc, C), P(0.5, Hc, -D), P(-0.5, Hc, -D)],
-    UP,
-    uv,
+  // Top: a cap overhanging the cabinet a little (a shadow line under it).
+  m.box(
+    P(0, Hc + 0.03, 0.01),
+    [0.52, 0.03, D + 0.02],
     body,
+    Math.atan2(n[0], n[2]),
   );
   // The door: its face at D, bevelled back to the cabinet edge on all four
   // sides, so a bright rim catches the light round the machine.
@@ -1348,7 +1426,7 @@ function vendingMachine(m: CMesh, p: Vec3, n: Vec3, col: number) {
 /** A-frame stand sign (printed, unlit) on the pavement at `p` facing `n`. */
 function aFrameSign(m: CMesh, p: Vec3, n: Vec3, id: number) {
   const r: Vec3 = [n[2], 0, -n[0]];
-  const mat = packMat(CM.sign, id | SIGN_FABRIC);
+  const mat = packMat(CM.sign, shopSignParam(id | SIGN_FABRIC));
   const h = 0.8,
     w = 0.3,
     lean = 0.17;
@@ -1480,6 +1558,50 @@ function pottedPlant(m: CMesh, p: Vec3, rng: Rng) {
 }
 
 /**
+ * A bin cabinet in a prop frame `P` (propFrame): x in [x - hx, x + hx],
+ * y in [0, h], z in [-hz, hz], its two front vertical corners chamfered (a
+ * highlight line down each), no top (a lid covers it) and no back (it
+ * stands against a wall): 5 quads, as many vertices as the plain box.
+ */
+function binCabinet(
+  m: CMesh,
+  P: (x: number, y: number, z: number) => Vec3,
+  x: number,
+  hx: number,
+  h: number,
+  hz: number,
+  mat: number,
+) {
+  const ch = 0.035;
+  const o = P(0, 0, 0);
+  const dir = (q: Vec3): Vec3 => [q[0] - o[0], 0, q[2] - o[2]];
+  const r = dir(P(1, 0, 0)),
+    f = dir(P(0, 0, 1));
+  const k = Math.SQRT1_2;
+  const face = (a: Vec2, b: Vec2, nn: Vec3) => {
+    const w = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    m.quad(
+      [P(a[0], 0, a[1]), P(b[0], 0, b[1]), P(b[0], h, b[1]), P(a[0], h, a[1])],
+      nn,
+      [
+        [0, 0],
+        [w, 0],
+        [w, h],
+        [0, h],
+      ],
+      mat,
+    );
+  };
+  const x0 = x - hx,
+    x1 = x + hx;
+  face([x0 + ch, hz], [x1 - ch, hz], f);
+  face([x1 - ch, hz], [x1, hz - ch], [(r[0] + f[0]) * k, 0, (r[2] + f[2]) * k]);
+  face([x0, hz - ch], [x0 + ch, hz], [(f[0] - r[0]) * k, 0, (f[2] - r[2]) * k]);
+  face([x1, hz - ch], [x1, -hz], r);
+  face([x0, -hz], [x0, hz - ch], [-r[0], 0, -r[2]]);
+}
+
+/**
  * Konbini recycling station: `count` bins side by side centred on `p`
  * against the wall (facing `n`), each a pale cabinet with a sloped
  * coloured lid holding a dark round-ish mouth, and a matching label band
@@ -1488,7 +1610,6 @@ function pottedPlant(m: CMesh, p: Vec3, rng: Rng) {
 const BIN_COLS = [0x5a, 0x79, 0xa4, 0x30];
 function recyclingBins(m: CMesh, p: Vec3, n: Vec3, count: number) {
   const P = propFrame(p, n);
-  const yaw = Math.atan2(n[0], n[2]);
   const body = packMat(CM.paint, 0xd0);
   const dark = packMat(CM.paint, 0x91);
   const W = 0.4;
@@ -1501,7 +1622,8 @@ function recyclingBins(m: CMesh, p: Vec3, n: Vec3, count: number) {
   for (let k = 0; k < count; k++) {
     const x = (k - (count - 1) / 2) * (W + 0.04);
     const lid = packMat(CM.paint, BIN_COLS[k % BIN_COLS.length]);
-    m.box(P(x, 0.4, 0), [W / 2, 0.4, 0.21], body, yaw);
+    // Cabinet with chamfered corners (its top is under the lid).
+    binCabinet(m, P, x, W / 2, 0.8, 0.21, body);
     // Sloped lid: low at the front, up to the back.
     const L = (sx: number, y: number, z: number) =>
       P(x + sx * (W / 2 + 0.01), y, z);
@@ -1675,7 +1797,7 @@ function nobori(m: CMesh, p: Vec3, n: Vec3, id: number) {
   m.cylinder(p, 0.17, 0.12, 4, packMat(CM.paint, 0x91));
   m.tube([P(0, 0.1, 0), P(0, 2.45, 0)], 0.018, pole);
   m.tube([P(0, 2.4, 0), P(0.48, 2.4, 0)], 0.012, pole);
-  const mat = packMat(CM.sign, id | SIGN_FABRIC);
+  const mat = packMat(CM.sign, shopSignParam(id | SIGN_FABRIC));
   const q = [
     P(0.03, 0.55, 0),
     P(0.48, 0.55, 0),
@@ -2286,7 +2408,7 @@ function tenantKit(
       0.015,
       packMat(CM.metal),
     );
-    const mat = packMat(CM.sign, t.id | SIGN_FABRIC);
+    const mat = packMat(CM.sign, shopSignParam(t.id | SIGN_FABRIC));
     const pw = nw / 3;
     for (let k = 0; k < 3; k++) {
       const a = sc - nw / 2 + k * pw + 0.01,
@@ -2398,6 +2520,7 @@ export function building(
   flush: number[] = [],
 ) {
   const rng = new Rng(b.seed);
+  signVariant = b.seed >>> 28;
   const fp = b.footprint;
   // Whether edge i is hidden up to height y by a neighbour (edgeCover).
   const hid = (i: number, y: number) => (cover[i] ?? -Infinity) >= y;
@@ -3024,8 +3147,15 @@ export function building(
       const s = e.len * pa.range(0.4, 0.6);
       const y = mainTop - 0.6 - hh;
       const lit = pa.chance(0.4);
-      const id = SIGN.billboard.first + pa.int(0, SIGN.billboard.count);
+      pa.int(0, SIGN.billboard.count); // (kept: the stream stays in step)
+      const id = billboardId(b, 0);
       partyAd = {edge: i, s, y, hw};
+      // Gooseneck floodlamps along the top edge (3 on short boards, else 4).
+      const nf = hw > 3 ? 4 : 3;
+      const floods = Array.from(
+        {length: nf},
+        (_, k) => hw * (((k + 0.5) / nf) * 2 - 1) * 0.92,
+      );
       const c = edgeAt(e, s, 0.12, y);
       const W = (ds: number, dy: number): Vec3 => [
         c[0] + e.along[0] * ds,
@@ -3041,11 +3171,11 @@ export function building(
           [0, 0],
           [1, 0],
         ],
-        packMat(CM.sign, id | (lit ? 0 : SIGN_FABRIC)),
+        packMat(CM.sign, shopSignParam(id | (lit ? 0 : SIGN_FABRIC))),
       );
       if (lod === 0) {
-        // Frame (a box-section rim), stand-off brackets and, on lit ones,
-        // two gooseneck lamps over the top.
+        // Frame (a box-section rim), stand-off brackets and a row of
+        // gooseneck floodlamps over the top edge.
         const fm = steelPaint(1 + (b.seed & 0xfc));
         const R = (ds: number, dy: number, out: number): Vec3 =>
           edgeAt(e, s + ds, out, y + dy);
@@ -3064,26 +3194,40 @@ export function building(
         for (const ds of [-hw * 0.6, hw * 0.6])
           for (const dy of [-hh, hh])
             m.tube([R(ds, dy, 0), R(ds, dy, 0.11)], 0.04, fm);
-        if (lit) {
-          for (const ds of [-hw * 0.5, hw * 0.5]) {
-            m.tube(
-              [
-                R(ds, hh + rim, 0.13),
-                R(ds, hh + 0.45, 0.25),
-                R(ds, hh + 0.4, 0.9),
-              ],
-              0.02,
-              fm,
-            );
-            m.box(
-              R(ds, hh + 0.33, 0.9),
-              [0.12, 0.05, 0.08],
-              packMat(CM.lamp, 1),
-              yawOf(e),
-            );
-          }
-          lights.add(edgeAt(e, s, 2.5, y), 9, signColor(id), LightKind.sign);
+        for (const ds of floods) {
+          m.tube(
+            [
+              R(ds, hh + rim, 0.13),
+              R(ds, hh + 0.5, 0.3),
+              R(ds, hh + 0.48, 0.85),
+            ],
+            0.025,
+            fm,
+          );
+          // Lamp head: a short lit drum hanging from the arm's end.
+          m.tube(
+            [R(ds, hh + 0.47, 0.9), R(ds, hh + 0.33, 0.97)],
+            0.09,
+            packMat(CM.lamp, 0),
+          );
         }
+        if (lit)
+          lights.add(edgeAt(e, s, 2.5, y), 9, signColor(id), LightKind.sign);
+      }
+      // The floodlamps' light (at every LOD: the board stays floodlit on
+      // shells): warm white, omnidirectional (point lights have no cone),
+      // so it sits out in front of the board just under its top edge: the
+      // board is brightest at the top and falls off downward, with a
+      // little spill on the wall over it. One light per pair of lamps.
+      for (let k = 0; k < floods.length; k += 2) {
+        const ds =
+          k + 1 < floods.length ? (floods[k] + floods[k + 1]) / 2 : floods[k];
+        lights.add(
+          edgeAt(e, s + ds, 1.3, y + hh - 0.3),
+          Math.max(4, hh * 2 + 0.5),
+          FLOOD,
+          LightKind.station,
+        );
       }
     }
   }
@@ -3792,15 +3936,42 @@ export function building(
         const th = sr.range(0.1, 0.2);
         signPanel(m, p, n, halfW * k1, h2 / 2, th, id, -1, lod);
         if (lod === 0) {
-          for (const e of [-0.42, 0.42]) {
+          // Mounting: steel cantilever arms over the top and under the foot
+          // of the panel, out to its far edge (they read in silhouette past
+          // the sign), a raking strut from the wall up to the top arm, and
+          // the sign's power conduit from its foot back to the wall and
+          // down to the shopfront head.
+          const steel = packMat(CM.metal);
+          const inner = out - halfW;
+          const ya = p[1] + h2 / 2 + 0.06;
+          for (const y of [ya, p[1] - h2 / 2 - 0.06])
             m.beam(
-              wallAt(t, 0, p[1] + e * h2),
-              wallAt(t, out - halfW, p[1] + e * h2),
-              0.04,
-              0.04,
-              packMat(CM.metal),
+              wallAt(t, 0, y),
+              wallAt(t, out + halfW - 0.03, y),
+              0.05,
+              0.05,
+              steel,
             );
-          }
+          m.tube(
+            [
+              wallAt(t, 0, ya - Math.min(1.1, out * 1.1)),
+              wallAt(t, out, ya - 0.03),
+            ],
+            0.03,
+            steel,
+          );
+          const yb = p[1] - h2 / 2 + 0.1;
+          const yj = Math.min(yb - 0.3, base + GROUND_H + 0.45);
+          const down = yb - yj > 0.6;
+          m.tube(
+            [
+              wallAt(t, inner, yb - 0.1),
+              wallAt(t, 0.05, yb - 0.25),
+              ...(down ? [wallAt(t, 0.05, yj + 0.1)] : []),
+            ],
+            0.02,
+            packMat(CM.paint, 0x90),
+          );
         }
       } else if (style === 'cube') {
         // Projecting light box on a bracket, sign on all four sides.
@@ -3882,7 +4053,12 @@ export function building(
         );
       }
       if (lit && style !== 'banner')
-        lights.add(wallAt(t, 1.95, lightY), 8, signColor(id), LightKind.sign);
+        lights.add(
+          wallAt(t, 1.95, lightY),
+          8,
+          signGlow(id, signVariant),
+          LightKind.sign,
+        );
     }
     // Zakkyo stack: on fronts without a blade stack, a projecting tenant
     // sign per upper floor in one column on a steel spine, at the street
@@ -3913,7 +4089,7 @@ export function building(
         // Each sign lights the wall around it in its own colour: a small,
         // dim light just in front of it (tight falloff, so the brick still
         // reads under the tint). Same at every LOD, so shells match.
-        const c = signColor(id);
+        const c = signGlow(id, signVariant);
         lights.add(
           wallAt(t, 1.0, yc),
           3.5,
@@ -3921,16 +4097,32 @@ export function building(
           LightKind.sign,
         );
         if (lod === 0)
-          m.beam(
-            wallAt(t, 0, yc + hh - 0.1),
-            wallAt(t, 0.32, yc + hh - 0.1),
-            0.03,
-            0.03,
-            metal,
-          );
+          for (const dy of [hh - 0.1, -hh + 0.1])
+            m.beam(
+              wallAt(t, 0, yc + dy),
+              wallAt(t, 0.32, yc + dy),
+              0.045,
+              0.045,
+              metal,
+            );
       }
-      if (lod === 0)
-        m.beam(wallAt(t, 0.28, y0), wallAt(t, 0.28, yTop), 0.04, 0.04, metal);
+      if (lod === 0) {
+        // The steel spine, and beside it the signs' power conduit down to
+        // a junction box over the shopfront.
+        m.beam(wallAt(t, 0.28, y0), wallAt(t, 0.28, yTop), 0.05, 0.05, metal);
+        const dt = (0.14 / len) * (atEnd ? -1 : 1);
+        m.tube(
+          [wallAt(t + dt, 0.05, yTop - 0.2), wallAt(t + dt, 0.05, y0 + 0.1)],
+          0.022,
+          packMat(CM.paint, 0x90),
+        );
+        m.box(
+          wallAt(t + dt, 0.05, y0),
+          [0.1, 0.12, 0.05],
+          packMat(CM.paint, 0xd4),
+          Math.atan2(n[0], n[2]),
+        );
+      }
     }
     // Signs on the side walls near the street corner.
     if (b.density > 0.3 && floors > 2) {
@@ -3978,6 +4170,21 @@ export function building(
             -1,
             lod,
           );
+          if (lod === 0) {
+            // Cantilever arms over and under it and a raking strut.
+            const steel = packMat(CM.metal);
+            const ya = y0 + h2 + 0.06;
+            for (const y of [ya, y0 - 0.06])
+              m.beam(at(0, y), at(0.22 + 2 * halfW, y), 0.05, 0.05, steel);
+            m.tube(
+              [
+                at(0, ya - Math.min(1.1, 0.25 + halfW)),
+                at(0.25 + halfW, ya - 0.03),
+              ],
+              0.03,
+              steel,
+            );
+          }
         }
       }
     }
@@ -4048,13 +4255,14 @@ export function building(
           -1,
           lod,
           false,
+          true,
         );
       }
       // The lit fascia washes the pavement at night (at every LOD).
       lights.add(
         wallAt((main.s0 + main.s1) / 2 / len, 1.8, y - 0.8),
         7,
-        signColor(id),
+        signGlow(main.id, signVariant),
         LightKind.sign,
       );
       if (lod === 0) {
@@ -4306,12 +4514,107 @@ export function building(
             );
           }
         }
+      } else {
+        // Distant shells keep the awning (its canvas) or the canopy (its
+        // deck and fascia), so the shopfront is not a flat card: the same
+        // choice and extent as LOD0, from a copy of the sign stream (which
+        // LOD0 goes on drawing). 4 or 8 vertices.
+        const cr2: Rng = Object.assign(Object.create(Rng.prototype), sr);
+        const ay = base + GROUND_H * 0.62;
+        const aStyle = konbini ? (cr2.next(), 0.7) : cr2.next();
+        if (aStyle < 0.55) {
+          const t0 = ftAt(cr2.range(0.06, 0.2)),
+            t1 = ftAt(1 - cr2.range(0.06, 0.2));
+          const reach = cr2.range(1.0, 1.5);
+          const drop = reach * cr2.range(0.35, 0.55);
+          const span = (t1 - t0) * len * 2;
+          const nl = Math.hypot(drop, reach - 0.15);
+          m.quad(
+            [
+              wallAt(t0, 0.15, ay),
+              wallAt(t1, 0.15, ay),
+              wallAt(t1, reach, ay - drop),
+              wallAt(t0, reach, ay - drop),
+            ],
+            [(n[0] * drop) / nl, (reach - 0.15) / nl, (n[2] * drop) / nl],
+            [
+              [0, 0],
+              [span, 0],
+              [span, 1],
+              [0, 1],
+            ],
+            packMat(CM.sign, ((id * 3 + 1) & 0xff) | SIGN_STRIPES),
+          );
+        } else if (aStyle < 0.85) {
+          const t0 = ftAt(0.06),
+            t1 = ftAt(0.94);
+          let R = 1.2;
+          for (const p of poles) {
+            const dx = p[0] - a[0],
+              dz = p[1] - a[1];
+            const s = (dx * along[0] + dz * along[2]) / len;
+            const o = dx * n[0] + dz * n[2];
+            if (s > t0 - 0.5 / len && s < t1 + 0.5 / len && o > 0 && o < 2)
+              R = Math.min(R, o - 0.35);
+          }
+          R = Math.max(0.5, R);
+          const w = (t1 - t0) * len;
+          const yT = ay + 0.12,
+            yF = ay - 0.26;
+          m.quad(
+            [
+              wallAt(t0, 0, yT),
+              wallAt(t1, 0, yT),
+              wallAt(t1, R, yT),
+              wallAt(t0, R, yT),
+            ],
+            UP,
+            [
+              [0, 0],
+              [w, 0],
+              [w, 1],
+              [0, 1],
+            ],
+            packMat(CM.paint, (b.seed >> 8) & 0xff),
+          );
+          const fq = [
+            wallAt(t0, R, yF),
+            wallAt(t1, R, yF),
+            wallAt(t1, R, yT),
+            wallAt(t0, R, yT),
+          ];
+          if (konbini)
+            m.quad(
+              fq,
+              n,
+              [
+                [0, 0],
+                [0, w],
+                [3, w],
+                [3, 0],
+              ],
+              packMat(CM.sign, (konbini.id & 0xff) | SIGN_STRIPES),
+            );
+          else
+            m.quad(
+              fq,
+              n,
+              [
+                [0, 0],
+                [w, 0],
+                [w, 1],
+                [0, 1],
+              ],
+              packMat(CM.metal, 0x2000 | (b.style & 0x1fff)),
+            );
+        }
       }
     }
     const billboard =
       b.density > 0.4 && b.height < 60 && rng.chance(0.1 * signDensity);
     if (billboard) {
-      const id = SIGN.billboard.first + rng.int(0, SIGN.billboard.count);
+      rng.int(0, SIGN.billboard.count); // (kept: the stream stays in step)
+      const id = billboardId(b, 1);
       const c2 = centroid(roof);
       const w = Math.min(len * 0.45, 7);
       const p: Vec3 = [c2[0], roofY + 3 + w * 0.25, c2[1]];
@@ -4378,7 +4681,8 @@ export function building(
             packMat(CM.screen, (b.seed >> 4) & 0xffff),
           );
         } else {
-          const bid = SIGN.billboard.first + sr.int(0, SIGN.billboard.count);
+          sr.int(0, SIGN.billboard.count); // (kept: the stream stays in step)
+          const bid = billboardId(b, 2);
           signPanel(m, p, along, w, hh, 0.15, bid, -1, lod);
         }
         // Legs and a cross brace behind the board.
@@ -4502,6 +4806,18 @@ export function building(
     // Party wall kit: a gas riser and a water line as pipe runs with
     // clamps at the floor lines, and on some walls a corrugated steel sheet
     // patched over old damage. Clear of the ad and the stair.
+    // The party wall that gets the big fixtures (the AC bank and the
+    // lamp): the longest one open to the sky.
+    let kitEdge = -1;
+    edges.forEach((e, i) => {
+      if (
+        e.role === ROLE.party &&
+        e.len >= 4 &&
+        !hid(i, wallTop) &&
+        (kitEdge < 0 || e.len > edges[kitEdge].len)
+      )
+        kitEdge = i;
+    });
     const partyKit = (e: FacadeEdge, i: number, ground: number) => {
       const pr = new Rng(hash2(b.seed, 0x9a27 + i));
       const P = (s: number, out: number, y: number) => edgeAt(e, s, out, y);
@@ -4509,6 +4825,7 @@ export function building(
         !inStair(i, s, pad) &&
         !(partyAd?.edge === i && Math.abs(s - partyAd.s) < partyAd.hw + pad);
       const yTop = wallTop - 0.5;
+      let sheet0: [number, number, number, number] | null = null;
       const gasS = pr.chance(0.5)
         ? pr.range(0.8, 1.6)
         : e.len - pr.range(0.8, 1.6);
@@ -4574,6 +4891,142 @@ export function building(
             e.n,
             steelGrey,
           );
+          sheet0 = [s0 - 0.5, s0 + w + 0.5, y0 - 0.3, y1 + 0.3];
+        }
+      }
+      // Big fixtures that read from across the block (own stream).
+      const kr = new Rng(hash2(b.seed, 0x9a3c + i));
+      const G = GHOST_STEP;
+      const inSheet = (s0: number, s1: number, y0: number, y1: number) =>
+        !!sheet0 &&
+        s1 > sheet0[0] &&
+        s0 < sheet0[1] &&
+        y1 > sheet0[2] &&
+        y0 < sheet0[3];
+      // A soil stack from a vent over the coping down to a gully at grade
+      // (ivory PVC), clear of the gas riser, the stair and the ad.
+      // (Below the ad only where it is out of the way.)
+      const clearBelow = (s: number, pad: number, y1: number) =>
+        !inStair(i, s, pad) &&
+        !(
+          partyAd?.edge === i &&
+          Math.abs(s - partyAd.s) < partyAd.hw + pad &&
+          y1 > partyAd.y - partyAd.hw / 2 - 0.4
+        );
+      const stackS =
+        [
+          e.len *
+            (gasS < e.len / 2 ? kr.range(0.62, 0.8) : kr.range(0.2, 0.38)),
+          0.45,
+          e.len - 0.45,
+        ].find(
+          s =>
+            clear(s, 0.3) &&
+            Math.abs(s - gasS) > 0.5 &&
+            !inSheet(s - 0.1, s + 0.1, ground, wallTop),
+        ) ?? -9;
+      const so = G + 0.1;
+      if (stackS > 0)
+        m.tube(
+          [
+            P(stackS, so, wallTop + 0.55),
+            P(stackS, so, Math.max(ground, cover[i] ?? -Infinity) + 0.3),
+            P(stackS, so + 0.12, ground + 0.08),
+          ],
+          0.055,
+          pipeMat,
+        );
+      // The rest on the building's longest open party wall only.
+      if (i !== kitEdge) return;
+      // A bank of split-AC condensers on steel shelves on the lower
+      // floors, their lines gathered into one duct cover that runs down to
+      // grade (the flats behind a party wall have nowhere else to put
+      // them).
+      if (bodyN >= 2) {
+        const cols = 2;
+        let rows = bodyN >= 3 && kr.chance(0.4) ? 2 : 1;
+        const f0 = 1;
+        const span = cols * 0.95 + 0.6;
+        let acS = -1;
+        // (Fewer rows where an ad hangs low over the wall.)
+        for (let t = 0; t < 8 && acS < 0; t++) {
+          if (t === 4 && rows > 1) rows--;
+          const c = kr.range(0.8, Math.max(0.81, e.len - span - 0.8));
+          const yLo = base + GROUND_H + (f0 - 1) * H;
+          const yHi = base + GROUND_H + (f0 - 1 + rows) * H;
+          if (
+            clearBelow(c - 0.3, 0.2, yHi + 0.6) &&
+            clearBelow(c + span, 0.2, yHi + 0.6) &&
+            clearBelow(c + span / 2, 0.2, yHi + 0.6) &&
+            Math.abs(c + span / 2 - stackS) > span / 2 + 0.3 &&
+            Math.abs(c + span / 2 - gasS) > span / 2 + 0.3 &&
+            !inSheet(c - 0.3, c + span, yLo, yHi) &&
+            yHi < wallTop - 0.5
+          )
+            acS = c;
+        }
+        if (acS >= 0) {
+          let topY = -Infinity;
+          const sD = acS + span - 0.1;
+          for (let r = 0; r < rows; r++)
+            for (let k = 0; k < cols; k++) {
+              const y = base + GROUND_H + (f0 - 1 + r) * H + 0.9;
+              if (hid(i, y + 0.6) || y < grade[i] + 2.2) continue;
+              const s = acS + 0.42 + k * 0.95;
+              acUnit(m, e, s, G + 0.32, y, false, false);
+              // Its steel shelf, and the refrigerant line from its side
+              // over to the duct.
+              m.quad(
+                [
+                  P(s - 0.43, G, y - 0.01),
+                  P(s + 0.43, G, y - 0.01),
+                  P(s + 0.43, G + 0.48, y - 0.01),
+                  P(s - 0.43, G + 0.48, y - 0.01),
+                ],
+                [0, -1, 0],
+                uv01,
+                steelGrey,
+              );
+              m.tube(
+                [
+                  P(s + 0.42, G + 0.3, y + 0.15),
+                  P(sD, G + 0.3, y + 0.15),
+                  P(sD, G + 0.08, y + 0.15),
+                ],
+                0.025,
+                pipeMat,
+              );
+              topY = Math.max(topY, y + 0.15);
+            }
+          if (topY > -Infinity)
+            m.tube(
+              [P(sD, G + 0.06, topY + 0.1), P(sD, G + 0.06, ground + 0.12)],
+              0.06,
+              pipeMat,
+            );
+        }
+      }
+      // A security bulkhead lamp on a short arm over the lower wall, its
+      // warm pool down the wall and on the paving.
+      {
+        const ls = e.len * kr.range(0.3, 0.7);
+        const ly = Math.max(grade[i], base) + 3.1;
+        if (
+          clearBelow(ls, 0.3, ly + 0.3) &&
+          !hid(i, ly + 0.3) &&
+          !inSheet(ls - 0.2, ls + 0.2, ly - 0.2, ly + 0.2)
+        ) {
+          m.tube(
+            [P(ls, 0, ly + 0.05), P(ls, G + 0.2, ly + 0.05)],
+            0.025,
+            steelGrey,
+          );
+          m.tube(
+            [P(ls - 0.12, G + 0.25, ly), P(ls + 0.12, G + 0.25, ly)],
+            0.075,
+            packMat(CM.lamp, 0),
+          );
+          lights.add(P(ls, 0.7, ly - 0.25), 8, WALL_LAMP, LightKind.station);
         }
       }
     };
@@ -4583,6 +5036,20 @@ export function building(
     // broken stubs of its floor slabs, cut-off pipe and cable stubs, and a
     // bricked-up doorway with its frame where a floor once met ours.
     const ghost = partyGhost(partyAux);
+    // How far the wall surface at (s, y) on party wall e stands out: the
+    // ghost's raised panel (ghostRelief) is GHOST_STEP proud under the old
+    // roofline. Flush fixtures there sit on it.
+    const ghostOut = (e: FacadeEdge, s: number, y: number) => {
+      if (!ghost || svc < 1 || e.role !== ROLE.party) return 0;
+      const uEnd = e.u0 + e.count * bay;
+      const u =
+        s < e.f0
+          ? e.u0 - (e.f0 - s)
+          : s > e.f1
+            ? uEnd + (s - e.f1)
+            : e.u0 + (s - e.f0) * e.k;
+      return y < ghost.top(u) + vOff + 0.05 ? GHOST_STEP : 0;
+    };
     const ghostRelief = (e: FacadeEdge, i: number) => {
       if (!ghost || svc < 1) return;
       const gr = new Rng(hash2(b.seed, 0x6a05 + i));
@@ -4603,7 +5070,7 @@ export function building(
       // The old roofline, sampled every 5 cm and simplified to its steps
       // and slopes.
       const pts: [number, number][] = [];
-      for (let s = 0.1; s <= e.len - 0.1 + 1e-6; s += 0.05) {
+      for (let s = GHOST_END; s <= e.len - GHOST_END + 1e-6; s += 0.05) {
         const y = topY(s);
         const n = pts.length;
         if (n >= 2) {
@@ -4615,6 +5082,123 @@ export function building(
           }
         }
         pts.push([s, y]);
+      }
+      // The wall the neighbour stood against stands GHOST_STEP proud of
+      // the weathered wall above its roofline (render and waterproofing
+      // left behind when it came down): the same party-wall surface (same
+      // material, aux and uv, so the shader's ghost paint lines up) under
+      // the old roofline, a lip along the profile and end caps short of the
+      // corners. Its foot sits on the plinth (or the neighbour's cover).
+      const yFoot = Math.max(
+        base + 0.35,
+        grade[i] + 0.25,
+        cover[i] ?? -Infinity,
+        b.low,
+      );
+      const yCap = wallTop - 0.3;
+      const yZone = base + GROUND_H;
+      const bodyMat = fmat(e, FZ.body, true);
+      const baseMat = fmat(e, FZ.base, true);
+      const G = GHOST_STEP;
+      const pv = (s: number, y: number): Vec2 => [uOf(s), y];
+      const panel = (s0: number, s1: number, ya: number, yb: number) => {
+        // Trapezoid over [s0, s1] from yFoot to the profile (ya at s0, yb at
+        // s1), split at the ground-floor line into its two zones.
+        const lo = (
+          y: number,
+          vo: number,
+          mat: number,
+          top: [number, number],
+        ) =>
+          m.quad(
+            [
+              edgeAt(e, s0, G, y),
+              edgeAt(e, s1, G, y),
+              edgeAt(e, s1, G, top[1]),
+              edgeAt(e, s0, G, top[0]),
+            ],
+            e.n,
+            [
+              [pv(s0, y)[0], y - vo],
+              [pv(s1, y)[0], y - vo],
+              [pv(s1, y)[0], top[1] - vo],
+              [pv(s0, y)[0], top[0] - vo],
+            ],
+            mat,
+            partyAux,
+          );
+        if (yFoot < yZone)
+          lo(yFoot, base, baseMat, [Math.min(ya, yZone), Math.min(yb, yZone)]);
+        const y0 = Math.max(yFoot, yZone);
+        if (ya > y0 + 0.01 && yb > y0 + 0.01) lo(y0, vOff, bodyMat, [ya, yb]);
+      };
+      if (pts.length >= 2 && !hid(i, yCap)) {
+        for (let k = 0; k + 1 < pts.length; k++) {
+          const [s0, y0] = pts[k],
+            [s1, y1] = pts[k + 1];
+          const ya = Math.min(y0, yCap),
+            yb = Math.min(y1, yCap);
+          if (ya < yFoot + 0.3 || yb < yFoot + 0.3) continue;
+          panel(s0, s1, ya, yb);
+          // Lip along the profile, its normal in the wall plane.
+          const ds = s1 - s0,
+            dy = yb - ya;
+          const l = Math.hypot(ds, dy) || 1;
+          const nn: Vec3 = [
+            (-e.along[0] * dy) / l,
+            ds / l,
+            (-e.along[2] * dy) / l,
+          ];
+          m.quad(
+            [
+              edgeAt(e, s0, 0, ya),
+              edgeAt(e, s1, 0, yb),
+              edgeAt(e, s1, G, yb),
+              edgeAt(e, s0, G, ya),
+            ],
+            nn,
+            [
+              [uOf(s0), ya - vOff],
+              [uOf(s1), yb - vOff],
+              [uOf(s1), yb - vOff + G],
+              [uOf(s0), ya - vOff + G],
+            ],
+            bodyMat,
+            partyAux,
+          );
+        }
+        // End caps.
+        for (const [s, y, sg] of [
+          [pts[0][0], pts[0][1], -1],
+          [pts[pts.length - 1][0], pts[pts.length - 1][1], 1],
+        ] as const) {
+          const yt = Math.min(y, yCap);
+          if (yt < yFoot + 0.3) continue;
+          m.quad(
+            sg < 0
+              ? [
+                  edgeAt(e, s, 0, yFoot),
+                  edgeAt(e, s, G, yFoot),
+                  edgeAt(e, s, G, yt),
+                  edgeAt(e, s, 0, yt),
+                ]
+              : [
+                  edgeAt(e, s, G, yFoot),
+                  edgeAt(e, s, 0, yFoot),
+                  edgeAt(e, s, 0, yt),
+                  edgeAt(e, s, G, yt),
+                ],
+            [e.along[0] * sg, 0, e.along[2] * sg],
+            [
+              [uOf(s), yFoot - vOff],
+              [uOf(s) + G, yFoot - vOff],
+              [uOf(s) + G, yt - vOff],
+              [uOf(s), yt - vOff],
+            ],
+            bodyMat,
+            partyAux,
+          );
+        }
       }
       const flash = packMat(CM.paint, 0x90);
       for (let k = 0; k + 1 < pts.length; k++) {
@@ -4631,13 +5215,43 @@ export function building(
           into,
         );
       }
-      // Slab stubs along the old floor lines (2.7 m storeys).
+      // The old floor slabs' cut edges: a continuous ledge 4.5 cm proud of
+      // the ghost along each old floor line (2.7 m storeys) wherever the
+      // neighbour stood above it, so each throws a shadow line.
       const slab = packMat(CM.concrete);
+      for (let fl = 1; fl < 4; fl++) {
+        const y = vOff + fl * 2.7 + 0.12;
+        const ledge = (s0: number, s1: number) => {
+          if (s1 - s0 < 0.6) return;
+          const o = (G + 0.045) / 2;
+          m.beam(
+            edgeAt(e, s0, o, y),
+            edgeAt(e, s1, o, y),
+            o,
+            0.06,
+            slab,
+            0,
+            into,
+          );
+        };
+        let r0 = -1;
+        const step = 0.25;
+        for (let s = GHOST_END + 0.15; s <= e.len - GHOST_END; s += step) {
+          const good = ok(s, y) && topY(s) > y + 0.3 && y > yFoot + 0.2;
+          if (good && r0 < 0) r0 = s;
+          else if (!good && r0 >= 0) {
+            ledge(r0, s - step);
+            r0 = -1;
+          }
+        }
+        if (r0 >= 0) ledge(r0, e.len - GHOST_END - 0.15);
+      }
+      // And a few broken stubs of the slabs standing deeper.
       let stubs = 0;
-      for (let fl = 1; fl < 4 && stubs < 5; fl++) {
+      for (let fl = 1; fl < 4 && stubs < 3; fl++) {
         const y = vOff + fl * 2.7 + 0.12;
         let s = gr.range(0.3, 1.2);
-        while (s < e.len - 0.6 && stubs < 5) {
+        while (s < e.len - 0.6 && stubs < 3) {
           const l = gr.range(0.4, 1.6);
           const s1 = Math.min(e.len - 0.3, s + l);
           if (
@@ -4725,7 +5339,7 @@ export function building(
           0,
           into,
         );
-        const q = (sx: number, y: number) => edgeAt(e, ds + sx, 0.015, y);
+        const q = (sx: number, y: number) => edgeAt(e, ds + sx, G + 0.015, y);
         m.quad(
           [q(-0.44, dy), q(0.44, dy), q(0.44, dy + 2.07), q(-0.44, dy + 2.07)],
           e.n,
@@ -4810,7 +5424,7 @@ export function building(
           for (const t of [0.22, 0.78])
             flatQuad(
               m,
-              edgeAt(e, e.len * t, 0.015, y),
+              edgeAt(e, e.len * t, 0.015 + ghostOut(e, e.len * t, y), y),
               e.along,
               0.13,
               0.13,
@@ -4826,11 +5440,20 @@ export function building(
           const s = lerp(e.len * 0.35, e.len * 0.65, cr.next());
           const y = base + GROUND_H + (f - 1) * H + 2.4;
           if (hid(i, y + 0.3)) return;
-          flatQuad(m, edgeAt(e, s, 0.01, y), e.along, 0.17, 0.15, e.n, metal);
+          const go = ghostOut(e, s, y + 0.2);
+          flatQuad(
+            m,
+            edgeAt(e, s, go + 0.01, y),
+            e.along,
+            0.17,
+            0.15,
+            e.n,
+            metal,
+          );
           for (const dy of [-0.08, 0, 0.08])
             flatQuad(
               m,
-              edgeAt(e, s, 0.015, y + dy),
+              edgeAt(e, s, go + 0.015, y + dy),
               e.along,
               0.14,
               0.018,
@@ -4838,7 +5461,7 @@ export function building(
               dark,
             );
           const c = (ds: number, out: number, dy: number) =>
-            edgeAt(e, s + ds, out, y + dy);
+            edgeAt(e, s + ds, out + go, y + dy);
           const nl = Math.hypot(0.16, 0.12);
           m.quad(
             [
@@ -5082,6 +5705,8 @@ export function building(
           cr.chance(0.5) ? 0x90 : 0x80,
           true,
         );
+        // Its canopy lamp lights the door and the yard.
+        lights.add(edgeAt(e, s, 0.7, y + 2.1), 7, WALL_LAMP, LightKind.station);
         m.box(edgeAt(e, s, 0.2, y + 0.05), [0.6, 0.05, 0.2], concrete, yaw);
         // Condensers on blocks beside it.
         const n2 = svc === 1 ? cr.int(1, 3) : 0;
@@ -6126,9 +6751,45 @@ function streetLight(
   dir: Vec2,
   kind: number,
   sodium: boolean,
+  lod: number,
 ) {
   const h = kind >= 2 ? 9 : 6.5;
   const reach = kind >= 2 ? 2.2 : 1.2;
+  const top: Vec3 = [p[0], p[1] + h, p[2]];
+  const head: Vec3 = [
+    p[0] + dir[0] * reach,
+    p[1] + h - 0.1,
+    p[2] + dir[1] * reach,
+  ];
+  if (lod > 0) {
+    // Distant tiles: the pole and arm as one bent tube (widened to a
+    // minimum on-screen width) and the lamp head as its lit underside and
+    // its top, 20 vertices instead of 42.
+    m.tube([[p[0], p[1] - SINK, p[2]], top, head], 0.09, packMat(CM.metal));
+    const r: Vec3 = [dir[1], 0, -dir[0]];
+    const H = (x: number, z: number, y: number): Vec3 => [
+      head[0] + r[0] * x + dir[0] * z,
+      head[1] + y,
+      head[2] + r[2] * x + dir[1] * z,
+    ];
+    const lamp = packMat(CM.lamp, sodium ? 0 : 1);
+    for (const [y, nn] of [
+      [-0.2, [0, -1, 0]],
+      [-0.04, UP],
+    ] as const)
+      m.quad(
+        [
+          H(-0.3, -0.18, y),
+          H(0.3, -0.18, y),
+          H(0.3, 0.18, y),
+          H(-0.3, 0.18, y),
+        ],
+        nn as Vec3,
+        uv01,
+        lamp,
+      );
+    return;
+  }
   m.cylinder(
     [p[0], p[1] - SINK, p[2]],
     0.09,
@@ -6137,12 +6798,6 @@ function streetLight(
     packMat(CM.metal),
     false,
   );
-  const top: Vec3 = [p[0], p[1] + h, p[2]];
-  const head: Vec3 = [
-    p[0] + dir[0] * reach,
-    p[1] + h - 0.1,
-    p[2] + dir[1] * reach,
-  ];
   m.beam(top, head, 0.05, 0.05, packMat(CM.metal));
   m.box(
     [head[0], head[1] - 0.12, head[2]],
@@ -6631,7 +7286,7 @@ export function buildTile(
     tz0 = Math.floor(tile / n) * TILE_SIZE - size / 2;
   const poles: Vec2[] = [];
   streetLightSpots(L, ctx.geom, hf, (p, dir, kind, sodium) => {
-    if (inTile(p[0], p[2])) streetLight(m, p, dir, kind, sodium);
+    if (inTile(p[0], p[2])) streetLight(m, p, dir, kind, sodium, lod);
     if (
       p[0] > tx0 - 40 &&
       p[0] < tx0 + TILE_SIZE + 40 &&
