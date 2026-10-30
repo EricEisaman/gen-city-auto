@@ -1,7 +1,7 @@
 // Per-tile city geometry: buildings (LOD0 detailed, LOD1 shells) and street
 // props (lights, utility poles and wires, signals, trees, vending machines).
 
-import {Rng, hash2} from '../math/random.ts';
+import {Rng, hash2, hash3} from '../math/random.ts';
 import {
   dist2,
   lerp,
@@ -21,11 +21,14 @@ import {
 } from './gen-base.ts';
 import {insetPolygon} from './graph.ts';
 import {
+  closestOnPolyline,
   elevatedHalfWidth,
+  FILL_CELL,
   obb,
   ROAD_WIDTH,
   SIDEWALK,
   Road,
+  type BlockFill,
   type Building,
   type CityLayout,
 } from './layout.ts';
@@ -132,8 +135,18 @@ function walls(
 
 function cap(m: CMesh, poly: Vec2[], y: number, mat: number, aux = 0) {
   const idx = triangulate(poly);
+  // Roofs get uv along the footprint's axes, so membrane sheets, joints and
+  // drains line up with the building rather than the world grid.
+  const u = (mat & 0xff) === CM.roof ? obb(poly).u : ([1, 0] as Vec2);
   const ids = poly.map(q =>
-    m.vertex([q[0], y, q[1]], UP, q[0], q[1], mat, aux),
+    m.vertex(
+      [q[0], y, q[1]],
+      UP,
+      q[0] * u[0] + q[1] * u[1],
+      q[1] * u[0] - q[0] * u[1],
+      mat,
+      aux,
+    ),
   );
   for (let i = 0; i < idx.length; i += 3)
     m.triFacing(ids[idx[i]], ids[idx[i + 1]], ids[idx[i + 2]], UP);
@@ -301,6 +314,191 @@ function fins(
   }
 }
 
+/**
+ * Equipment that scales with roof area, so big flat roofs read at their size
+ * from the air: AC condenser banks in 2-row grids (about one unit per 120 m²,
+ * 4 to 40), and on roofs over 1500 m² 2 to 4 skylight strips (2 x 12 m) and a
+ * 3 m stair core. `hole` is a tower standing on this roof (a podium cap);
+ * `taken` lists rects [su, sv, hu, hv] in the roof's OBB frame already used.
+ * LOD1 merges each bank into one box. Uses its own random stream.
+ */
+function roofField(
+  m: CMesh,
+  roof: Vec2[],
+  y: number,
+  hole: Vec2[] | null,
+  seed: number,
+  lod: number,
+  coreMat: number,
+  aux: number,
+  taken: number[][] = [],
+) {
+  const area = polygonArea(roof) - (hole ? polygonArea(hole) : 0);
+  if (area < 400) return;
+  const rng = new Rng(hash2(seed, 0x700f));
+  const box = obb(roof);
+  const U = box.u;
+  const V: Vec2 = [-U[1], U[0]];
+  // CMesh.box: forward (h[2]) runs along U, right (h[0]) along V.
+  const yaw = Math.atan2(U[0], U[1]);
+  const at = (su: number, sv: number): Vec2 => [
+    box.c[0] + U[0] * su + V[0] * sv,
+    box.c[1] + U[1] * su + V[1] * sv,
+  ];
+  const rectPoly = (su: number, sv: number, hu: number, hv: number) => [
+    at(su - hu, sv - hv),
+    at(su + hu, sv - hv),
+    at(su + hu, sv + hv),
+    at(su - hu, sv + hv),
+  ];
+  const fits = (su: number, sv: number, hu: number, hv: number) => {
+    for (const [a, c] of [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+      [0, 0],
+    ]) {
+      const q = at(su + a * (hu + 1), sv + c * (hv + 1));
+      if (!pointInPolygon(q, roof)) return false;
+      if (hole && pointInPolygon(q, hole)) return false;
+    }
+    if (
+      hole &&
+      hole.some(q => pointInPolygon(q, rectPoly(su, sv, hu + 1, hv + 1)))
+    )
+      return false;
+    for (const t of taken)
+      if (
+        Math.abs(su - t[0]) < hu + t[2] + 0.8 &&
+        Math.abs(sv - t[1]) < hv + t[3] + 0.8
+      )
+        return false;
+    return true;
+  };
+  const place = (hu: number, hv: number, tries: number) => {
+    if (box.hu < hu + 1 || box.hv < hv + 1) return null;
+    for (let k = 0; k < tries; k++) {
+      const su = rng.range(-box.hu + hu, box.hu - hu);
+      const sv = rng.range(-box.hv + hv, box.hv - hv);
+      if (fits(su, sv, hu, hv)) {
+        taken.push([su, sv, hu, hv]);
+        return [su, sv];
+      }
+    }
+    return null;
+  };
+  const big = area > 1500;
+  if (big) {
+    // Stair core.
+    const s = place(1.5, 1.5, 12);
+    if (s) {
+      const q = at(s[0], s[1]);
+      m.box([q[0], y + 1.5, q[1]], [1.5, 1.5, 1.5], coreMat, yaw, aux);
+    }
+    // Skylight strips side by side along U.
+    const n = 2 + Math.min(2, Math.floor((area - 1500) / 1500));
+    const span = (n - 1) * 3.6;
+    const c = place(6, span / 2 + 1, 16);
+    if (c) {
+      for (let k = 0; k < n; k++) {
+        const q = at(c[0], c[1] - span / 2 + k * 3.6);
+        m.box([q[0], y + 0.2, q[1]], [1, 0.2, 6], packMat(CM.metal), yaw);
+        m.box(
+          [q[0], y + 0.42, q[1]],
+          [0.9, 0.04, 5.9],
+          packMat(CM.glass, 4),
+          yaw,
+        );
+      }
+    }
+  }
+  // AC banks: 2 x up to 6 condensers each, until the area's quota is met
+  // (commercial-size units on big roofs).
+  let units = Math.max(4, Math.min(40, Math.round(area / 120)));
+  const unitMat = (k: number) => packMat(CM.paint, 0xe0 + (k & 3));
+  const pitch = big ? 2.0 : 1.4;
+  const rowW = big ? 2.4 : 1.6;
+  const uh: Vec3 = big ? [0.5, 0.6, 0.85] : [0.4, 0.45, 0.55];
+  for (let bank = 0; units > 0 && bank < 10; bank++) {
+    const cols = Math.min(6, Math.ceil(units / 2));
+    const hu = (cols * pitch) / 2;
+    const s = place(hu, rowW, 10);
+    if (!s) break;
+    units -= cols * 2;
+    if (lod > 0) {
+      const q = at(s[0], s[1]);
+      m.box(
+        [q[0], y + uh[1], q[1]],
+        [rowW / 2 + uh[0], uh[1], hu - 0.1],
+        unitMat(bank),
+        yaw,
+      );
+      continue;
+    }
+    for (let r = 0; r < 2; r++) {
+      for (let k = 0; k < cols; k++) {
+        const q = at(
+          s[0] - hu + pitch / 2 + k * pitch,
+          s[1] + (r - 0.5) * rowW,
+        );
+        m.box([q[0], y + uh[1], q[1]], uh, unitMat(k + bank), yaw);
+      }
+    }
+    // Refrigerant pipe tray alongside the bank.
+    const a = at(s[0] - hu, s[1] + rowW - 0.05);
+    const d = at(s[0] + hu, s[1] + rowW - 0.05);
+    m.beam(
+      [a[0], y + 0.18, a[1]],
+      [d[0], y + 0.18, d[1]],
+      0.1,
+      0.1,
+      packMat(CM.metal),
+    );
+  }
+  if (!big) return;
+  // Air handlers with a duct run, and a cooling tower on the largest roofs.
+  const ahus = 1 + Math.min(3, Math.floor(area / 3000));
+  for (let k = 0; k < ahus; k++) {
+    const s = place(3, 1.5, 8);
+    if (!s) break;
+    const q = at(s[0], s[1]);
+    m.box([q[0], y + 1.1, q[1]], [1.5, 1.1, 3], packMat(CM.paint, 0xe1), yaw);
+    if (lod === 0) {
+      const e = at(s[0] + 3, s[1]);
+      const f = at(s[0] + 3 + Math.min(10, box.hu - s[0] - 4), s[1]);
+      if (pointInPolygon(f, roof) && !(hole && pointInPolygon(f, hole)))
+        m.beam(
+          [e[0], y + 1.4, e[1]],
+          [f[0], y + 1.4, f[1]],
+          0.45,
+          0.35,
+          packMat(CM.metal),
+        );
+    }
+  }
+  if (area > 3000) {
+    const s = place(2.4, 2.4, 8);
+    if (s) {
+      const q = at(s[0], s[1]);
+      m.box(
+        [q[0], y + 1.2, q[1]],
+        [2.3, 1.2, 2.3],
+        packMat(CM.paint, 0xe2),
+        yaw,
+      );
+      m.cylinder(
+        [q[0], y + 2.4, q[1]],
+        1.9,
+        1.2,
+        lod === 0 ? 12 : 6,
+        packMat(CM.paint, 0xe3),
+        true,
+      );
+    }
+  }
+}
+
 export function building(
   b: Building,
   m: CMesh,
@@ -424,6 +622,7 @@ export function building(
     );
     cap(m, fp, podTop, packMat(CM.roof, b.style & 0xffff), aux);
     if (lod === 0) parapet(m, fp, podTop, 1.1, concrete);
+    roofField(m, fp, podTop, towerFp, b.seed ^ 0x90d, lod, concrete, aux);
     const towerMat =
       b.kind === 'glass'
         ? packMat(CM.glass, facadeParam(b, false, false))
@@ -483,6 +682,20 @@ export function building(
       );
     }
     cap(m, roof, roofY, packMat(CM.roof, b.style & 0xffff), aux);
+    {
+      // Plant around the central helipad / machine room (radius ~9 m).
+      const box = obb(roof);
+      const c = centroid(roof);
+      const d: Vec2 = [c[0] - box.c[0], c[1] - box.c[1]];
+      roofField(m, roof, roofY, null, b.seed ^ 0xc70, lod, concrete, aux, [
+        [
+          d[0] * box.u[0] + d[1] * box.u[1],
+          d[1] * box.u[0] - d[0] * box.u[1],
+          9.5,
+          9.5,
+        ],
+      ]);
+    }
     if (lod === 0) {
       parapet(m, roof, roofY, 1.2, concrete);
       const c = centroid(roof);
@@ -839,8 +1052,10 @@ export function building(
       box.c[0] + R[0] * su + F[0] * sv,
       box.c[1] + R[1] * su + F[1] * sv,
     ];
-    // AC condenser arrays in rows.
-    const units = Math.min(14, rng.int(4, 12) * Math.min(1, area / 300));
+    // AC condenser arrays in rows (big roofs get roofField's banks instead).
+    const field = area >= 400;
+    const nUnits = rng.int(4, 12);
+    const units = field ? 0 : Math.min(14, nUnits * Math.min(1, area / 300));
     const rows = rng.chance(0.6) ? 2 : 1;
     const su0 = rng.range(-box.hu * 0.6, box.hu * 0.2);
     const sv0 = rng.range(-box.hv * 0.5, box.hv * 0.3);
@@ -893,7 +1108,7 @@ export function building(
           m.box(
             [q[0], roofY + 0.5, q[1]],
             [1.0, 0.04, 0.8],
-            packMat(CM.glass, 0x1234),
+            packMat(CM.glass, 4),
             yaw,
           );
       }
@@ -911,6 +1126,18 @@ export function building(
           packMat(CM.metal),
         );
     }
+    if (field)
+      roofField(
+        m,
+        roof,
+        roofY,
+        null,
+        b.seed,
+        0,
+        packMat(CM.facade, (b.style & 0xffff) | (KIND_INDEX[b.kind] << 16)),
+        aux,
+        roofTaken(roof),
+      );
   } else if (b.height > 10) {
     // Distant roofs: a coarse silhouette of the same clutter (stair housing,
     // a merged block of AC units, a water tank) so skylines aren't bare boxes.
@@ -932,7 +1159,7 @@ export function building(
           aux,
         );
       const ac = at(-box.hu * 0.2, box.hv * 0.25);
-      if (pointInPolygon(ac, roof))
+      if (area < 400 && pointInPolygon(ac, roof))
         m.box(
           [ac[0], roofY + 0.45, ac[1]],
           [Math.min(box.hu * 0.4, 4), 0.45, Math.min(box.hv * 0.25, 1.6)],
@@ -951,8 +1178,41 @@ export function building(
             true,
           );
       }
+      roofField(
+        m,
+        roof,
+        roofY,
+        null,
+        b.seed,
+        1,
+        packMat(CM.facade, (b.style & 0xffff) | (KIND_INDEX[b.kind] << 16)),
+        aux,
+        roofTaken(roof),
+      );
     }
   }
+}
+
+/**
+ * Roof spots (OBB frame rects [su, sv, hu, hv]) used by the fixed clutter in
+ * building(): stair housing, water tanks (both LODs' spots) and solar array.
+ */
+function roofTaken(roof: Vec2[]): number[][] {
+  const box = obb(roof);
+  const c = centroid(roof);
+  const t: Vec2 = [lerp(c[0], roof[0][0], 0.5), lerp(c[1], roof[0][1], 0.5)];
+  const d: Vec2 = [t[0] - box.c[0], t[1] - box.c[1]];
+  return [
+    [box.hu * 0.45, -box.hv * 0.4, 1.6, 1.6],
+    [-box.hu * 0.5, -box.hv * 0.3, 1.2, 1.2],
+    [
+      d[0] * box.u[0] + d[1] * box.u[1],
+      d[1] * box.u[0] - d[0] * box.u[1],
+      1.2,
+      1.2,
+    ],
+    [-box.hu * 0.3 + 3.3, box.hv * 0.35, 4.4, 0.6],
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -1375,6 +1635,103 @@ function deckClearance(ctx: TileContext, x: number, z: number, ground: number) {
   return ctx.deckFloor[gz * n + gx] - ground;
 }
 
+/**
+ * Props on a block's open-ground fill: trees on a jittered grid on lawns,
+ * parked cars in about two thirds of car-park stalls (matching the stall
+ * pattern of carParkMat: 2.5 m stalls, rows at v 0..5 and 11..16 of each
+ * 16 m period). Cars keep clear of viaduct piers.
+ */
+function fillProps(
+  ctx: TileContext,
+  m: CMesh,
+  f: BlockFill,
+  seed: number,
+  lod: number,
+  inTile: (x: number, z: number) => boolean,
+) {
+  const L = ctx.layout;
+  const hf = L.terrain.heights;
+  const V: Vec2 = [-f.u[1], f.u[0]];
+  const P = (u: number, v: number): Vec2 => [
+    f.o[0] + f.u[0] * u + V[0] * v,
+    f.o[1] + f.u[1] * u + V[1] * v,
+  ];
+  const ground = (q: Vec2) => hf.sample(q[0], q[1]) + 0.21;
+  if (f.kind === 'green') {
+    const rng = new Rng(seed ^ 0x6ee7);
+    for (const r of f.rects) {
+      for (let v = r[1] + 4; v < r[3] - 2; v += 9) {
+        for (let u = r[0] + 4; u < r[2] - 2; u += 9) {
+          const q = P(u + rng.range(-2, 2), v + rng.range(-2, 2));
+          const th = rng.range(6, 11);
+          if (!inTile(q[0], q[1]) || rng.chance(0.2)) continue;
+          const y = ground(q);
+          if (deckClearance(ctx, q[0], q[1], y) < th + 1) continue;
+          tree(m, [q[0], y, q[1]], th, lod, rng);
+        }
+      }
+    }
+    return;
+  }
+  // Cars face along v; CMesh.box forward (h[2]) runs along (sin yaw, cos yaw).
+  const yaw = Math.atan2(V[0], V[1]);
+  for (const r of f.rects) {
+    for (let p = Math.floor(r[1] / 16); p * 16 < r[3]; p++) {
+      for (const [v0, v1] of [
+        [p * 16, p * 16 + 5],
+        [p * 16 + 11, p * 16 + 16],
+      ]) {
+        if (v0 < r[1] - 0.01 || v1 > r[3] + 0.01) continue;
+        for (let k = Math.ceil(r[0] / FILL_CELL - 0.01); ; k++) {
+          const u0 = k * FILL_CELL;
+          if (u0 + FILL_CELL > r[2] + 0.01) break;
+          const h = hash3(seed, k, v0);
+          if (h % 100 >= 65) continue;
+          const q = P(
+            u0 + FILL_CELL / 2,
+            (v0 + v1) / 2 + (v0 % 16 ? 0.3 : -0.3),
+          );
+          if (!inTile(q[0], q[1])) continue;
+          const y = ground(q);
+          const clear = deckClearance(ctx, q[0], q[1], y);
+          if (clear < 2) continue;
+          if (
+            clear < 40 &&
+            L.elevated.some(
+              e => closestOnPolyline(e.pts, q).d < elevatedHalfWidth(e) * 0.5,
+            )
+          )
+            continue;
+          const c = (h >>> 8) % 10;
+          const paint =
+            c < 4 ? 0xd0 : c < 6 ? 0x90 : c < 8 ? 0x91 : (h >>> 12) & 0x7f;
+          const body = packMat(CM.paint, paint);
+          const len = 2.0 + ((h >>> 16) % 4) * 0.12;
+          m.box([q[0], y + 0.6, q[1]], [0.84, 0.32, len], body, yaw);
+          const back: Vec2 = [q[0] - V[0] * 0.25, q[1] - V[1] * 0.25];
+          if (lod === 0) {
+            m.box(
+              [q[0], y + 0.18, q[1]],
+              [0.72, 0.18, len - 0.45],
+              packMat(CM.frame),
+              yaw,
+            );
+            m.box([back[0], y + 1.17, back[1]], [0.76, 0.25, 1.1], body, yaw);
+            m.box(
+              [back[0], y + 1.12, back[1]],
+              [0.79, 0.17, 1.0],
+              packMat(CM.frame),
+              yaw,
+            );
+          } else {
+            m.box([back[0], y + 1.15, back[1]], [0.76, 0.24, 1.1], body, yaw);
+          }
+        }
+      }
+    }
+  }
+}
+
 export function buildTile(
   ctx: TileContext,
   tile: number,
@@ -1476,9 +1833,10 @@ export function buildTile(
   const prng = new Rng(hash2(tile, 4242));
   for (const bi of ctx.tileParks[tile] ?? []) {
     const b = L.blocks[bi];
+    const r = b.late ? new Rng(hash2(tile, bi ^ 0x1a7e)) : prng;
     for (let k = 0; k < 140; k++) {
-      const x = tx + prng.next() * TILE_SIZE;
-      const z = tz + prng.next() * TILE_SIZE;
+      const x = tx + r.next() * TILE_SIZE;
+      const z = tz + r.next() * TILE_SIZE;
       if (!pointInPolygon([x, z], b.curb)) continue;
       const near = b.curb.some((q, i) => {
         const r = b.curb[(i + 1) % b.curb.length];
@@ -1489,10 +1847,17 @@ export function buildTile(
       });
       if (near) continue;
       const ground = hf.sample(x, z) + 0.16;
-      const th = prng.range(7, 13);
+      const th = r.range(7, 13);
       if (deckClearance(ctx, x, z, ground) < th + 1) continue;
-      tree(m, [x, ground, z], th, lod, prng);
+      tree(m, [x, ground, z], th, lod, r);
     }
+  }
+
+  // Lawns (trees) and car parks (parked cars) on blocks' open ground.
+  for (const bi of ctx.tileBlocks[tile] ?? []) {
+    L.blocks[bi].fill?.forEach((f, fi) =>
+      fillProps(ctx, m, f, hash2(bi, fi), lod, inTile),
+    );
   }
 
   // Shop-front clutter (LOD0): vending machine clusters, parked bicycles.

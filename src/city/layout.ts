@@ -105,7 +105,29 @@ export interface Block {
   park: boolean;
   /** Road kind of each curb edge. */
   kinds: number[];
+  /**
+   * Made a park after lots were laid out (bare or leftover ground). Its trees
+   * use their own random stream so older parks in the same tile keep theirs.
+   */
+  late?: boolean;
+  /** Open ground between buildings given a use (lawn or surface car park). */
+  fill?: BlockFill[];
 }
+
+/**
+ * A patch of a block's open ground, as rectangles in a frame with origin `o`
+ * and unit axis `u` (stall rows run along `u`; v = perp(u)). Rect corners are
+ * [u0, v0, u1, v1] in metres from `o`, all non-negative.
+ */
+export interface BlockFill {
+  kind: 'green' | 'parking';
+  o: Vec2;
+  u: Vec2;
+  rects: [number, number, number, number][];
+}
+
+/** Grid cell of the open-ground search; also the parking stall width. */
+export const FILL_CELL = 2.5;
 
 export interface Elevated {
   pts: Vec2[];
@@ -812,7 +834,7 @@ export function generateLayout(
   progress?.('Subdividing blocks', 0.5);
   const faces = extractFaces(g, 400000);
   const blocks: Block[] = [];
-  const lots: {lot: Lot; park: boolean}[] = [];
+  const lots: {lot: Lot; block: number}[] = [];
   const nearRail = (q: Vec2, pad: number) => {
     for (const e of elevated) {
       if (e.kind !== 'rail') continue;
@@ -855,6 +877,9 @@ export function generateLayout(
     }
     return false;
   };
+  // Slivers between converging roads too thin for a sidewalk ring and lots;
+  // they become pocket parks (appended after the real blocks).
+  const slivers: Block[] = [];
   for (const f of faces) {
     const kinds = f.edges.map(e => g.edges[e].kind);
     const poly = f.nodes.map(n => g.nodes[n].p);
@@ -867,7 +892,31 @@ export function generateLayout(
       poly,
       kinds.map(k => ROAD_WIDTH[k] / 2 + SIDEWALK[k]),
     );
-    if (!inner) continue;
+    if (!inner) {
+      const a = polygonArea(curb);
+      let cx = 0,
+        cz = 0;
+      for (const q of curb) {
+        cx += q[0];
+        cz += q[1];
+      }
+      cx /= curb.length;
+      cz /= curb.length;
+      if (
+        a > 60 &&
+        isLand([cx, cz]) &&
+        wetFraction(curb, hf) <= 0.02 &&
+        !overlapsRoad(curb)
+      ) {
+        const thin = insetPolygon(
+          curb,
+          curb.map(() => 0.6),
+        );
+        if (thin)
+          slivers.push({curb, inner: thin, park: true, kinds, late: true});
+      }
+      continue;
+    }
     let cx = 0,
       cz = 0;
     for (const q of inner) {
@@ -929,15 +978,18 @@ export function generateLayout(
         lotsHere,
       );
     }
-    for (const lot of lotsHere) lots.push({lot, park: false});
+    for (const lot of lotsHere) lots.push({lot, block: blocks.length - 1});
   }
 
   progress?.('Grading blocks', 0.55);
+  blocks.push(...slivers);
   gradeBlocks(hf, blocks);
 
   progress?.('Designing buildings', 0.6);
   const buildings: Building[] = [];
-  for (const {lot} of lots) {
+  // Buildings standing on each block, for the open-ground pass.
+  const onBlock: number[][] = blocks.map(() => []);
+  for (const {lot, block} of lots) {
     const fp = cleanPolygon(lot.poly, 1.2);
     if (fp.length < 3) continue;
     const area = polygonArea(fp);
@@ -1017,6 +1069,7 @@ export function generateLayout(
         front = i;
       }
     });
+    onBlock[block].push(buildings.length);
     buildings.push({
       id: buildings.length,
       kind,
@@ -1043,6 +1096,8 @@ export function generateLayout(
       density: dens,
     });
   }
+  progress?.('Open ground', 0.68);
+  fillOpenGround(blocks, onBlock, buildings, elevated);
   progress?.('Layout done', 0.7);
   return {
     params,
@@ -1055,6 +1110,287 @@ export function generateLayout(
     buildings,
     elevated,
   };
+}
+
+/** Largest patch of bare sidewalk paving left inside a block, m². */
+const MAX_BARE = 400;
+
+/**
+ * Give large open ground inside blocks a use, so aerial views don't show
+ * acres of plain paving. A block whose lots were all dropped (e.g. beside a
+ * viaduct) becomes a park; otherwise free cells (inside the sidewalk ring and
+ * clear of buildings) are flood-filled and every patch over MAX_BARE becomes a
+ * lawn or a striped surface car park (mostly car parks under a viaduct).
+ * Decisions hash positions, so the layout RNG stream is untouched.
+ */
+function fillOpenGround(
+  blocks: Block[],
+  onBlock: number[][],
+  buildings: Building[],
+  elevated: Elevated[],
+) {
+  const C = FILL_CELL;
+  const bkey = (x: number, z: number) => (z + 1000) * 2000 + x + 1000;
+  // Ground under elevated decks, on an 8 m grid.
+  const DK = 8;
+  const deck = new Set<number>();
+  for (const e of elevated) {
+    const r = elevatedHalfWidth(e);
+    for (let i = 0; i + 1 < e.pts.length; i++) {
+      const a = e.pts[i],
+        b = e.pts[i + 1];
+      const steps = Math.ceil(dist2(a, b) / 3);
+      for (let k = 0; k <= steps; k++) {
+        const x = lerp(a[0], b[0], k / steps);
+        const z = lerp(a[1], b[1], k / steps);
+        for (let dz = -r; dz <= r; dz += DK / 2)
+          for (let dx = -r; dx <= r; dx += DK / 2)
+            if (dx * dx + dz * dz <= r * r)
+              deck.add(
+                bkey(Math.floor((x + dx) / DK), Math.floor((z + dz) / DK)),
+              );
+      }
+    }
+  }
+  // Scanline crossings of an interleaved (u, v) polygon with the line at v,
+  // sorted into xs; returns the count.
+  const xs = new Float64Array(256);
+  const crossings = (poly: Float64Array, v: number) => {
+    const n = poly.length / 2;
+    let c = 0;
+    for (let e = 0, f = n - 1; e < n && c < xs.length; f = e++) {
+      const av = poly[e * 2 + 1],
+        bv = poly[f * 2 + 1];
+      if (av > v !== bv > v) {
+        const au = poly[e * 2];
+        const x = au + ((v - av) * (poly[f * 2] - au)) / (bv - av);
+        // Insertion sort: crossings per line are few.
+        let k = c++;
+        for (; k > 0 && xs[k - 1] > x; k--) xs[k] = xs[k - 1];
+        xs[k] = x;
+      }
+    }
+    return c;
+  };
+  const underDeck = (q: Vec2) =>
+    deck.has(bkey(Math.floor(q[0] / DK), Math.floor(q[1] / DK)));
+
+  for (let bi = 0; bi < blocks.length; bi++) {
+    const blk = blocks[bi];
+    if (blk.park) continue;
+    const area = polygonArea(blk.inner);
+    if (area < MAX_BARE) continue;
+    let covered = 0;
+    const own = onBlock[bi] ?? [];
+    for (const i of own) covered += polygonArea(buildings[i].footprint);
+    if (area - covered < MAX_BARE) continue;
+    let cx = 0,
+      cz = 0;
+    for (const q of blk.inner) {
+      cx += q[0];
+      cz += q[1];
+    }
+    cx /= blk.inner.length;
+    cz /= blk.inner.length;
+    const h = hash2(Math.round(cx * 3), Math.round(cz * 3) ^ 0x7a11);
+    if (own.length === 0 && area > 800 && h % 3 !== 0) {
+      blk.park = true;
+      blk.late = true;
+      continue;
+    }
+    // Free cells on a grid aligned with the block.
+    const box = obb(blk.inner);
+    const U = box.u;
+    const V: Vec2 = [-U[1], U[0]];
+    const ni = Math.ceil((box.hu * 2) / C);
+    const nj = Math.ceil((box.hv * 2) / C);
+    const o0: Vec2 = [
+      box.c[0] - (U[0] * ni * C) / 2 - (V[0] * nj * C) / 2,
+      box.c[1] - (U[1] * ni * C) / 2 - (V[1] * nj * C) / 2,
+    ];
+    const at = (u: number, v: number): Vec2 => [
+      o0[0] + U[0] * u + V[0] * v,
+      o0[1] + U[1] * u + V[1] * v,
+    ];
+    // Polygons in grid coordinates (u, v interleaved).
+    const local = (poly: Vec2[]) => {
+      const out = new Float64Array(poly.length * 2);
+      poly.forEach((q, k) => {
+        out[k * 2] = (q[0] - o0[0]) * U[0] + (q[1] - o0[1]) * U[1];
+        out[k * 2 + 1] = (q[0] - o0[0]) * V[0] + (q[1] - o0[1]) * V[1];
+      });
+      return out;
+    };
+    // Corner inside-ness by scanlines, then cells with all corners inside.
+    const inner = local(blk.inner);
+    const corner = new Uint8Array((ni + 1) * (nj + 1));
+    for (let j = 0; j <= nj; j++) {
+      const n = crossings(inner, j * C);
+      for (let i = 0, c = 0; i <= ni; i++) {
+        while (c < n && xs[c] <= i * C) c++;
+        corner[j * (ni + 1) + i] = c & 1;
+      }
+    }
+    const free = new Uint8Array(ni * nj);
+    let nFree = 0;
+    for (let j = 0; j < nj; j++)
+      for (let i = 0; i < ni; i++) {
+        const k = j * (ni + 1) + i;
+        if (
+          corner[k] &&
+          corner[k + 1] &&
+          corner[k + ni + 1] &&
+          corner[k + ni + 2]
+        ) {
+          free[j * ni + i] = 1;
+          nFree++;
+        }
+      }
+    if (nFree * C * C <= MAX_BARE) continue;
+    // Clear cells near buildings (keep a ~1.5 m apron of paving).
+    const margin = 1.6;
+    for (const bi of own) {
+      const fp = local(buildings[bi].footprint);
+      const nf = fp.length / 2;
+      let u0 = Infinity,
+        u1 = -Infinity,
+        v0 = Infinity,
+        v1 = -Infinity;
+      for (let k = 0; k < nf; k++) {
+        u0 = Math.min(u0, fp[k * 2]);
+        u1 = Math.max(u1, fp[k * 2]);
+        v0 = Math.min(v0, fp[k * 2 + 1]);
+        v1 = Math.max(v1, fp[k * 2 + 1]);
+      }
+      const i0 = Math.max(0, Math.floor((u0 - margin) / C));
+      const i1 = Math.min(ni - 1, Math.floor((u1 + margin) / C));
+      const j0 = Math.max(0, Math.floor((v0 - margin) / C));
+      const j1 = Math.min(nj - 1, Math.floor((v1 + margin) / C));
+      // Scanline the footprint at the cell-centre row and a margin above
+      // and below; the extent of those crossings, grown by the margin,
+      // clears the cells it covers (lots are near-convex).
+      for (let j = j0; j <= j1; j++) {
+        const pv = (j + 0.5) * C;
+        let lo = Infinity,
+          hi = -Infinity;
+        for (let sv = -1; sv <= 1; sv++) {
+          const n = crossings(fp, pv + sv * margin);
+          if (n < 2) continue;
+          lo = Math.min(lo, xs[0]);
+          hi = Math.max(hi, xs[n - 1]);
+        }
+        const a0 = Math.max(i0, Math.ceil((lo - margin) / C - 0.5));
+        const a1 = Math.min(i1, Math.floor((hi + margin) / C - 0.5));
+        for (let i = a0; i <= a1; i++) free[j * ni + i] = 0;
+      }
+    }
+    // Flood-fill patches.
+    const comp = new Int32Array(ni * nj).fill(-1);
+    for (let s = 0; s < ni * nj; s++) {
+      if (!free[s] || comp[s] >= 0) continue;
+      const cells: number[] = [s];
+      comp[s] = s;
+      for (let q = 0; q < cells.length; q++) {
+        const c = cells[q];
+        const i = c % ni,
+          j = (c - i) / ni;
+        const visit = (t: number) => {
+          if (free[t] && comp[t] < 0) {
+            comp[t] = s;
+            cells.push(t);
+          }
+        };
+        if (i > 0) visit(c - 1);
+        if (i + 1 < ni) visit(c + 1);
+        if (j > 0) visit(c - ni);
+        if (j + 1 < nj) visit(c + ni);
+      }
+      if (cells.length * C * C <= MAX_BARE) continue;
+      let ci0 = ni,
+        ci1 = 0,
+        cj0 = nj,
+        cj1 = 0,
+        deckCells = 0;
+      for (const c of cells) {
+        const i = c % ni,
+          j = (c - i) / ni;
+        ci0 = Math.min(ci0, i);
+        ci1 = Math.max(ci1, i);
+        cj0 = Math.min(cj0, j);
+        cj1 = Math.max(cj1, j);
+        if (underDeck(at((i + 0.5) * C, (j + 0.5) * C))) deckCells++;
+      }
+      const wu = ci1 - ci0 + 1,
+        wv = cj1 - cj0 + 1;
+      const compact = cells.length / (wu * wv);
+      const p0 = at(ci0 * C, cj0 * C);
+      const ph = hash2(Math.round(p0[0] * 4), Math.round(p0[1] * 4) ^ 0x9a3);
+      const roomy = Math.min(wu, wv) >= 4 && compact > 0.45;
+      const parking =
+        roomy &&
+        (deckCells > cells.length * 0.25 ? ph % 4 !== 0 : ph % 3 === 0);
+      // Merge cells into rectangles: runs per row, extended down while equal.
+      const rects: [number, number, number, number][] = [];
+      let open = new Map<string, [number, number, number, number]>();
+      for (let j = cj0; j <= cj1 + 1; j++) {
+        const next = new Map<string, [number, number, number, number]>();
+        for (let i = ci0; i <= ci1 && j <= cj1; i++) {
+          if (comp[j * ni + i] !== s) continue;
+          let e = i;
+          while (e + 1 <= ci1 && comp[j * ni + e + 1] === s) e++;
+          const k = `${i},${e}`;
+          const r = open.get(k);
+          if (r) {
+            r[3] = j + 1;
+            open.delete(k);
+            next.set(k, r);
+          } else {
+            next.set(k, [i, j, e + 1, j + 1]);
+          }
+          i = e;
+        }
+        for (const r of open.values()) rects.push(r);
+        open = next;
+      }
+      // Stall rows run along the patch's long side.
+      const alongU = wu >= wv;
+      const fu: Vec2 = alongU ? U : V;
+      const fv: Vec2 = [-fu[1], fu[0]];
+      const toFrame = (r: [number, number, number, number]) => {
+        let a0 = Infinity,
+          a1 = -Infinity,
+          b0 = Infinity,
+          b1 = -Infinity;
+        for (const [i, j] of [
+          [r[0], r[1]],
+          [r[2], r[3]],
+        ]) {
+          const q = at(i * C, j * C);
+          const a = q[0] * fu[0] + q[1] * fu[1];
+          const b = q[0] * fv[0] + q[1] * fv[1];
+          a0 = Math.min(a0, a);
+          a1 = Math.max(a1, a);
+          b0 = Math.min(b0, b);
+          b1 = Math.max(b1, b);
+        }
+        return [a0, b0, a1, b1] as [number, number, number, number];
+      };
+      const fr = rects.map(toFrame);
+      let ma = Infinity,
+        mb = Infinity;
+      for (const r of fr) {
+        ma = Math.min(ma, r[0]);
+        mb = Math.min(mb, r[1]);
+      }
+      const o: Vec2 = [fu[0] * ma + fv[0] * mb, fu[1] * ma + fv[1] * mb];
+      (blk.fill ??= []).push({
+        kind: parking ? 'parking' : 'green',
+        o,
+        u: fu,
+        rects: fr.map(r => [r[0] - ma, r[1] - mb, r[2] - ma, r[3] - mb]),
+      });
+    }
+  }
 }
 
 /**
@@ -1259,6 +1595,7 @@ function carveRoads(hf: Heightfield, chains: RoadChain[]) {
   const S = hf.size / 2;
   const target = new Float32Array(n * n).fill(NaN);
   const weight = new Float32Array(n * n);
+  const dist = new Float32Array(n * n).fill(Infinity);
   for (const c of chains) {
     const half = ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] + 1;
     const falloff = half + 10;
@@ -1278,9 +1615,14 @@ function carveRoads(hf: Heightfield, chains: RoadChain[]) {
           const h = lerp(c.heights[i], c.heights[i + 1], t);
           const w = d < half ? 1 : 1 - smoothstep(half, falloff, d);
           const k = gz * n + gx;
-          if (w > weight[k]) {
+          // Where two roads' full-weight bands overlap (acute junctions,
+          // boulevards whose wide carve band reaches the next road), the
+          // nearer road sets the height; first-come would bury the other
+          // road under up to 3 m of terrain.
+          if (w > weight[k] || (w === weight[k] && d < dist[k])) {
             weight[k] = w;
             target[k] = h;
+            dist[k] = d;
           }
         }
       }
