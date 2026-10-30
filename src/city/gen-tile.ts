@@ -7361,9 +7361,11 @@ function signBoardFace(
 
 /**
  * Japanese horizontal signal on its pole: grey head with three dark lenses
- * (the lit one glows), a visor over each and a dark backing frame; the
- * intersection-name plate above it; the junction luminaire on a second arm
- * at SIGNAL_LUM.h (shared pole); optionally the controller cabinet.
+ * (the lit one glows), a 30 cm visor over each and a black backplate
+ * 14 cm proud all round; the intersection-name plate above it; the
+ * junction luminaire on a second arm at SIGNAL_LUM.h (shared pole);
+ * one or two regulatory plates on the column; optionally the controller
+ * cabinet.
  */
 function signal(
   m: CMesh,
@@ -7416,11 +7418,19 @@ function signal(
     end[2] - armDir[1] * 0.7,
   ];
   m.box(hc, [0.62, 0.2, 0.12], grey, fyaw);
-  // Backing frame: 3 cm of black around the head, just behind its face.
+  // Backplate: a matt black board 14 cm proud of the head all round (so
+  // the head reads as a dark slab with three lenses at eye distance, and
+  // against the sky), just behind its face; edged in grey.
   m.box(
     [hc[0] - face[0] * 0.04, hc[1], hc[2] - face[1] * 0.04],
-    [0.65, 0.23, 0.07],
+    [0.76, 0.34, 0.02],
     packMat(CM.paint, 0x91),
+    fyaw,
+  );
+  m.box(
+    [hc[0] - face[0] * 0.055, hc[1], hc[2] - face[1] * 0.055],
+    [0.78, 0.36, 0.012],
+    grey,
     fyaw,
   );
   for (let k = 0; k < 3; k++) {
@@ -7439,8 +7449,9 @@ function signal(
       10,
       packMat(CM.signal, signalParam(k, group, phase)),
     );
-    // Tubular hood over the top of each lamp.
-    hood(m, lp, face, 0.175, 0.175, 0.2, grey, true);
+    // Tubular visor over the top of each lamp, 30 cm deep (it reads as a
+    // peak over each lens from the kerb).
+    hood(m, lp, face, 0.18, 0.18, 0.3, grey, true);
   }
   // Louvred back: slats behind the backing frame, angled down (they shed
   // the sun and rain and read as ribs from behind).
@@ -7503,6 +7514,42 @@ function signal(
       fyaw,
     );
   }
+  // Regulatory plates strapped to the column, facing the approach like
+  // the head: a 0.6 m disc at 3.75 m (designated direction, no parking or
+  // no entry), on half the poles the pedestrian-crossing square above it.
+  const rh = hash2(name * 4 + Math.round(p[0] * 4), Math.round(p[2] * 4));
+  const kind = [3, 3, 2, 5][rh & 3];
+  const pc: Vec3 = [p[0] + face[0] * 0.17, p[1] + 3.75, p[2] + face[1] * 0.17];
+  disc(m, pc, face, 0.3, 12, packMat(CM.roadSign, kind));
+  disc(
+    m,
+    [pc[0] - face[0] * 0.012, pc[1], pc[2] - face[1] * 0.012],
+    [-face[0], -face[1]],
+    0.3,
+    12,
+    packMat(CM.roadSign, kind | 0x100),
+  );
+  const square = (rh >>> 2) & 1;
+  for (const dy of square ? [-0.15, 0.15, 0.57, 0.87] : [-0.15, 0.15])
+    m.tube(
+      [
+        [p[0], pc[1] + dy, p[2]],
+        [pc[0] - face[0] * 0.015, pc[1] + dy, pc[2] - face[1] * 0.015],
+      ],
+      0.02,
+      grey,
+    );
+  if (square)
+    signBoard(
+      m,
+      [pc[0], pc[1] + 0.72, pc[2]],
+      face,
+      0.3,
+      0.3,
+      0.01,
+      packMat(CM.roadSign, 4),
+      packMat(CM.roadSign, 4 | 0x100),
+    );
 }
 
 /**
@@ -7571,23 +7618,27 @@ function guideSign(
     return;
   }
   signBoard(m, pc, f, hw, hh, 0.04, front, back, uv);
-  // Back: two horizontal stiffener channels across the panel (what the
-  // sign's back shows from the junction), galvanised like the back face.
-  for (const dy of [-0.55, 0.55])
+  // Back (what the sign shows from the junction, round 3's blank slab):
+  // five horizontal stiffener ribs 10 cm deep across the panel and two
+  // vertical hanger channels over them up to the arm, in grey paint
+  // against the galvanised back so the ribs and their shadows read.
+  const rib = packMat(CM.paint, 0x90);
+  const B = (u: number, y: number, d: number): Vec3 => [
+    pc[0] + inward[0] * u - f[0] * d,
+    pc[1] + y,
+    pc[2] + inward[1] * u - f[1] * d,
+  ];
+  for (let k = 0; k < 5; k++) {
+    const y = (-0.8 + k * 0.4) * hh;
+    m.beam(B(-(hw - 0.06), y, 0.09), B(hw - 0.06, y, 0.09), 0.05, 0.035, rib);
+  }
+  for (const u of [-0.55, 0.55])
     m.beam(
-      [
-        pc[0] - inward[0] * (hw - 0.1) - f[0] * 0.08,
-        pc[1] + dy * hh,
-        pc[2] - inward[1] * (hw - 0.1) - f[1] * 0.08,
-      ],
-      [
-        pc[0] + inward[0] * (hw - 0.1) - f[0] * 0.08,
-        pc[1] + dy * hh,
-        pc[2] + inward[1] * (hw - 0.1) - f[1] * 0.08,
-      ],
-      0.04,
-      0.06,
-      back,
+      B(u * hw, -hh + 0.05, 0.17),
+      B(u * hw, 7.3 - 5 - hh, 0.17),
+      0.05,
+      0.05,
+      rib,
     );
   const behind = 0.08;
   for (const y of [7.2, 6.9]) {
@@ -7672,7 +7723,9 @@ function vnoise1(x: number, seed: number) {
  * a 6-point rounded profile per sample whose points are pushed in and out
  * along their normals by a hash (lumps every sample, 2.6 m), overhanging
  * the kerb top, with leaf cards (the tree leaf path, `CM.leaves`) on the
- * shoulders for a broken, lighter-tipped outline. Hedge uv: x metres along,
+ * shoulders (4 per side per sample), spilling over the planter rim (3) and
+ * round the run ends
+ * for a broken, lighter-tipped outline. Hedge uv: x metres along,
  * y metres up from the planter soil (the shader's AO darkens toward 0).
  *
  * LOD1: one smooth 4-point green strip (no kerb, no cards).
@@ -7892,45 +7945,113 @@ function hedgeRun(
       const b = m.pos(rows[i + 1][k]);
       return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
     };
-    // Shoulders: k 2 (front, toward the road) and 3 (back), two tufts each.
+    const rnd = (n: number) => (hash2(hv, n) & 0xffff) / 0xffff;
+    /** A card at c leaning `lean` out over side s, yawed off the run. */
+    const tuft = (
+      c: Vec3,
+      s: number,
+      yaw: number,
+      up: number,
+      out: number,
+      hw: number,
+      hh: number,
+      ny: number,
+    ) => {
+      const cy = Math.cos(yaw);
+      const sy = Math.sin(yaw);
+      const bx: Vec3 = [ax[0] * cy + o[0] * sy, 0, ax[2] * cy + o[1] * sy];
+      const bo: Vec2 = [-ax[0] * sy + o[0] * cy, -ax[2] * sy + o[1] * cy];
+      const ay: Vec3 = [bo[0] * s * out, up, bo[1] * s * out];
+      const al = Math.hypot(ay[0], ay[1], ay[2]) || 1;
+      const nl = Math.hypot(0.6, ny);
+      card(
+        c,
+        bx,
+        [ay[0] / al, ay[1] / al, ay[2] / al],
+        [(o[0] * s * 0.6) / nl, ny / nl, (o[1] * s * 0.6) / nl],
+        hw,
+        hh,
+      );
+    };
     for (const [k, s] of [
       [2, -1],
       [3, 1],
-    ] as const)
-      for (let j = 0; j < 2; j++) {
-        const t = 0.05 + j * 0.5 + fr(k * 8 + j * 4) * 0.4;
+    ] as const) {
+      // Top edge: four tufts per shoulder, standing up and leaning out
+      // past the hull, yawed 25-60 degrees off the run (so a view along
+      // the hedge does not see them edge-on): the top outline breaks into
+      // leaves against the sky and the walk instead of a chamfered box.
+      for (let j = 0; j < 4; j++) {
+        const t = (j + 0.15 + rnd(k * 16 + j) * 0.7) / 4;
         const c = hull(k, t);
-        // Yawed 30-60 degrees off the run, so a view along the hedge
-        // does not see them edge-on.
-        const yaw = (j ? 1 : -1) * (0.5 + fr(k * 8 + 16 + j * 4) * 0.5);
-        const cy = Math.cos(yaw);
-        const sy = Math.sin(yaw);
-        const bx: Vec3 = [ax[0] * cy + o[0] * sy, 0, ax[2] * cy + o[1] * sy];
-        const bo: Vec2 = [-ax[0] * sy + o[0] * cy, -ax[2] * sy + o[1] * cy];
-        const ay: Vec3 = [bo[0] * s * 0.5, 0.87, bo[1] * s * 0.5];
-        const n: Vec3 = [o[0] * s * 0.55, 0.85, o[1] * s * 0.55];
-        card(
-          [c[0] + o[0] * s * 0.08, c[1] + 0.07, c[2] + o[1] * s * 0.08],
-          bx,
-          ay,
-          n,
-          0.4 + fr(4 + j * 8) * 0.15,
-          0.3,
+        tuft(
+          [
+            c[0] + o[0] * s * 0.07,
+            c[1] + 0.06 + rnd(k * 16 + j + 4) * 0.06,
+            c[2] + o[1] * s * 0.07,
+          ],
+          s,
+          (j & 1 ? 1 : -1) * (0.45 + rnd(k * 16 + j + 8) * 0.6),
+          0.87,
+          0.5,
+          0.3 + rnd(k * 16 + j + 12) * 0.12,
+          0.24,
+          0.85,
         );
       }
-    // One on a side every other segment, alternating sides.
-    const side = hv & 1 ? 1 : -1;
-    if (!(i & 1)) {
-      const c = hull(side > 0 ? 4 : 1, 0.3 + fr(20) * 0.4);
-      card(
-        [c[0] + o[0] * side * 0.04, c[1] - 0.05, c[2] + o[1] * side * 0.04],
-        ax,
-        [0, 1, 0],
-        [o[0] * side, 0.2, o[1] * side],
-        0.42,
-        0.3,
-      );
+      // Planter rim: three sprays per side spilling out and down over the
+      // kerb top, so the hedge's foot is not a ruled line on the kerb.
+      const base = k === 2 ? 0 : 5;
+      for (let j = 0; j < 3; j++) {
+        const t = (j + 0.2 + rnd(k * 16 + j + 40) * 0.6) / 3;
+        const c = hull(base, t);
+        tuft(
+          [c[0] + o[0] * s * 0.1, c[1] + 0.13, c[2] + o[1] * s * 0.1],
+          s,
+          (j & 1 ? 1 : -1) * (0.2 + rnd(k * 16 + j + 44) * 0.3),
+          0.55,
+          0.85,
+          0.4 + rnd(k * 16 + j + 48) * 0.1,
+          0.24,
+          0.2,
+        );
+      }
     }
+    // One on a side every segment, alternating sides.
+    const side = hv & 1 ? 1 : -1;
+    const c = hull(side > 0 ? 4 : 1, 0.3 + fr(20) * 0.4);
+    card(
+      [c[0] + o[0] * side * 0.04, c[1] - 0.05, c[2] + o[1] * side * 0.04],
+      ax,
+      [0, 1, 0],
+      [o[0] * side, 0.2, o[1] * side],
+      0.42,
+      0.3,
+    );
+  }
+  // Run ends (the flat cap read as a cut box at a gap): a spray over the
+  // cap face and tufts on its two top corners and the top middle, leaning
+  // out past the cap.
+  for (const i of [0, pts.length - 1]) {
+    const j = i === 0 ? 1 : pts.length - 2;
+    const dx = pts[i][0] - pts[j][0];
+    const dz = pts[i][2] - pts[j][2];
+    const dl = Math.hypot(dx, dz) || 1;
+    const n: Vec3 = [dx / dl, 0, dz / dl];
+    const across: Vec3 = [out[i][0], 0, out[i][1]];
+    const at = (q: Vec3, d: number, up: number): Vec3 => [
+      q[0] + n[0] * d,
+      q[1] + up,
+      q[2] + n[2] * d,
+    ];
+    const lean: Vec3 = [n[0] * 0.5, 0.87, n[2] * 0.5];
+    const nu: Vec3 = [n[0] * 0.6, 0.8, n[2] * 0.6];
+    card(at(P(i, W / 2, 0.55), 0.07, 0), across, [0, 1, 0], n, 0.44, 0.3);
+    for (const k of [2, 3]) {
+      const q = m.pos(rows[i][k]);
+      card(at(q, 0.05, 0.05), across, lean, nu, 0.3, 0.24);
+    }
+    card(at(P(i, W / 2, HEDGE_H), 0.04, 0.08), across, lean, nu, 0.34, 0.24);
   }
 }
 
