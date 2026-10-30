@@ -69,7 +69,20 @@ fn applyWetness(s: ptr<function, Surf>, world: vec3f, flatness: f32, porous: f32
   // rooftops don't read sun-bleached in a downpour.
   let up = smoothstep(0.55, 0.92, (*s).normal.y) * wet;
   (*s).albedo *= mix(1.0, 0.62, up);
-  (*s).rough = mix((*s).rough, 0.25, damp * 0.7);
+  // Walls (vertical faces) keep their texture's gloss variation, halved,
+  // and carry glossy run-off streaks hanging down them (0.3-1 m wide,
+  // metres long), so in the rain a wall shows a pattern of sheen, not one
+  // flat darker satin.
+  let vert = 1.0 - smoothstep(0.3, 0.6, abs((*s).normal.y));
+  (*s).rough = mix((*s).rough, 0.25, damp * 0.7 * (1.0 - vert));
+  (*s).rough = mix((*s).rough, (*s).rough * 0.5, wet * vert);
+  {
+    let hx = world.x + world.z * 0.73;
+    let streak = smoothstep(0.5, 0.75, valueNoise(vec2f(hx * 1.7, world.y * 0.08)))
+      * (0.6 + 0.4 * valueNoise(vec2f(hx * 0.6, world.y * 0.3))) * wet * vert;
+    (*s).rough = mix((*s).rough, 0.06, streak);
+    (*s).albedo *= 1.0 - 0.25 * streak;
+  }
   (*s).rough = mix((*s).rough, min((*s).rough, 0.18), up * 0.8);
   (*s).rough = mix((*s).rough, 0.12, margin);
   (*s).albedo *= 1.0 - 0.2 * margin;
