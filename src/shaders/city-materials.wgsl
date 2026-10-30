@@ -560,14 +560,23 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   return s;
 }
 
-// Per-building window sash: anodised aluminium, silver (55 %), bronze (30 %)
-// or white (15 %). Dark walls always get a light sash so the window grid
-// still reads.
-fn sashColor(style: u32, wall: vec3f) -> vec3f {
+// Per-building window and shopfront frames: anodised aluminium (metallic,
+// rough 0.3) in silver (40 %), bronze (30 %) or black (20 %), or white
+// painted steel (10 %). rgb albedo, w metalness. Dark walls never get dark
+// frames, so the window grid still reads. Distinct finishes per building
+// (not one blue-grey everywhere) are much of a street's value variety.
+fn frameFinish(style: u32, wall: vec3f) -> vec4f {
   let k = hashuf(hashu(style * 2654435761u + 9u));
-  var c = select(select(vec3f(0.75, 0.75, 0.73), vec3f(0.34, 0.27, 0.2), k < 0.85), vec3f(0.55, 0.56, 0.57), k < 0.55);
-  if (luminance(wall) < 0.2 && k >= 0.55 && k < 0.85) { c = vec3f(0.55, 0.56, 0.57); }
+  var c = vec4f(0.62, 0.62, 0.6, 1.0);
+  if (k >= 0.4) { c = vec4f(0.3, 0.21, 0.13, 1.0); }
+  if (k >= 0.7) { c = vec4f(0.035, 0.035, 0.038, 0.7); }
+  if (k >= 0.9) { c = vec4f(0.78, 0.78, 0.76, 0.0); }
+  if (luminance(wall) < 0.2 && k >= 0.4 && k < 0.9) { c = vec4f(0.62, 0.62, 0.6, 1.0); }
   return c;
+}
+
+fn frameRough(fin: vec4f) -> f32 {
+  return select(0.45, 0.3, fin.w > 0.5);
 }
 
 // ---- Facade programs (zones, roles, piers) ---------------------------------
@@ -655,7 +664,7 @@ fn facadeRole(st: ptr<function, FacadeStyle>, z: ptr<function, FacadeZone>, uv: 
 
 // Entrance lobby: aluminium-framed glass doors and sidelights in front of a
 // bright lobby (stone back wall, mailbox bank, downlights).
-fn facadeLobby(uv: vec2f, n: vec3f, T: vec3f, V: vec3f) -> Surf {
+fn facadeLobby(uv: vec2f, n: vec3f, T: vec3f, V: vec3f, fin: vec4f) -> Surf {
   var s = defaultSurf(n);
   let lx = uv.x;
   let ly = uv.y;
@@ -667,9 +676,9 @@ fn facadeLobby(uv: vec2f, n: vec3f, T: vec3f, V: vec3f) -> Surf {
   }
   let mx = fract(lx / 0.9) * 0.9;
   if (min(mx, 0.9 - mx) < 0.035 || abs(ly - 2.5) < 0.035 || ly < 0.07 || ly > top - 0.02) {
-    s.albedo = vec3f(0.55, 0.56, 0.57);
-    s.metal = 0.8;
-    s.rough = 0.3;
+    s.albedo = fin.rgb;
+    s.metal = fin.w;
+    s.rough = frameRough(fin);
     return s;
   }
   let night = gloomLight();
@@ -896,9 +905,9 @@ fn partyWall(s: ptr<function, Surf>, uvIn: vec2f, auxIn: u32, bodyH: f32, base: 
 
 // Surface overrides once the wall material is done: the granite finish on
 // the base, the lobby, and solid walls (no windows). True: `s` is final.
-fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32, bodyH: f32) -> bool {
+fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32, bodyH: f32, fin: vec4f) -> bool {
   if (z.zone == FZ_LOBBY) {
-    *s = facadeLobby(uv, n, T, V);
+    *s = facadeLobby(uv, n, T, V, fin);
     return true;
   }
   if (z.zone == FZ_BASE && z.role <= 1u) {
@@ -1060,6 +1069,24 @@ fn vinyl(p: vec2f, size: vec2f, lxg: f32, bayIdx: f32, floorIdx: f32, bay: f32, 
     }
   }
   return vec4f(col, cov);
+}
+
+// Rear walls: render painted in the building's own colour (cream, pale
+// green, blue-grey, off-white or salmon), flaking off near the base where
+// damp rises and in the odd patch higher up, showing the grey render
+// beneath with a pale lip of lifted paint. Patches are 0.2-1 m so they read
+// across a back street; their edges fade by footprint.
+fn paintedRender(s: ptr<function, Surf>, uv: vec2f, style: u32, foot: f32) {
+  let h = hashu(style * 2246822519u + 0x9a7u);
+  let paint = array<vec3f, 5>(vec3f(0.74, 0.69, 0.57), vec3f(0.6, 0.67, 0.58), vec3f(0.6, 0.65, 0.7), vec3f(0.78, 0.77, 0.73), vec3f(0.74, 0.6, 0.52))[h % 5u];
+  let base = (*s).albedo / 0.47;
+  let fl = valueNoise(uv * vec2f(1.6, 2.2) + f32(h & 255u)) * 0.7 + valueNoise(uv * 6.0) * 0.3;
+  let rise = 0.5 * (1.0 - smoothstep(0.4, 2.6, uv.y)) - 0.17;
+  let edge = 0.03 + foot * 0.6;
+  let bare = smoothstep(0.66 - edge, 0.66 + edge, fl + rise);
+  let lip = (1.0 - smoothstep(0.0, edge * 1.5, abs(fl + rise - 0.66))) * (1.0 - smoothstep(0.02, 0.08, foot));
+  (*s).albedo = mix(base * paint, base * vec3f(0.36, 0.35, 0.33), bare) * (1.0 + 0.25 * lip);
+  (*s).rough = mix(0.7, 0.92, bare);
 }
 
 // Street grime on the bottom of a wall (uv.y = 0 at street level): dirt
@@ -1347,7 +1374,20 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   // Tile relief and the floor-slab bevel.
   if (st.family != 3u) {
     s.normal = detailNormal(s.normal, T, vec3f(0.0, 1.0, 0.0), wd, select(0.5, 1.0, tiled));
-    if (tiled) { s.rough = mix(0.35, 0.8, 1.0 - wd.a); }
+    if (tiled) {
+      // Glazed tile: every 240 x 69 mm tile (the DETAIL_TILE grid) is set a
+      // little out of plane and fired to its own gloss, so in sun the wall
+      // sparkles tile by tile and the grout stays matte. Past a few
+      // pixels per tile the tilts average into a broader, duller lobe.
+      let trow = floor(uv.y / 0.96 * 14.0);
+      let tcol = floor(uv.x / 0.24 + select(0.0, 0.5, (u32(trow + 1000.0) & 1u) == 1u));
+      let th = hash22(vec2f(tcol, trow) + f32(aux & 255u) * 0.13);
+      let fT = 1.0 - smoothstep(0.01, 0.04, foot);
+      let face = smoothstep(0.3, 0.45, wd.a);
+      let tilt = (th - 0.5) * 0.14 * fT * face;
+      s.normal = normalize(s.normal + T * tilt.x + vec3f(0.0, tilt.y, 0.0));
+      s.rough = mix(0.85, mix(mix(0.1, 0.3, th.x), 0.3, 1.0 - fT), face);
+    }
     let lyw = uv.y - floor(uv.y / st.floorH) * st.floorH;
     if (lyw < 0.21 && lyw > 0.18) { s.normal = normalize(s.normal + vec3f(0.0, 0.9, 0.0)); }
   }
@@ -1363,7 +1403,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     s.sunVis = smoothstep(sy - 0.04, sy + 0.04, st.floorH - ly);
   }
 
-  let zoneDone = facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux, bodyH);
+  let fin = frameFinish(style, st.wall);
+  let zoneDone = facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux, bodyH, fin);
+  if (fz.role == 3u && fz.zone != FZ_CROWN) { paintedRender(&s, uv, style, foot); }
   if (fz.zone == FZ_BASE) { s.albedo *= groundGrime(uv, foot); }
   if (fz.zone != FZ_LOBBY) { facadeRain(&s, uv, n, T, washAmt, underSill, select(0.6, 0.3, tiled)); }
   if (zoneDone) { return s; }
@@ -1399,9 +1441,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       let mx = lx - floor(lx / mw) * mw;
       let tr = st.floorH * 0.62;
       if (min(mx, mw - mx) < 0.035 || abs(ly - tr) < 0.03 || ly < 0.22) {
-        s.albedo = vec3f(0.5, 0.51, 0.52);
-        s.metal = 0.8;
-        s.rough = 0.35;
+        s.albedo = fin.rgb;
+        s.metal = fin.w;
+        s.rough = frameRough(fin);
         return s;
       }
       let ndvP = max(-dot(V, n), 0.05);
@@ -1507,7 +1549,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let wx1 = st.bay - wx0;
   let sill = (1.0 - st.winH) * st.floorH * 0.55;
   let wy1 = sill + st.winH * st.floorH;
-  let office = kind <= 2u && !(kind == 2u && hashuf(style) < 0.4);
+  // (Rear rooms are pantries, toilets and flats: lit room by room, warm or
+  // cool, curtained, never one office section's uniform fluorescent.)
+  let office = kind <= 2u && !(kind == 2u && hashuf(style) < 0.4) && fz.role != 3u;
   // Office tenants: one per floor and ~6 m of facade, so a floor never
   // lights up as one slab.
   let section = hashu(aux ^ (u32(floorIdx + 500.0) * 7919u) ^ (u32(floor(uv.x / 6.0) + 500.0) * 104729u));
@@ -1528,9 +1572,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     if (sx < hw && sy > 0.0 && sy < 1.2) {
       let e = min(hw - sx, min(sy, 1.2 - sy));
       if (e < 0.045) {
-        s.albedo = sashColor(style, st.wall);
-        s.metal = 0.8;
-        s.rough = 0.42;
+        s.albedo = fin.rgb;
+        s.metal = fin.w;
+        s.rough = frameRough(fin);
         return s;
       }
       // Glass block (190 mm, pale mortar joints): translucent, greenish
@@ -1619,12 +1663,28 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     if (st.strip) { barD = min(barD, (0.5 - abs(fract(uv.x / 1.6) - 0.5)) * 1.6 - 0.048); }
     if (!st.strip && roomSize.x > 1.2) { barD = min(barD, abs(lxg - (wx0 + wx1) * 0.5) - 0.022); }
     let barCov = 1.0 - smoothstep(-0.5 * foot, 0.5 * foot, barD);
-    let sash = sashColor(style, st.wall);
+    let sash = fin.rgb;
     if (barCov > 0.999) {
-      // Anodised aluminium sash: silver, bronze or white, never black.
+      // Anodised aluminium sash in the building's finish.
       s.albedo = sash;
-      s.metal = 0.8;
-      s.rough = mix(0.42, 0.15, wet);
+      s.metal = fin.w;
+      s.rough = mix(frameRough(fin), 0.12, wet);
+      return s;
+    }
+    if (fz.role == 3u && hashuf(cellSeed ^ 0xf05u) < 0.35) {
+      // Frosted wired glass (bathrooms and toilets): pale and translucent
+      // by day; at night a dim, warm, featureless glow when someone's in,
+      // with the diamond wire mesh showing up close.
+      let q = vec2f(lxg - wx0, lyg - sill);
+      let dq = abs(fract(vec2f(q.x + q.y, q.x - q.y) / 0.035) - 0.5) * 0.035;
+      let wire = (1.0 - smoothstep(0.0015, 0.003, min(dq.x, dq.y))) * (1.0 - smoothstep(0.004, 0.012, foot));
+      let gl = gloomLight();
+      let litF = hashuf(cellSeed ^ 0xf06u) < mix(0.03, 0.5, gl);
+      let glowF = select(vec3f(0.0), vec3f(1.0, 0.62, 0.32) * mix(0.08, 0.2, hashuf(cellSeed ^ 0xf07u)) * gl, litF);
+      s.albedo = mix(vec3f(0.5, 0.52, 0.51) * (1.0 - 0.45 * wire), sash, barCov);
+      s.rough = mix(0.4, frameRough(fin), barCov);
+      s.metal = fin.w * barCov;
+      s.emissive = glowF * (1.0 - 0.5 * wire) * (1.0 - barCov);
       return s;
     }
     // Each pane sits slightly out of plane and bows a little, so neighbours
@@ -1688,8 +1748,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     gl *= mix(0.65, 1.7, paneSeed.y) * mix(vec3f(1.0), vec3f(0.85, 1.0, 1.2), fract(paneSeed.x * 7.0));
     if (fract(paneSeed.x * 13.0) < 0.2) { glassRough = max(glassRough, mix(0.1, 0.18, paneSeed.y)); }
     s.albedo = mix(gl + vec3f(0.06) * wet, sash, barCov);
-    s.rough = mix(glassRough, 0.42, barCov);
-    s.metal = 0.8 * barCov;
+    s.rough = mix(glassRough, frameRough(fin), barCov);
+    s.metal = fin.w * barCov;
     // Water trails on the glass refract the room: it breaks up behind them.
     s.emissive = inside * (1.0 - fres) * see * (1.0 - 0.2 * wet) * (1.0 - 0.45 * rivulet) * (1.0 - barCov);
     // Each trail is a lens gathering the bright sky above: pale streaks
