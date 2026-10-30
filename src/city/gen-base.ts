@@ -698,14 +698,8 @@ function junctionMarkings(
       for (let i = path.length ? 1 : 0; i <= k; i++)
         path.push([lerp(p[0], q[0], i / k), lerp(p[1], q[1], i / k)]);
     };
-    // Only a short straight run in / out (<= 2 m): where the box is much
-    // longer one way the straight part would read as a stray line.
-    const run = (from: Vec2, to: Vec2): Vec2 => {
-      const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
-      const k = len > 2 ? 2 / len : 1;
-      return [lerp(from[0], to[0], k), lerp(from[1], to[1], k)];
-    };
-    seg(run(a0, P), a0);
+    // The arc alone: no straight run in or out (round 5's runs of up to
+    // 2 m put straight dashes at the arc ends that read as strays).
     const ka = Math.max(8, Math.ceil((T * 1.6) / 0.5));
     for (let i = path.length ? 1 : 0; i <= ka; i++) {
       const t = i / ka;
@@ -719,7 +713,6 @@ function junctionMarkings(
         (b0 * a0[1] + b1 * X[1] + b2 * a1[1]) / s,
       ]);
     }
-    seg(path[path.length - 1], run(a1, Q));
     // ONE guide per movement: the lane's outer edge (the larger radius,
     // toward the corner X of the two lane lines), dashed 2 m on / 1.5 m
     // off by arc length, the dashes following the curve. (Round 4 dashed
