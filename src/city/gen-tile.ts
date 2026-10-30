@@ -6653,7 +6653,7 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
       aux,
     );
     blob(m, c, r * 0.5, 0, aux, lr, sp);
-    leafCards(m, c, r, 10, aux, lr, 0.72, sp);
+    leafCards(m, c, r, 9, aux, lr, 0.72, sp);
   }
 }
 
@@ -7766,8 +7766,8 @@ function hedgeRun(
   // Leaf-card shell (the tree leaf path, CM.leaves), lighter than the
   // clipped mass (new growth at the tips): per segment two fringe tufts on
   // each top shoulder, tilted up and out and half past the hull so the
-  // edges break into leaves against the sky and the walk, one lying on the
-  // top and one on alternating sides. Placed on the swollen hull.
+  // edges break into leaves against the sky and the walk, and one on a
+  // side every other segment. Placed on the swollen hull.
   const leaf = packMat(CM.leaves, 0);
   const card = (
     c: Vec3,
@@ -7842,21 +7842,9 @@ function hedgeRun(
           0.3,
         );
       }
-    // Lying on the top, or on alternating sides.
+    // One on a side every other segment, alternating sides.
     const side = hv & 1 ? 1 : -1;
-    if (i & 1) {
-      const a = hull(2, 0.5);
-      const b = hull(3, 0.5);
-      const f = 0.2 + fr(12) * 0.6;
-      card(
-        [lerp(a[0], b[0], f), lerp(a[1], b[1], f) + 0.05, lerp(a[2], b[2], f)],
-        ax,
-        [o[0], 0, o[1]],
-        [o[0] * 0.25 * side, 0.97, o[1] * 0.25 * side],
-        0.42,
-        0.3,
-      );
-    } else {
+    if (!(i & 1)) {
       const c = hull(side > 0 ? 4 : 1, 0.3 + fr(20) * 0.4);
       card(
         [c[0] + o[0] * side * 0.04, c[1] - 0.05, c[2] + o[1] * side * 0.04],

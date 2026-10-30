@@ -513,7 +513,7 @@ function plateAt(tris: Vec3[][], x: number, z: number): number | null {
  *   edge dotted (1 m on / 2 m off);
  * - the right-turn waiting box (右折待ち): the last 5 m of the run in as a
  *   solid lane-wide rectangle, where turners wait for oncoming traffic;
- * - lane lines carried across the box (2 m on / 3 m off) to the opposite
+ * - lane lines carried across the box (2 m on / 4 m off) to the opposite
  *   arm most in line with the approach (within 3 m), for avenues.
  * Arm frame: `dir` out of the junction, `l` its left; the approach lanes
  * are on +l (the road shader's x > 0 at a chain start, x < 0 at its end).
@@ -772,7 +772,7 @@ function junctionMarkings(
     if (C) {
       for (let k = 1; k < Math.min(A.per, C.per); k++) {
         const c = turn(A.at(k * A.lw), t0, C.at(-k * C.lw), C.dir, 0.5);
-        dashed({...sample(c.B, c.len)}, 2, 3);
+        dashed({...sample(c.B, c.len)}, 2, 4);
       }
     }
   }
