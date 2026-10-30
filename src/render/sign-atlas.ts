@@ -6,6 +6,7 @@ import {
   ATLAS_H,
   ATLAS_W,
   BRAND_WORDS,
+  HORIZONTAL_WORDS,
   SHOP_WORDS,
   STATION_NAMES,
   signColor,
@@ -90,7 +91,7 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
   // Horizontal shop signs.
   for (let id = 32; id < 44; id++) {
     const {x, y, w, h} = paintSign(g, id, rng);
-    const word = SHOP_WORDS[(id * 7 + 1) % SHOP_WORDS.length];
+    const word = HORIZONTAL_WORDS[id - 32];
     const size = Math.min(h * 0.6, (w * 0.85) / Math.max(2, [...word].length));
     g.font = `bold ${size}px ${FONT}`;
     g.fillText(word, x + w / 2, y + h / 2);

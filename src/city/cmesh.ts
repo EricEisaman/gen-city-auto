@@ -164,8 +164,17 @@ export class CMesh {
   /**
    * Oriented box: center, half extents along (right, up, forward) axes, with
    * the box rotated by `yaw` about +y. UVs are in meters on each face.
+   * `skipBack` drops the -forward face (boxes mounted on a wall facing out).
    */
-  box(c: Vec3, h: Vec3, mat: number, yaw = 0, aux = 0, skipBottom = true) {
+  box(
+    c: Vec3,
+    h: Vec3,
+    mat: number,
+    yaw = 0,
+    aux = 0,
+    skipBottom = true,
+    skipBack = false,
+  ) {
     const cs = Math.cos(yaw);
     const sn = Math.sin(yaw);
     const R: Vec3 = [cs, 0, -sn];
@@ -214,18 +223,19 @@ export class CMesh {
       mat,
       aux,
     );
-    this.quad(
-      [P(1, -1, -1), P(-1, -1, -1), P(-1, 1, -1), P(1, 1, -1)],
-      neg(F),
-      [
-        [0, 0],
-        [2 * h[0], 0],
-        [2 * h[0], 2 * h[1]],
-        [0, 2 * h[1]],
-      ],
-      mat,
-      aux,
-    );
+    if (!skipBack)
+      this.quad(
+        [P(1, -1, -1), P(-1, -1, -1), P(-1, 1, -1), P(1, 1, -1)],
+        neg(F),
+        [
+          [0, 0],
+          [2 * h[0], 0],
+          [2 * h[0], 2 * h[1]],
+          [0, 2 * h[1]],
+        ],
+        mat,
+        aux,
+      );
     this.quad(
       [P(-1, 1, 1), P(1, 1, 1), P(1, 1, -1), P(-1, 1, -1)],
       U,
@@ -254,8 +264,25 @@ export class CMesh {
     }
   }
 
-  /** Box spanning segment a->b (a thick line), e.g. wires, rails, girders. */
-  beam(a: Vec3, b: Vec3, w: number, hgt: number, mat: number, aux = 0) {
+  /**
+   * Box spanning segment a->b (a thick line), e.g. wires, rails, girders.
+   * `hide`: a direction (say into a wall) whose facing side is not drawn.
+   */
+  beam(
+    a: Vec3,
+    b: Vec3,
+    w: number,
+    hgt: number,
+    mat: number,
+    aux = 0,
+    hide?: Vec3,
+  ) {
+    // Thin square bars are drawn as a tube of the same section (half the
+    // vertices; at a few cm nobody can tell the corners are smooth).
+    if (w === hgt && w <= 0.06) {
+      this.tube([a, b], w * Math.SQRT2, mat, aux);
+      return;
+    }
     const dx = b[0] - a[0];
     const dy = b[1] - a[1];
     const dz = b[2] - a[2];
@@ -282,6 +309,8 @@ export class CMesh {
       [-1, -1, 1, -1, [-u[0], -u[1], -u[2]]],
     ];
     for (const [x0, y0, x1, y1, n] of sides) {
+      if (hide && n[0] * hide[0] + n[1] * hide[1] + n[2] * hide[2] > 0.7)
+        continue;
       this.quad(
         [P(a, x0, y0), P(b, x0, y0), P(b, x1, y1), P(a, x1, y1)],
         n,
@@ -294,6 +323,74 @@ export class CMesh {
         mat,
         aux,
       );
+    }
+  }
+
+  /**
+   * Thin round bar (pipe, rail, wire, post) through `pts`: a square section
+   * turned 45 degrees with radial normals, so it shades like a cylinder.
+   * Joints share their ring: 4 vertices per point instead of a beam's 16 per
+   * segment. uv: u = metres along, v = 0..1 around. No end caps.
+   */
+  tube(pts: Vec3[], r: number, mat: number, aux = 0) {
+    if (pts.length < 2) return;
+    const rings: number[] = [];
+    let u = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const a = pts[Math.max(0, i - 1)];
+      const b = pts[Math.min(pts.length - 1, i + 1)];
+      if (i > 0) u += Math.hypot(p[0] - a[0], p[1] - a[1], p[2] - a[2]);
+      let f: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      const fl = Math.hypot(f[0], f[1], f[2]) || 1;
+      f = [f[0] / fl, f[1] / fl, f[2] / fl];
+      // Side axis horizontal (or x for vertical bars), up = side x forward.
+      let s: Vec3 = [f[2], 0, -f[0]];
+      const sl = Math.hypot(s[0], s[2]);
+      s = sl > 1e-4 ? [s[0] / sl, 0, s[2] / sl] : [1, 0, 0];
+      const up: Vec3 = [
+        s[1] * f[2] - s[2] * f[1],
+        s[2] * f[0] - s[0] * f[2],
+        s[0] * f[1] - s[1] * f[0],
+      ];
+      for (let k = 0; k < 4; k++) {
+        const c = k === 0 || k === 3 ? 1 : -1;
+        const d = k < 2 ? 1 : -1;
+        const n: Vec3 = [
+          (s[0] * c + up[0] * d) * Math.SQRT1_2,
+          (s[1] * c + up[1] * d) * Math.SQRT1_2,
+          (s[2] * c + up[2] * d) * Math.SQRT1_2,
+        ];
+        rings.push(
+          this.vertex(
+            [p[0] + n[0] * r, p[1] + n[1] * r, p[2] + n[2] * r],
+            n,
+            u,
+            k / 4,
+            mat,
+            aux,
+          ),
+        );
+      }
+    }
+    for (let i = 0; i + 1 < pts.length; i++) {
+      for (let k = 0; k < 4; k++) {
+        const k1 = (k + 1) & 3;
+        const a = rings[i * 4 + k],
+          b = rings[i * 4 + k1],
+          c = rings[i * 4 + 4 + k1],
+          d = rings[i * 4 + 4 + k];
+        // Face normal: between the two corner normals.
+        const pa = this.pos(a),
+          pb = this.pos(b);
+        const m: Vec3 = [
+          (pa[0] + pb[0]) / 2 - pts[i][0],
+          (pa[1] + pb[1]) / 2 - pts[i][1],
+          (pa[2] + pb[2]) / 2 - pts[i][2],
+        ];
+        this.triFacing(a, b, c, m);
+        this.triFacing(a, c, d, m);
+      }
     }
   }
 

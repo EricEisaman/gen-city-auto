@@ -79,6 +79,48 @@ export const SHOP_WORDS = [
   'ダイニング',
 ];
 
+/**
+ * Ground-floor tenant types, as the shader picks them per pair of shopfront
+ * bays (city-materials.wgsl facadeMat: shopType = hashu(aux ^ (bayPair +
+ * 3000)) % 4): konbini, restaurant, boutique, office lobby.
+ */
+export const SHOP_TYPE = {konbini: 0, restaurant: 1, boutique: 2, office: 3};
+
+/**
+ * Words on the horizontal (fascia) signs, ids 32..43, grouped by tenant type
+ * so a fascia can name the business behind its glass (TENANT_SIGNS).
+ */
+export const HORIZONTAL_WORDS = [
+  '焼鳥',
+  '居酒屋',
+  'ラーメン',
+  '寿司',
+  'そば',
+  'FRESH MART',
+  'コンビニ',
+  '古着',
+  'BOUTIQUE',
+  '不動産',
+  '歯科',
+  '英会話',
+];
+
+/** Horizontal sign ids per SHOP_TYPE. */
+export const TENANT_SIGNS: number[][] = [
+  [37, 38],
+  [32, 33, 34, 35, 36],
+  [39, 40],
+  [41, 42, 43],
+];
+
+/** Square (cube / A-board) sign ids per SHOP_TYPE (see SQUARE_TEXT). */
+export const TENANT_SQUARES: number[][] = [
+  [73, 81],
+  [75, 78, 82, 83, 85],
+  [84, 87],
+  [72, 81],
+];
+
 export const STATION_NAMES = [
   '新宿',
   '渋谷',

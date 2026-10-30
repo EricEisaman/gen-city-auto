@@ -33,7 +33,15 @@ import {
   type CityLayout,
 } from './layout.ts';
 import {chainAt, type RoadGeom} from './roadgeom.ts';
-import {SIGN, SIGN_FABRIC, SIGN_STRIPES, signColor} from './signs.ts';
+import {
+  SHOP_TYPE,
+  SIGN,
+  SIGN_FABRIC,
+  SIGN_STRIPES,
+  TENANT_SIGNS,
+  TENANT_SQUARES,
+  signColor,
+} from './signs.ts';
 import type {Heightfield} from './terrain.ts';
 
 export const TILE_SIZE = 256;
@@ -180,6 +188,7 @@ function signPanel(
   id: number,
   sideId = -1,
   lod = 0,
+  back = true,
 ) {
   const n: Vec3 = [along[2], 0, -along[0]];
   const P = (s: number, t: number, k: number): Vec3 => [
@@ -200,17 +209,19 @@ function signPanel(
     ],
     mat,
   );
-  m.quad(
-    [P(1, -1, -1), P(-1, -1, -1), P(-1, 1, -1), P(1, 1, -1)],
-    [-n[0], 0, -n[2]],
-    [
-      [1, 1],
-      [0, 1],
-      [0, 0],
-      [1, 0],
-    ],
-    mat,
-  );
+  // (Signs flush on a wall skip the back face.)
+  if (back)
+    m.quad(
+      [P(1, -1, -1), P(-1, -1, -1), P(-1, 1, -1), P(1, 1, -1)],
+      [-n[0], 0, -n[2]],
+      [
+        [1, 1],
+        [0, 1],
+        [0, 0],
+        [1, 0],
+      ],
+      mat,
+    );
   if (lod > 0 && sideId < 0) return;
   const frame = packMat(CM.metal);
   if (lod === 0) {
@@ -321,6 +332,14 @@ const hashuf = (x: number) => (hashu(x) & 0xffffff) / 16777216;
 function facadeBay(style: number) {
   const h = hashu(Math.imul(style & 0x1fff, 747796405) + 1);
   return 1.5 + 1.7 * hashuf(h ^ 0x1234);
+}
+
+/**
+ * Ground-floor tenant type (SHOP_TYPE) of the shopfront bay with facade grid
+ * index `bayIdx`: city-materials.wgsl facadeMat's shopType, per bay pair.
+ */
+function shopTypeAt(aux: number, bayIdx: number) {
+  return hashu((aux ^ (Math.floor(bayIdx / 2) + 3000)) >>> 0) % 4;
 }
 
 /** Facade role of each footprint edge (the longest edge fronts if none does). */
@@ -569,6 +588,8 @@ function coping(m: CMesh, poly: Vec2[], y: number, lod: number) {
       0.17,
       0.03,
       packMat(CM.metal),
+      0,
+      [0, -1, 0],
     );
   }
 }
@@ -1112,23 +1133,34 @@ function pottedPlant(m: CMesh, p: Vec3, rng: Rng) {
 const yawOf = (e: FacadeEdge) => Math.atan2(e.n[0], e.n[2]);
 
 /**
- * Steel switchback fire stair on a wall (LOD0): floor landings at `levels`
- * (the first is grade) at end A with a steel door and a lamp each, half
- * landings at end B, two flights per storey (outer lane up to the half
- * landing, inner lane back), with treads, soffits, solid painted
- * balustrade plates, on two columns from the foundation. Kept to plain
- * quads (about 160 vertices a storey).
+ * Painted steel (fire stairs, ad frames, sign lattices): CM.paint with param
+ * PAINT_STEEL | seed (city-materials.wgsl paintedSteel: chipped paint, rust
+ * at joints, streaks; world-space patterns). `seed & 3` picks the colour
+ * (0 dark brown, 1 grey, 2 cream, 3 green); higher bits vary the wear.
+ */
+const PAINT_STEEL = 0x300;
+const steelPaint = (seed: number) =>
+  packMat(CM.paint, PAINT_STEEL | (seed & 0xff));
+
+/**
+ * Open steel switchback fire stair on a wall (LOD0): floor landings at
+ * `levels` (the first is grade) at end A with a steel door and a lamp each,
+ * half landings at end B, two flights per storey (outer lane up to the half
+ * landing, inner lane back). Flights are C-channel stringers carrying
+ * separate open treads; landings are plates with a channel edge; pipe
+ * handrails with a mid rail and balusters; two round columns from the
+ * foundation. Bars are tubes (8 vertices each), about 330 vertices a storey.
  * `toEnd`: end A is toward the edge's end (the stair sits near its start).
  */
 function fireStair(
   m: CMesh,
   e: FacadeEdge,
   sC: number,
-  rng: Rng,
-  o: {levels: number[]; low: number; toEnd: boolean},
+  o: {levels: number[]; low: number; toEnd: boolean; paint: number},
 ) {
-  const steel = packMat(CM.paint, rng.chance(0.5) ? 0x6b : 0xa7);
-  const deck = packMat(CM.metal);
+  const frame = steelPaint(o.paint);
+  const deck = frame;
+  const rail = frame;
   const dir = o.toEnd ? 1 : -1;
   const LAND = 1.15;
   const sA = sC + dir * (STAIR_L / 2 - LAND / 2);
@@ -1137,90 +1169,159 @@ function fireStair(
   const fA = sA - dir * (LAND / 2);
   const fB = sB + dir * (LAND / 2);
   const lane = STAIR_D / 2;
-  const uv: Vec2[] = [
-    [0, 0],
-    [1, 0],
-    [1, 1],
-    [0, 1],
-  ];
-  // Vertical plate between (s0, o0) and (s1, o1), bottom/top heights at
-  // each end, seen from both sides.
-  const plate = (
+  const D = STAIR_D;
+  const P = (s: number, out: number, y: number) => edgeAt(e, s, out, y);
+  const RAIL_H = 1.0;
+  // Quad in the edge frame with uv in metres (u along s or out, v up).
+  const q4 = (pts: Vec3[], n: Vec3, mat: number, w: number, h: number) =>
+    m.quad(
+      pts,
+      n,
+      [
+        [0, 0],
+        [w, 0],
+        [w, h],
+        [0, h],
+      ],
+      mat,
+    );
+  const nOut = e.n;
+  const nIn: Vec3 = [-e.n[0], 0, -e.n[2]];
+  const nAlong = (sg: number): Vec3 => [e.along[0] * sg, 0, e.along[2] * sg];
+  // Stringer: a C-channel along (s0, y0) -> (s1, y1) at `out`, its web
+  // seen from both sides, flanges toward `side` (+1 away from the wall).
+  const stringer = (
     s0: number,
-    o0: number,
-    b0: number,
-    t0: number,
-    s1: number,
-    o1: number,
-    b1: number,
-    t1: number,
-    mat: number,
-    sides = 2,
-  ) => {
-    const p0 = edgeAt(e, s0, o0, 0),
-      p1 = edgeAt(e, s1, o1, 0);
-    const dx = p1[0] - p0[0],
-      dz = p1[2] - p0[2];
-    const l = Math.hypot(dx, dz) || 1;
-    const q: Vec3[] = [
-      [p0[0], b0, p0[2]],
-      [p1[0], b1, p1[2]],
-      [p1[0], t1, p1[2]],
-      [p0[0], t0, p0[2]],
-    ];
-    // The normal facing away from the wall (or toward the stair's end).
-    let nn: Vec3 = [dz / l, 0, -dx / l];
-    if (nn[0] * (e.n[0] + e.along[0]) + nn[2] * (e.n[2] + e.along[2]) < 0)
-      nn = [-nn[0], 0, -nn[2]];
-    m.quad(q, nn, uv, mat);
-    if (sides > 1) m.quad(q, [-nn[0], 0, -nn[2]], uv, mat);
-  };
-  // Balustrade: a painted steel plate from the stringer to the handrail.
-  const rail = (
-    s0: number,
-    o0: number,
     y0: number,
     s1: number,
-    o1: number,
     y1: number,
-  ) => plate(s0, o0, y0 - 0.15, y0 + 1.05, s1, o1, y1 - 0.15, y1 + 1.05, steel);
-  const landing = (s: number, y: number, door: boolean) => {
-    const P = (ds: number, out: number, dy: number) =>
-      edgeAt(e, s + ds, out, y + dy);
-    const h = LAND / 2;
-    m.quad(
-      [P(-h, 0, 0), P(h, 0, 0), P(h, STAIR_D, 0), P(-h, STAIR_D, 0)],
-      UP,
-      uv,
-      deck,
-    );
-    m.quad(
+    out: number,
+    side: number,
+  ) => {
+    const len = Math.hypot(s1 - s0, y1 - y0);
+    const web = [
+      P(s0, out, y0 - 0.2),
+      P(s1, out, y1 - 0.2),
+      P(s1, out, y1 + 0.06),
+      P(s0, out, y0 + 0.06),
+    ];
+    q4(web, nOut, frame, len, 0.26);
+    q4(web, nIn, frame, len, 0.26);
+    const f = out + side * 0.06;
+    // Flange normals: up/down, tilted with the slope.
+    const k = (y1 - y0) / (len || 1);
+    const ds = (s1 - s0) / (len || 1);
+    const up: Vec3 = [-e.along[0] * ds * k, Math.abs(ds), -e.along[2] * ds * k];
+    q4(
       [
-        P(-h, 0, -0.1),
-        P(h, 0, -0.1),
-        P(h, STAIR_D, -0.1),
-        P(-h, STAIR_D, -0.1),
+        P(s0, out, y0 - 0.2),
+        P(s1, out, y1 - 0.2),
+        P(s1, f, y1 - 0.2),
+        P(s0, f, y0 - 0.2),
+      ],
+      [-up[0], -up[1], -up[2]],
+      frame,
+      len,
+      0.06,
+    );
+  };
+  // Pipe rail along a path at `h` above the walking line, a mid rail, and
+  // balusters at the listed points (indices into the path, fractional).
+  const railRun = (pts: [number, number, number][], posts: number[]) => {
+    const at = (t: number): [number, number, number] => {
+      const i = Math.min(pts.length - 2, Math.floor(t));
+      const f = t - i;
+      const a = pts[i],
+        c = pts[i + 1];
+      return [lerp(a[0], c[0], f), lerp(a[1], c[1], f), lerp(a[2], c[2], f)];
+    };
+    m.tube(
+      pts.map(p => P(p[0], p[1], p[2] + RAIL_H)),
+      0.024,
+      rail,
+    );
+    m.tube(
+      pts.map(p => P(p[0], p[1], p[2] + 0.5)),
+      0.014,
+      rail,
+    );
+    for (const t of posts) {
+      const p = at(t);
+      m.tube(
+        [P(p[0], p[1], p[2] + 0.04), P(p[0], p[1], p[2] + RAIL_H)],
+        0.016,
+        rail,
+      );
+    }
+  };
+  const landing = (
+    s: number,
+    y: number,
+    door: boolean,
+    end: number,
+    last = false,
+  ) => {
+    const h = LAND / 2;
+    const sEnd = s + end * h;
+    const sIn = s - end * h;
+    const T = 0.12;
+    q4(
+      [P(s - h, 0, y), P(s + h, 0, y), P(s + h, D, y), P(s - h, D, y)],
+      UP,
+      deck,
+      LAND,
+      D,
+    );
+    q4(
+      [
+        P(s - h, 0, y - T),
+        P(s + h, 0, y - T),
+        P(s + h, D, y - T),
+        P(s - h, D, y - T),
       ],
       [0, -1, 0],
-      uv,
-      steel,
+      frame,
+      LAND,
+      D,
     );
-    // Balustrade on the open sides: along the front and the end.
-    const sEnd = s + (s === sA ? dir : -dir) * h;
-    rail(s - h, STAIR_D, y, s + h, STAIR_D, y);
-    rail(sEnd, 0.05, y, sEnd, STAIR_D, y);
-    if (!door) return;
-    steelDoor(m, edgeAt(e, s, 0, y), e.along, e.n, 0x90, false);
-    m.quad(
+    // Channel edges on the open sides.
+    q4(
+      [P(s - h, D, y - T), P(s + h, D, y - T), P(s + h, D, y), P(s - h, D, y)],
+      nOut,
+      frame,
+      LAND,
+      T,
+    );
+    q4(
+      [P(sEnd, 0, y - T), P(sEnd, D, y - T), P(sEnd, D, y), P(sEnd, 0, y)],
+      nAlong(end),
+      frame,
+      D,
+      T,
+    );
+    railRun(
       [
-        P(-0.07, 0.06, 2.24),
-        P(0.07, 0.06, 2.24),
-        P(0.07, 0.06, 2.36),
-        P(-0.07, 0.06, 2.36),
+        [sEnd, 0.05, y],
+        [sEnd, D - 0.03, y],
+        [sIn, D - 0.03, y],
+        // The top landing closes off the stairwell over the outer lane.
+        ...(last ? [[sIn, lane, y] as [number, number, number]] : []),
+      ],
+      [1],
+    );
+    if (!door) return;
+    steelDoor(m, P(s, 0, y), e.along, e.n, 0x90, false);
+    q4(
+      [
+        P(s - 0.07, 0.06, y + 2.24),
+        P(s + 0.07, 0.06, y + 2.24),
+        P(s + 0.07, 0.06, y + 2.36),
+        P(s - 0.07, 0.06, y + 2.36),
       ],
       e.n,
-      uv,
       packMat(CM.lamp, 1),
+      0.14,
+      0.12,
     );
   };
   const flight = (
@@ -1228,75 +1329,216 @@ function fireStair(
     y0: number,
     s1: number,
     y1: number,
-    inner: boolean,
+    o0: number,
+    o1: number,
+    railAt: number,
   ) => {
-    const o0 = inner ? 0.04 : lane,
-      o1 = inner ? lane : STAIR_D - 0.02;
-    const n = Math.max(3, Math.round((y1 - y0) / 0.36));
-    const run = (s1 - s0) / n;
+    // Open treads (top and underside) between the stringers: n risers,
+    // n - 1 treads, with a gap between treads.
+    const n = Math.max(4, Math.round((y1 - y0) / 0.25));
+    const run = (s1 - s0) / (n - 1);
     const rise = (y1 - y0) / n;
-    for (let k = 0; k < n; k++) {
-      const a = s0 + run * k,
-        c = s0 + run * (k + 1);
-      const y = y0 + rise * (k + 1);
-      m.quad(
-        [
-          edgeAt(e, a, o0, y),
-          edgeAt(e, c, o0, y),
-          edgeAt(e, c, o1, y),
-          edgeAt(e, a, o1, y),
-        ],
-        UP,
-        uv,
-        deck,
+    const gap = 0.04 * Math.sign(run);
+    for (let j = 1; j < n; j++) {
+      const a = s0 + run * (j - 1) + gap,
+        c = s0 + run * j;
+      const y = y0 + rise * j;
+      const t = [P(a, o0, y), P(c, o0, y), P(c, o1, y), P(a, o1, y)];
+      q4(t, UP, deck, Math.abs(run), o1 - o0);
+      q4(
+        t.map((p): Vec3 => [p[0], p[1] - 0.035, p[2]]),
+        [0, -1, 0],
+        frame,
+        Math.abs(run),
+        o1 - o0,
       );
     }
-    // Soffit, and the open side's stringer or balustrade.
-    m.quad(
+    stringer(s0, y0, s1, y1, o0, -1);
+    stringer(s0, y0, s1, y1, o1, 1);
+    railRun(
       [
-        edgeAt(e, s0, o0, y0 - 0.12),
-        edgeAt(e, s1, o0, y1 - 0.12),
-        edgeAt(e, s1, o1, y1 - 0.12),
-        edgeAt(e, s0, o1, y0 - 0.12),
+        [s0, railAt, y0],
+        [s1, railAt, y1],
       ],
-      [0, -1, 0],
-      uv,
-      steel,
+      [0.5],
     );
-    if (inner)
-      plate(
-        s0,
-        o1,
-        y0 - 0.15,
-        y0 + 0.08,
-        s1,
-        o1,
-        y1 - 0.15,
-        y1 + 0.08,
-        steel,
-        1,
-      );
-    else rail(s0, STAIR_D, y0, s1, STAIR_D, y1);
   };
   const L = o.levels;
   for (let k = 0; k + 1 < L.length; k++) {
     const ya = L[k],
       yb = L[k + 1];
     const mid = (ya + yb) / 2;
-    flight(fA, ya, fB, mid, false);
-    landing(sB, mid, false);
-    flight(fB, mid, fA, yb, true);
-    landing(sA, yb, true);
+    flight(fA, ya, fB, mid, lane, D - 0.03, D - 0.03);
+    landing(sB, mid, false, -dir);
+    flight(fB, mid, fA, yb, 0.04, lane - 0.02, lane - 0.02);
+    landing(sA, yb, true, dir, k + 2 === L.length);
   }
-  const top = L[L.length - 1] + 1.05;
+  // Two round columns at the outer corners, from the foundation up past the
+  // top landing's rail.
+  const top = L[L.length - 1] + RAIL_H;
   for (const s of [sA + dir * (LAND / 2 - 0.05), sB - dir * (LAND / 2 - 0.05)])
-    m.beam(
-      edgeAt(e, s, STAIR_D - 0.05, o.low),
-      edgeAt(e, s, STAIR_D - 0.05, top),
-      0.05,
-      0.05,
-      steel,
+    m.tube([P(s, D - 0.05, o.low), P(s, D - 0.05, top)], 0.07, frame);
+}
+
+/**
+ * The fire stair on distant shells: each flight's and landing's balustrade
+ * as one outward-facing plate (the zigzag that reads from afar) and the
+ * two columns, about 16 vertices a storey.
+ */
+function fireStairShell(
+  m: CMesh,
+  e: FacadeEdge,
+  sC: number,
+  o: {levels: number[]; low: number; toEnd: boolean; paint: number},
+) {
+  const mat = steelPaint(o.paint);
+  const dir = o.toEnd ? 1 : -1;
+  const LAND = 1.15;
+  const sA = sC + dir * (STAIR_L / 2 - LAND / 2);
+  const sB = sC - dir * (STAIR_L / 2 - LAND / 2);
+  const fA = sA - dir * (LAND / 2);
+  const fB = sB + dir * (LAND / 2);
+  const D = STAIR_D;
+  const plate = (s0: number, y0: number, s1: number, y1: number, out: number) =>
+    m.quad(
+      [
+        edgeAt(e, s0, out, y0 - 0.2),
+        edgeAt(e, s1, out, y1 - 0.2),
+        edgeAt(e, s1, out, y1 + 1.0),
+        edgeAt(e, s0, out, y0 + 1.0),
+      ],
+      e.n,
+      [
+        [0, 0],
+        [1, 0],
+        [1, 1],
+        [0, 1],
+      ],
+      mat,
     );
+  const L = o.levels;
+  for (let k = 0; k + 1 < L.length; k++) {
+    const ya = L[k],
+      yb = L[k + 1];
+    const mid = (ya + yb) / 2;
+    plate(fA, ya, fB, mid, D);
+    plate(sB - dir * (LAND / 2), mid, fB, mid, D);
+    plate(fA, yb, sA + dir * (LAND / 2), yb, D);
+  }
+}
+
+/**
+ * Street kit in front of one ground-floor tenant (`t`: its type, extent
+ * [s0, s1] along the front edge and fascia sign id). `gy` is the pavement
+ * and `head` the shopfront head. Restaurants hang a noren printed with
+ * their name over the door, and put out a lit plastic-food display case
+ * and stacked beer crates; a konbini has its row of recycling bins.
+ */
+function tenantKit(
+  m: CMesh,
+  e: FacadeEdge,
+  t: {type: number; s0: number; s1: number; id: number},
+  gy: number,
+  head: number,
+  rng: Rng,
+) {
+  const w = t.s1 - t.s0;
+  const yaw = yawOf(e);
+  const P = (s: number, out: number, y: number) => edgeAt(e, s, out, y);
+  const dark = packMat(CM.paint, 0x91);
+  if (t.type === SHOP_TYPE.restaurant && w > 1.4) {
+    const nw = Math.min(1.8, w * 0.6);
+    const sc = t.s0 + w * rng.range(0.35, 0.65);
+    const top = Math.min(head - 0.05, gy + 2.3);
+    const drop = rng.range(0.55, 0.9);
+    m.tube(
+      [P(sc - nw / 2 - 0.08, 0.2, top), P(sc + nw / 2 + 0.08, 0.2, top)],
+      0.015,
+      packMat(CM.metal),
+    );
+    const mat = packMat(CM.sign, t.id | SIGN_FABRIC);
+    const pw = nw / 3;
+    for (let k = 0; k < 3; k++) {
+      const a = sc - nw / 2 + k * pw + 0.01,
+        c = a + pw - 0.02;
+      m.quad(
+        [
+          P(a, 0.2, top - drop),
+          P(c, 0.2, top - drop),
+          P(c, 0.2, top),
+          P(a, 0.2, top),
+        ],
+        e.n,
+        [
+          [1 - k / 3, 1],
+          [1 - (k + 1) / 3, 1],
+          [1 - (k + 1) / 3, 0],
+          [1 - k / 3, 0],
+        ],
+        mat,
+      );
+    }
+    // Plastic-food display case beside the door: a dark cabinet, and lit
+    // shelves of samples behind glass (M_VENDING's lit rows).
+    const right = sc + nw / 2 + 0.6 <= t.s1 - 0.5;
+    const ds = right ? sc + nw / 2 + 0.6 : sc - nw / 2 - 0.6;
+    if (ds >= t.s0 + 0.5 && ds <= t.s1 - 0.5 && rng.chance(0.75)) {
+      m.box(P(ds, 0.3, gy + 0.4), [0.45, 0.4, 0.22], dark, yaw);
+      m.box(P(ds, 0.3, gy + 1.07), [0.45, 0.27, 0.22], packMat(CM.metal), yaw);
+      m.quad(
+        [
+          P(ds - 0.42, 0.525, gy + 0.83),
+          P(ds + 0.42, 0.525, gy + 0.83),
+          P(ds + 0.42, 0.525, gy + 1.31),
+          P(ds - 0.42, 0.525, gy + 1.31),
+        ],
+        e.n,
+        [
+          [0, 0.7],
+          [0.84, 0.7],
+          [0.84, 1.5],
+          [0, 1.5],
+        ],
+        packMat(CM.vending, 2),
+      );
+    }
+    // Beer crates stacked by the other end.
+    if (rng.chance(0.55)) {
+      const cs = right ? t.s0 + 0.4 : t.s1 - 0.4;
+      const crate = packMat(CM.paint, 0x92);
+      for (const [d, n] of [
+        [-0.27, rng.int(2, 4)],
+        [0.27, rng.int(1, 3)],
+      ])
+        m.box(
+          P(cs + d, 0.3, gy + 0.155 * n),
+          [0.24, 0.155 * n, 0.18],
+          crate,
+          yaw + (d > 0 ? rng.range(-0.15, 0.15) : 0),
+        );
+    }
+  } else if (t.type === SHOP_TYPE.konbini) {
+    // Recycling bins: one cabinet with three dark openings.
+    const bs = rng.chance(0.5) ? t.s1 - 0.7 : t.s0 + 0.7;
+    if (w > 1.6) {
+      m.box(
+        P(bs, 0.3, gy + 0.45),
+        [0.55, 0.45, 0.22],
+        packMat(CM.paint, 0xd0),
+        yaw,
+      );
+      for (let k = -1; k <= 1; k++)
+        flatQuad(
+          m,
+          P(bs + k * 0.36, 0.525, gy + 0.72),
+          e.along,
+          0.1,
+          0.05,
+          e.n,
+          dark,
+        );
+    }
+  }
 }
 
 export function building(
@@ -1666,6 +1908,14 @@ export function building(
   // One storey band on every edge: piers, the window field (split around the
   // lobby) and the core strip standing out of the wall.
   // Party walls never have openings; walls below grade are solid (`below`).
+  // Party-wall quads (body, base) share an aux whose low byte is the wall
+  // top (coping) in body-zone uv.y, in 0.25 m steps: uv.y of the coping =
+  // (aux & 0xff) * 0.25 on body quads; base quads' uv.y starts GROUND_H - H
+  // lower (FACADE_GROUND - floorH). The shader hashes aux >> 8 there.
+  const partyAux =
+    ((aux & ~0xff) |
+      clamp(Math.round((mainTop + CROWN_H - vOff) * 4), 0, 255)) >>>
+    0;
   const storeys = (
     es: FacadeEdge[],
     y0: number,
@@ -1683,11 +1933,13 @@ export function building(
       const sB = hasCore && e.core > 0 ? e.core : e.len;
       const field = fmat(e, zone, e.role === ROLE.party);
       const uf = (s: number) => e.u0 + (s - e.f0) * e.k;
+      // Party walls carry their coping height in aux (partyAux).
+      const qa = e.role === ROLE.party ? partyAux : aux;
       const cut = clamp(below[i] ?? y0, y0, y1);
       const fieldQuad = (s0: number, s1: number) => {
         if (cut > y0)
-          edgeQuad(m, e, s0, s1, y0, cut, 0, uf(s0), uf(s1), vo, solid, aux);
-        edgeQuad(m, e, s0, s1, cut, y1, 0, uf(s0), uf(s1), vo, field, aux);
+          edgeQuad(m, e, s0, s1, y0, cut, 0, uf(s0), uf(s1), vo, solid, qa);
+        edgeQuad(m, e, s0, s1, cut, y1, 0, uf(s0), uf(s1), vo, field, qa);
       };
       const solid = fmat(e, zone, true);
       if (hasCore) {
@@ -1704,7 +1956,7 @@ export function building(
           CORE_W,
           lobbyHere ? base : vo,
           fmat(e, lobbyHere ? FZ.lobby : FZ.core, false),
-          aux,
+          qa,
         );
       }
       // Distant shells: one quad, the window grid running over the piers.
@@ -1714,34 +1966,8 @@ export function building(
       }
       const pier = solid;
       const uEnd = e.u0 + e.count * bay;
-      edgeQuad(
-        m,
-        e,
-        sA,
-        e.f0,
-        y0,
-        y1,
-        0,
-        e.u0 - e.f0 + sA,
-        e.u0,
-        vo,
-        pier,
-        aux,
-      );
-      edgeQuad(
-        m,
-        e,
-        e.f1,
-        sB,
-        y0,
-        y1,
-        0,
-        uEnd,
-        uEnd + sB - e.f1,
-        vo,
-        pier,
-        aux,
-      );
+      edgeQuad(m, e, sA, e.f0, y0, y1, 0, e.u0 - e.f0 + sA, e.u0, vo, pier, qa);
+      edgeQuad(m, e, e.f1, sB, y0, y1, 0, uEnd, uEnd + sB - e.f1, vo, pier, qa);
       const hole =
         lob && lob.edge === i ? lob : blank?.edge === i ? blank : null;
       const cuts = hole
@@ -1764,7 +1990,7 @@ export function building(
           uf(hole.s1),
           vo,
           solid,
-          aux,
+          qa,
         );
       if (lob && lob.edge === i) {
         const lm = fmat(e, FZ.lobby, false);
@@ -1780,7 +2006,7 @@ export function building(
           lob.s1 - lob.s0,
           base,
           lm,
-          aux,
+          qa,
         );
       }
     });
@@ -1839,6 +2065,8 @@ export function building(
       stairS = cr.chance(0.5) ? 0.4 + STAIR_L / 2 : e.len - 0.4 - STAIR_L / 2;
     }
   }
+  // Steel paint colour and wear (steelPaint), the same at every LOD.
+  const stairPaint = hashu(b.seed ^ 0x57a1) & 0xff;
   let backDoor: {edge: number; s0: number; s1: number} | null = null;
   {
     const i = edges.findIndex(e => e.role === ROLE.rear && e.count >= 2);
@@ -1878,6 +2106,86 @@ export function building(
   );
   storeys(edges, base + GROUND_H, mainTop, FZ.body, vOff, null, solidTo);
   crown(edges, fp, mainTop);
+  // Ad on an exposed party wall (quieter blocks, where it stands clear of
+  // the neighbours): a printed vinyl or a lit billboard in a steel frame
+  // high on the wall. The panel is drawn at every LOD (it reads from afar).
+  let partyAd: {edge: number; s: number; y: number; hw: number} | null = null;
+  {
+    const pa = new Rng(hash2(b.seed, 0xad5));
+    const cands = edges
+      .map((e, i) => (e.role === ROLE.party && e.len >= 7 ? i : -1))
+      .filter(i => i >= 0);
+    if (cands.length && bodyN >= 3 && pa.chance(0.35 * svc)) {
+      const i = cands[pa.int(0, cands.length)];
+      const e = edges[i];
+      const hw = Math.min(e.len * 0.32, 4.2);
+      const hh = hw / 2;
+      const s = e.len * pa.range(0.4, 0.6);
+      const y = mainTop - 0.6 - hh;
+      const lit = pa.chance(0.4);
+      const id = SIGN.billboard.first + pa.int(0, SIGN.billboard.count);
+      partyAd = {edge: i, s, y, hw};
+      const c = edgeAt(e, s, 0.12, y);
+      const W = (ds: number, dy: number): Vec3 => [
+        c[0] + e.along[0] * ds,
+        c[1] + dy,
+        c[2] + e.along[2] * ds,
+      ];
+      m.quad(
+        [W(-hw, -hh), W(hw, -hh), W(hw, hh), W(-hw, hh)],
+        e.n,
+        [
+          [1, 1],
+          [0, 1],
+          [0, 0],
+          [1, 0],
+        ],
+        packMat(CM.sign, id | (lit ? 0 : SIGN_FABRIC)),
+      );
+      if (lod === 0) {
+        // Frame (a box-section rim), stand-off brackets and, on lit ones,
+        // two gooseneck lamps over the top.
+        const fm = steelPaint(1 + (b.seed & 0xfc));
+        const R = (ds: number, dy: number, out: number): Vec3 =>
+          edgeAt(e, s + ds, out, y + dy);
+        const rim = 0.06;
+        m.tube(
+          [
+            R(-hw - rim, -hh - rim, 0.13),
+            R(hw + rim, -hh - rim, 0.13),
+            R(hw + rim, hh + rim, 0.13),
+            R(-hw - rim, hh + rim, 0.13),
+            R(-hw - rim, -hh - rim, 0.13),
+          ],
+          0.07,
+          fm,
+        );
+        for (const ds of [-hw * 0.6, hw * 0.6])
+          for (const dy of [-hh, hh])
+            m.tube([R(ds, dy, 0), R(ds, dy, 0.11)], 0.04, fm);
+        if (lit) {
+          for (const ds of [-hw * 0.5, hw * 0.5]) {
+            m.tube(
+              [
+                R(ds, hh + rim, 0.13),
+                R(ds, hh + 0.45, 0.25),
+                R(ds, hh + 0.4, 0.9),
+              ],
+              0.02,
+              fm,
+            );
+            m.box(
+              R(ds, hh + 0.33, 0.9),
+              [0.12, 0.05, 0.08],
+              packMat(CM.lamp, 1),
+              yawOf(e),
+            );
+          }
+          lights.add(edgeAt(e, s, 2.5, y), 9, signColor(id), LightKind.sign);
+        }
+      }
+    }
+  }
   // The core strip's sides, and the penthouse it ends in on the roof.
   let pent: {rect: Vec2[]; top: number} | null = null;
   if (core) {
@@ -1938,6 +2246,7 @@ export function building(
       nid,
       -1,
       lod,
+      false,
     );
     if (lod === 0) roofHouse(m, rect, mainTop, top, 2);
     pent = {rect, top};
@@ -1987,6 +2296,8 @@ export function building(
           depth / 2,
           j === 0 ? 0.14 : 0.06,
           concrete,
+          0,
+          [-e.n[0], 0, -e.n[2]],
         );
       }
     }
@@ -2022,6 +2333,8 @@ export function building(
           0.5,
           0.06,
           concrete,
+          0,
+          [-e.n[0], 0, -e.n[2]],
         );
       if (lod === 0)
         edgeQuad(
@@ -2045,6 +2358,8 @@ export function building(
         0.06,
         0.03,
         concrete,
+        0,
+        [-e.n[0], 0, -e.n[2]],
       );
       if (ar.chance(0.5)) {
         const s = lerp(e.f0 + 0.6, e.f1 - 0.6, ar.next());
@@ -2073,7 +2388,8 @@ export function building(
         const y = base + GROUND_H + (f - 1) * H;
         const o0: Vec3 = [ia[0] + n[0] * 0.6, y, ia[1] + n[2] * 0.6];
         const o1: Vec3 = [ic[0] + n[0] * 0.6, y, ic[1] + n[2] * 0.6];
-        m.beam(o0, o1, 0.6, 0.08, concrete);
+        const inward: Vec3 = [-n[0], 0, -n[2]];
+        m.beam(o0, o1, 0.6, 0.08, concrete, 0, inward);
         m.beam(
           [ia[0] + n[0] * 1.15, y + 0.55, ia[1] + n[2] * 1.15],
           [ic[0] + n[0] * 1.15, y + 0.55, ic[1] + n[2] * 1.15],
@@ -2081,6 +2397,7 @@ export function building(
           0.5,
           packMat(CM.paint, (b.style >> 4) & 0xff),
           aux,
+          inward,
         );
       }
       break;
@@ -2123,7 +2440,15 @@ export function building(
       );
       const ms = s + side * (CORE_W / 2 + 0.5);
       if (ms > 0.4 && ms < e.len - 0.4) {
-        m.box(edgeAt(e, ms, 0.12, base + 1.2), [0.35, 0.3, 0.12], metal, yaw);
+        m.box(
+          edgeAt(e, ms, 0.12, base + 1.2),
+          [0.35, 0.3, 0.12],
+          metal,
+          yaw,
+          0,
+          false,
+          true,
+        );
         m.box(
           edgeAt(e, ms, 0.04, base + 1.95),
           [0.12, 0.17, 0.04],
@@ -2292,6 +2617,7 @@ export function building(
           hid,
           -1,
           lod,
+          false,
         );
         lightY = y;
       } else if (style === 'led') {
@@ -2436,7 +2762,8 @@ export function building(
       }
     }
     if (shop && len > 4) {
-      const id = SIGN.horizontal.first + rng.int(0, SIGN.horizontal.count);
+      // (A draw kept so the building stream stays in step.)
+      rng.int(0, SIGN.horizontal.count);
       // The shopfront: the front clear of the core strip.
       let ft0 = 0,
         ft1 = 1;
@@ -2445,64 +2772,76 @@ export function building(
         if (core.atEnd) ft1 = Math.max(0.2, (c0 - 0.3) / len);
         else ft0 = Math.min(0.8, (c0 + CORE_W + 0.3) / len);
       }
-      const span = (ft1 - ft0) * len;
       const ftAt = (t: number) => ft0 + (ft1 - ft0) * t;
-      // Fascia box sign: depth, height and width vary; wide frontages
-      // sometimes carry two tenants side by side.
-      const two = span > 9 && sr.chance(0.3);
+      // Tenants: the shader picks a shop type per pair of bays (shopTypeAt),
+      // so each run of same-type bays is one business, and its fascia sign
+      // names that kind of business.
+      const fe = edges[i];
+      const tenants: {type: number; s0: number; s1: number; id: number}[] = [];
+      {
+        const bw = bay / fe.k;
+        const col0 = Math.round(fe.u0 / bay);
+        for (let j = 0; j < fe.count; j++) {
+          const type = shopTypeAt(aux, col0 + j);
+          const s0 = fe.f0 + j * bw;
+          const last = tenants[tenants.length - 1];
+          if (last?.type === type) last.s1 = s0 + bw;
+          else tenants.push({type, s0, s1: s0 + bw, id: 0});
+        }
+        if (!tenants.length)
+          tenants.push({
+            type: SHOP_TYPE.restaurant,
+            s0: ft0 * len,
+            s1: ft1 * len,
+            id: 0,
+          });
+        // The end tenants take the shopfront out to the piers.
+        tenants[0].s0 = Math.min(tenants[0].s0, ft0 * len + 0.3);
+        tenants[tenants.length - 1].s1 = Math.max(
+          tenants[tenants.length - 1].s1,
+          ft1 * len - 0.3,
+        );
+        for (const t of tenants) {
+          const ids = TENANT_SIGNS[t.type];
+          t.id = ids[sr.int(0, ids.length)];
+        }
+      }
+      const main = tenants.reduce((p, t) =>
+        t.s1 - t.s0 > p.s1 - p.s0 ? t : p,
+      );
+      const id = main.id;
+      // Fascia box signs: depth and height vary per building.
       const halfH = sr.range(0.35, 0.6);
       const out = sr.range(0.18, 0.5);
       const y = base + GROUND_H * 0.86 + (halfH - 0.45) * 0.5;
-      if (two) {
-        const halfW = Math.min(span * 0.2, 4);
+      for (const t of tenants) {
+        const w = t.s1 - t.s0;
+        const halfW = Math.min(w * (w < 3 ? 0.44 : 0.4), 6);
         signPanel(
           m,
-          wallAt(ftAt(0.26), out, y),
+          wallAt((t.s0 + t.s1) / 2 / len, out, y),
           along,
           halfW,
-          halfH,
+          t === main ? halfH : halfH * 0.85,
           0.16,
-          id,
+          t.id,
           -1,
           lod,
-        );
-        const id2 = SIGN.horizontal.first + ((id + 5) % SIGN.horizontal.count);
-        signPanel(
-          m,
-          wallAt(ftAt(0.74), out, y),
-          along,
-          halfW,
-          halfH * 0.85,
-          0.16,
-          id2,
-          -1,
-          lod,
-        );
-      } else {
-        const halfW = Math.min(span * sr.range(0.3, 0.44), 6);
-        signPanel(
-          m,
-          wallAt(ftAt(0.5), out, y),
-          along,
-          halfW,
-          halfH,
-          0.16,
-          id,
-          -1,
-          lod,
+          false,
         );
       }
       // The lit fascia washes the pavement at night.
       if (lod === 0)
         lights.add(
-          wallAt(ftAt(0.5), 1.8, y - 0.8),
+          wallAt((main.s0 + main.s1) / 2 / len, 1.8, y - 0.8),
           7,
           signColor(id),
           LightKind.sign,
         );
       if (lod === 0) {
         // Roll-shutter housing over the opening with its guide rails, an
-        // A-frame stand sign and a plant or two by the door.
+        // A-frame stand sign and a plant or two by the door, then each
+        // tenant's street kit.
         const st = new Rng(hash2(b.seed, 0x5f0e));
         const hy = y - halfH - 0.16;
         m.beam(
@@ -2511,6 +2850,8 @@ export function building(
           0.13,
           0.13,
           metal,
+          0,
+          [-n[0], 0, -n[2]],
         );
         for (const t of [0.02, 0.98])
           m.beam(
@@ -2523,15 +2864,21 @@ export function building(
         const gy = base + 0.16;
         if (st.chance(0.7)) {
           const t = ftAt(st.range(0.2, 0.8));
+          const k = st.int(0, SIGN.square.count);
+          const tn =
+            tenants.find(x => t * len >= x.s0 && t * len <= x.s1) ?? main;
+          const sq = TENANT_SQUARES[tn.type];
           aFrameSign(
             m,
             wallAt(t, st.range(1.1, 1.6), gy),
             n,
-            SIGN.square.first + st.int(0, SIGN.square.count),
+            sq[k % sq.length],
           );
         }
         for (const t of [0.06, 0.94])
           if (st.chance(0.4)) pottedPlant(m, wallAt(ftAt(t), 0.45, gy), st);
+        const kr = new Rng(hash2(b.seed, 0x7e4a));
+        for (const t of tenants) tenantKit(m, fe, t, gy, hy - 0.13, kr);
       }
       if (lod === 0) {
         const ay = base + GROUND_H * 0.62;
@@ -2586,6 +2933,7 @@ export function building(
             0.05,
             packMat(CM.paint, (b.seed >> 8) & 0xff),
             aux,
+            [-n[0], 0, -n[2]],
           );
         }
         // Nobori: cloth banners on poles in front of the shop.
@@ -2787,6 +3135,9 @@ export function building(
           [0.14, 0.16, 0.1],
           steelGrey,
           yawOf(e),
+          0,
+          false,
+          true,
         );
       const pts: Vec3[] =
         jog !== 0
@@ -2805,6 +3156,100 @@ export function building(
     };
     const inStair = (i: number, s: number, pad = 0) =>
       i === stair && Math.abs(s - stairS) < STAIR_L / 2 + pad;
+    // Party wall kit: a gas riser and a water line as pipe runs with
+    // clamps at the floor lines, and on some walls a corrugated steel sheet
+    // patched over old damage. Clear of the ad and the stair.
+    const partyKit = (e: FacadeEdge, i: number, ground: number) => {
+      const pr = new Rng(hash2(b.seed, 0x9a27 + i));
+      const P = (s: number, out: number, y: number) => edgeAt(e, s, out, y);
+      const clear = (s: number, pad: number) =>
+        !inStair(i, s, pad) &&
+        !(partyAd?.edge === i && Math.abs(s - partyAd.s) < partyAd.hw + pad);
+      const yTop = wallTop - 0.5;
+      const gasS = pr.chance(0.5)
+        ? pr.range(0.8, 1.6)
+        : e.len - pr.range(0.8, 1.6);
+      if (clear(gasS, 0.3) && pr.chance(0.85)) {
+        const gas = packMat(CM.paint, pr.chance(0.5) ? 0x92 : 0xd2);
+        m.tube(
+          [
+            P(gasS, 0, ground + 1.1),
+            P(gasS, 0.07, ground + 1.1),
+            P(gasS, 0.07, yTop),
+            P(gasS + 0.3, 0.07, yTop),
+            P(gasS + 0.3, 0, yTop),
+          ],
+          0.03,
+          gas,
+        );
+      }
+      if (bodyN >= 2 && pr.chance(0.6)) {
+        // Water / drain line along a floor line, then down to grade.
+        const f = pr.int(1, bodyN);
+        const y = base + GROUND_H + f * H - 0.35;
+        const sa = e.len * pr.range(0.3, 0.55);
+        const sb = sa + (pr.chance(0.5) ? 1 : -1) * pr.range(1.5, 3);
+        if (sb > 0.4 && sb < e.len - 0.4 && clear(sa, 0.2) && clear(sb, 0.2))
+          m.tube(
+            [
+              P(sa, 0, y),
+              P(sa, 0.06, y),
+              P(sb, 0.06, y),
+              P(sb, 0.06, ground + 0.15),
+            ],
+            0.035,
+            steelGrey,
+          );
+      }
+      if (bodyN >= 2 && pr.chance(0.35)) {
+        // Corrugated sheet over one or two floors, ribs vertical.
+        const w = Math.min(e.len - 1.2, pr.range(2.4, 4.8));
+        const s0 = pr.range(0.6, e.len - 0.6 - w);
+        const f = pr.int(1, bodyN);
+        const y0 = Math.max(base + GROUND_H + (f - 1) * H, grade[i] + 0.4);
+        const y1 = Math.min(y0 + H * pr.range(1, 2), mainTop);
+        if (clear(s0, 0.2) && clear(s0 + w, 0.2) && clear(s0 + w / 2, 0)) {
+          const sheet = packMat(CM.paint, 0xf8);
+          const o = 0.035;
+          m.quad(
+            [P(s0, o, y0), P(s0 + w, o, y0), P(s0 + w, o, y1), P(s0, o, y1)],
+            e.n,
+            [
+              [0, 0],
+              [w, 0],
+              [w, y1 - y0],
+              [0, y1 - y0],
+            ],
+            sheet,
+          );
+          for (const [sx, sg] of [
+            [s0, -1],
+            [s0 + w, 1],
+          ])
+            m.quad(
+              [P(sx, 0, y0), P(sx, o, y0), P(sx, o, y1), P(sx, 0, y1)],
+              [e.along[0] * sg, 0, e.along[2] * sg],
+              [
+                [0, 0],
+                [o, 0],
+                [o, y1 - y0],
+                [0, y1 - y0],
+              ],
+              sheet,
+            );
+          // Flashing over the top edge.
+          flatQuad(
+            m,
+            P(s0 + w / 2, o + 0.01, y1),
+            e.along,
+            w / 2 + 0.03,
+            0.04,
+            e.n,
+            steelGrey,
+          );
+        }
+      }
+    };
     let meters = false;
     edges.forEach((e, i) => {
       if (e.role < ROLE.party || e.len < 3) return;
@@ -2840,12 +3285,18 @@ export function building(
           [0.6, 0.2, 0.09],
           packMat(CM.paint, 0xd4),
           yaw,
+          0,
+          true,
+          true,
         );
         m.box(
           edgeAt(e, s0 + 0.35, 0.07, ground + 1.75),
           [0.2, 0.28, 0.07],
           packMat(CM.paint, 0xd6),
           yaw,
+          0,
+          true,
+          true,
         );
         flatQuad(
           m,
@@ -2881,36 +3332,72 @@ export function building(
             );
         }
         if (bodyN >= 2 && svc === 1) {
+          // Kitchen exhaust: a flush louvre under a sloped weather cowl.
           const f = cr.int(1, bodyN + 1);
           const s = lerp(e.len * 0.35, e.len * 0.65, cr.next());
           const y = base + GROUND_H + (f - 1) * H + 2.4;
-          m.box(edgeAt(e, s, 0.08, y), [0.18, 0.16, 0.08], metal, yaw);
-          flatQuad(
-            m,
-            edgeAt(e, s, 0.165, y - 0.05),
-            e.along,
-            0.15,
-            0.03,
-            e.n,
-            dark,
+          flatQuad(m, edgeAt(e, s, 0.01, y), e.along, 0.17, 0.15, e.n, metal);
+          for (const dy of [-0.08, 0, 0.08])
+            flatQuad(
+              m,
+              edgeAt(e, s, 0.015, y + dy),
+              e.along,
+              0.14,
+              0.018,
+              e.n,
+              dark,
+            );
+          const c = (ds: number, out: number, dy: number) =>
+            edgeAt(e, s + ds, out, y + dy);
+          const nl = Math.hypot(0.16, 0.12);
+          m.quad(
+            [
+              c(-0.19, 0.16, 0.06),
+              c(0.19, 0.16, 0.06),
+              c(0.19, 0, 0.18),
+              c(-0.19, 0, 0.18),
+            ],
+            [(e.n[0] * 0.12) / nl, 0.16 / nl, (e.n[2] * 0.12) / nl],
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 1],
+            ],
+            metal,
           );
         }
+        if (svc === 1) partyKit(e, i, ground);
         return;
       }
       // Rear: precast sills under the punched windows (facadeRole: rear
-      // windows are 0.45 x 0.45 of bay and floor), skipping the stair
-      // column of glass block, the back door bay and floors below grade.
+      // windows are 0.45 x 0.45 of bay and floor) and a drip hood over
+      // them, skipping the stair column of glass block, the back door bay
+      // and floors below grade. Security grilles (面格子: aluminium bars
+      // in a frame) on most ground-floor windows and some upper ones.
       const bw = bay / e.k;
       const hw = 0.225 * bw;
       const col0 = Math.round(e.u0 / bay);
       const trimMat = packMat(CM.concrete);
+      const alu = packMat(CM.paint, 0xd3);
+      const gr = new Rng(hash2(b.seed, 0x6e1 + i));
+      let grilles = 0;
+      const glassBlock = (f: number, j: number) =>
+        f >= 1 && (col0 + j + 1000 + (aux >>> 4)) % 11 === 0;
+      const uv: Vec2[] = [
+        [0, 0],
+        [1, 0],
+        [1, 1],
+        [0, 1],
+      ];
       for (let f = 0; f <= bodyN && svc === 1 && b.kind !== 'apartment'; f++) {
         const y0 = f === 0 ? base : base + GROUND_H + (f - 1) * H;
         if (y0 < solidTo[i]) continue;
         const fh = f === 0 ? GROUND_H : H;
         const sill = y0 + 0.55 * fh * 0.55;
+        const head = sill + 0.45 * fh;
         for (let j = 0; j < e.count; j++) {
-          if (f >= 1 && (col0 + j + 1000 + (aux >>> 4)) % 11 === 0) continue;
+          if (glassBlock(f, j)) continue;
           const s = e.f0 + (j + 0.5) * bw;
           if (
             f === 0 &&
@@ -2921,12 +3408,6 @@ export function building(
             continue;
           const Q = (ds: number, out: number, y: number) =>
             edgeAt(e, s + ds, out, y);
-          const uv: Vec2[] = [
-            [0, 0],
-            [1, 0],
-            [1, 1],
-            [0, 1],
-          ];
           const w = hw + 0.06;
           // Sill: one bevelled face from the wall out and down.
           m.quad(
@@ -2940,59 +3421,114 @@ export function building(
             uv,
             trimMat,
           );
+          // Head: a drip hood sloping out over the opening.
+          m.quad(
+            [
+              Q(-w, 0.06, head + 0.03),
+              Q(w, 0.06, head + 0.03),
+              Q(w, 0, head + 0.1),
+              Q(-w, 0, head + 0.1),
+            ],
+            [e.n[0] * 0.75, 0.66, e.n[2] * 0.75],
+            uv,
+            trimMat,
+          );
+          if (
+            grilles >= 2 ||
+            inStair(i, s, 0.3) ||
+            !gr.chance(f === 0 ? 0.8 : 0.3)
+          )
+            continue;
+          grilles++;
+          const gh = (head - sill) / 2;
+          const gy = sill + gh;
+          const nb = 4;
+          for (let k = 0; k <= nb; k++)
+            flatQuad(
+              m,
+              Q(-hw + (2 * hw * k) / nb, 0.06, gy),
+              e.along,
+              0.014,
+              gh,
+              e.n,
+              alu,
+            );
+          for (const dy of [-gh, gh])
+            flatQuad(
+              m,
+              Q(0, 0.065, gy + dy),
+              e.along,
+              hw + 0.01,
+              0.02,
+              e.n,
+              alu,
+            );
         }
       }
-      // AC condensers under rear windows on brackets: about every other
-      // floor, the refrigerant line in a white cover up to the wall and a
-      // condensate drain hanging below; one or two on a pad at grade.
+      // AC condensers on brackets under rear windows, where the shader
+      // bleeds rust below a bracket (city-materials facadeMat: a third of
+      // the cells, by cellSeed): each unit's insulated refrigerant line
+      // runs over to a duct cover that carries the column's lines down the
+      // wall into the ground; a condensate drain hangs below each.
+      const acCell = (f: number, j: number) => {
+        const c = hashu(
+          (aux ^
+            hashu(
+              (Math.imul(col0 + j + 1000, 73856093) ^
+                Math.imul(f + 1000, 19349663)) >>>
+                0,
+            )) >>>
+            0,
+        );
+        return hashuf(c ^ 0xac1) < 0.3;
+      };
       let units = 0;
-      for (let f = 1; f <= bodyN; f++)
-        for (let j = 0; j < e.count && units < 3 * svc; j++) {
+      const maxUnits = Math.round(5 * svc);
+      // The duct cover runs just clear of the windows.
+      const dS = Math.max(0.55, hw + 0.12);
+      for (let j = 0; j < e.count; j++) {
+        const s = e.f0 + (j + 0.5) * bw;
+        if (inStair(i, s, 0.6) || inStair(i, s + dS, 0.3)) continue;
+        let topY = -Infinity;
+        for (let f = 1; f <= bodyN && units < maxUnits; f++) {
           const y0 = base + GROUND_H + (f - 1) * H;
-          if (y0 < solidTo[i] || !cr.chance(0.4)) continue;
-          const s = e.f0 + (j + 0.5) * bw;
-          if (inStair(i, s, 0.6)) continue;
-          if ((col0 + j + 1000 + (aux >>> 4)) % 11 === 0) continue;
+          if (y0 < solidTo[i] || glassBlock(f, j) || !acCell(f, j)) continue;
           const y = y0 + 0.55 * H * 0.55 - 0.42;
-          m.box(edgeAt(e, s, 0.3, y), [0.4, 0.275, 0.145], acMat, yaw);
+          m.box(
+            edgeAt(e, s, 0.3, y),
+            [0.4, 0.275, 0.145],
+            acMat,
+            yaw,
+            0,
+            true,
+            true,
+          );
           const sh = (ds: number, out: number) =>
             edgeAt(e, s + ds, out, y - 0.28);
           m.quad(
             [sh(-0.42, 0), sh(0.42, 0), sh(0.42, 0.47), sh(-0.42, 0.47)],
             [0, -1, 0],
-            [
-              [0, 0],
-              [1, 0],
-              [1, 1],
-              [0, 1],
-            ],
+            uv,
             steelGrey,
           );
           const g = (ds: number, dy: number) =>
             edgeAt(e, s + ds, 0.447, y + dy);
-          const uv: Vec2[] = [
-            [0, 0],
-            [1, 0],
-            [1, 1],
-            [0, 1],
-          ];
           m.quad(
             [g(-0.31, -0.19), g(0.07, -0.19), g(0.07, 0.19), g(-0.31, 0.19)],
             e.n,
             uv,
             packMat(CM.frame),
           );
-          // Refrigerant line in its cover from the unit up into the wall,
-          // and the condensate drain hanging below.
-          const ps = s + 0.46;
-          m.beam(
-            edgeAt(e, ps, 0.06, y - 0.1),
-            edgeAt(e, ps, 0.06, y + 0.75),
-            0.04,
-            0.04,
+          m.tube(
+            [
+              edgeAt(e, s + 0.4, 0.3, y - 0.12),
+              edgeAt(e, s + dS, 0.3, y - 0.12),
+              edgeAt(e, s + dS, 0.07, y - 0.12),
+            ],
+            0.03,
             pipeMat,
           );
-          const dl = cr.range(0.3, 0.9);
+          const dl = 0.3 + 0.6 * hashuf(units * 7 + aux);
           const dq = (ds: number, dy: number) =>
             edgeAt(e, s - 0.3 + ds, 0.25, y - 0.28 + dy);
           m.quad(
@@ -3001,8 +3537,22 @@ export function building(
             uv,
             dark,
           );
+          topY = Math.max(topY, y - 0.12);
           units++;
         }
+        if (topY > -Infinity) {
+          const ground = paving(i);
+          m.tube(
+            [
+              edgeAt(e, s + dS, 0.07, topY + 0.04),
+              edgeAt(e, s + dS, 0.07, ground + 0.35),
+              edgeAt(e, s + dS, 0, ground + 0.45),
+            ],
+            0.05,
+            pipeMat,
+          );
+        }
+      }
       if (backDoor?.edge === i) {
         // Steel back door in a frame, a small canopy with a lamp, a step.
         const s = (backDoor.s0 + backDoor.s1) / 2;
@@ -3026,14 +3576,26 @@ export function building(
       }
     });
     if (stair >= 0)
-      fireStair(m, edges[stair], stairS, cr, {
+      fireStair(m, edges[stair], stairS, {
         levels: [
           paving(stair),
           ...Array.from({length: bodyN}, (_, f) => base + GROUND_H + f * H),
         ].filter((y, k) => k === 0 || y > paving(stair) + 1.6),
         low: b.low,
         toEnd: stairS < edges[stair].len / 2,
+        paint: stairPaint,
       });
+  } else if (stair >= 0) {
+    const g = Math.max(base, grade[stair] - 0.05);
+    fireStairShell(m, edges[stair], stairS, {
+      levels: [
+        g,
+        ...Array.from({length: bodyN}, (_, f) => base + GROUND_H + f * H),
+      ].filter((y, k) => k === 0 || y > g + 1.6),
+      low: b.low,
+      toEnd: stairS < edges[stair].len / 2,
+      paint: stairPaint,
+    });
   }
 
   // Roof: the penthouse (over the core, or a stair house in the corner away
@@ -3206,8 +3768,8 @@ export function building(
             m.beam(
               leg(-1, c, ty - 0.06),
               leg(1, c, ty - 0.06),
-              0.05,
-              0.06,
+              0.055,
+              0.055,
               steel,
             );
             m.beam(
@@ -3222,8 +3784,8 @@ export function building(
             m.beam(
               leg(a, -1, ty - 0.06),
               leg(a, 1, ty - 0.06),
-              0.05,
-              0.06,
+              0.055,
+              0.055,
               steel,
             );
           // Ladder up the side and a manhole on top.
@@ -3251,18 +3813,24 @@ export function building(
     const fenceRing = fence && lod === 0 ? inset(roof, 0.5) : null;
     if (fenceRing) {
       const green = packMat(CM.paint, 0x6b);
+      // Rails: one tube round the ring each.
+      for (const [h, r] of [
+        [0.1, 0.02],
+        [1.8, 0.03],
+      ])
+        m.tube(
+          [...fenceRing, fenceRing[0]].map((q): Vec3 => [
+            q[0],
+            roofY + h,
+            q[1],
+          ]),
+          r,
+          green,
+        );
       for (let i = 0; i < fenceRing.length; i++) {
         const a = fenceRing[i],
           c = fenceRing[(i + 1) % fenceRing.length];
         const len = dist2(a, c);
-        for (const h of [0.1, 1.8])
-          m.beam(
-            [a[0], roofY + h, a[1]],
-            [c[0], roofY + h, c[1]],
-            0.02,
-            h === 1.8 ? 0.03 : 0.012,
-            green,
-          );
         const posts = Math.max(1, Math.round(len / 4));
         for (let k = 0; k < posts; k++) {
           const t = k / posts;
@@ -3280,15 +3848,19 @@ export function building(
     if (guardRing) {
       const y = roofY + CROWN_H + 0.06;
       const gm = packMat(CM.paint, kr.chance(0.6) ? 0x90 : 0x6b);
+      for (const [h, w] of [
+        [1.05, 0.035],
+        [0.55, 0.017],
+      ])
+        m.tube(
+          [...guardRing, guardRing[0]].map((q): Vec3 => [q[0], y + h, q[1]]),
+          w,
+          gm,
+        );
       for (let i = 0; i < guardRing.length; i++) {
         const a = guardRing[i],
           c = guardRing[(i + 1) % guardRing.length];
         const len = dist2(a, c);
-        for (const [h, w] of [
-          [1.05, 0.025],
-          [0.55, 0.012],
-        ])
-          m.beam([a[0], y + h, a[1]], [c[0], y + h, c[1]], w, w, gm);
         // Flat bar posts facing out (seen from the street).
         const nn = edgeNormal(guardRing, i);
         const dx = (c[0] - a[0]) / (len || 1),
@@ -3339,7 +3911,7 @@ export function building(
       const sc = (s0 + s1) / 2;
       const hh = hw / 4;
       const out = -1.3;
-      const yb = roofY + CROWN_H + 0.35;
+      const yb = roofY + CROWN_H + 0.9;
       const corners = [
         edgeAt(e, sc - hw, out + 0.3, 0),
         edgeAt(e, sc + hw, out + 0.3, 0),
@@ -3378,50 +3950,40 @@ export function building(
           -1,
           lod,
         );
-        const steel = packMat(CM.paint, 0x90);
+        const steel = steelPaint(1 + ((b.seed >> 8) & 0xfc));
         const top = yb + hh * 2;
+        const F = (sl: number, y: number, o2 = out - 0.15) =>
+          edgeAt(e, sl, o2, y);
+        // Steel lattice standing clear above the parapet: posts every
+        // metre or so with X bracing in each panel, two main legs up the
+        // back of the board, with backstays. Distant shells get the legs
+        // and one X.
+        const ylo = roofY + 0.3,
+          yhi = yb - 0.08;
+        const legs = [sc - hw * 0.8, sc + hw * 0.8];
+        for (const sl of legs) m.tube([F(sl, roofY), F(sl, top)], 0.06, steel);
         if (lod > 0) {
-          for (const d of [-0.75, 0.75])
-            m.box(
-              edgeAt(e, sc + d * hw, out - 0.15, (roofY + top) / 2),
-              [0.06, (top - roofY) / 2, 0.06],
-              steel,
-            );
+          m.tube([F(legs[0], ylo), F(legs[1], yhi)], 0.04, steel);
+          m.tube([F(legs[1], ylo), F(legs[0], yhi)], 0.04, steel);
         } else {
-          // Lattice: two legs with backstays, chords and X bracing.
-          const legs = [sc - hw * 0.75, sc + hw * 0.75];
-          for (const sl of legs) {
-            m.beam(
-              edgeAt(e, sl, out - 0.15, roofY),
-              edgeAt(e, sl, out - 0.15, top),
-              0.05,
-              0.05,
-              steel,
-            );
-            m.beam(
-              edgeAt(e, sl, out - 1.3, roofY),
-              edgeAt(e, sl, out - 0.15, top - 0.1),
-              0.03,
+          const np = Math.max(2, Math.round((legs[1] - legs[0]) / 1.1));
+          const pw = (legs[1] - legs[0]) / np;
+          for (let k = 1; k < np; k++)
+            m.tube(
+              [F(legs[0] + k * pw, ylo), F(legs[0] + k * pw, yhi)],
               0.03,
               steel,
             );
+          for (let k = 0; k < np; k++) {
+            const s0 = legs[0] + k * pw,
+              s1 = s0 + pw;
+            m.tube([F(s0, ylo), F(s1, yhi)], 0.018, steel);
+            m.tube([F(s1, ylo), F(s0, yhi)], 0.018, steel);
           }
-          for (const y of [roofY + 0.3, yb - 0.08, top + 0.04])
-            m.beam(
-              edgeAt(e, legs[0], out - 0.15, y),
-              edgeAt(e, legs[1], out - 0.15, y),
-              0.025,
-              0.025,
-              steel,
-            );
-          for (const d of [1, -1])
-            m.beam(
-              edgeAt(e, d > 0 ? legs[0] : legs[1], out - 0.15, roofY + 0.3),
-              edgeAt(e, d > 0 ? legs[1] : legs[0], out - 0.15, yb - 0.08),
-              0.015,
-              0.015,
-              steel,
-            );
+          for (const y of [ylo, yhi, top + 0.04])
+            m.tube([F(legs[0], y), F(legs[1], y)], 0.035, steel);
+          for (const sl of legs)
+            m.tube([F(sl, roofY, out - 1.3), F(sl, top - 0.1)], 0.04, steel);
         }
       }
     }
@@ -3448,7 +4010,7 @@ export function building(
     const su0 = rr.range(-box.hu * 0.6, box.hu * 0.2);
     const sv0 = rr.range(-box.hv * 0.5, box.hv * 0.3);
     if (area < 400) {
-      const units = Math.min(14, nUnits * Math.min(1, area / 300));
+      const units = Math.min(10, nUnits * Math.min(1, area / 300));
       const perRow = Math.ceil(units / rows);
       let lo: Vec2 | null = null;
       let hi: Vec2 = [0, 0];
@@ -3820,17 +4382,16 @@ function utilityPole(m: CMesh, p: Vec3) {
 
 function wireSag(m: CMesh, a: Vec3, b: Vec3, sag: number) {
   const n = 5;
-  let prev = a;
-  for (let k = 1; k <= n; k++) {
+  const pts: Vec3[] = [];
+  for (let k = 0; k <= n; k++) {
     const t = k / n;
-    const q: Vec3 = [
+    pts.push([
       lerp(a[0], b[0], t),
       lerp(a[1], b[1], t) - sag * 4 * t * (1 - t),
       lerp(a[2], b[2], t),
-    ];
-    m.beam(prev, q, 0.012, 0.012, packMat(CM.wire));
-    prev = q;
+    ]);
   }
+  m.tube(pts, 0.012 * Math.SQRT2, packMat(CM.wire));
 }
 
 export interface TileContext {
