@@ -351,9 +351,10 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       segT: 6,
     });
     // The inside trim is a little narrower so its edges never poke through
-    // the glass; pillar trims are wide, rounded covers in headliner fabric.
+    // the glass; pillar trims are rounded covers in headliner fabric, a little
+    // wider than the paint so its inner side never shows past their edges.
     const mapIn = (s: number, t: number) =>
-      map(trim ? s : lerp(0.28, 0.72, s), t);
+      map(trim ? lerp(-0.12, 1.12, s) : lerp(0.28, 0.72, s), t);
     if (inner)
       kit.decal(g, mapIn, trim ? Mat.headliner : Mat.interior, {
         ns: trim ? Math.max(ns, 6) : ns,
@@ -363,15 +364,31 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         mirror: true,
         segS: trim ? Math.max(ns, 6) * 2 : ns - 1,
         segT: 6,
-        bump: trim ? s => 0.022 * Math.sin(Math.PI * s) : undefined,
+        bump: trim ? s => 0.012 * Math.sin(Math.PI * s) : undefined,
+        // Its edges show through the glass from outside: give them a back.
+        doubleSided: trim,
       });
   };
   const pillarMat = (p: 'paint' | 'black') =>
     p === 'paint' ? (cfg.roofMat ?? Mat.paint) : Mat.plastic;
-  // A pillar: the front corner rows.
+  // A pillar: a ~9 cm band centred in the front corner rows (real pillar
+  // trim is 8-10 cm; the whole corner would be a wall at the driver's eye).
+  const aRows = (() => {
+    const u = g.u(2.5);
+    const p0 = g.point(u, g.v(gh.iSide)),
+      p1 = g.point(u, g.v(gh.iFrontCorner));
+    const len = Math.hypot(p0[0] - p1[0], p0[1] - p1[1], p0[2] - p1[2]);
+    const perRow = len / Math.max(1, gh.iFrontCorner - gh.iSide);
+    const c = (gh.iSide + gh.iFrontCorner) / 2 - 0.4;
+    const h = Math.min(1.0, 0.045 / perRow);
+    return [
+      Math.max(gh.iSide + 0.6, c - h),
+      Math.min(gh.iFrontCorner - 1.4, c + h),
+    ];
+  })();
   glassDecal(
-    () => gh.iSide + 0.6,
-    () => gh.iFrontCorner - 1.4,
+    () => aRows[0],
+    () => aRows[1],
     0,
     1,
     pillarMat(cfg.aPillar),
@@ -391,7 +408,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
   glassDecal(
     () => gh.iFrontCorner - 0.6,
     () => nRows - 1,
-    0.93,
+    0.965,
     1,
     Mat.plastic,
     true,
@@ -1224,12 +1241,27 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
   const eyeZ = zDashRear - (cfg.eyeBack ?? 0.82);
   // Seat cushion height: normally 25 cm above the floor, lower in low cars so
   // the headrests stay under the roof.
-  const seatY = (x: number, z: number) =>
+  const seatY0 = (x: number, z: number) =>
     Math.max(
       floorY + 0.12,
       Math.min(floorY + 0.25, roofY(Math.abs(x), z - 0.35) - 1.03),
     );
-  const eyeY = seatY(driverX, eyeZ + 0.12) + 0.62;
+  // The first-person camera sits CAMERA_LIFT above driverEye. Seat the
+  // driver low enough that the windscreen header stays >= 14 degrees above
+  // that camera (a thin strip of headliner, not a wall), as low-roof cars
+  // really do; never closer than 6 cm to the floor.
+  const CAMERA_LIFT = 0.15;
+  const eye0 = seatY0(driverX, eyeZ + 0.12) + 0.62;
+  const headerY = roofY(driverX, cfg.wsTopZ) - 0.02;
+  const camMax =
+    headerY - Math.max(0.1, cfg.wsTopZ - eyeZ) * Math.tan((14 * Math.PI) / 180);
+  const seatDrop = clamp(
+    eye0 + CAMERA_LIFT - camMax,
+    0,
+    seatY0(driverX, eyeZ + 0.12) - (floorY + 0.06),
+  );
+  const seatY = (x: number, z: number) => seatY0(x, z) - seatDrop;
+  const eyeY = eye0 - seatDrop;
   if (cfg.interior !== 'none') {
     // Small trim details only at full detail: LOD meshes see the cabin
     // through glass from afar, and tiny blobs keep a minimum ring count.
@@ -1913,18 +1945,23 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     // Rear-view mirror and sun visors.
     {
       const zm = cfg.wsTopZ - 0.08;
-      const ym = roofY(0, zm) - 0.1;
-      blob(kit, [0, ym, zm], [0.12, 0.035, 0.015], Mat.plastic, {
-        n: 4,
-        segU: 12,
-        segV: 3,
+      const ym = roofY(0, zm) - 0.09;
+      // Rounded housing with a domed back, the glass set into its face.
+      blob(kit, [0, ym, zm + 0.004], [0.122, 0.036, 0.02], Mat.plastic, {
+        n: 2.8,
+        m: 2.4,
+        segU: 24,
+        segV: 6,
+        taper: t => {
+          const k = Math.max(0, t * 2 - 1);
+          return [lerp(1, 0.9, k), lerp(1, 0.82, k)];
+        },
       });
-      // Mirror glass facing the cabin.
       if (fine)
-        blob(kit, [0, ym, zm - 0.014], [0.11, 0.027, 0.002], Mat.chrome, {
-          n: 5,
+        blob(kit, [0, ym, zm - 0.0155], [0.11, 0.027, 0.002], Mat.chrome, {
+          n: 3,
           m: 2,
-          segU: 16,
+          segU: 24,
           segV: 2,
         });
       tube(
@@ -1939,9 +1976,9 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       );
       for (const sx of [driverX, -driverX]) {
         // Padded visor folded up against the headliner, on a hinge rod.
-        const yv = roofY(sx, zm - 0.07) - 0.017;
+        const yv = roofY(sx, zm - 0.07) - 0.008;
         const slope = (roofY(sx, zm) - roofY(sx, zm - 0.14)) / 0.14;
-        blob(kit, [sx, yv, zm - 0.07], [0.15, 0.007, 0.068], Mat.headliner, {
+        blob(kit, [sx, yv, zm - 0.07], [0.15, 0.0035, 0.068], Mat.headliner, {
           n: 6,
           m: 2.5,
           segU: 10,
