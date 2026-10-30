@@ -91,19 +91,21 @@ fn wallPalette(i: u32) -> vec3f {
 }
 
 fn wallPaletteRaw(i: u32) -> vec3f {
+  // Tokyo midrises are mostly pale: 7 of 12 light (white, beige, pale grey),
+  // 3 mid and 2 dark (brown tile, charcoal).
   switch (i % 12u) {
     case 0u: { return vec3f(0.78, 0.76, 0.72); }  // off-white tile
-    case 1u: { return vec3f(0.62, 0.6, 0.57); }   // light concrete
+    case 1u: { return vec3f(0.72, 0.72, 0.7); }   // light grey
     case 2u: { return vec3f(0.45, 0.33, 0.25); }  // brown tile
-    case 3u: { return vec3f(0.3, 0.3, 0.32); }    // dark grey
+    case 3u: { return vec3f(0.7, 0.72, 0.74); }   // pale blue grey
     case 4u: { return vec3f(0.7, 0.66, 0.56); }   // beige
     case 5u: { return vec3f(0.55, 0.58, 0.6); }   // blue grey
     case 6u: { return vec3f(0.82, 0.8, 0.78); }   // white
-    case 7u: { return vec3f(0.5, 0.42, 0.35); }   // taupe
-    case 8u: { return vec3f(0.38, 0.4, 0.38); }   // green grey
+    case 7u: { return vec3f(0.8, 0.76, 0.66); }   // cream
+    case 8u: { return vec3f(0.3, 0.29, 0.29); }   // charcoal
     case 9u: { return vec3f(0.66, 0.52, 0.42); }  // terracotta-ish
-    case 10u: { return vec3f(0.2, 0.2, 0.22); }   // charcoal
-    default: { return vec3f(0.72, 0.7, 0.66); }
+    case 10u: { return vec3f(0.74, 0.71, 0.66); } // warm light grey
+    default: { return vec3f(0.6, 0.59, 0.56); }   // mid concrete
   }
 }
 
@@ -120,6 +122,29 @@ fn paintColor(p: u32) -> vec3f {
   let k = vec3f(5.0, 3.0, 1.0);
   let rgb = clamp(abs(fract(vec3f(hue) + k / 6.0) * 6.0 - 3.0) - 1.0, vec3f(0), vec3f(1));
   return val * mix(vec3f(1.0), rgb, sat);
+}
+
+// Electric light in one room (zero when the room is dark). Offices light up
+// in sections (one tenant working late); homes room by room. Brightness and
+// colour temperature (2700-5000 K homes, 3500-6500 K per office tenant) vary
+// per room, scaled so the brightest window stays below clipping at night.
+fn roomLight(seed: u32, office: bool, section: u32) -> vec3f {
+  let night = nightLight();
+  var lit: bool;
+  if (office) {
+    let sectionLit = hashuf(section ^ 0xbeefu) < mix(0.1, 0.5, night);
+    lit = hashuf(seed ^ 0x1234567u) < select(0.04, 0.75, sectionLit);
+  } else {
+    lit = hashuf(seed ^ 0x1234567u) < mix(0.03, 0.4, night);
+  }
+  if (!lit) { return vec3f(0.0); }
+  let r0 = hashuf(seed);
+  let r2 = hashuf(seed ^ 0x5bd1u);
+  let t = hashuf(seed ^ 0x7e7u);
+  let home = select(select(vec3f(0.92, 0.96, 1.0), vec3f(1.0, 0.82, 0.6), t < 0.8), vec3f(1.0, 0.7, 0.42), t < 0.5);
+  let cool = mix(vec3f(1.0, 0.86, 0.66), vec3f(0.88, 0.95, 1.0), hashuf(section ^ 0x51u));
+  let col = select(home, cool, office && r0 > 0.25);
+  return col * mix(0.35, 1.3, r2 * r2) * 0.6 * mix(0.12, 1.0, night);
 }
 
 // Fake room behind a window (interior mapping). Returns radiance.
@@ -146,8 +171,15 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
       c = select(vec3f(0.35, 0.25, 0.18), vec3f(0.4, 0.42, 0.45), office);
     } else {
       c = vec3f(0.62);
-      // Ceiling light panels.
-      if (office && fract(hit.z * 0.4) < 0.25 && abs(hit.x - size.x * 0.5) < 0.4) { c = vec3f(1.3); }
+      // Ceiling light panels. Seen steeply from below, the ceiling is
+      // compressed into a few pixels: fade the panels to their average
+      // before they alias into vertical barcode stripes.
+      if (office) {
+        let ay = max(abs(rd.y), 1e-3);
+        let span = max(length(dWorldX), length(dWorldY)) * (1.0 + (abs(rd.z) + abs(rd.x)) / ay);
+        let panel = select(0.62, 1.3, fract(hit.z * 0.4) < 0.25 && abs(hit.x - size.x * 0.5) < 0.4);
+        c = vec3f(mix(0.62 + 0.68 * 0.25 * min(0.8 / size.x, 1.0), panel, 1.0 - smoothstep(0.04, 0.15, span)));
+      }
     }
   } else {
     c = wallC * 0.75;
@@ -175,33 +207,19 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
     screen = screen || local.x < cw || local.x > size.x - cw;
   }
   if (screen) {
-    let slat = select(1.0, 0.85 + 0.15 * step(0.5, fract(local.y * 12.0)), office);
+    // Slats fade to their mean before they alias.
+    let slatK = 1.0 - smoothstep(0.01, 0.03, max(length(dWorldX), length(dWorldY)));
+    let slat = select(1.0, mix(0.925, 0.85 + 0.15 * step(0.5, fract(local.y * 12.0)), slatK), office);
     c = select(vec3f(0.78, 0.62, 0.48), vec3f(0.8, 0.8, 0.78), office) * slat * 0.45;
   }
-  // Lighting: lit rooms glow at night, everything gets some daylight.
-  let night = nightLight();
-  // Offices light up in sections (a few floors x part of a facade: one
-  // tenant working late); homes are lit room by room in the evening.
-  var lit: bool;
-  if (office) {
-    let sectionLit = hashuf(section ^ 0xbeefu) < mix(0.1, 0.45, night);
-    lit = hashuf(seed ^ 0x1234567u) < select(0.04, 0.88, sectionLit);
-  } else {
-    lit = hashuf(seed ^ 0x1234567u) < mix(0.03, 0.34, night);
-  }
-  // Office colour temperature varies by tenant (3500-6500 K).
-  let cool = mix(vec3f(1.0, 0.86, 0.66), vec3f(0.88, 0.95, 1.0), hashuf(section ^ 0x51u));
-  let warm = select(vec3f(1.0, 0.72, 0.42), cool, office && r0 > 0.25);
   // Daylight in a room is dim and neutral: seen from the street a room is
   // 5-10x darker than the facade, so the glass reflection dominates.
+  let night = nightLight();
   var light = vec3f(luminance(frame.skyAmbient.rgb)) * vec3f(1.0, 0.95, 0.88) * 0.14;
   // Dark offices still show their ceiling grid under corridor and exit
   // lighting, so towers don't read as black slabs at night.
   if (office) { light += vec3f(0.75, 0.85, 1.0) * 0.05 * night; }
-  if (lit) {
-    let flicker = 1.0;
-    light += warm * mix(0.6, 1.2, r2) * flicker * mix(0.12, 1.0, night);
-  }
+  light += roomLight(seed, office, section);
   return c * light;
 }
 
@@ -244,6 +262,8 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   s.strip = hashuf(h ^ 0x44u) < select(0.28, 0.6, kind == 0u);
   if (s.strip) { s.winW = 1.0; }
   s.wall = wallPalette(hashu(h ^ 0x55u));
+  // Hue jitter so neighbours with the same palette entry never match.
+  s.wall *= 1.0 + vec3f(0.04, 0.0, -0.04) * (hashuf(h ^ 0x56u) - 0.5) * 2.0;
   let fam = hashuf(h ^ 0x66u);
   s.family = select(select(select(select(0u, 1u, fam < 0.62), 2u, fam < 0.44), 3u, fam < 0.28), 4u, fam < 0.12);
   if (s.strip) { s.family = 1u; }
@@ -252,6 +272,16 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   if (s.family == 4u) { s.wall = vec3f(0.36, 0.355, 0.34) * mix(0.85, 1.1, hashuf(h ^ 0x88u)); }
   if (podium) { s.wall = mix(s.wall, vec3f(0.35, 0.33, 0.3), 0.5); }
   return s;
+}
+
+// Per-building window sash: anodised aluminium, silver (55 %), bronze (30 %)
+// or white (15 %). Dark walls always get a light sash so the window grid
+// still reads.
+fn sashColor(style: u32, wall: vec3f) -> vec3f {
+  let k = hashuf(hashu(style * 2654435761u + 9u));
+  var c = select(select(vec3f(0.75, 0.75, 0.73), vec3f(0.34, 0.27, 0.2), k < 0.85), vec3f(0.55, 0.56, 0.57), k < 0.55);
+  if (luminance(wall) < 0.2 && k >= 0.55 && k < 0.85) { c = vec3f(0.55, 0.56, 0.57); }
+  return c;
 }
 
 fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
@@ -277,26 +307,54 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   // grime streaks.
   let tiled = st.family <= 1u;
   let wd = select(detailUV(uv, 2.4, DETAIL_CONCRETE), detailUV(uv, 0.96, DETAIL_TILE), tiled);
-  let streak = valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25;
+  // Pixel footprint: every pattern below fades to its mean before it gets
+  // smaller than a few pixels, and each fine pattern is backed by a 1-10 m
+  // one carrying the same idea to a distance.
+  let foot = max(length(dWorldX), length(dWorldY));
+  let fFine = 1.0 - smoothstep(0.03, 0.1, foot);
+  let fMid = 1.0 - smoothstep(0.25, 0.7, foot);
+  let wet = frame.weather.z;
+  let streak = mix(0.125, valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25, fFine);
   var wall = st.wall * (0.88 + 0.12 * valueNoise(uv * 0.7)) * (1.0 - streak * 0.5) * mix(1.0, wd.b * 2.0, select(0.6, 1.0, tiled)) * mix(0.6, 1.0, wd.a);
-  // Street grime: darker, rain-splashed base of the wall.
-  wall *= mix(0.7, 1.0, smoothstep(0.0, 3.0, uv.y));
-  // Weathering. Rain washes dirt off window sills into streaks below each
-  // window; slab edges drip too. Patch repairs vary the tone in panels.
+  // Each face of the building has its own tone (sun bleach, a different
+  // batch), so corners read even in flat light.
+  let faceH = hashu(aux ^ (u32(round(atan2(n.z, n.x) * 2.546) + 64.0) * 0x9e3779b1u));
+  wall *= mix(0.93, 1.07, hashuf(faceH));
+  // Tile batches: 2 x 2 tile patches of slightly different kiln tone, the
+  // speckled mosaic a tiled facade shows at 30-80 m.
+  if (tiled) {
+    wall *= mix(1.0, 0.94 + 0.12 * hash21(floor(uv / vec2f(1.92, 1.38)) + f32(aux & 511u)), fMid);
+  }
+  // Street grime: a dark, rain-splashed band along the bottom metre.
+  wall *= mix(0.72, 1.0, smoothstep(0.0, 1.2, uv.y));
+  // Weathering. Rain washes dirt off the slab edges and window sills into
+  // dark streaks hanging below them; they shine in the rain.
+  var washAmt = 0.0;
   {
     let wx0e = (1.0 - st.winW) * 0.5 * st.bay;
     let sillE = (1.0 - st.winH) * st.floorH * 0.55;
     let below = sillE - ly;
-    let inSpan = lx > wx0e - 0.05 && lx < st.bay - wx0e + 0.05;
-    let drip = valueNoise(vec2f(uv.x * 9.0, floorIdx * 3.1)) * valueNoise(vec2f(uv.x * 23.0, uv.y * 0.4));
-    let dirtAmt = mix(0.15, 0.55, hashuf(aux ^ 0x5151u));
-    if (below > 0.0 && inSpan) {
-      wall *= 1.0 - dirtAmt * drip * smoothstep(1.4, 0.0, below);
+    let dirtAmt = mix(0.3, 0.7, hashuf(aux ^ 0x5151u)) * (1.0 + 0.6 * wet);
+    // Sill ends: a 0.15 m streak under each end of the sill, 1.5 m long;
+    // at a distance its average darkening over the window width.
+    let endD = min(abs(lx - wx0e), abs(lx - (st.bay - wx0e)));
+    let endLen = 1.5 * mix(0.6, 1.0, hashuf(cellSeed ^ 0x3131u));
+    let endFar = 0.3 * step(wx0e - 0.1, lx) * step(lx, st.bay - wx0e + 0.1);
+    let sillStreak = mix(endFar, smoothstep(0.1, 0.02, endD) * (0.7 + 0.3 * valueNoise(vec2f(uv.x * 23.0, uv.y * 0.4))), fFine);
+    if (below > 0.0 && !st.strip) {
+      washAmt = max(washAmt, sillStreak * smoothstep(endLen, 0.0, below));
     }
-    let slabDrip = valueNoise(vec2f(uv.x * 14.0, floorIdx * 7.7));
-    wall *= 1.0 - dirtAmt * 0.6 * slabDrip * smoothstep(0.9, 0.18, ly) * step(0.18, ly);
+    // Slab and ledge wash: 0.7-1.4 m wide streaks of varying length below
+    // every floor line (deep in the top part of the floor below it).
+    let slabBelow = st.floorH - ly;
+    let col = valueNoise(vec2f(uv.x * 0.9, floorIdx * 5.3 + 7.0));
+    let len = mix(0.6, 2.6, valueNoise(vec2f(uv.x * 0.6 + 3.0, floorIdx * 2.7)));
+    washAmt = max(washAmt, smoothstep(0.42, 0.8, col) * smoothstep(len, 0.0, slabBelow) * 0.8);
+    // Fine drips inside the wash fade out at a distance.
+    washAmt *= mix(1.0, 0.75 + 0.5 * valueNoise(vec2f(uv.x * 14.0, floorIdx * 7.7)), fFine);
+    wall *= 1.0 - clamp(dirtAmt * washAmt * select(0.6, 0.45, tiled), 0.0, 0.5);
     let patchC = floor(uv / vec2f(2.4, st.floorH));
-    wall *= 0.95 + 0.1 * hash21(patchC + f32(aux & 255u));
+    wall *= mix(1.0, 0.95 + 0.1 * hash21(patchC + f32(aux & 255u)), select(0.5, 1.0, !tiled));
   }
   s.albedo = wall;
   s.rough = 0.75;
@@ -331,6 +389,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let lyw = uv.y - floor(uv.y / st.floorH) * st.floorH;
     if (lyw < 0.21 && lyw > 0.18) { s.normal = normalize(s.normal + vec3f(0.0, 0.9, 0.0)); }
   }
+  // Wet run-off streaks shine.
+  s.rough = mix(s.rough, 0.15, clamp(washAmt * 1.5, 0.0, 1.0) * wet);
   // Floor slab line.
   if (ly < 0.18) { s.albedo = wall * 0.8; }
   // Shadow cast by the floor ledge above (projecting P metres, underside at
@@ -485,7 +545,39 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let wx1 = st.bay - wx0;
   let sill = (1.0 - st.winH) * st.floorH * 0.55;
   let wy1 = sill + st.winH * st.floorH;
-  if (lx >= wx0 && lx <= wx1 && ly >= sill && ly <= wy1) {
+  let office = kind <= 2u && !(kind == 2u && hashuf(style) < 0.4);
+  // Office tenants: one per floor and ~12 m of facade.
+  let section = hashu(aux ^ (u32(floorIdx + 500.0) * 7919u) ^ (u32(floor(uv.x / 12.0) + 500.0) * 104729u));
+  let roomL = roomLight(cellSeed, office, section);
+  // Stair column: one bay in ~11 (about one per building face) holds the
+  // stairwell, a small wired-glass window per floor that is always lit at
+  // night. The stack of identical cool lights is the classic night read.
+  let stairBay = (kind == 2u || kind == 3u || kind == 5u) && floorIdx >= 1.0 && !st.strip && st.family != 3u
+    && ((u32(bayIdx + 1000.0) + (aux >> 4u)) % 11u) == 0u;
+  if (stairBay) {
+    let hw = min(0.45, st.bay * 0.3);
+    let sx = abs(lx - st.bay * 0.5);
+    let sy = ly - st.floorH * 0.3;
+    if (sx < hw && sy > 0.0 && sy < 1.2) {
+      let e = min(hw - sx, min(sy, 1.2 - sy));
+      if (e < 0.045) {
+        s.albedo = sashColor(style, st.wall);
+        s.metal = 0.8;
+        s.rough = 0.42;
+        return s;
+      }
+      // Glass block (190 mm, pale mortar joints): translucent, greenish
+      // grey by day; the joints fade to their mean by pixel footprint.
+      let gb = abs(fract(vec2f(lx, ly) / 0.19) - 0.5) * 0.19;
+      let joint = (1.0 - smoothstep(0.006, 0.02, foot)) * (1.0 - smoothstep(0.006, 0.012, min(gb.x, gb.y))) + 0.15 * smoothstep(0.006, 0.02, foot);
+      let cellG = 0.9 + 0.2 * hash21(floor(vec2f(lx, ly) / 0.19) + f32(aux & 255u)) * (1.0 - smoothstep(0.02, 0.06, foot));
+      s.albedo = mix(vec3f(0.36, 0.42, 0.42) * cellG, vec3f(0.6, 0.6, 0.58), joint);
+      s.rough = 0.2;
+      s.emissive = vec3f(0.75, 0.9, 1.0) * mix(0.02, 0.22, nightLight()) * (1.0 - 0.7 * joint) * cellG;
+      return s;
+    }
+  }
+  if (!stairBay && lx >= wx0 && lx <= wx1 && ly >= sill && ly <= wy1) {
     // Window reveal parallax: the glass sits D behind the wall plane (deeper
     // between piers).
     let D = select(0.30, 0.45, st.family == 2u);
@@ -514,6 +606,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         else { iy = select(e.y - sill, wy1 - e.y, vT.y < 0.0); }
         s.sunVis = min(s.sunVis, castVis(min(ix, iy)));
       }
+      // Light from a lit room spills onto the reveal.
+      s.emissive = roomL * wall * 0.2;
       return s;
     }
     let lxg = g.x;
@@ -525,27 +619,48 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     }
     let fx = min(lxg - wx0, wx1 - lxg);
     let fy = min(lyg - sill, wy1 - lyg);
+    let roomSize = vec2f(wx1 - wx0, wy1 - sill);
     let mull = st.strip && abs(fract(uv.x / 1.6) - 0.5) > 0.47;
-    if (fx < 0.07 || fy < 0.07 || mull) {
-      s.albedo = vec3f(0.08, 0.08, 0.09);
-      s.metal = 0.7;
-      s.rough = 0.35;
+    // Sliding sashes meet at a vertical rail mid-window.
+    let rail = !st.strip && roomSize.x > 1.2 && abs(lxg - (wx0 + wx1) * 0.5) < 0.022;
+    if (fx < 0.045 || fy < 0.045 || mull || rail) {
+      // Anodised aluminium sash: silver, bronze or white, never black.
+      s.albedo = sashColor(style, st.wall);
+      s.metal = 0.8;
+      s.rough = 0.42;
       return s;
     }
     // Each pane sits slightly out of plane, so neighbours reflect different
     // sky and city. Glass gets no wall tile relief.
     let wob = (hash22(vec2f(bayIdx, floorIdx) + f32(aux & 1023u)) - 0.5) * 0.035;
     s.normal = normalize(n + T * wob.x + vec3f(0.0, wob.y, 0.0));
-    let office = kind <= 2u && !(kind == 2u && hashuf(style) < 0.4);
-    let roomSize = vec2f(wx1 - wx0, wy1 - sill);
-    let section = hashu(aux ^ (u32(floor(floorIdx / 3.0) + 500.0) * 7919u) ^ (u32(floor(uv.x / 18.0)) * 104729u));
+    // Raindrops beaded on the glass (only resolvable up close).
+    if (frame.weather.y > 0.01 && foot < 0.01) {
+      let dq = vec2f(lxg, lyg) / 0.03;
+      let dc = floor(dq);
+      let dh = hash22(dc + f32(aux & 255u));
+      let df = fract(dq) - 0.5 - (dh - 0.5) * 0.4;
+      let dr = length(df);
+      let drop = (1.0 - smoothstep(0.15, 0.3, dr)) * step(0.45, dh.x) * frame.weather.y * (1.0 - smoothstep(0.004, 0.01, foot));
+      s.normal = normalize(s.normal + (T * df.x + vec3f(0.0, df.y, 0.0)) * 2.5 * drop);
+    }
     var inside = interior(vec2f(lxg - wx0, lyg - sill), roomSize, mix(3.5, 7.0, hashuf(cellSeed)), n, T, V, cellSeed, office, section);
-    // Curtains / blinds.
+    // Curtains / blinds: lit from behind they glow warm with soft folds.
     let blinds = hashuf(cellSeed ^ 0xabcu);
     let cover = select(0.0, mix(0.2, 1.0, hashuf(cellSeed ^ 0xdefu)), blinds < 0.35);
     if ((lyg - sill) / roomSize.y > 1.0 - cover) {
-      let lit = luminance(inside) > 0.4;
-      inside = vec3f(0.8, 0.75, 0.65) * select(frame.skyAmbient.rgb * 0.3, vec3f(1.2, 0.95, 0.7), lit) * (0.85 + 0.15 * step(0.5, fract(lyg * 30.0)));
+      let fold = mix(1.0, 0.88 + 0.12 * cos((lxg - wx0) * 52.36), 1.0 - smoothstep(0.008, 0.025, foot));
+      let cloth = select(vec3f(0.8, 0.8, 0.78), vec3f(0.8, 0.75, 0.65), !office);
+      inside = cloth * frame.skyAmbient.rgb * 0.3 * fold;
+      if (any(roomL > vec3f(0.0))) {
+        inside += roomL * vec3f(1.0, 0.85, 0.65) * 1.6 * fold;
+        // Somebody standing behind the curtain, now and then.
+        let px = (lxg - wx0) - roomSize.x * mix(0.3, 0.7, hashuf(cellSeed ^ 0x4242u));
+        let py = lyg - sill;
+        let body = abs(px) < 0.2 - max(py - 0.6, 0.0) * 0.15 && py < 0.65;
+        let head = length(vec2f(px, py - 0.82)) < 0.11;
+        if (hashuf(cellSeed ^ 0x6161u) < 0.15 && (body || head)) { inside *= 0.45; }
+      }
     }
     let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
     s.albedo = vec3f(0.03, 0.035, 0.04);
@@ -555,8 +670,17 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     s.cls = CLASS_GLASS;
     return s;
   }
-  // Window sill shadow / AC units under some windows.
-  if (ly < sill && ly > sill - 0.1 && lx > wx0 && lx < wx1) { s.albedo = wall * 0.6; }
+  // Window sill: a pale, slightly projecting precast sill.
+  if (!stairBay && ly < sill && ly > sill - 0.08 && lx > wx0 - 0.05 && lx < wx1 + 0.05) {
+    s.albedo = mix(wall, vec3f(0.62, 0.6, 0.56), 0.6);
+    s.normal = normalize(n + vec3f(0.0, 0.6, 0.0));
+  }
+  // Lit windows spill a faint glow onto the wall around them.
+  {
+    let dx = max(max(wx0 - lx, lx - wx1), 0.0);
+    let dy = max(max(sill - ly, ly - wy1), 0.0);
+    s.emissive += roomL * s.albedo * 0.05 * smoothstep(0.4, 0.0, length(vec2f(dx, dy))) * f32(!stairBay);
+  }
   // Deep piers shadow the recessed spandrels between them.
   if (st.family == 2u && sunLit && lx > wx0 && lx < wx1) {
     let ex = lx + sT.x * 0.45;
@@ -992,7 +1116,16 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.rough = 0.8;
       applyWetness(&s, world, max(n.y, 0.0), 0.5);
     }
-    case M_FACADE: { s = facadeMat(world, n, uv, param, aux); }
+    case M_FACADE: {
+      s = facadeMat(world, n, uv, param, aux);
+      // Rain soaks the wall: porous render and granite darken more than
+      // glazed tile; metal sashes and glass only get the water film.
+      if (s.cls != CLASS_GLASS) {
+        let fam = facadeStyle(param & 0xffffu, (param >> 16u) & 7u, ((param >> 20u) & 1u) == 1u).family;
+        let porous = select(select(0.8, 0.35, fam <= 1u), 0.0, s.metal > 0.5 || fam == 3u);
+        applyWetness(&s, world, 0.0, porous);
+      }
+    }
     case M_GLASS: { s = curtainWall(world, n, uv, param, aux); }
     case M_ROOF: { s = roofMat(world, n, uv, param); }
     case M_CARPARK: { s = carParkMat(world, n, uv); }

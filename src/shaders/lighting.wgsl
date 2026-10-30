@@ -73,11 +73,17 @@ fn cityReflection(world: vec3f, r: vec3f) -> vec4f {
   let size = frame.world.x;
   var t = 1.5;
   var prevT = 0.0;
+  // A facade point sits inside its own building's height-map texel (several
+  // metres wide), so the ray only counts hits once it has left it. Otherwise
+  // walls reflect themselves: a sharp sunlit or lit-window "facade" a metre
+  // away, which drew warm stripes and barcode lines on windows.
+  var outside = false;
   for (var i = 0; i < 28; i++) {
     let p = world + r * t;
     let h = skylineAt(p, N, size);
     if (h < -1e8) { break; }
-    if (p.y < h) {
+    if (p.y >= h) { outside = true; }
+    if (p.y < h && outside) {
       // Refine onto the facade surface so the window pattern is coherent
       // (an overshoot inside the building slices it into shards).
       var lo = prevT;
@@ -652,7 +658,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   env = mix(groundRadiance(), env, smoothstep(-0.08, reflLo, refl.y));
   if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE) {
     let cr = cityReflection(world + n * 0.3, refl);
-    env = mix(env, cr.rgb, cr.a);
+    // The skyline hit is a sharp mirror image: only near-specular surfaces
+    // (glass, water, wet film) may show it. On glazed tile and paint it drew
+    // a hard warm stripe (a lone sunlit tower) at golden hour and per-tile
+    // lit-window speckle at night.
+    env = mix(env, cr.rgb, cr.a * (1.0 - smoothstep(0.1, 0.3, rough)));
   }
   env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
   // Screen-space reflections only nearby: far away the depth tolerance grows
