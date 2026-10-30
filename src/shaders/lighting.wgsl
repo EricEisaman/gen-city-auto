@@ -637,7 +637,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     color += brdf(n, v, frame.moonDir.xyz, albedo, f0, rough, metal) * moonCol * shadow(world, n, vd) * sunVis;
   }
   // Point lights.
-  let wetWall = frame.weather.z * (1.0 - smoothstep(0.3, 0.6, abs(n.y))) * select(0.0, 1.0, cls == CLASS_DEFAULT);
+  // (Not on the signs themselves: anything already emitting is skipped.)
+  let wetWall = frame.weather.z * (1.0 - smoothstep(0.3, 0.6, abs(n.y))) * select(0.0, 1.0, cls == CLASS_DEFAULT)
+    * (1.0 - smoothstep(0.02, 0.1, luminance(em.rgb)));
   let count = min(atomicLoad(&tileCount), MAX_TILE_LIGHTS);
   for (var k = 0u; k < count; k++) {
     let L = lightBuf.lights[tileLights[k]];
@@ -665,7 +667,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       // Neon on a soaked wall: the water film spreads each sign's colour
       // over the wall around it (a soft, view-independent sheen; the GGX
       // lobe alone is a pin-prick at this roughness).
-      color += lc * atten * 60.0 * 0.07 * wetWall * smoothstep(4.5, 2.0, d);
+      color += lc * atten * 60.0 * 0.04 * wetWall * smoothstep(4.5, 2.2, d) * smoothstep(1.5, 2.0, d);
     }
     if (cls == CLASS_FOLIAGE) {
       // Two-sided leaves: street and sign light scatters through the crown
