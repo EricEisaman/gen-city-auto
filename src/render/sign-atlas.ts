@@ -63,6 +63,162 @@ function paintSign(g: OffscreenCanvasRenderingContext2D, id: number, rng: Rng) {
   return {x, y, w, h, textCol};
 }
 
+// Billboard poster k (0..7) in the cell (x, y, w, h): four layouts (product
+// on a sun disc, diagonal split, giant kanji, travel poster) in flat colours
+// with heavy outlined type, all hard edges.
+const POSTER_TAGS = [
+  '新発売',
+  '期間限定',
+  '本日オープン',
+  '全国ツアー',
+  '冬のごちそう',
+  '今だけ半額',
+  'ゼロカロリー',
+  '絶景の旅へ',
+];
+const POSTER_KANJI = ['旨', '夏', '光', '速', '冷', '祭', '新', '空'];
+
+function paintBillboard(
+  g: OffscreenCanvasRenderingContext2D,
+  k: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+) {
+  const id = 48 + k;
+  const c1 = signColor(id + 3);
+  const c2 = signColor(id + 6 + (k >> 2));
+  const ink = '#14161c';
+  g.save();
+  g.beginPath();
+  g.rect(x, y, w, h);
+  g.clip();
+  const brand = BRAND_WORDS[k % BRAND_WORDS.length];
+  const tag = POSTER_TAGS[k];
+  const outlined = (
+    text: string,
+    tx: number,
+    ty: number,
+    size: number,
+    fill: string,
+    stroke: string,
+  ) => {
+    g.font = `900 ${size}px ${FONT}`;
+    g.lineJoin = 'round';
+    g.lineWidth = Math.max(4, size * 0.12);
+    g.strokeStyle = stroke;
+    g.strokeText(text, tx, ty);
+    g.fillStyle = fill;
+    g.fillText(text, tx, ty);
+  };
+  const layout = k % 4;
+  if (layout === 0) {
+    // Product on a sun disc: a drink can (body, band, rim) at the right.
+    g.fillStyle = css(c1, 0.85);
+    g.fillRect(x, y, w, h);
+    g.fillStyle = css(c2);
+    g.beginPath();
+    g.arc(x + w * 0.76, y + h * 0.5, h * 0.46, 0, Math.PI * 2);
+    g.fill();
+    const cx = x + w * 0.76,
+      cw = h * 0.3,
+      ch = h * 0.66;
+    g.fillStyle = '#f4f4f0';
+    g.fillRect(cx - cw / 2, y + h * 0.17, cw, ch);
+    g.fillStyle = ink;
+    g.fillRect(cx - cw / 2, y + h * 0.38, cw, ch * 0.3);
+    g.fillStyle = '#b8bcc4';
+    g.fillRect(cx - cw / 2, y + h * 0.13, cw, h * 0.05);
+    g.textAlign = 'left';
+    g.textBaseline = 'alphabetic';
+    outlined(brand, x + w * 0.05, y + h * 0.52, h * 0.34, '#ffffff', ink);
+  } else if (layout === 1) {
+    // Diagonal split, the tagline in tall white type on the dark side.
+    g.fillStyle = css(c1);
+    g.fillRect(x, y, w, h);
+    g.fillStyle = ink;
+    g.beginPath();
+    g.moveTo(x + w * 0.58, y);
+    g.lineTo(x + w, y);
+    g.lineTo(x + w, y + h);
+    g.lineTo(x + w * 0.42, y + h);
+    g.closePath();
+    g.fill();
+    g.fillStyle = css(c2);
+    g.fillRect(x + w * 0.5, y, w * 0.03, h);
+    g.textAlign = 'left';
+    g.textBaseline = 'alphabetic';
+    outlined(brand, x + w * 0.05, y + h * 0.46, h * 0.3, ink, '#ffffff');
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.font = `900 ${h * 0.2}px ${FONT}`;
+    g.fillStyle = '#ffffff';
+    g.fillText(tag, x + w * 0.76, y + h * 0.5, w * 0.36);
+  } else if (layout === 2) {
+    // One giant kanji in the brand colour, outlined white, on navy.
+    g.fillStyle = '#101a3a';
+    g.fillRect(x, y, w, h);
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    outlined(
+      POSTER_KANJI[k],
+      x + w * 0.27,
+      y + h * 0.5,
+      h * 0.82,
+      css(c1),
+      '#ffffff',
+    );
+    g.textAlign = 'left';
+    outlined(brand, x + w * 0.52, y + h * 0.4, h * 0.24, '#ffffff', '#101a3a');
+  } else {
+    // Travel poster: flat sky bands, a white peak and a red sun.
+    const bands = [css(c1, 0.95), css(c1, 0.75), css(c1, 0.55)];
+    bands.forEach((c, i) => {
+      g.fillStyle = c;
+      g.fillRect(x, y + (h * i) / 3, w, h / 3 + 1);
+    });
+    g.fillStyle = '#e8402a';
+    g.beginPath();
+    g.arc(x + w * 0.8, y + h * 0.3, h * 0.15, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#2a3348';
+    g.beginPath();
+    g.moveTo(x + w * 0.3, y + h);
+    g.lineTo(x + w * 0.62, y + h * 0.3);
+    g.lineTo(x + w * 0.95, y + h);
+    g.closePath();
+    g.fill();
+    g.fillStyle = '#ffffff';
+    g.beginPath();
+    g.moveTo(x + w * 0.62, y + h * 0.3);
+    g.lineTo(x + w * 0.7, y + h * 0.47);
+    g.lineTo(x + w * 0.65, y + h * 0.43);
+    g.lineTo(x + w * 0.6, y + h * 0.49);
+    g.lineTo(x + w * 0.55, y + h * 0.44);
+    g.closePath();
+    g.fill();
+    g.textAlign = 'left';
+    g.textBaseline = 'alphabetic';
+    outlined(brand, x + w * 0.05, y + h * 0.42, h * 0.28, '#ffffff', ink);
+  }
+  // Tagline bar along the bottom (layout 1 carries its tagline already).
+  if (layout !== 1) {
+    g.fillStyle = '#ffffff';
+    g.fillRect(x, y + h * 0.76, w * 0.5, h * 0.17);
+    g.fillStyle = ink;
+    g.textAlign = 'left';
+    g.textBaseline = 'middle';
+    g.font = `900 ${h * 0.12}px ${FONT}`;
+    g.fillText(tag, x + w * 0.04, y + h * 0.846, w * 0.44);
+  }
+  // Frame.
+  g.strokeStyle = '#ffffff';
+  g.lineWidth = 6;
+  g.strokeRect(x + 3, y + 3, w - 6, h - 6);
+  g.restore();
+}
+
 export function paintSignAtlas(seed = 1): OffscreenCanvas {
   const canvas = new OffscreenCanvas(ATLAS_W, ATLAS_H);
   const g = canvas.getContext('2d')!;
@@ -114,44 +270,16 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
       y + h * 0.38,
     );
   }
-  // Billboards: gradients, shapes and brand names.
+  // Billboards: flat, hard-edged poster graphics (no gradients or soft
+  // shapes, so they stay crisp in the mip chain and read from across the
+  // street): a bold colour field, one big shape, the brand name in heavy
+  // outlined type and a tagline bar.
   for (let k = 0; k < 8; k++) {
     const id = 48 + k;
     const [x, y, w, h] = signRect(id);
-    const c1 = signColor(id + 3);
-    const c2 = signColor(id + 6);
-    const grad = g.createLinearGradient(x, y, x + w, y + h);
-    grad.addColorStop(0, css(c1, 0.9));
-    grad.addColorStop(1, css(c2, 0.5));
-    g.fillStyle = grad;
-    g.fillRect(x, y, w, h);
-    g.globalAlpha = 0.35;
-    for (let s = 0; s < 6; s++) {
-      g.fillStyle = s % 2 ? '#fff' : css(c2);
-      g.beginPath();
-      g.arc(
-        x + rng.range(0, w),
-        y + rng.range(0, h),
-        rng.range(20, 120),
-        0,
-        Math.PI * 2,
-      );
-      g.fill();
-    }
-    g.globalAlpha = 1;
-    g.fillStyle = '#fff';
-    g.textAlign = 'left';
-    g.textBaseline = 'alphabetic';
-    g.font = `900 ${h * 0.3}px ${FONT}`;
-    g.fillText(BRAND_WORDS[k % BRAND_WORDS.length], x + w * 0.06, y + h * 0.48);
-    g.font = `bold ${h * 0.14}px ${FONT}`;
-    g.fillText(
-      SHOP_WORDS[(k * 11) % SHOP_WORDS.length] +
-        ' ' +
-        SHOP_WORDS[(k * 13 + 2) % SHOP_WORDS.length],
-      x + w * 0.06,
-      y + h * 0.75,
-    );
+    // (The old painter's draws, so the cube signs below keep their styles.)
+    for (let s = 0; s < 18; s++) rng.next();
+    paintBillboard(g, k, x, y, w, h);
   }
   // Square cube signs (projecting light boxes): one or two big glyphs, in a
   // circle or a plain square, or a short Latin word.

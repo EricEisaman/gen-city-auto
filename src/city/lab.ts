@@ -565,8 +565,11 @@ export function labInfo(
     );
     views.far = look(from(C, d34, Math.max(350, fit * 2.5), y0 + 60), C);
     views.shell = {...views.far, lod1: true};
-    const ad = Math.max(150, fit * 1.4) * Math.SQRT1_2;
-    views.aerial = look(from(C, rot(n, 0.5 * dirU), ad, C[1] + ad), C);
+    // Aerial: 45 degrees down onto the roof, close enough that the roof
+    // fills about 40 % of the frame (the top of the front facade shows).
+    const R = v3([C[0], C[2]], top - Math.min(3, b.height * 0.15));
+    const ad = Math.max(24, span * 1.6) * Math.SQRT1_2;
+    views.aerial = look(from(R, rot(n, 0.5 * dirU), ad, R[1] + ad), R);
     views.rear = look(
       // Above the utility wires (8-9 m) that line small streets.
       from(
@@ -590,8 +593,8 @@ export function labInfo(
     );
     orbit = {
       center: C,
-      radius: Math.max(60, fit * 1.15),
-      height: y0 + b.height * 0.6 + 15,
+      radius: Math.max(42, fit * 1.3),
+      height: y0 + b.height * 0.6 + 12,
       fov: 1.0,
     };
   } else if (site.asset === 'road') {
