@@ -214,6 +214,7 @@ export class Game {
       return out;
     };
     this.camera.setElevated(city.summary.layout.elevated);
+    this.camera.setSolids(city.summary.solids ?? []);
     this.camera.vehicles = () => {
       // Traffic (cars, buses, trucks) and train cars as oriented boxes.
       const out: VehicleBox[] = [];
