@@ -1149,7 +1149,7 @@ const steelPaint = (seed: number) =>
  * landing, inner lane back). Flights are C-channel stringers carrying
  * separate open treads; landings are plates with a channel edge; pipe
  * handrails with a mid rail and balusters; two round columns from the
- * foundation. Bars are tubes (8 vertices each), about 330 vertices a storey.
+ * foundation. Bars are tubes (8 vertices each), about 300 vertices a storey.
  * `toEnd`: end A is toward the edge's end (the stair sits near its start).
  */
 function fireStair(
@@ -1225,9 +1225,14 @@ function fireStair(
       0.06,
     );
   };
-  // Pipe rail along a path at `h` above the walking line, a mid rail, and
-  // balusters at the listed points (indices into the path, fractional).
-  const railRun = (pts: [number, number, number][], posts: number[]) => {
+  // Pipe rail along a path RAIL_H above the walking line, a mid rail
+  // (flights), and balusters at the listed points (indices into the path,
+  // fractional).
+  const railRun = (
+    pts: [number, number, number][],
+    posts: number[],
+    mid = true,
+  ) => {
     const at = (t: number): [number, number, number] => {
       const i = Math.min(pts.length - 2, Math.floor(t));
       const f = t - i;
@@ -1240,11 +1245,12 @@ function fireStair(
       0.024,
       rail,
     );
-    m.tube(
-      pts.map(p => P(p[0], p[1], p[2] + 0.5)),
-      0.014,
-      rail,
-    );
+    if (mid)
+      m.tube(
+        pts.map(p => P(p[0], p[1], p[2] + 0.5)),
+        0.014,
+        rail,
+      );
     for (const t of posts) {
       const p = at(t);
       m.tube(
@@ -1308,6 +1314,7 @@ function fireStair(
         ...(last ? [[sIn, lane, y] as [number, number, number]] : []),
       ],
       [1],
+      false,
     );
     if (!door) return;
     steelDoor(m, P(s, 0, y), e.along, e.n, 0x90, false);
@@ -1335,7 +1342,7 @@ function fireStair(
   ) => {
     // Open treads (top and underside) between the stringers: n risers,
     // n - 1 treads, with a gap between treads.
-    const n = Math.max(4, Math.round((y1 - y0) / 0.25));
+    const n = Math.max(4, Math.round((y1 - y0) / 0.33));
     const run = (s1 - s0) / (n - 1);
     const rise = (y1 - y0) / n;
     const gap = 0.04 * Math.sign(run);
@@ -1345,13 +1352,15 @@ function fireStair(
       const y = y0 + rise * j;
       const t = [P(a, o0, y), P(c, o0, y), P(c, o1, y), P(a, o1, y)];
       q4(t, UP, deck, Math.abs(run), o1 - o0);
-      q4(
-        t.map((p): Vec3 => [p[0], p[1] - 0.035, p[2]]),
-        [0, -1, 0],
-        frame,
-        Math.abs(run),
-        o1 - o0,
-      );
+      // Undersides on the outer lane (seen from the street below).
+      if (o1 > lane)
+        q4(
+          t.map((p): Vec3 => [p[0], p[1] - 0.035, p[2]]),
+          [0, -1, 0],
+          frame,
+          Math.abs(run),
+          o1 - o0,
+        );
     }
     stringer(s0, y0, s1, y1, o0, -1);
     stringer(s0, y0, s1, y1, o1, 1);
@@ -1381,9 +1390,9 @@ function fireStair(
 }
 
 /**
- * The fire stair on distant shells: each flight's and landing's balustrade
- * as one outward-facing plate (the zigzag that reads from afar) and the
- * two columns, about 16 vertices a storey.
+ * The fire stair on distant shells: each storey's outer flight balustrade
+ * as one outward-facing plate (the diagonal stripes that read from afar),
+ * 4 vertices a storey.
  */
 function fireStairShell(
   m: CMesh,
@@ -1422,8 +1431,6 @@ function fireStairShell(
       yb = L[k + 1];
     const mid = (ya + yb) / 2;
     plate(fA, ya, fB, mid, D);
-    plate(sB - dir * (LAND / 2), mid, fB, mid, D);
-    plate(fA, yb, sA + dir * (LAND / 2), yb, D);
   }
 }
 
@@ -3169,11 +3176,10 @@ export function building(
       const gasS = pr.chance(0.5)
         ? pr.range(0.8, 1.6)
         : e.len - pr.range(0.8, 1.6);
-      if (clear(gasS, 0.3) && pr.chance(0.85)) {
+      if (clear(gasS, 0.3) && pr.chance(0.6)) {
         const gas = packMat(CM.paint, pr.chance(0.5) ? 0x92 : 0xd2);
         m.tube(
           [
-            P(gasS, 0, ground + 1.1),
             P(gasS, 0.07, ground + 1.1),
             P(gasS, 0.07, yTop),
             P(gasS + 0.3, 0.07, yTop),
@@ -3183,7 +3189,7 @@ export function building(
           gas,
         );
       }
-      if (bodyN >= 2 && pr.chance(0.6)) {
+      if (bodyN >= 2 && pr.chance(0.4)) {
         // Water / drain line along a floor line, then down to grade.
         const f = pr.int(1, bodyN);
         const y = base + GROUND_H + f * H - 0.35;
@@ -3222,21 +3228,6 @@ export function building(
             ],
             sheet,
           );
-          for (const [sx, sg] of [
-            [s0, -1],
-            [s0 + w, 1],
-          ])
-            m.quad(
-              [P(sx, 0, y0), P(sx, o, y0), P(sx, o, y1), P(sx, 0, y1)],
-              [e.along[0] * sg, 0, e.along[2] * sg],
-              [
-                [0, 0],
-                [o, 0],
-                [o, y1 - y0],
-                [0, y1 - y0],
-              ],
-              sheet,
-            );
           // Flashing over the top edge.
           flatQuad(
             m,
@@ -3434,7 +3425,7 @@ export function building(
             trimMat,
           );
           if (
-            grilles >= 2 ||
+            grilles >= 1 ||
             inStair(i, s, 0.3) ||
             !gr.chance(f === 0 ? 0.8 : 0.3)
           )
@@ -3442,7 +3433,7 @@ export function building(
           grilles++;
           const gh = (head - sill) / 2;
           const gy = sill + gh;
-          const nb = 4;
+          const nb = 3;
           for (let k = 0; k <= nb; k++)
             flatQuad(
               m,
@@ -3483,7 +3474,7 @@ export function building(
         return hashuf(c ^ 0xac1) < 0.3;
       };
       let units = 0;
-      const maxUnits = Math.round(5 * svc);
+      const maxUnits = Math.round(3 * svc);
       // The duct cover runs just clear of the windows.
       const dS = Math.max(0.55, hw + 0.12);
       for (let j = 0; j < e.count; j++) {
@@ -3725,11 +3716,8 @@ export function building(
         );
         const steel = packMat(CM.paint, 0x90);
         if (lod > 0) {
-          // Distant shells: the stand as two crossed frames.
-          for (const [a, c] of [
-            [-1, -1],
-            [1, -1],
-          ]) {
+          // Distant shells: the stand as one diagonal frame.
+          for (const [a, c] of [[-1, -1]]) {
             const p0 = at(spot[0] + a * 1.05, spot[1] + c * 0.85);
             const p1 = at(spot[0] - a * 1.05, spot[1] - c * 0.85);
             const nn: Vec3 = [p1[1] - p0[1], 0, p0[0] - p1[0]];
