@@ -3910,6 +3910,15 @@ fn rdDigit(p: vec2f, dgt: u32, th: f32) -> f32 {
   return d - th;
 }
 
+// Physical width / height of a sign face whose uv spans 0..1 (from the
+// screen derivatives), to tell plates of different shapes apart.
+fn signAspect() -> f32 {
+  let det = dUvX.x * dUvY.y - dUvX.y * dUvY.x;
+  let du = (dWorldX * dUvY.y - dWorldY * dUvX.y) / det;
+  let dv = (dWorldY * dUvX.x - dWorldX * dUvY.x) / det;
+  return length(du) / max(length(dv), 1e-6);
+}
+
 // Road signs (CM.roadSign): uv 0..1 over the face. Kinds 0-5 regulatory
 // discs/squares, 16-23 overhead guide signs, 24-31 intersection-name
 // plates; 0x100 = back face.
@@ -3995,6 +4004,24 @@ fn roadSignMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     // Route shield.
     let sh = length(q - vec2f(-0.45, 0.33)) - 0.08;
     col = mix(col, white, 1.0 - smoothstep(-aa, aa, sh));
+  } else if (k >= 24u && k < 32u && signAspect() < 2.9) {
+    // Platform number plate (gen-base, 1.1 x 0.5 m; the road's name plates
+    // are 3.6:1): JR-style white plate, the track number in a dark ring on
+    // the left, a "bansen" / "Track" text block beside it.
+    let q = p * vec2f(2.2, 1.0);
+    col = white * 1.05;
+    let num = (k - 24u) % 8u + 1u;
+    let ring = length(q - vec2f(-0.68, 0.0));
+    col = mix(col, vec3f(0.06, 0.2, 0.12), 1.0 - smoothstep(0.36 - aa, 0.36, ring));
+    col = mix(col, white * 1.05, 1.0 - smoothstep(0.3 - aa, 0.3, ring));
+    let dg = rdDigit((q - vec2f(-0.68, 0.0)) * 1.55, num, 0.06) / 1.55;
+    col = mix(col, vec3f(0.04), 1.0 - smoothstep(-aa, aa, dg));
+    let chars = abs(fract((q.x - 0.05) / 0.26) - 0.5) * 0.26;
+    let jp = max(rdBox(q - vec2f(0.33, 0.1), vec2f(0.24, 0.13)), 0.025 - chars);
+    let en = rdBox(q - vec2f(0.33, -0.2), vec2f(0.24, 0.035));
+    col = mix(col, vec3f(0.05), 1.0 - smoothstep(-aa, aa, min(jp, en)));
+    // Line-colour band along the bottom edge.
+    col = mix(col, vec3f(0.1, 0.55, 0.2), step(p.y, -0.4));
   } else if (k >= 24u && k < 32u) {
     // Intersection-name plate: blue with a white name line.
     col = blue;
@@ -4602,6 +4629,7 @@ const RC_STATION = 8u;
 const RC_SOUNDWALL = 9u;
 const RC_ROADSIDE = 0x10u;
 const RC_GLAZED = 0x20u;
+const RC_WIDE = 0x40u;
 // packMat(CM.metal, ...) / packMat(CM.paint, ...) params.
 const RAIL_STEEL = 0x4000u;
 const RAIL_WEB = 0x4001u;
@@ -5036,8 +5064,12 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
     }
     case RC_COLUMN: {
       if (vert) {
-        // Box UV: uv.y - 1 = metres above ground.
+        // Box UV: uv.y - 1 = metres above ground; u runs on round the four
+        // faces, 2 hw per face (hw 0.6 with RC_WIDE), the last 2 CH (CH =
+        // 0.1) of each face being the chamfer.
         let h = uy - 1.0;
+        let fwc = select(1.0, 1.2, (param & RC_WIDE) != 0u);
+        let lu = ux - floor(ux / fwc) * fwc;
         // Splash / grime band with a ragged top edge.
         let sdf = f32(seed & 0xffu);
         // Grime from above: the top of a pier is darker (beam run-off), with
@@ -5072,7 +5104,7 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         let ang = atan2(n.z, n.x);
         let rel = fract((ang / 6.2831853) - hashuf(seed ^ 0x3c6eu));
         if (rel < 0.25) {
-          let q = vec2f(ux - 0.5, h - 2.2);
+          let q = vec2f(lu - fwc * 0.5, h - 2.2);
           let pk = 1.0 - smoothstep(0.03, 0.08, fp);
           let plate = bandF(q.x, -0.15, 0.15, fu.x) * bandF(q.y, -0.1, 0.1, fu.y);
           var pc = vec3f(0.78, 0.78, 0.75);
@@ -5088,10 +5120,26 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
           if (rel >= 0.5 && rel < 0.75 && hashuf(hb) < 0.75) { kind = 1u; }
           if (rel >= 0.25 && rel < 0.5 && hashuf(hb ^ 3u) < 0.55) { kind = 2u; }
           if (kind != 0u) {
-            let bl = pierBill(vec2f(ux, h), 1.0, kind, hashu(hb ^ kind), fu, fp);
+            let bl = pierBill(vec2f(lu, h), fwc - 0.2, kind, hashu(hb ^ kind), fu, fp);
             a = mix(a, bl.rgb * mix(1.0, 0.85, g), bl.a);
             s.rough = mix(s.rough, select(0.8, 0.55, kind == 2u), bl.a);
             porous = mix(porous, 0.3, bl.a);
+          }
+        }
+        // Chamfered arris: a worn, paler line (knocked by vans and bikes
+        // low down, chipped through the hazard paint) on a flat diagonal
+        // facet, so the corners read as lines at 30-60 m.
+        {
+          let arris = bandF(lu, fwc - 0.2, fwc + 0.05, fu.x);
+          if (arris > 0.0) {
+            var tu: vec3f;
+            var tv: vec3f;
+            uvDirs(&tu, &tv);
+            var dg = normalize(cross(vec3f(0.0, 1.0, 0.0), tu));
+            dg = select(dg, -dg, dot(dg, n) < 0.0);
+            s.normal = normalize(mix(s.normal, dg, 0.85 * arris));
+            let worn = mix(1.35, 1.5, smoothstep(1.8, 0.3, h));
+            a = mix(a, min(a * worn + vec3f(0.025), vec3f(0.6)), arris);
           }
         }
         // Rain: water sheets down the column in a few structure-aligned runs.
@@ -5158,10 +5206,10 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       a = mix(a, vec3f(0.12, 0.115, 0.11), 0.6 * gum);
       // Coping stone along the edge: a paler 0.5 m precast strip with 1 m
       // joints, and the white edge line painted on it.
-      let cope = bandF(x, -0.2, 0.5, fu.x);
+      let cope = bandF(x, -0.2, 0.4, fu.x);
       let cj = jointCov(uy, fu.y, 0.01);
       a = mix(a, vec3f(0.5, 0.49, 0.46) * tex * (1.0 - 0.5 * cj), cope);
-      a *= 1.0 - 0.35 * bandF(x, 0.49, 0.52, fu.x);
+      a *= 1.0 - 0.45 * bandF(x, 0.39, 0.42, fu.x);
       a = mix(a, vec3f(0.8, 0.8, 0.77) * mix(0.85, 1.0, d.a), bandF(x, 0.04, 0.16, fu.x));
       // Yellow tactile warning strip (0.3 m blocks of domed dots on a 75 mm
       // grid). The dots are drawn into the albedo too (dark gaps, lit caps)
@@ -5174,8 +5222,8 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         uvDirs(&tu, &tv);
         let q = fract(vec2f(x - 0.8, uy) / 0.075) - 0.5;
         let r = length(q);
-        let vis = 1.0 - smoothstep(0.008, 0.03, fp);
-        let w = min(fp / 0.075, 0.3);
+        let vis = 1.0 - smoothstep(0.02, 0.05, fp);
+        let w = min(fp / 0.075 * 0.6, 0.3);
         let dome = 1.0 - smoothstep(0.26 - w, 0.33 + w, r);
         let slope = smoothstep(0.1, 0.3, r) * dome;
         s.normal = normalize(mix(s.normal, normalize(n + (tu * q.x + tv * q.y) / max(r, 1e-3) * slope * 1.6), vis * tk));
@@ -5185,8 +5233,8 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         let ht = hash21(tb + 3.7);
         // Blocks: most a faded ochre, a few fresh replacements.
         var ya = select(vec3f(0.8, 0.6, 0.06), vec3f(0.92, 0.72, 0.04), ht < 0.15) * mix(0.88, 1.05, d.a);
-        ya *= mix(0.86, 1.0 - 0.55 * ring - 0.3 * (1.0 - dome) + 0.18 * cap, vis);
-        ya *= 1.0 - 0.55 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.008 / 0.3), jointCov((x - 0.8) / 0.3, fu.x / 0.3, 0.008 / 0.3));
+        ya *= mix(0.8, 1.0 - 0.6 * ring - 0.35 * (1.0 - dome) + 0.2 * cap, vis);
+        ya *= 1.0 - 0.6 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.012 / 0.3), jointCov((x - 0.8) / 0.3, fu.x / 0.3, 0.012 / 0.3));
         // Boot-scuffed grey wear on the dots, black tyre / sole marks.
         ya = mix(ya, vec3f(0.4, 0.38, 0.33), 0.4 * smoothstep(0.55, 0.8, valueNoise(vec2f(x * 4.0, uy * 0.6))));
         a = mix(a, ya, tk);
@@ -5735,6 +5783,13 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.albedo = vec3f(0.8);
       s.rough = 0.2;
       s.emissive = col * night * 40.0 * select(0.0, 1.0, n.y < -0.5) + col * night * 4.0;
+      if (param == 1u) {
+        // LED fittings seen side-on (the viaduct coping light line, fascia
+        // up-lights, soffit tubes): a brighter side term that grows with
+        // distance (none within 40 m) so a 10 cm strip stays a lit line at
+        // far-night.
+        s.emissive += col * night * 4.0 * clamp((length(world - frame.camPos.xyz) - 40.0) / 60.0, 0.0, 4.0) * select(1.0, 0.0, n.y < -0.5);
+      }
       if (param == 2u) {
         // Aviation obstruction light: slow red blink.
         let blink = step(0.55, fract(frame.time.x * 0.6 + hash21(floor(world.xz))));
