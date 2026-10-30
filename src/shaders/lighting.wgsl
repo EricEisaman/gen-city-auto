@@ -891,7 +891,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
         let arterial = L.radius > 17.0;
         let temp = select(mix(vec3f(1.1, 0.95, 0.78), vec3f(1.04, 0.97, 0.88), ht), mix(vec3f(0.95, 0.98, 1.06), vec3f(0.99, 0.99, 1.0), ht), arterial);
         // Foliage scatters what reaches its outer leaves: a softer cut-off.
-        let spill = select(0.02, 0.15, cls == CLASS_FOLIAGE);
+        // Ground keeps a little more of the tail: light bounced off the pools
+        // lifts the road between them (near-black floors at street level).
+        let spill = select(select(0.02, 0.045, cls == CLASS_GROUND), 0.15, cls == CLASS_FOLIAGE);
         // Junction luminaires stay the strongest: the box is the best-lit
         // place on the road. Road luminaires 30 % below the old peak.
         let deckLed = L.kind == 0.0 && L.radius < 19.0;
@@ -918,6 +920,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
       // Point lights cast no shadows: the vehicle contact term stands in under cars.
       color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
+      if (wetGround > 0.0 && L.kind < 0.5) {
+        // The water film scatters a street light's pool (rain-roughened
+        // surface, drops): the pool stays on the soaked road as a diffuse
+        // glow under the streak, not only the mirror lobe (the box went
+        // dark in night rain though it was the best-lit place at night).
+        color += albedo * (1.0 - metal) * max(dot(n, l), 0.0) / PI * lc * atten * 60.0 * 0.8 * wetGround;
+      }
       streakC = select(lc, lcS, lcS.x >= 0.0) * atten;
       if (L.kind > 0.5 && L.kind < 1.5 && wetWall > 0.0) {
         // Neon on a soaked wall: the water film spreads each sign's colour
