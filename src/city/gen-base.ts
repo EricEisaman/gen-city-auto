@@ -931,8 +931,26 @@ function railViaduct(
             [12, 4],
             [0, 4],
           ],
-          packMat(CM.paint, 0xd0) /* light grey steel canopy */,
+          packMat(CM.paint, 0xf8) /* corrugated steel canopy */,
         );
+        // Fascia boards along both canopy edges give it thickness.
+        const dn2 = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
+        for (const [e0, e1, s] of [
+          [r3, r2, 1],
+          [r1, r0, -1],
+        ] as [Vec3, Vec3, number][]) {
+          m.quad(
+            [e0, e1, dn2(e1), dn2(e0)],
+            [out[0] * s, 0, out[2] * s],
+            [
+              [0, 0],
+              [12, 0],
+              [12, 0.3],
+              [0, 0.3],
+            ],
+            packMat(CM.paint, 0xd0),
+          );
+        }
         m.quad(
           [r0, r1, r2, r3],
           [0, -1, 0],

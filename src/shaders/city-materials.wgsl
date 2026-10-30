@@ -1046,7 +1046,23 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       if (state == lamp) { s.emissive = cols[lamp] * mix(6.0, 14.0, night); } else { s.emissive = cols[lamp] * 0.03; }
     }
     case M_FRAME: { s.albedo = vec3f(0.08); s.metal = 0.6; s.rough = 0.4; }
-    case M_PAINT: { s.albedo = paintColor(param); s.rough = 0.5; s.metal = 0.1; applyWetness(&s, world, 0.0, 0.0); }
+    case M_PAINT: {
+      s.albedo = paintColor(param);
+      s.rough = 0.5;
+      s.metal = 0.1;
+      if (param == 0xf8u) {
+        // Corrugated steel sheet (ribs every 20 cm along u), faded to flat
+        // once a rib is smaller than a pixel.
+        let T = normalize(dWorldX * dUvY.y - dWorldY * dUvX.y + vec3f(1e-6));
+        let k = clamp(0.08 / max(length(dUvX) + length(dUvY), 1e-4), 0.0, 1.0);
+        let rib = sin(uv.x * 31.4159);
+        s.normal = normalize(n + T * cos(uv.x * 31.4159) * 0.45 * k);
+        s.albedo = vec3f(0.5, 0.52, 0.53) * (0.9 + 0.1 * rib * k) * (0.85 + 0.15 * valueNoise(uv * vec2f(0.5, 2.0)));
+        s.metal = 0.3;
+        s.rough = 0.5;
+      }
+      applyWetness(&s, world, 0.0, 0.0);
+    }
     case M_SCREEN: { s = screenMat(n, uv, param); }
     case M_TILE: {
       let h = hashu(param * 13u + 1u);
