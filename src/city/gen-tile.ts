@@ -2262,7 +2262,7 @@ function tenantKit(
     if (take(pv, 'wall', us, 0.25))
       umbrellaStand(m, P(us, 0.35, gy), rng, rng.int(3, 6));
     banner();
-    bikes(rng.int(1, 3) - (rng.chance(0.3) ? 1 : 0));
+    bikes(rng.int(1, 3));
   } else if (t.type === SHOP_TYPE.boutique) {
     const rs = at(rng.range(0.25, 0.75));
     if (w > 2 && take(pv, 'wall', rs, 0.65))
@@ -3399,7 +3399,7 @@ export function building(
           const y0 = base + GROUND_H + (f - 1) * H;
           if (y0 < solidTo[i]) continue;
           for (let j = 0; j < e.count && units < maxUnits; j++) {
-            if (!sv.chance(office ? 0.06 : 0.12)) continue;
+            if (!sv.chance(office ? 0.1 : 0.14)) continue;
             const s =
               e.f0 + (j + (win.strip ? 0.5 : sv.chance(0.5) ? 0 : 1)) * bw;
             if (s < 0.6 || s > e.len - 0.6 || signSlot(s)) continue;
@@ -5068,16 +5068,20 @@ export function building(
         for (let a = s0; a < s1 - 1.2; a += fw) {
           const b1 = Math.min(s1, a + fw);
           const k = br.chance(0.4) ? 0 : br.chance(0.2) ? 2 : 1;
-          for (let j = 0; j < k; j++)
+          // On the slab, or wall-hung on a bracket clear above the
+          // balustrade (seen from the street).
+          for (let j = 0; j < k; j++) {
+            const hung = br.chance(0.5);
             acUnit(
               m,
               e,
               lerp(a + 0.55, b1 - 0.55, k === 1 ? br.next() : j),
               0.3,
-              y + 0.02,
-              false,
-              false,
+              y + (hung ? 1.25 : 0.02),
+              hung,
+              hung,
             );
+          }
         }
         // Laundry poles on about a third of the flats' balconies (homes):
         // two poles on hangers under the slab above, with washing on some.
@@ -5355,25 +5359,28 @@ export function building(
           const out: Vec3 = [U[0], 0, U[1]];
           for (let y = roofY + 0.5; y < yTop - 0.2; y += 0.6)
             flatQuad(m, lad(0, y), along, 0.22, 0.02, out, steel);
-          // Supply pipe: down a leg from the tank's floor,
-          // then on low stools across the roof to the penthouse (or over
-          // the parapet).
-          const pipe = packMat(CM.paint, 0xd2);
-          const goal: Vec2 = mast
-            ? [mast[0], mast[2]]
-            : at(spot[0] * -0.3, spot[1] * -0.3);
-          for (const [dv, r] of [[0.35, 0.05]]) {
-            const l0 = leg(1, dv > 0 ? 1 : -1, ty);
-            const a: Vec3 = [l0[0], ty, l0[2]];
-            const g: Vec3 = [
-              goal[0] + V[0] * dv,
-              roofY + 0.35,
-              goal[1] + V[1] * dv,
-            ];
-            const mid: Vec3 = [a[0], roofY + 0.35, a[2]];
-            const elbow: Vec3 = [g[0], roofY + 0.35, a[2]];
-            m.tube([a, mid, elbow, g], r, pipe);
-          }
+          // Supply pipe: down a leg from the tank's floor, then along
+          // the roof's axes to the penthouse (or toward the middle).
+          const gq: Vec2 = mast
+            ? toObb([mast[0], mast[2]])
+            : [spot[0] * -0.3, spot[1] * -0.3];
+          const yp = roofY + 0.3;
+          const A2 = (su: number, sv: number, y: number): Vec3 => {
+            const p = at(su, sv);
+            return [p[0], y, p[1]];
+          };
+          const su0 = spot[0] + lu * Math.sign(gq[0] - spot[0] || 1),
+            sv0 = spot[1] + lv * Math.sign(gq[1] - spot[1] || 1);
+          m.tube(
+            [
+              A2(su0, sv0, ty),
+              A2(su0, sv0, yp),
+              A2(gq[0], sv0, yp),
+              A2(gq[0], gq[1], yp),
+            ],
+            0.065,
+            packMat(CM.paint, 0xd2),
+          );
         }
       }
     }
@@ -5589,14 +5596,14 @@ export function building(
           top - 0.1,
           p[2] + dz * t + dx * w,
         ];
-        m.tube([B(-0.5, 0), B(0.9, 0)], 0.015, metalM);
+        m.tube([B(-0.6, 0), B(1.0, 0)], 0.022, metalM);
         for (let k = 0; k < 4; k++) {
           const t = -0.4 + k * 0.38;
           const w = 0.32 - k * 0.04;
-          m.tube([B(t, -w), B(t, w)], 0.008, metalM);
+          m.tube([B(t, -w), B(t, w)], 0.013, metalM);
         }
       }
-      if (ar2.chance(0.4)) {
+      if (ar2.chance(0.6)) {
         // Dish (60 cm) on a pole by the penthouse, facing south-west and up.
         const p: Vec3 = [
           mast[0] - U[0] * 0.9 + V[0] * 0.5,
@@ -5627,8 +5634,8 @@ export function building(
         );
         const rim = Array.from({length: 8}, (_, k) => {
           const a = (k / 8) * Math.PI * 2;
-          const x = Math.cos(a) * 0.3,
-            y = Math.sin(a) * 0.3;
+          const x = Math.cos(a) * 0.36,
+            y = Math.sin(a) * 0.36;
           return m.vertex(
             [
               c[0] + R[0] * x + Up[0] * y,
@@ -6321,7 +6328,7 @@ function neighbourGrid(L: CityLayout) {
  * never be seen (or would stick into the neighbour); 0.3 m out, sampled
  * to the corners: walls flush against a neighbour, not drawn at all.
  */
-export function edgeCover(
+function edgeCover(
   L: CityLayout,
   bi: number,
   off = 1.0,
