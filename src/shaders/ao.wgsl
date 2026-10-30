@@ -37,11 +37,15 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let rot = (cellIdx / 16.0 + fract(frame.time.z * 0.618034) * 0.0625) * 6.2831;
   var occ = 0.0;
   var total = 0.0;
-  for (var scale = 0; scale < 2; scale++) {
+  // Scales: 0 = 1 m, 1 = 7 m (street canyons), 2 = 0.35 m creases (window
+  // reveals, kerbs, roof-to-parapet lines).
+  for (var scale = 0; scale < 3; scale++) {
     // Shrinks for close-up pixels (car interiors): a metre-scale radius at
     // arm's length covers half the screen and turns into flickering noise.
-    let R = select(1.0, 7.0, scale == 1) * clamp(dist / 30.0, 1.0, 4.0) * min(1.0, dist / select(12.0, 28.0, scale == 1));
-    let count = select(8, 6, scale == 1);
+    let radii = array<f32, 3>(1.0, 7.0, 0.35);
+    let near = array<f32, 3>(12.0, 28.0, 5.0);
+    let R = radii[scale] * clamp(dist / 30.0, 1.0, select(4.0, 2.5, scale == 2)) * min(1.0, dist / near[scale]);
+    let count = select(8, 6, scale >= 1);
     for (var i = 0; i < count; i++) {
       let fi = f32(i);
       let a = rot + fi * 2.399963;
@@ -64,6 +68,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       total += w;
     }
   }
-  let ao = clamp(1.0 - occ / max(total, 1.0) * 1.35, 0.0, 1.0);
+  let ao = pow(clamp(1.0 - occ / max(total, 1.0), 0.0, 1.0), 2.2);
   textureStore(aoOut, id.xy, vec4f(ao, ao, ao, 1.0));
 }

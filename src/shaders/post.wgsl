@@ -333,12 +333,21 @@ fn exposure(@builtin(local_invocation_index) li: u32, @builtin(local_invocation_
     var acc = 0.0;
     var sum = 0.0;
     var cnt = 0.0;
+    // Black and white points (1st and 99.5th percentile, EV) for the levels
+    // stretch in fsTonemap.
+    var evLo = -10.0;
+    var evHi = 6.0;
+    var gotLo = false;
+    var gotHi = false;
     for (var b = 0u; b < 64u; b++) {
       let n = f32(atomicLoad(&bins[b]));
+      let ev = (f32(b) + 0.5) / 64.0 * 16.0 - 10.0;
       let take = max(0.0, min(acc + n, hi) - max(acc, lo));
-      sum += take * ((f32(b) + 0.5) / 64.0 * 16.0 - 10.0);
+      sum += take * ev;
       cnt += take;
       acc += n;
+      if (!gotLo && acc >= total * 0.01) { evLo = ev; gotLo = true; }
+      if (!gotHi && acc >= total * 0.995) { evHi = ev; gotHi = true; }
     }
     let avg = exp2(sum / max(cnt, 1.0));
     let key = mix(0.17, 0.05, frame.time.w);
@@ -346,10 +355,15 @@ fn exposure(@builtin(local_invocation_index) li: u32, @builtin(local_invocation_
     let spread = mix(2.0, 3.0, frame.time.w);
     let tgt = clamp(key / max(avg, 1e-5), base / spread, base * spread);
     var cur = expo.value;
-    if (cur <= 0.0 || frame.time.z < 2.0) { cur = tgt; }
+    var pts = vec2f(expo.pad0, expo.pad1);
+    if (cur <= 0.0 || frame.time.z < 2.0) { cur = tgt; pts = vec2f(evLo, evHi); }
     let rate = select(1.2, 2.5, tgt < cur);
-    cur = mix(cur, tgt, 1.0 - exp(-frame.time.y * rate));
+    let k = 1.0 - exp(-frame.time.y * rate);
+    cur = mix(cur, tgt, k);
+    pts = mix(pts, vec2f(evLo, evHi), k);
     expo.value = cur;
+    expo.pad0 = pts.x;
+    expo.pad1 = pts.y;
     expo.avgLum = avg;
   }
 }
@@ -449,9 +463,17 @@ fn lensDrops(uv: vec2f) -> vec2f {
   let lum = luminance(c);
   c *= mix(sh, hi, smoothstep(-6.0, 1.0, log2(max(lum, 1e-6))));
   var m = agx(c);
-  // Punchy look in AgX space; saturation only at night, less in rain.
-  m = pow(m, vec3f(1.12));
-  let sat = mix(1.0, 1.15, night) * mix(1.0, 0.8, rainK);
+  // Levels: stretch the frame's 1st..99.5th percentile to the display range
+  // (capped gain, blacks never lifted) so hazy days don't sit in mid-grey.
+  let E = tmExpo.value;
+  let dLo = agx(vec3f(exp2(tmExpo.pad0) * E)).g;
+  let dHi = agx(vec3f(exp2(tmExpo.pad1) * E)).g;
+  let gain = clamp(0.94 / max(dHi - dLo, 0.05), 1.0, mix(1.45, 1.12, night));
+  let lo = min(dLo, 0.09);
+  m = clamp((m - lo) * gain + 0.015, vec3f(0.0), vec3f(1.0));
+  // Punchy look in AgX space; less saturation in rain.
+  m = pow(m, vec3f(mix(1.22, 1.12, night)));
+  let sat = mix(1.12, 1.15, night) * mix(1.0, 0.85, rainK);
   let ml = luminance(m);
   m = max(mix(vec3f(ml), m, sat), vec3f(0.0));
   // Soft vignette and highlight-safe grain.
