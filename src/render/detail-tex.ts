@@ -114,17 +114,33 @@ function asphalt(): Layer {
     L.h[k] = fine(k % N, (k / N) | 0) * 0.8;
     L.a[k] = 0.36;
   }
-  // Mostly dark aggregate with some light quartz chips, 3-10 mm.
+  // Mostly dark aggregate with a few pale chips, 3-10 mm: read by relief,
+  // not speckle.
   stones(
     L,
     rng,
     9000,
     1.4,
     4.5,
-    () => (rng.next() < 0.18 ? rng.range(0.75, 1) : rng.range(0.4, 0.6)),
+    () => (rng.next() < 0.07 ? rng.range(0.6, 0.78) : rng.range(0.44, 0.56)),
     0.6,
   );
-  L.bump = 0.35;
+  // Small dark pits between the chips.
+  for (let i = 0; i < 1500; i++) {
+    const cx = rng.range(0, N);
+    const cy = rng.range(0, N);
+    const r = rng.range(0.8, 1.6);
+    const R = Math.ceil(r);
+    for (let dy = -R; dy <= R; dy++)
+      for (let dx = -R; dx <= R; dx++) {
+        const d2 = (dx * dx + dy * dy) / (r * r);
+        if (d2 >= 1) continue;
+        const k = idx(Math.round(cx) + dx, Math.round(cy) + dy);
+        L.h[k] -= 0.6 * (1 - d2);
+        L.a[k] = 0.15;
+      }
+  }
+  L.bump = 0.5;
   return L;
 }
 
@@ -142,7 +158,7 @@ function pavers(): Layer {
   const bw = N / 6;
   const bh = N / 12;
   const tones = Float32Array.from({length: 6 * 12}, () =>
-    rng.range(0.38, 0.62),
+    rng.range(0.45, 0.55),
   );
   const tilt = Float32Array.from({length: 6 * 12 * 2}, () => rng.range(-1, 1));
   for (let y = 0; y < N; y++) {
