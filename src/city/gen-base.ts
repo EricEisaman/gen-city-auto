@@ -120,6 +120,29 @@ export function landUse(L: CityLayout, mask: Uint8Array): Uint8Array {
     }
   }
   for (let i = 0; i < n * n; i++) if (mask[i]) out[i] = 3;
+  // Where a road crosses open land (no block beside it), pull the road paint
+  // back one cell so the terrain's asphalt-to-grass blend happens under the
+  // road strip, not as dark sawteeth on the verge (the mask reaches 1 m past
+  // the road edge and the terrain interpolates per cell).
+  const erode: number[] = [];
+  for (let z = 1; z < n - 1; z++) {
+    for (let x = 1; x < n - 1; x++) {
+      const i = z * n + x;
+      if (out[i] !== 3) continue;
+      if (
+        out[i - 1] === 0 ||
+        out[i + 1] === 0 ||
+        out[i - n] === 0 ||
+        out[i + n] === 0 ||
+        out[i - n - 1] === 0 ||
+        out[i - n + 1] === 0 ||
+        out[i + n - 1] === 0 ||
+        out[i + n + 1] === 0
+      )
+        erode.push(i);
+    }
+  }
+  for (const i of erode) out[i] = 0;
   return out;
 }
 
