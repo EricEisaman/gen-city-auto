@@ -52,13 +52,17 @@ export const LightKind = {
 export const SODIUM: Vec3 = [1.0, 0.55, 0.22];
 export const LED: Vec3 = [1.0, 0.88, 0.72];
 
-/** Road coverage raster (1 = road surface) on the heightfield grid. */
-export function roadMask(L: CityLayout): Uint8Array {
+/**
+ * Road coverage raster (1 = road surface) on the heightfield grid. `visible`
+ * leaves out chains hidden by the asset lab.
+ */
+export function roadMask(L: CityLayout, visible = false): Uint8Array {
   const hf = L.terrain.heights;
   const n = hf.n;
   const mask = new Uint8Array(n * n);
   const S = hf.size / 2;
-  for (const c of L.chains) {
+  for (const [ci, c] of L.chains.entries()) {
+    if (visible && L.hidden?.chains[ci]) continue;
     const half = ROAD_WIDTH[c.kind] / 2 + 1;
     for (let i = 0; i + 1 < c.pts.length; i++) {
       const a = c.pts[i];
@@ -87,13 +91,24 @@ export function roadMask(L: CityLayout): Uint8Array {
   return mask;
 }
 
-/** Land use raster for the terrain shader: 0 natural, 1 urban, 2 park, 3 road. */
-export function landUse(L: CityLayout, mask: Uint8Array): Uint8Array {
+/**
+ * Land use raster for the terrain shader: 0 natural, 1 urban, 2 park, 3 road.
+ * Blocks and roads hidden by the asset lab (`visible` = their road mask
+ * without hidden chains) become plain urban ground.
+ */
+export function landUse(
+  L: CityLayout,
+  mask: Uint8Array,
+  visible?: Uint8Array,
+): Uint8Array {
   const hf = L.terrain.heights;
   const n = hf.n;
   const S = hf.size / 2;
-  const out = new Uint8Array(n * n);
-  for (const b of L.blocks) {
+  // In the asset lab everything outside the shown asset is bare urban
+  // ground (a neutral backdrop rather than patches of grass).
+  const out = new Uint8Array(n * n).fill(visible ? 1 : 0);
+  for (const [bi, b] of L.blocks.entries()) {
+    const use = L.hidden?.blocks[bi] ? 1 : b.park ? 2 : 1;
     let x0 = Infinity,
       x1 = -Infinity,
       z0 = Infinity,
@@ -115,11 +130,12 @@ export function landUse(L: CityLayout, mask: Uint8Array): Uint8Array {
         gx++
       ) {
         if (pointInPolygon([gx * hf.cell - S, gz * hf.cell - S], b.curb))
-          out[gz * n + gx] = b.park ? 2 : 1;
+          out[gz * n + gx] = use;
       }
     }
   }
-  for (let i = 0; i < n * n; i++) if (mask[i]) out[i] = 3;
+  for (let i = 0; i < n * n; i++)
+    if (mask[i]) out[i] = visible && !visible[i] ? 1 : 3;
   // Where a road crosses open land (no block beside it), pull the road paint
   // back one cell so the terrain's asphalt-to-grass blend happens under the
   // road strip, not as dark sawteeth on the verge (the mask reaches 1 m past
@@ -202,6 +218,7 @@ function roads(
 ) {
   const hf = L.terrain.heights;
   L.chains.forEach((c, ci) => {
+    if (L.hidden?.chains[ci]) return;
     const [s0, s1] = geom.setbacks[ci];
     const arc = geom.arc[ci];
     const total = arc[arc.length - 1];
@@ -458,7 +475,7 @@ function roads(
   // Junction surfaces.
   geom.junctions.forEach((jg, ji) => {
     const j = L.junctions[ji];
-    if (jg.outline.length < 3) return;
+    if (jg.outline.length < 3 || L.hidden?.junctions[ji]) return;
     const h = j.h + 0.02;
     const mat = packMat(CM.asphaltPlain);
     const center = m.vertex([j.p[0], h, j.p[1]], UP, j.p[0], j.p[1], mat);
@@ -499,7 +516,8 @@ function subdivide(tris: Vec2[][], maxEdge: number): Vec2[][] {
 
 function blocks(L: CityLayout, m: CMesh) {
   const hf = L.terrain.heights;
-  for (const b of L.blocks) {
+  for (const [bi, b] of L.blocks.entries()) {
+    if (L.hidden?.blocks[bi]) continue;
     const poly = b.curb;
     const idx = triangulate(poly);
     const tris: Vec2[][] = [];
@@ -1357,12 +1375,13 @@ export function buildBase(L: CityLayout): BaseGeometry {
   unM();
   unP();
   streetLights(L, geom, lights);
-  outskirts(L, m);
+  // The asset lab shows its subject alone, without the distant skyline.
+  if (!L.hidden) outskirts(L, m);
   return {
     mesh: m,
     piers,
     lights: lights.data,
-    landUse: landUse(L, mask),
+    landUse: landUse(L, mask, L.hidden ? roadMask(L, true) : undefined),
     roadMask: mask,
     geom,
     solids,
@@ -1392,7 +1411,7 @@ export function streetLightSpots(
   cb: (p: Vec3, dir: Vec2, kind: number, sodium: boolean) => void,
 ) {
   L.chains.forEach((c, ci) => {
-    if (c.bridge.some(b => b)) return;
+    if (c.bridge.some(b => b) || L.hidden?.chains[ci]) return;
     const arc = geom.arc[ci];
     const total = arc[arc.length - 1];
     const [s0, s1] = geom.setbacks[ci];

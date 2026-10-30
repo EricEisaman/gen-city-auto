@@ -1886,14 +1886,17 @@ export function makeTileContext(
   const tileChains = lists();
   const tileParks = lists();
   const tileBlocks = lists();
+  // Chains, junctions and blocks hidden by the asset lab get no props.
+  const hid = layout.hidden;
   layout.buildings.forEach((b, i) => {
     const c = centroid(b.footprint);
     tileBuildings[tileOf(size, c[0], c[1])].push(i);
   });
-  layout.junctions.forEach((j, i) =>
-    tileJunctions[tileOf(size, j.p[0], j.p[1])].push(i),
-  );
+  layout.junctions.forEach((j, i) => {
+    if (!hid?.junctions[i]) tileJunctions[tileOf(size, j.p[0], j.p[1])].push(i);
+  });
   layout.chains.forEach((c, i) => {
+    if (hid?.chains[i]) return;
     const seen = new Set<number>();
     for (const q of c.pts) {
       for (const [dx, dz] of [
@@ -1912,6 +1915,9 @@ export function makeTileContext(
     }
   });
   layout.blocks.forEach((b, i) => {
+    // Hidden parks stay listed: they share a tile's tree random stream.
+    const hidden = !!hid?.blocks[i];
+    if (hidden && !b.park) return;
     let x0 = Infinity,
       x1 = -Infinity,
       z0 = Infinity,
@@ -1925,7 +1931,7 @@ export function makeTileContext(
     for (let z = z0; z <= z1 + TILE_SIZE; z += TILE_SIZE) {
       for (let x = x0; x <= x1 + TILE_SIZE; x += TILE_SIZE) {
         const t = tileOf(size, Math.min(x, x1), Math.min(z, z1));
-        if (!tileBlocks[t].includes(i)) tileBlocks[t].push(i);
+        if (!hidden && !tileBlocks[t].includes(i)) tileBlocks[t].push(i);
         if (b.park && !tileParks[t].includes(i)) tileParks[t].push(i);
       }
     }
@@ -2186,6 +2192,9 @@ export function buildTile(
   for (const bi of ctx.tileParks[tile] ?? []) {
     const b = L.blocks[bi];
     const r = b.late ? new Rng(hash2(tile, bi ^ 0x1a7e)) : prng;
+    // Parks hidden by the asset lab still draw their trees from the shared
+    // stream (into a discarded mesh) so the visible parks keep theirs.
+    const pm = L.hidden?.blocks[bi] ? new CMesh(1 << 10, 1 << 11) : m;
     for (let k = 0; k < 140; k++) {
       const x = tx + r.next() * TILE_SIZE;
       const z = tz + r.next() * TILE_SIZE;
@@ -2201,7 +2210,7 @@ export function buildTile(
       const ground = hf.sample(x, z) + 0.16;
       const th = r.range(7, 13);
       if (deckClearance(ctx, x, z, ground) < th + 1) continue;
-      tree(m, [x, ground, z], th, lod, r);
+      tree(pm, [x, ground, z], th, lod, r);
     }
   }
 

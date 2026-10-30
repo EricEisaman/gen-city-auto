@@ -47,6 +47,17 @@ URL parameters: `city=neon|metro|harbour|river`, `seed`, `time` (hours),
 `shot=<director shot>`, `spawn=x,z`, `freecam=x,y,z,yaw,pitch`, `quality=low`,
 `debug=1..8` (G-buffer and lighting views).
 
+Asset lab (one asset alone in the full renderer, for art review):
+`lab=building|road|rail`, `pick=<n>` (0 = most typical building / most
+central signalized junction / first straight viaduct section),
+`kind=tower|glass|midrise|pencil|house|apartment|station` (buildings),
+`station=1` (rail: a station), `ctx=1` (road/rail: keep the buildings around),
+`view=<preset>`: building `street|facade|mid|far|shell|aerial|rear|orbit`,
+road `eye|low|top|mid|far|shell|curb|orbit`, rail
+`side|under|along|mid|far|shell|station|orbit`. `shell` is `far` with every
+tile forced to LOD1. Traffic, pedestrians, trains and the director are off;
+`time`, `weather`, `ui=0` and `freecam` still apply.
+
 ## Development
 
 ```sh
@@ -57,6 +68,10 @@ npm test             # typecheck, unit tests, puppeteer smoke test
 npm run test:shots   # screenshot matrix in test/out/shots (for the AAA judge)
 npm run test:perf    # frame-time measurements
 node test/puppeteer/turntable.mjs <design>   # vehicle turntable screenshots
+npm run lab -- building --kind=midrise --times=day,night   # asset lab shots
+#   test/puppeteer/lab.mjs <building|road|rail> [--pick=0] [--kind=..]
+#   [--station=1] [--ctx=1] [--views=a,b] [--times=day,golden,night,rain]
+#   [--size=1280x720] -> test/out/lab/*.png and <asset>-sheet.png
 node tools/map.ts neon 1 test/out/map.png    # 2D map of a city layout
 ```
 

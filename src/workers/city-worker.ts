@@ -9,11 +9,19 @@ import {
   makeTileContext,
   type TileContext,
 } from '../city/gen-tile.ts';
+import {isolate, labInfo, type LabInfo, type LabSpec} from '../city/lab.ts';
 import {generateLayout, type CityLayout} from '../city/layout.ts';
 import type {RoadGeom} from '../city/roadgeom.ts';
 
 export type WorkerRequest =
-  | {type: 'init'; cityType: CityType; seed: number; primary: boolean}
+  | {
+      type: 'init';
+      cityType: CityType;
+      seed: number;
+      primary: boolean;
+      /** Asset lab: isolate one asset (see city/lab.ts). */
+      lab?: LabSpec;
+    }
   | {type: 'tile'; tile: number; lod: number; id: number};
 
 export interface LayoutSummary {
@@ -25,6 +33,8 @@ export interface LayoutSummary {
   geom: RoadGeom;
   /** Bridge/viaduct solids for the camera (see BaseGeometry.solids). */
   solids?: number[];
+  /** Asset lab: the isolated asset and its camera presets. */
+  lab?: LabInfo;
 }
 
 let layout: CityLayout | null = null;
@@ -47,6 +57,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         req.seed,
         req.primary ? (msg, f) => post({type: 'progress', msg, f}) : undefined,
       );
+      // The lab filters the finished layout, so generation is unchanged.
+      const iso = req.lab ? isolate(layout, req.lab) : null;
+      if (iso) layout = iso.layout;
       const base = buildBase(layout);
       ctx = makeTileContext(layout, base.geom, base.roadMask);
       if (req.primary) {
@@ -62,6 +75,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           },
           geom: base.geom,
           solids: base.solids,
+          lab: iso ? labInfo(iso, base.geom, base.solids) : undefined,
         };
         const baseClusters = clusterize(base.mesh, 0, 0xffffffff, 1);
         const pierClusters = clusterize(base.piers, 0, 0xffffffff, 0);

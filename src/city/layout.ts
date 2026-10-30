@@ -148,6 +148,18 @@ export interface CityLayout {
   blocks: Block[];
   buildings: Building[];
   elevated: Elevated[];
+  /**
+   * Asset lab only (see lab.ts): chains, junctions and blocks left out of the
+   * geometry (1 = hidden). They stay in the arrays because tile props hash
+   * their indices.
+   */
+  hidden?: LayoutMask;
+}
+
+export interface LayoutMask {
+  chains: Uint8Array;
+  junctions: Uint8Array;
+  blocks: Uint8Array;
 }
 
 export function densityAt(hubs: Hub[], noise: Noise2D, x: number, z: number) {

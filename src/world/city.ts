@@ -4,6 +4,7 @@
 
 import type {ClusterData} from '../city/cmesh.ts';
 import type {CityType} from '../city/config.ts';
+import type {LabSpec} from '../city/lab.ts';
 import {LIGHT_FLOATS, LightKind} from '../city/gen-base.ts';
 import {TILE_SIZE} from '../city/gen-tile.ts';
 import {Heightfield} from '../city/terrain.ts';
@@ -43,12 +44,16 @@ export class City {
   private tileLods = new Uint32Array(0);
   private lightScratch = new Float32Array(1024 * 8);
   lod0Radius = 520;
+  /** Show every tile at LOD1 (asset lab: judge the distant shell up close). */
+  forceLod1 = false;
   stats = {lod0: 0, lod1: 0, queue: 0};
+  private lab?: LabSpec;
 
-  constructor(renderer: Renderer, type: CityType, seed: number) {
+  constructor(renderer: Renderer, type: CityType, seed: number, lab?: LabSpec) {
     this.renderer = renderer;
     this.type = type;
     this.seed = seed;
+    this.lab = lab;
   }
 
   async load(progress: Progress, focus: () => Vec3) {
@@ -101,6 +106,7 @@ export class City {
         cityType: this.type,
         seed: this.seed,
         primary: i === 0,
+        lab: this.lab,
       };
       w.postMessage(req);
     }
@@ -319,7 +325,10 @@ export class City {
         s.lod0 = null;
         s.lights0 = new Float32Array(0);
       }
-      const use0 = !!s.lod0 && this.tileDist(t, p) < this.lod0Radius + 120;
+      const use0 =
+        !!s.lod0 &&
+        !this.forceLod1 &&
+        this.tileDist(t, p) < this.lod0Radius + 120;
       this.tileLods[t] = use0 ? 0 : 1;
       if (use0) lod0++;
       else if (s.lod1) lod1++;

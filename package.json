@@ -14,6 +14,7 @@
     "test:smoke": "node build.mjs && node test/puppeteer/smoke.mjs",
     "test:shots": "node build.mjs && node test/puppeteer/shots.mjs",
     "test:perf": "node build.mjs && node test/puppeteer/perf.mjs",
+    "lab": "node build.mjs && node test/puppeteer/lab.mjs",
     "test": "npm run typecheck && npm run test:unit && npm run test:smoke"
   },
   "keywords": [],

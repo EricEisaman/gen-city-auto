@@ -1,4 +1,5 @@
 import type {CityType} from './city/config.ts';
+import {isBuildingKind, isLabAsset, type LabSpec} from './city/lab.ts';
 import type {CameraMode} from './game/camera.ts';
 import {Game} from './game/game.ts';
 import type {WeatherKind} from './game/weather.ts';
@@ -22,6 +23,18 @@ async function main() {
       document.getElementById(id)!.style.visibility = 'hidden';
   resizeToCss(canvas);
   const gpu = await initGpu(canvas);
+  // lab=building|road|rail shows one asset alone (see city/lab.ts).
+  const asset = params.get('lab');
+  const kind = params.get('kind');
+  const lab: LabSpec | undefined = isLabAsset(asset)
+    ? {
+        asset,
+        pick: num('pick', 0),
+        kind: isBuildingKind(kind) ? kind : undefined,
+        station: params.get('station') === '1',
+        ctx: params.get('ctx') === '1',
+      }
+    : undefined;
   const spawn = params.get('spawn')?.split(',').map(Number) as
     [number, number] | undefined;
   const game = new Game(gpu, {
@@ -39,6 +52,8 @@ async function main() {
     traffic: num('traffic', 380),
     quality: params.get('quality') === 'low' ? 0 : 1,
     freecam: params.get('freecam')?.split(',').map(Number),
+    lab,
+    view: params.get('view') ?? undefined,
   });
   await game.init();
   (window as unknown as {__game: Game}).__game = game;

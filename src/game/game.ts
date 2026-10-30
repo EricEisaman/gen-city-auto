@@ -8,6 +8,7 @@ import type {Vec3} from '../math/vec.ts';
 import {RainRenderer} from '../render/rain.ts';
 import {LightSprites} from '../render/sprites.ts';
 import {streetLightSpots} from '../city/gen-base.ts';
+import type {LabSpec} from '../city/lab.ts';
 import type {CityLayout} from '../city/layout.ts';
 import {GBUFFER_FORMATS, Renderer} from '../render/renderer.ts';
 import {VehicleRenderer} from '../render/vehicles.ts';
@@ -44,6 +45,10 @@ export interface GameOptions {
   /** Fixed camera for tests: x, y, z, yaw, pitch. */
   freecam?: number[];
   quality: number;
+  /** Asset lab: show one asset alone, no traffic, fixed camera presets. */
+  lab?: LabSpec;
+  /** Asset lab camera preset (see LabInfo.views). */
+  view?: string;
 }
 
 export class Game {
@@ -91,6 +96,9 @@ export class Game {
   } as unknown as Input;
   /** Last camera output (for tests). */
   lastCam: {eye: Vec3; target: Vec3; fov: number} | null = null;
+  /** Asset lab: current camera preset, and the orbit preset's angle. */
+  labView = '';
+  private orbitAngle = 0.3;
 
   constructor(gpu: Gpu, opts: GameOptions) {
     this.gpu = gpu;
@@ -143,6 +151,8 @@ export class Game {
   }
 
   private spawnPoint(): Vec3 {
+    const lab = this.city?.summary?.lab;
+    if (lab) return lab.focus;
     if (this.opts.spawn) return [this.opts.spawn[0], 0, this.opts.spawn[1]];
     const L = this.city!.summary.layout;
     // Start in a dense district (a sub-center), not beside the central park.
@@ -154,10 +164,14 @@ export class Game {
     this.loading = true;
     document.getElementById('loading')!.style.display = '';
     this.city?.dispose();
-    this.city = new City(this.renderer, type, seed);
+    this.city = new City(this.renderer, type, seed, this.opts.lab);
     let focus: Vec3 = [0, 0, 0];
     const city = this.city;
-    await city.load(this.progress.bind(this), () => focus);
+    // The asset lab knows its focus as soon as the layout arrives.
+    await city.load(
+      this.progress.bind(this),
+      () => city.summary?.lab?.focus ?? focus,
+    );
     // Focus streaming on the spawn point before revealing.
     focus = this.spawnPoint();
     city.updateStreaming(focus);
@@ -170,7 +184,7 @@ export class Game {
     const net = this.net!;
     this.traffic = new Traffic(net, this.vehicles);
     this.buildLightSprites();
-    this.traffic.target = this.opts.traffic;
+    this.traffic.target = this.opts.lab ? 0 : this.opts.traffic;
     this.trains = new Trains(city.summary.layout.elevated, this.vehicles);
     this.helis = new AmbientHelis(
       city.summary.layout.hubs,
@@ -295,6 +309,11 @@ export class Game {
         named >= 0 ? named : this.pickVariant('car', 'sports'),
       );
     }
+    if (this.city!.summary.lab) {
+      const views = Object.keys(this.city!.summary.lab.views);
+      const v = this.opts.view;
+      this.setLabView(v && views.includes(v) ? v : views[0]);
+    }
     const fc = this.opts.freecam;
     if (fc) {
       this.freeCam.setPose(
@@ -307,7 +326,7 @@ export class Game {
     }
     if (this.opts.shot) this.forceShot(this.opts.shot);
     // Warm up traffic so the streets are busy immediately.
-    for (let i = 0; i < 40; i++)
+    for (let i = 0; i < (this.opts.lab ? 0 : 40); i++)
       this.traffic.update(
         0.25,
         this.time + i * 0.25,
@@ -329,6 +348,33 @@ export class Game {
       x => !['train', 'helicopter', 'person'].includes(x.info.kind),
     );
     return Math.max(0, any);
+  }
+
+  /** Asset lab: switch to camera preset `name` (see city/lab.ts). */
+  setLabView(name: string) {
+    const lab = this.city?.summary.lab;
+    const v = lab?.views[name];
+    if (!lab || !v) return;
+    this.labView = name;
+    this.orbitAngle = 0.3;
+    this.city!.forceLod1 = !!v.lod1;
+    const [yaw, pitch] = yawPitch(v.eye, v.target);
+    this.freeCam.setPose(v.eye, yaw, pitch, v.fov);
+    this.freeMode = true;
+  }
+
+  /** The orbit preset circles the asset slowly. */
+  private updateOrbit(dt: number) {
+    const o = this.city?.summary.lab?.orbit;
+    if (!o || this.labView !== 'orbit' || !this.freeMode) return;
+    this.orbitAngle += dt * 0.12;
+    const eye: Vec3 = [
+      o.center[0] + Math.sin(this.orbitAngle) * o.radius,
+      o.height,
+      o.center[2] + Math.cos(this.orbitAngle) * o.radius,
+    ];
+    const [yaw, pitch] = yawPitch(eye, o.center);
+    this.freeCam.setPose(eye, yaw, pitch, o.fov);
   }
 
   forceShot(name: string, lock = true) {
@@ -415,7 +461,8 @@ export class Game {
       }
     };
     net.chains.forEach((c, ci) => {
-      if (c.kind < 1) return;
+      // The asset lab has no traffic.
+      if (c.kind < 1 || this.opts.lab) return;
       const pts = c.pts.map((q, i): Vec3 => [q[0], c.heights[i], q[1]]);
       const offs = [...Array(net.lanesPerDir(ci)).keys()].map(k =>
         net.laneOffset(ci, k),
@@ -424,7 +471,7 @@ export class Game {
       both(pts, offs, c.kind >= 2 ? 12 : 10, 30);
     });
     for (const e of L.elevated) {
-      if (e.kind !== 'expressway') continue;
+      if (e.kind !== 'expressway' || this.opts.lab) continue;
       const pts = e.pts.map((q, i): Vec3 => [q[0], e.heights[i], q[1]]);
       // Shuto expressway: ~70 km/h.
       both(pts, [2.2, 5.6], 19, 40);
@@ -583,26 +630,33 @@ export class Game {
     this.time += dt;
     this.hour = (this.hour + dt * this.timeSpeed + 24) % 24;
     this.weather.update(dt);
-    this.player.update(
-      dt,
-      this.freeMode ? this.noInput : this.input,
-      this.time,
-    );
+    // The asset lab shows its asset alone: no player, traffic, trains,
+    // helicopters or pedestrians.
+    const lab = !!this.opts.lab;
+    if (!lab)
+      this.player.update(
+        dt,
+        this.freeMode ? this.noInput : this.input,
+        this.time,
+      );
+    this.updateOrbit(dt);
     const cam = this.freeMode
       ? this.freeCam.update(dt, this.input)
       : this.camera.update(dt, this.player, this.input);
     const focus = this.player.pos;
-    this.traffic.update(
-      dt,
-      this.time,
-      focus,
-      this.player.follower && this.player.autopilot
-        ? [this.player.follower]
-        : [],
-    );
-    this.trains!.update(dt);
-    this.helis!.update(dt);
-    this.peds!.update(dt, cam.eye);
+    if (!lab) {
+      this.traffic.update(
+        dt,
+        this.time,
+        focus,
+        this.player.follower && this.player.autopilot
+          ? [this.player.follower]
+          : [],
+      );
+      this.trains!.update(dt);
+      this.helis!.update(dt);
+      this.peds!.update(dt, cam.eye);
+    }
     this.city.updateStreaming(cam.eye);
     const night = this.renderer.sky.night;
     const lightsOn = night > 0.3 || this.weather.state.rain > 0.3 ? 1 : 0;
@@ -623,7 +677,8 @@ export class Game {
       );
       n++;
     };
-    addHeadlights(this.player.model, this.player.info?.size[2] ?? 4.5);
+    if (!lab)
+      addHeadlights(this.player.model, this.player.info?.size[2] ?? 4.5);
     const near = this.traffic.cars
       .map(c => ({
         c,
@@ -641,11 +696,13 @@ export class Game {
     );
     // Vehicles.
     this.vehicles.begin(cam.eye);
-    this.player.draw(lightsOn);
-    this.traffic.draw(lightsOn);
-    this.trains!.draw(lightsOn);
-    this.helis!.draw(this.time, lightsOn);
-    this.peds!.draw();
+    if (!lab) {
+      this.player.draw(lightsOn);
+      this.traffic.draw(lightsOn);
+      this.trains!.draw(lightsOn);
+      this.helis!.draw(this.time, lightsOn);
+      this.peds!.draw();
+    }
     this.vehicles.finish();
     this.lastCam = cam;
     this.rain.intensity = this.weather.state.rain;
@@ -673,7 +730,9 @@ export class Game {
       ...this.city.stats,
       fps: Math.round(this.fpsAvg),
       cars: this.traffic.cars.length,
-      shot: this.camera.shot?.name ?? this.camera.mode,
+      shot: lab
+        ? `lab ${this.labView}`
+        : (this.camera.shot?.name ?? this.camera.mode),
       eye: cam.eye.map(v => Math.round(v)),
     };
     if (this.frames === 20) window.__ready = true;
