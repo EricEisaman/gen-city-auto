@@ -474,6 +474,24 @@ fn brdf(n: vec3f, v: vec3f, l: vec3f, albedo: vec3f, f0: vec3f, rough: f32, meta
   return (diff + spec) * nl;
 }
 
+// How far (x the light radius) street-light streaks reach on wet ground.
+const STREAK_REACH = 2.5;
+
+// A lamp mirrored in a wet road's water film (film normal nF): GGX with
+// the half vector's component along the view squashed, so the highlight
+// stretches ~5x toward the eye (vertical on screen) and stays narrow
+// across. Returns the BRDF x cos term (scaled), capped.
+fn wetStreak(nF: vec3f, v: vec3f, l: vec3f, fwdV: vec3f) -> f32 {
+  let hv = normalize(l + v);
+  let hs = normalize(hv - fwdV * dot(hv, fwdV) * 0.8);
+  let nlF = max(dot(nF, l), 0.0);
+  let nvF = max(dot(nF, v), 0.05);
+  let aF = 0.022;
+  let Fw = 0.02 + 0.98 * pow(1.0 - max(dot(v, hv), 0.0), 5.0);
+  let sp = D_GGX(max(dot(nF, hs), 0.0), aF) * V_SmithJoint(nvF, nlF, aF) * Fw * nlF;
+  return min(sp, 60.0) * 0.2;
+}
+
 fn shadow(world: vec3f, n: vec3f, vdepth: f32) -> f32 {
   var cascade = 0u;
   for (var k = 0u; k < 3u; k++) {
@@ -487,10 +505,15 @@ fn shadow(world: vec3f, n: vec3f, vdepth: f32) -> f32 {
   if (any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) { return 1.0; }
   let z = lp.z - 0.0005;
   let size = vec2f(textureDimensions(shadowMap));
+  // The 3x3 kernel jittered by up to a texel per pixel and frame (TAA
+  // resolves it): a fixed kernel left the staircase of a caster's texel
+  // edges as parallel stripes on grazing receivers (the planter wall under
+  // a hedge, kerb faces).
+  let jt = (hash22(floor(world.xz * 211.0) + floor(world.y * 211.0) * 0.37 + fract(frame.time.z * 0.618) * 97.0) - 0.5) * 1.2;
   var sum = 0.0;
   for (var y = -1; y <= 1; y++) {
     for (var x = -1; x <= 1; x++) {
-      sum += textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(f32(x), f32(y)) / size, i32(cascade), z);
+      sum += textureSampleCompareLevel(shadowMap, shadowSampler, uv + (vec2f(f32(x), f32(y)) + jt) / size, i32(cascade), z);
     }
   }
   var s = sum / 9.0;
@@ -513,7 +536,10 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool, thi
   if (aniso) {
     let side = normalize(cross(n, v));
     let fwd = cross(side, n);
-    r = normalize(r + side * j.x * rough * 0.08 + fwd * j.y * rough * 0.7);
+    // (A floor on the stretch: a glossy film still smears a lamp into a
+    // streak several times longer than wide.)
+    let sr = max(rough, 0.2);
+    r = normalize(r + side * j.x * sr * 0.06 + fwd * j.y * sr * 0.9);
   } else {
     r = normalize(r + vec3f(j.x, 0.0, j.y) * rough * 0.6);
   }
@@ -660,16 +686,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let tileMax = tileMin + f32(TILE);
   for (var i = li; i < lightBuf.count; i += 256u) {
     let L = lightBuf.lights[i];
+    // In the wet, street lights reach 2.5x further: their streaks on the
+    // film (and only those) carry well beyond the pool.
+    let R = L.radius * select(1.0, STREAK_REACH, frame.weather.z > 0.3 && L.kind < 0.5);
     let vp = frame.view * vec4f(L.pos, 1.0);
     let lz = -vp.z;
-    if (lz + L.radius < zMin || lz - L.radius > zMax) { continue; }
+    if (lz + R < zMin || lz - R > zMax) { continue; }
     // Conservative screen-space bounds of the light sphere.
     let clip = frame.viewProj * vec4f(L.pos, 1.0);
     var inside = true;
-    if (lz > L.radius) {
+    if (lz > R) {
       let c = clip.xy / clip.w;
       let spx = vec2f(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5) * frame.resolution.xy;
-      let rpx = L.radius * frame.proj[1][1] * 0.5 * frame.resolution.y / (lz - L.radius * 0.9);
+      let rpx = R * frame.proj[1][1] * 0.5 * frame.resolution.y / (lz - R * 0.9);
       inside = all(spx + rpx >= tileMin) && all(spx - rpx <= tileMax);
     }
     if (!inside) { continue; }
@@ -760,17 +789,40 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     * (1.0 - smoothstep(0.02, 0.1, luminance(em.rgb)));
   // How glossy a wet wall is (its rain streaks and run-off sheets).
   let wetGloss = 1.0 - smoothstep(0.06, 0.22, rough);
+  // Wet ground (carriageway, pavement): the water film mirrors every lamp
+  // as a long streak running toward the eye (Forza / GTA rain nights). Only
+  // where the film is glossy (paint and dry patches stay satin).
+  let wetGround = select(0.0, frame.weather.z, cls == CLASS_GROUND) * smoothstep(0.8, 0.95, n.y)
+    * (1.0 - smoothstep(0.1, 0.22, rough));
+  // The film's normal: the aggregate's bump drowned (a streak, not glitter).
+  let nFilm = normalize(n + vec3f(0.0, 3.0, 0.0));
+  let fwdV = normalize(vec3f(v.x, 0.0, v.z) + vec3f(1e-5, 0.0, 0.0));
   let count = min(atomicLoad(&tileCount), MAX_TILE_LIGHTS);
   for (var k = 0u; k < count; k++) {
     let L = lightBuf.lights[tileLights[k]];
     let dl = L.pos - world;
     let d2 = dot(dl, dl);
-    if (d2 > L.radius * L.radius) { continue; }
+    if (d2 > L.radius * L.radius) {
+      // Beyond the pool: on the wet film, only the lamp's streak (the head
+      // glaring at a low angle; plain inverse square, faded out by 2.5 R).
+      if (wetGround > 0.0 && L.kind < 0.5 && d2 < L.radius * L.radius * STREAK_REACH * STREAK_REACH) {
+        let d = sqrt(d2);
+        let l = dl / d;
+        let fade = 1.0 - smoothstep(L.radius * (STREAK_REACH - 0.6), L.radius * STREAK_REACH, d);
+        let lcF = L.color * 0.4 * select(1.0, 1.3, abs(L.kind) <= 0.01 || L.radius > 22.0);
+        color += lcF * fade / (d2 + 1.0) * 60.0 * wetStreak(nFilm, v, l, fwdV) * wetGround;
+      }
+      continue;
+    }
     let d = sqrt(d2);
     let l = dl / d;
     let win = pow(clamp(1.0 - pow(d / L.radius, 4.0), 0.0, 1.0), 2.0);
     let atten = win / (d2 + 1.0);
     var lc = L.color;
+    // What the film mirrors: the luminaire as seen from the reflection
+    // point. A cut-off head still glares at low angles (its lens and
+    // reflector), so the streak keeps a floor where the pool has gone.
+    var lcS = vec3f(-1.0);
     if (L.kind >= 5.0) {
       // Vehicle headlight: forward cone, slightly downward.
       let a = fract(L.kind) * 6.2831853;
@@ -795,6 +847,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       var e2 = 0.0;
       var back = 1.0;
       var ht = hash21(floor(L.pos.xz * 0.37));
+      // Junction luminaires on the signal poles (the 24 m lights, or kind
+      // exactly 0): whatever way their arm points, they light the box
+      // too (a wide round pool, no house-side cut-off), and at twice the
+      // road luminaires' output: the box is the best-lit place on the road.
+      let junctionLum = abs(L.kind) <= 0.01 || L.radius > 22.0;
       if (abs(L.kind) > 0.01) {
         var ra: vec2f;
         var fwd = vec2f(0.0);
@@ -828,9 +885,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       }
       let w1 = clamp(1.0 - e2, 0.0, 1.0);
       var pool = select(0.0, (0.65 * exp(-e2 * 7.0) + 0.35 * w1 * w1 * w1) * back, l.y > 0.0);
-      if (abs(L.kind) <= 0.01) { pool = select(0.0, 0.45 * exp(-e2 * 9.0) + 0.55 * w1 * w1, l.y > 0.0); }
       // Road luminaires: peak 25 % lower (pools, not floodlit discs).
-      if (L.kind < -0.01) { pool *= 0.75; }
+      if (L.kind < -0.01 && !junctionLum) { pool *= 0.75; }
+      if (junctionLum) {
+        let er = dot(q, q) / (1.8 * 1.8);
+        let wr = clamp(1.0 - er, 0.0, 1.0);
+        pool = max(pool * 0.8, select(0.0, 0.4 * exp(-er * 6.0) + 0.6 * wr * wr, l.y > 0.0));
+      }
       // Arterial heads (the long-reach 20 m lights on avenues and
       // boulevards) are cool 4000-5000 K LED; side-street ones warmer.
       let arterial = L.radius > 17.0;
@@ -839,7 +900,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       let spill = select(0.02, 0.15, cls == CLASS_FOLIAGE);
       // Junction luminaires stay the strongest: the box is the best-lit
       // place on the road. Road luminaires 30 % below the old peak.
-      lc *= temp * mix(spill, 1.0, pool) * select(60.0 / 60.0, 120.0 / 60.0, L.kind == 0.0);
+      lc *= temp * mix(spill, 1.0, pool) * select(1.0, 1.3, junctionLum);
+      lcS = L.color * temp * max(pool, 0.4) * select(1.0, 1.3, junctionLum);
     } else if (L.kind > 2.5 && L.kind < 3.5) {
       // Fittings (soffit fluorescents, bracket and bulkhead lamps) hang under
       // a slab or hood and cast no shadow here: nothing much above the
@@ -851,6 +913,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     // Point lights cast no shadows: the vehicle contact term stands in under cars.
     color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
+    if (wetGround > 0.0) {
+      color += select(lc, lcS, lcS.x >= 0.0) * atten * 60.0 * wetStreak(nFilm, v, l, fwdV) * wetGround;
+    }
     if (L.kind > 0.5 && L.kind < 1.5 && wetWall > 0.0) {
       // Neon on a soaked wall: the water film spreads each sign's colour
       // over the wall around it (a soft, view-independent sheen; the GGX

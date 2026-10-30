@@ -177,5 +177,8 @@ struct SOut {
 }
 
 @fragment fn fsShadow(i: SOut) {
-  if (i.leaf == 1u && textureSampleLevel(leafTex, linearSampler, i.uv, 2.0).a < 0.5) { discard; }
+  // Leaf alpha at about the shadow texel's scale (mip 3.5, ~2-3 cm on a
+  // card): at mip 2 each leaf's sliver cast a thin streak, and a hedge's
+  // grazing cards striped the planter wall under it with parallel lines.
+  if (i.leaf == 1u && textureSampleLevel(leafTex, linearSampler, i.uv, 3.5).a < 0.5) { discard; }
 }
