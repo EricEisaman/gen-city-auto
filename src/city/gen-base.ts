@@ -3056,7 +3056,7 @@ function railViaduct(
     line(k => P(k, c + stag(k), MW - 0.5 * sag(k)), 0.008, packMat(CM.wire, 2));
     // Droppers every 6 m (two a bay, none at the gantries), on the
     // straight lines between the wires' points; wire tubes stay a solid
-    // ~1.2 px line at range (city.wgsl), so they read as a comb.
+    // ~1 px line at range (city.wgsl), so they read as a comb.
     const lp = (a: Vec3, b: Vec3, t: number): Vec3 => [
       lerp(a[0], b[0], t),
       lerp(a[1], b[1], t),

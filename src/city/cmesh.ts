@@ -7,7 +7,7 @@
 // low 16 bits are the tube radius in 0.5 mm units, written by tube() and 0 on
 // every other primitive (vertex() clears them); city.wgsl's vs widens such
 // tubes to a minimum on-screen width: hashed partial coverage for most, a
-// solid ~1.2 px line for overhead-line wires (CM.wire params != 0) and lamp
+// solid ~1 px line for overhead-line wires (CM.wire params != 0) and lamp
 // tubes (whose light is scaled by the true coverage). The high 16 bits stay
 // free (seed).
 //
