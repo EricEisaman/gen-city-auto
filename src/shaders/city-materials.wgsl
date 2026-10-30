@@ -660,7 +660,7 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
   let fw = max(crackW, foot * 0.45);
   let tar = (1.0 - smoothstep(fw * 0.5, fw * 1.5, crack)) * (crackW / fw)
     * smoothstep(0.55, 0.7, valueNoise(world.xz * 0.09));
-  s.albedo = mix(s.albedo, vec3f(0.03), tar * 0.8);
+  s.albedo = mix(s.albedo, vec3f(0.045), tar * 0.6);
   s.rough = mix(s.rough, 0.4, tar);
   let oil = smoothstep(0.78, 0.92, valueNoise(world.xz * 0.6)) * valueNoise(world.xz * 3.0);
   s.albedo *= 1.0 - oil * 0.3;

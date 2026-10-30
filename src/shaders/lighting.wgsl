@@ -584,7 +584,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // Light bounced up from sunlit pavement onto downward-facing surfaces.
   let groundBounce = frame.groundAmbient.rgb + frame.sunColor.rgb * max(frame.sunDir.y, 0.0) * 0.07 * mix(0.6, 1.0, skyVis);
   let skyAmb = groundBounce * (1.0 - hemi) + skyIrradiance(n) * hemi * skyVis + bounce;
-  let diffAmb = albedo * (1.0 - metal) * skyAmb * ao;
+  // In full sun the fill is weaker relative to the key (about 4:1 on open
+  // streets), so shade reads as shade instead of a uniform grey.
+  let fill = mix(1.0, 0.75, smoothstep(0.05, 0.3, frame.sunDir.y) * (1.0 - frame.weather.x));
+  let diffAmb = albedo * (1.0 - metal) * skyAmb * ao * fill;
   color += diffAmb;
   // Specular ambient: sky reflection, replaced by SSR where available.
   let nv = max(dot(n, v), 1e-3);
