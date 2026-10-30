@@ -64,7 +64,13 @@ fn applyWetness(s: ptr<function, Surf>, world: vec3f, flatness: f32, porous: f32
   let margin = smoothstep(edge - 0.15, edge, puddleNoise) * flatness * wet;
   let damp = wet * mix(0.6, 1.0, porous);
   (*s).albedo *= mix(1.0, 0.45, damp * porous);
+  // Every upward-facing surface (roofs, decks, ledges, awnings included)
+  // holds a water film: darker and glossier than a merely damp wall, so
+  // rooftops don't read sun-bleached in a downpour.
+  let up = smoothstep(0.55, 0.92, (*s).normal.y) * wet;
+  (*s).albedo *= mix(1.0, 0.62, up);
   (*s).rough = mix((*s).rough, 0.25, damp * 0.7);
+  (*s).rough = mix((*s).rough, min((*s).rough, 0.18), up * 0.8);
   (*s).rough = mix((*s).rough, 0.12, margin);
   (*s).albedo *= 1.0 - 0.2 * margin;
   (*s).rough = mix((*s).rough, 0.03, puddle);
