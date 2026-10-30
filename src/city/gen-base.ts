@@ -509,11 +509,13 @@ function plateAt(tris: Vec3[][], x: number, z: number): number | null {
  * ribbons 12 mm over the plate (`BOX_PAINT`, 15 cm wide):
  * - right-turn guides (右折導流線): from each avenue approach's inner lane to
  *   the inner departure lane of the arm on its right: a circular arc as
- *   large as the box allows, tangent to both lanes, both lane edges dashed
- *   2 m on / 2 m off (round 3's straight run-in with a solid 5 m
- *   waiting box read as L-brackets);
- * - lane lines carried across the box (2 m on / 4 m off) to the opposite
- *   arm most in line with the approach (within 3 m), for avenues.
+ *   large as the box allows, tangent to both lanes, ONE dashed line per
+ *   movement (the lane's outer edge, 2 m on / 1.5 m off by arc length,
+ *   each dash bent along the curve; round 4's two edges per turn with
+ *   2.5 m straight dashes read as confetti from above);
+ * - one lane line carried across the box (2 m on / 4 m off) per arterial
+ *   approach, to the opposite arterial arm most in line with it.
+ * At most six dashed lines per box.
  * Arm frame: `dir` out of the junction, `l` its left; the approach lanes
  * are on +l (the road shader's x > 0 at a chain start, x < 0 at its end).
  * A merged cluster (`members`, lead first) is marked as one box.
@@ -616,7 +618,9 @@ function junctionMarkings(
       const q = c.pts[i];
       return [lerp(p[0], q[0], t), lerp(p[1], q[1], t)];
     };
-    const n = Math.max(1, Math.ceil((b - a) / 2.5));
+    // Each dash in three or more pieces (<= 0.7 m) so it bends with the
+    // curve instead of reading as a straight tick across it.
+    const n = Math.max(3, Math.ceil((b - a) / 0.7));
     ribbon(
       Array.from({length: n + 1}, (_, i) => at(a + ((b - a) * i) / n)),
       a,
@@ -667,7 +671,7 @@ function junctionMarkings(
   type ArmF = (typeof F)[number];
   const rightTurn = (A: ArmF, B: ArmF) => {
     const t0: Vec2 = [-A.dir[0], -A.dir[1]];
-    // The path of the turning lane's centre (its edges are the guides): a
+    // The path of the turning lane's centre (its outer edge is the guide): a
     // circular arc, as large as the box allows, tangent to the approach
     // lane and to the exit lane (a short straight run in or out only where
     // the box is longer one way), drawn as a rational quadratic Bezier
@@ -679,7 +683,7 @@ function junctionMarkings(
     const den = t0[0] * t1[1] - t0[1] * t1[0];
     const dP = ((Q[0] - P[0]) * t1[1] - (Q[1] - P[1]) * t1[0]) / den;
     const dQ = -((Q[0] - P[0]) * t0[1] - (Q[1] - P[1]) * t0[0]) / den;
-    if (Math.abs(den) < 0.3 || dP < 3 || dQ < 3) return;
+    if (Math.abs(den) < 0.3 || dP < 3 || dQ < 3) return false;
     const T = Math.min(dP, dQ);
     const X: Vec2 = [P[0] + t0[0] * dP, P[1] + t0[1] * dP];
     const a0: Vec2 = [X[0] - t0[0] * T, X[1] - t0[1] * T];
@@ -694,7 +698,14 @@ function junctionMarkings(
       for (let i = path.length ? 1 : 0; i <= k; i++)
         path.push([lerp(p[0], q[0], i / k), lerp(p[1], q[1], i / k)]);
     };
-    seg(P, a0);
+    // Only a short straight run in / out (<= 2 m): where the box is much
+    // longer one way the straight part would read as a stray line.
+    const run = (from: Vec2, to: Vec2): Vec2 => {
+      const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
+      const k = len > 2 ? 2 / len : 1;
+      return [lerp(to[0], from[0], k), lerp(to[1], from[1], k)];
+    };
+    seg(run(a0, P), a0);
     const ka = Math.max(8, Math.ceil((T * 1.6) / 0.5));
     for (let i = path.length ? 1 : 0; i <= ka; i++) {
       const t = i / ka;
@@ -708,11 +719,13 @@ function junctionMarkings(
         (b0 * a0[1] + b1 * X[1] + b2 * a1[1]) / s,
       ]);
     }
-    seg(path[path.length - 1], Q);
-    // Both edges of the lane, dashed 2 m on / 2 m off (dash quads
-    // following the curve), each pair of dashes facing across the lane.
-    for (const d of [-half, half]) {
-      const pts = path.map((q, i): Vec2 => {
+    seg(path[path.length - 1], run(a1, Q));
+    // ONE guide per movement: the lane's outer edge (the larger radius,
+    // toward the corner X of the two lane lines), dashed 2 m on / 1.5 m
+    // off by arc length, the dashes following the curve. (Round 4 dashed
+    // both edges: eight broken arcs per box read as confetti from above.)
+    const edge = (d: number) =>
+      path.map((q, i): Vec2 => {
         const a = path[Math.max(0, i - 1)];
         const b = path[Math.min(path.length - 1, i + 1)];
         const dl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
@@ -721,18 +734,28 @@ function junctionMarkings(
           q[1] + ((b[0] - a[0]) / dl) * d,
         ];
       });
-      const s = [0];
-      for (let i = 1; i < pts.length; i++)
-        s.push(
-          s[i - 1] +
-            Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]),
-        );
-      dashed({pts, s}, 2, 2, 0.3);
-    }
+    const im = path.length >> 1;
+    const pos = edge(half);
+    const neg = edge(-half);
+    const pts = dist2(pos[im], X) < dist2(neg[im], X) ? pos : neg;
+    const s = [0];
+    for (let i = 1; i < pts.length; i++)
+      s.push(
+        s[i - 1] +
+          Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]),
+      );
+    // Centre the dash pattern on the curve so both ends get a whole dash.
+    const total = s[s.length - 1];
+    const lead = Math.max(0.2, ((total + 1.5) % 3.5) / 2);
+    dashed({pts, s}, 2, 1.5, lead, total - 0.2);
+    return true;
   };
+  // At most MAX_ARCS dashed lines per box: the right turns first, then
+  // the lane lines carried across.
+  const MAX_ARCS = 6;
+  let arcs = 0;
   for (const A of F) {
-    if (A.kind < 2) continue;
-    const t0: Vec2 = [-A.dir[0], -A.dir[1]];
+    if (A.kind < 2 || arcs >= MAX_ARCS) continue;
     // Right turn: the arm best matching the approach's right (-l).
     let B = null;
     let best = 0.7;
@@ -741,13 +764,21 @@ function junctionMarkings(
         best = dot(b.dir, [-A.l[0], -A.l[1]]);
         B = b;
       }
-    if (B && B.kind >= 1 && dist2(A.o, B.o) < 45) rightTurn(A, B);
-    // Lane lines across the box to the opposite arm (the one most in line
-    // with this one, within 3 m: two parallel chains are two roads).
+    if (B && B.kind >= 1 && dist2(A.o, B.o) < 45 && rightTurn(A, B)) arcs++;
+  }
+  // One lane line carried across the box per arterial approach (the line
+  // between the kerbside and middle lanes, 2 m on / 4 m off) to the
+  // opposite arterial arm most in line with it (within 3 m: two parallel
+  // chains are two roads). Avenues get none: their through lanes are
+  // read from the stop lines (round 4 carried every lane line of every
+  // approach, which added to the clutter).
+  for (const A of F) {
+    if (A.kind < 3 || arcs >= MAX_ARCS) continue;
+    const t0: Vec2 = [-A.dir[0], -A.dir[1]];
     let C = null;
     let off = 3;
     for (const c of F) {
-      if (c === A || c.kind < 2 || dot(c.dir, t0) < 0.94) continue;
+      if (c === A || c.kind < 3 || dot(c.dir, t0) < 0.94) continue;
       const o = Math.abs(dot([c.o[0] - A.o[0], c.o[1] - A.o[1]], A.l));
       if (o < off) {
         off = o;
@@ -755,10 +786,11 @@ function junctionMarkings(
       }
     }
     if (C) {
-      for (let k = 1; k < Math.min(A.per, C.per); k++) {
-        const c = turn(A.at(k * A.lw), t0, C.at(-k * C.lw), C.dir, 0.5);
-        dashed({...sample(c.B, c.len)}, 2, 4);
-      }
+      const k = Math.min(A.per, C.per) - 1;
+      if (k < 1) continue;
+      const c = turn(A.at(k * A.lw), t0, C.at(-k * C.lw), C.dir, 0.5);
+      dashed({...sample(c.B, c.len)}, 2, 4);
+      arcs++;
     }
   }
 }
@@ -1470,8 +1502,70 @@ const CURB_STEP = 9;
  * are one shared-vertex strip per edge, from road - 0.05 to the band edge.
  * Corners at junctions follow the kerb-return fillets of the road geometry.
  */
+/**
+ * The curb band's triangles (as built by blocks()), on a 16 m grid, so
+ * tile props lying on the band (utility covers) sit on its actual surface:
+ * the band is linear between samples up to CURB_STEP apart, which bandY's
+ * exact terrain/road heights miss by several cm on slopes.
+ */
+class BandTris {
+  tris: number[] = [];
+  grid = new Map<number, number[]>();
+  add(a: Vec3, b: Vec3, c: Vec3) {
+    const i = this.tris.length;
+    this.tris.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    const x0 = Math.floor(Math.min(a[0], b[0], c[0]) / 16);
+    const x1 = Math.floor(Math.max(a[0], b[0], c[0]) / 16);
+    const z0 = Math.floor(Math.min(a[2], b[2], c[2]) / 16);
+    const z1 = Math.floor(Math.max(a[2], b[2], c[2]) / 16);
+    for (let z = z0; z <= z1; z++)
+      for (let x = x0; x <= x1; x++) {
+        const k = (z + 4096) * 8192 + x + 4096;
+        const l = this.grid.get(k);
+        if (l) l.push(i);
+        else this.grid.set(k, [i]);
+      }
+  }
+  at(x: number, z: number): number | null {
+    const k = (Math.floor(z / 16) + 4096) * 8192 + Math.floor(x / 16) + 4096;
+    const t = this.tris;
+    for (const i of this.grid.get(k) ?? []) {
+      const ax = t[i],
+        az = t[i + 2],
+        bx = t[i + 3],
+        bz = t[i + 5],
+        cx = t[i + 6],
+        cz = t[i + 8];
+      const d = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+      if (Math.abs(d) < 1e-9) continue;
+      const u = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / d;
+      const v = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / d;
+      const w = 1 - u - v;
+      if (u >= -1e-5 && v >= -1e-5 && w >= -1e-5)
+        return t[i + 1] * u + t[i + 4] * v + t[i + 7] * w;
+    }
+    return null;
+  }
+}
+const bandTrisOf = new WeakMap<RoadGeom, BandTris>();
+
+/**
+ * Height of the curb band's surface at (x, z), or null where there is no
+ * band (or the base mesh was not built in this realm: the tile worker
+ * builds it first).
+ */
+export function bandSurfaceAt(
+  geom: RoadGeom,
+  x: number,
+  z: number,
+): number | null {
+  return bandTrisOf.get(geom)?.at(x, z) ?? null;
+}
+
 function blocks(L: CityLayout, m: CMesh, geom: RoadGeom) {
   const hf = L.terrain.heights;
+  const bandTris = new BandTris();
+  bandTrisOf.set(geom, bandTris);
   const land = landing(L, geom);
   const lift = 0.16;
   // Crossing aprons: near the mouth corners of junctions with crossings.
@@ -1660,6 +1754,8 @@ function blocks(L: CityLayout, m: CMesh, geom: RoadGeom) {
       const tops: {p: Vec2; y: number; hr: number}[] = [];
       let prevO = -1;
       let prevI = -1;
+      let prevOp: Vec3 = [0, 0, 0];
+      let prevIp: Vec3 = [0, 0, 0];
       let prevIn: Vec2 | null = null;
       for (let k = 0; k < outer.length; k++) {
         const q = outer[k];
@@ -1672,27 +1768,26 @@ function blocks(L: CityLayout, m: CMesh, geom: RoadGeom) {
         const aux = (rs ? rs.bits : edges[i].bw > 2 ? 3 : 1) | bwBits;
         tops.push({p: q, y, hr});
         const o = m.vertex([q[0], y, q[1]], UP, along, 0, bandMat, aux);
+        const op: Vec3 = [q[0], y, q[1]];
         let iv = prevI;
+        let ip = prevIp;
         const qi = ins[k];
         if (!prevIn || qi[0] !== prevIn[0] || qi[1] !== prevIn[1]) {
-          iv = m.vertex(
-            [qi[0], hf.sample(qi[0], qi[1]) + lift, qi[1]],
-            UP,
-            along,
-            e.bw,
-            bandMat,
-            aux,
-          );
+          ip = [qi[0], hf.sample(qi[0], qi[1]) + lift, qi[1]];
+          iv = m.vertex(ip, UP, along, e.bw, bandMat, aux);
         }
         if (prevO >= 0) {
-          if (iv === prevI) m.triFacing(prevO, o, iv, UP);
-          else {
-            m.triFacing(prevO, o, iv, UP);
+          m.triFacing(prevO, o, iv, UP);
+          bandTris.add(prevOp, op, ip);
+          if (iv !== prevI) {
             m.triFacing(prevO, iv, prevI, UP);
+            bandTris.add(prevOp, ip, prevIp);
           }
         }
         prevO = o;
         prevI = iv;
+        prevOp = op;
+        prevIp = ip;
         prevIn = qi;
       }
       curbTops.push(tops);
@@ -4717,8 +4812,47 @@ export function signalSpots(
   });
 }
 
-/** Junction luminaire on a signal pole: arm height and reach over the road. */
-export const SIGNAL_LUM = {h: 9.5, reach: 2.5} as const;
+/**
+ * Junction luminaire on a signal pole: arm height, the head's reach and
+ * (on the mast poles, see signalLums) the far head's maximum reach.
+ */
+export const SIGNAL_LUM = {h: 9.5, reach: 2.5, far: 6.5} as const;
+
+/**
+ * The junction luminaire heads on signal pole `k` of junction ji (pole at
+ * p, from signalSpots): the luminaire arm points from the pole toward the
+ * junction centre (round 4 aimed it across the approach and threw the
+ * light down the approach, leaving the box the darkest place on the road
+ * at night). Every pole has a head at SIGNAL_LUM.reach (`pool` false: a
+ * directed throw toward the centre); on two diagonal poles of each box
+ * the arm reaches on over the box to a second head (`pool` true: a round
+ * pool, kind 0) up to SIGNAL_LUM.far out, stopping 3 m short of the
+ * centre. Shared by the tile props, the base light list and the tree
+ * clearance.
+ */
+export function signalLums(
+  L: CityLayout,
+  ji: number,
+  p: Vec3,
+  armDir: Vec2,
+  k: number,
+  cb: (head: Vec3, dir: Vec2, reach: number, pool: boolean) => void,
+) {
+  const c = L.junctions[ji].p;
+  const dx = c[0] - p[0];
+  const dz = c[1] - p[2];
+  const dl = Math.hypot(dx, dz);
+  const dir: Vec2 = dl > 1 ? [dx / dl, dz / dl] : armDir;
+  const head = (r: number): Vec3 => [
+    p[0] + dir[0] * r,
+    p[1] + SIGNAL_LUM.h,
+    p[2] + dir[1] * r,
+  ];
+  cb(head(SIGNAL_LUM.reach), dir, SIGNAL_LUM.reach, false);
+  const far = Math.min(SIGNAL_LUM.far, dl - 3);
+  if (((k + hash2(ji, 0x1a4)) & 1) === 0 && far > SIGNAL_LUM.reach + 1.5)
+    cb(head(far), dir, far, true);
+}
 
 /** Horizontal clearance from an avenue tree's trunk to any lamp head. */
 const TREE_LAMP_CLEAR = 6.5;
@@ -4760,11 +4894,8 @@ export function avenueTreeS(
       add(p[0] + dir[0] * reach, p[2] + dir[1] * reach);
     });
     L.junctions.forEach((_, ji) =>
-      signalSpots(L, geom, hf, ji, (p, armDir) =>
-        add(
-          p[0] + armDir[0] * SIGNAL_LUM.reach,
-          p[2] + armDir[1] * SIGNAL_LUM.reach,
-        ),
+      signalSpots(L, geom, hf, ji, (p, armDir, _r, k) =>
+        signalLums(L, ji, p, armDir, k, h => add(h[0], h[2])),
       ),
     );
     lampHeads.set(geom, (heads = g));
@@ -4820,24 +4951,27 @@ function streetLights(L: CityLayout, geom: RoadGeom, lights: LightList) {
       directedKind(dir),
     );
   });
-  // Junction luminaires (round pools, kind exactly 0), brighter than the
-  // arterial lights so the box is the best-lit place on the road.
-  const s = 1.3;
-  // Each throws down its approach (the arm's outward direction), lighting
-  // the queue up to the stop line.
+  // Junction luminaires on the signal poles (signalLums): each corner
+  // head throws toward the box centre (directed, brighter than the road
+  // luminaires), and the far heads over the box are round pools (kind
+  // exactly 0, which the shader doubles), so the box is the best-lit place
+  // on the road.
+  // Tuned in the lab (top-night): box mean luma ~1.1-1.2x the sidewalk's.
+  const s = 1.0;
+  const lum: Vec3 = [LED[0] * s, LED[1] * s, LED[2] * s];
+  const p = 0.4;
+  const poolCol: Vec3 = [LED[0] * p, LED[1] * p, LED[2] * p];
   L.junctions.forEach((_, ji) =>
-    signalSpots(L, geom, hf, ji, (p, armDir, _reach, k) => {
-      lights.add(
-        [
-          p[0] + armDir[0] * SIGNAL_LUM.reach,
-          p[1] + SIGNAL_LUM.h - 0.35,
-          p[2] + armDir[1] * SIGNAL_LUM.reach,
-        ],
-        24,
-        [LED[0] * s, LED[1] * s, LED[2] * s],
-        directedKind(geom.junctions[ji].arms[k].dir),
-      );
-    }),
+    signalSpots(L, geom, hf, ji, (p, armDir, _reach, k) =>
+      signalLums(L, ji, p, armDir, k, (h, dir, _r, pool) =>
+        lights.add(
+          [h[0], h[1] - 0.35, h[2]],
+          pool ? 26 : 24,
+          pool ? poolCol : lum,
+          pool ? LightKind.street : directedKind(dir),
+        ),
+      ),
+    ),
   );
 }
 
