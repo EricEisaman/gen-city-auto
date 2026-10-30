@@ -533,3 +533,55 @@ but these are the hooks:
   (`CM.paint 0xd0`), a bike rack; stair towers get rooftop plant and fins. Platform: benches and
   vending every bay in a 4-bay rhythm, platform number plates (`CM.roadSign` 24+, both faces),
   departure boards lowered 0.35 m on rods with a clock beside them.
+
+### Round 4 geometry additions (for the shader engineer)
+
+- **Thin lines (city.wgsl vs/fs, cmesh tube contract):** the beading / stair-stepping was TAA, not
+  the widening: hashed coverage only survives where the 3x3 variance clip keeps history, and a
+  sparse dither (a wire at 10-40 % coverage) has frames with no covered neighbour, so the history
+  is wiped and the line comes out as dots. Now overhead-line wires (`CM.wire` params != 0) widen to
+  `MIN_LINE_PX` 0.85 (~1.2 px across the diamond) with a coverage floor of 0.5 (0.3 past 260-520 m),
+  and `CM.lamp` joined `TUBE_MATS`: **lamp tubes are drawn as solid min-width lines** (no dither;
+  VOut.cov < 0 carries the true coverage and fs scales `s.emissive` by it). Street wires (param 0)
+  and frame/paint/metal tubes keep the old 0.7 px hashed path.
+- **Coping light line** is now a lamp tube, **`CM.lamp` 7** (r 4.5 cm at lateral 5.455, y 1.155,
+  continuous over each non-station run, both sides), replacing the lamp-1 strip. With the solid
+  min-width path it no longer needs lamp 7's x8 distance boost to stay continuous: at far-night it
+  now reads as a bright, slightly blooming tube; please drop the boost to ~x2-3 for param 7.
+- **Soffit fittings** (the 1.2 m tube under the centre soffit, every bay) are **`CM.lamp` 6** (was
+  1): distance-boosted, solid min-width, so they read as a row of lit bars from afar.
+- **Coping lip** is 19 cm deep (y 1.25..1.06, was ..1.13): deeper shadow line. The RC_FASCIA face
+  top is now 1.06 (uv.y still metres down from it). The lamp-1 LED strip under the lip is at 1.03.
+- **Scuppers:** a dark green spout (`CM.paint` 0x303, r 7.5 cm) through each non-station fascia,
+  both sides, from (5.12, y 0.97) to (5.68, y 0.84), at exactly `u = scupperU(seed, i)` (gen-base.ts):
+  `12i + 6 + (hashuf(hashu(seed * 0x9e3779b1 ^ (i + 65536)) ^ 0x22) - 0.5) * 1.8` - the x0 of the
+  scupper streak in `deckStains()`. If you move/re-anchor that streak keep x0, or tell me; the
+  streak should start right under the spout (uv.y ~0.1-0.2 from the fascia top) with a hard top.
+- **Cable troughs (off platforms):** two precast troughs per side: signal 4.3..4.6 (lid
+  `RC_TROUGH` 'h' at y 0.295, a 5 cm `RC_PARAPET` 'h' rim at 4.3..4.35 y 0.32), a step face
+  (`RC_TROUGH` 'v') up to the power trough 4.6..4.9 (lid y 0.355), its outer face down to a 5 cm
+  dark gap (4.9..4.95, y 0.2, `RC_PARAPET` 'h') against the parapet. Centre trough: 5 cm
+  `RC_PARAPET` rims at |lateral| 0.27..0.32, y 0.24, lid 0.22. **Shader ask:** lids still read as
+  pale paving - darker/greener lid tone than the rims, 1 m lid joints that survive to ~30 m
+  (prefiltered), some lids rocked (+-tone), a cable glimpse at 1 in 40 joints.
+- **Ballast shoulder (off platforms):** crown 0.9..3.3 at y 0.15, then one 'bed' slope to
+  (4.05, -0.17) (n ~ (0.39, 0.92)), cess `RC_PARAPET` 'h' 4.05..4.3 at -0.17. `uv.x` is the signed
+  lateral, so `abs(uv.x) > 3.3` is the slope: paler fresh stone with a darker toe would sell it.
+- **Soundwall panel mix:** `RC_SOUNDWALL` params carry **`(param >> 7) & 3` (RC_PANELS_SHIFT = 7)**
+  per 120 m stretch: 0 all ribbed grey; 1 ribbed + ~1 in 4 clear polycarbonate; 2 ribbed + ~1 in 6
+  replaced panel in a fresher/other tone; 3 all three. Pick each ~2 m panel by
+  `hash(floor(uv.x / 2), aux seed)`; +-8 % tint, grime at the foot. (Glazed bit 0x20 unchanged.)
+- **Soundwall ends:** galvanised H end post (0.26 x 1.88 m, 25 cm above the cap) and a 6 m raking
+  taper (both panel faces, wall mat, uv.x continues the run's bent units, uv.y from the panel top)
+  with a sloped `RC_PARAPET` cap down to the parapet. Next to a platform: post + end face only.
+- **Clearance boards:** every girder span's outer web now has 0x80 set (board on every span), plus
+  a proud plate (`CM.paint RAIL_GIRDER | 0x80 | seed`, 3 cm proud of the web at lateral 4.43, in
+  front of the hazard band, y -1.8..-2.3, uv = (12i + 4.8..7.2, 0.9..1.4)) with `CM.frame` edges.
+  **Shader ask:** a real black numeral (e.g. "4.5m" via rdDigit) in the white panel instead of the
+  noise glyphs.
+- **Station:** line-colour band (`CM.paint 0x0c`, 0.45 m, 2 cm proud) along both platform outer
+  fascias (y 0.5..0.95); canopy purlins (galv-less `CM.metal` tubes r 6 cm, ~2.5 m apart, 4.1..9.7)
+  each with a 1.2 m `CM.lamp` 8 tube fitting (5.4..6.6); yellow car-position plates (`CM.paint`
+  0x92, 0.28 x 0.24 m, facing along) under the canopy fascia every 24 m.
+- **Lab:** new `platform` view for station sites (on the +1 platform at eye height looking toward
+  the stair head: canopy soffit, departure board, clock, benches, vending).

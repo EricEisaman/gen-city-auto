@@ -874,10 +874,14 @@ export function labInfo(
     views.mid = look(from(J, rot(arm.dir, 0.8), 45, j.h + 30), J);
     views.far = look(from(J, rot(arm.dir, 0.35), 250, j.h + 50), J);
     views.shell = {...views.far, lod1: true};
-    // Looking along the gutter toward the junction, 2 m from the curb.
-    const k = P(sb + 9, W / 2 - 0.3);
-    const ce = P(sb + 12, W / 2 - 1.5);
-    views.curb = look(v3(ce.p, ce.h + 1.3), v3(k.p, k.h + 0.05), 1.05);
+    // Looking along the gutter toward the junction, 1.6 m out from the
+    // kerb of the block the eye view stands on (the other side of a
+    // divided road may be a flush overlap strip with no kerb at all): kerb
+    // face, gutter apron and the edge of the walk fill the lower frame.
+    const sg = ws ? -1 : 1;
+    const k = P(sb + 7, sg * (W / 2 + 0.2));
+    const ce = P(sb + 15, sg * (W / 2 - 1.6));
+    views.curb = look(v3(ce.p, ce.h + 1.0), v3(k.p, k.h + 0.1), 1.05);
     orbit = {center: J, radius: 70, height: j.h + 25, fov: 1.0};
   } else {
     const e = L.elevated[site.line];
@@ -961,6 +965,16 @@ export function labInfo(
         S.p[1] + sl[1] * 32 + S.d[1] * 30,
       ];
       views.station = look(v3(sp, g(sp) + 1.7), v3(S.p, S.h - 1), 1.05);
+      if (site.station >= 0) {
+        // On the +1 platform at eye height, looking down it toward the
+        // stair head: canopy soffit, departure board, clock, benches.
+        const at = (ds: number, lat: number, dy: number): Vec3 => {
+          const q = along(e, arc, arc[si] + ds);
+          const ql: Vec2 = [-q.d[1], q.d[0]];
+          return [q.p[0] + ql[0] * lat, q.h + 1.45 + dy, q.p[1] + ql[1] * lat];
+        };
+        views.platform = look(at(4, 7.6, 1.6), at(50, 6.0, 1.5), 1.05);
+      }
     }
     // The orbit stays 20 m above the highest ground on its circle (the
     // site can sit below a hill, which put the eye in the ground).
