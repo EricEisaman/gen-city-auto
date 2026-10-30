@@ -874,10 +874,14 @@ export function labInfo(
     views.mid = look(from(J, rot(arm.dir, 0.8), 45, j.h + 30), J);
     views.far = look(from(J, rot(arm.dir, 0.35), 250, j.h + 50), J);
     views.shell = {...views.far, lod1: true};
-    // Looking along the gutter toward the junction, 2 m from the curb.
-    const k = P(sb + 9, W / 2 - 0.3);
-    const ce = P(sb + 12, W / 2 - 1.5);
-    views.curb = look(v3(ce.p, ce.h + 1.3), v3(k.p, k.h + 0.05), 1.05);
+    // Looking along the gutter toward the junction, 1.6 m out from the
+    // kerb of the block the eye view stands on (the other side of a
+    // divided road may be a flush overlap strip with no kerb at all): kerb
+    // face, gutter apron and the edge of the walk fill the lower frame.
+    const sg = ws ? -1 : 1;
+    const k = P(sb + 7, sg * (W / 2 + 0.2));
+    const ce = P(sb + 15, sg * (W / 2 - 1.6));
+    views.curb = look(v3(ce.p, ce.h + 1.0), v3(k.p, k.h + 0.1), 1.05);
     orbit = {center: J, radius: 70, height: j.h + 25, fov: 1.0};
   } else {
     const e = L.elevated[site.line];
