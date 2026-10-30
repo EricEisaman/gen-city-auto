@@ -1078,6 +1078,120 @@ fn groundGrime(uv: vec2f, foot: f32) -> vec3f {
   return g;
 }
 
+// Convenience store seen through its window: a small ray-traced room in
+// the tenancy's own frame (x along the shopfront from the unit's left edge,
+// y up from the shop floor, z into the store). A low magazine rack along the
+// glass, gondola runs perpendicular to the window with aisles between them
+// (their end caps facing the street, packed shelves down their sides), the
+// back wall of lit drinks coolers, a white floor and a ceiling of bare
+// fluorescent tubes. d is the view ray per metre of depth. Returns
+// radiance: konbini are lit cold white day and night and at night are the
+// brightest interiors on the street.
+fn konbiniInterior(p: vec2f, w: f32, d: vec2f, seed: u32, foot: f32) -> vec3f {
+  let night = gloomLight();
+  let cool = vec3f(0.86, 0.96, 1.1);
+  let L = mix(0.3, 0.75, night);
+  let fk = 1.0 - smoothstep(0.012, 0.05, foot);
+  let dir = vec3f(d, 1.0);
+  let o = vec3f(p, 0.0);
+  let inv = 1.0 / select(dir, vec3f(1e-4), abs(dir) < vec3f(1e-4));
+  // Room: floor, ceiling (2.7 m), back wall (5.6 m), side walls.
+  let tyR = select(-o.y * inv.y, (2.7 - o.y) * inv.y, dir.y > 0.0);
+  let txR = select(-o.x * inv.x, (w - o.x) * inv.x, dir.x > 0.0);
+  var t = min(min(tyR, 5.6), max(txR, 0.0));
+  var c = vec3f(0.0);
+  var e = vec3f(0.0);
+  let hit = o + dir * t;
+  if (t == 5.6) {
+    // Coolers: glass doors 0.62 m wide from 0.1 to 2.0 m, bottles on lit
+    // shelves behind, a dark frame and a header strip above.
+    let cx = fract(hit.x / 0.62);
+    if (hit.y > 0.1 && hit.y < 2.0 && cx > 0.06 && cx < 0.96) {
+      let row = floor((hit.y - 0.1) / 0.32);
+      let bh = hash21(vec2f(floor(hit.x / 0.07), row + f32(seed & 31u)));
+      let bottle = mix(vec3f(0.45), 0.35 + 0.35 * cos(6.2831 * (bh + vec3f(0.0, 0.33, 0.67))), fk);
+      let lip = step(fract((hit.y - 0.1) / 0.32), 0.08);
+      c = mix(bottle, vec3f(0.9), lip) * 0.8;
+      e = cool * 0.35 * L;
+    } else if (hit.y > 2.1 && hit.y < 2.4) {
+      c = vec3f(0.85, 0.85, 0.82);
+      e = cool * 0.2 * L;
+    } else {
+      c = vec3f(0.2);
+    }
+  } else if (t == tyR && dir.y > 0.0) {
+    // Ceiling: rows of bare tubes running along the shopfront.
+    c = vec3f(0.85);
+    let tz = abs(fract((hit.z - 0.9) / 1.5) - 0.5) * 1.5;
+    let tube = 1.0 - smoothstep(0.05, 0.08 + foot * 4.0, tz);
+    e = cool * mix(0.15, 8.0, tube) * L;
+  } else if (t == tyR) {
+    // Polished white vinyl floor, faint 300 mm tile joints, the tubes'
+    // reflections lying in it.
+    let g = abs(fract(hit.xz / 0.3) - 0.5) * 0.3;
+    c = vec3f(0.5, 0.5, 0.49) * (1.0 - 0.15 * (1.0 - smoothstep(0.004, 0.01, min(g.x, g.y))) * fk);
+    let rz = abs(fract((hit.z - 0.9) / 1.5) - 0.5) * 1.5;
+    e = cool * 0.5 * (1.0 - smoothstep(0.08, 0.25, rz)) * L;
+  } else {
+    // Side walls: tall shelving, packed.
+    let row = floor(hit.y / 0.36);
+    let ph = hash21(vec2f(floor(hit.z / 0.12), row + f32(seed & 63u)));
+    c = mix(vec3f(0.5), 0.32 + 0.32 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), fk) * select(1.0, 0.3, hit.y > 2.0);
+  }
+  // Gondola runs: 0.9 m wide, 1.5 m tall, from 1.5 to 4.6 m deep, every
+  // 2.1 m along the front; the ray is tested against the few it can cross.
+  let x15 = o.x + dir.x * 1.5;
+  let k0 = floor((x15 - 0.6) / 2.1);
+  for (var k = -1; k <= 2; k++) {
+    let kk = k0 + f32(select(k, -k, dir.x < 0.0));
+    let cx0 = 1.05 + kk * 2.1;
+    if (cx0 - 0.45 < 0.2 || cx0 + 0.45 > w - 0.2) { continue; }
+    let bmin = vec3f(cx0 - 0.45, 0.0, 1.5);
+    let bmax = vec3f(cx0 + 0.45, 1.5, 4.6);
+    let t0 = (bmin - o) * inv;
+    let t1 = (bmax - o) * inv;
+    let tn = min(t0, t1);
+    let tf = max(t0, t1);
+    let tin = max(max(tn.x, tn.y), tn.z);
+    let tout = min(min(tf.x, tf.y), tf.z);
+    if (tin < tout && tin > 0.0 && tin < t) {
+      t = tin;
+      let q = o + dir * tin;
+      e = vec3f(0.0);
+      if (tin == tn.z) {
+        // End cap: a promotion display, big colour blocks and a price card.
+        let ph = hashuf(seed ^ (u32(kk + 50.0) * 0x2c1u));
+        c = mix(vec3f(0.85, 0.8, 0.7), 0.5 + 0.45 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), step(0.35, fract(q.y / 0.5)));
+        if (q.y > 1.3) { c = vec3f(0.95, 0.85, 0.2); }
+      } else if (tin == tn.y) {
+        c = vec3f(0.7);
+      } else {
+        // Side: product rows every 0.36 m with white shelf lips.
+        let row = floor(q.y / 0.36);
+        let fy = fract(q.y / 0.36);
+        let ph = hash21(vec2f(floor(q.z / mix(0.07, 0.14, hashuf(seed ^ (u32(row) * 77u)))), row * 7.0 + kk * 13.0 + f32(seed & 127u)));
+        let pack = mix(vec3f(0.4), select(0.32 + 0.32 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), vec3f(0.85), fract(ph * 7.0) < 0.3), fk);
+        c = select(pack, vec3f(0.92), fy < 0.1);
+        // Shaded side of the run.
+        c *= select(1.0, 0.75, (tin == tn.x) == (dir.x > 0.0));
+      }
+    }
+  }
+  // Magazine rack along the glass: 0.3 m deep, 1.1 m tall, across the
+  // window except the door bay; covers fade by footprint.
+  let tm = 0.25;
+  let pm = o + dir * tm;
+  if (tm < t && pm.y < 1.1 && pm.y > 0.0 && pm.x > 0.3 && pm.x < w - 1.4) {
+    let mh = hash21(vec2f(floor(pm.x / 0.21), floor(pm.y / 0.28) + f32(seed & 15u)));
+    let mag = mix(vec3f(0.6, 0.55, 0.5), 0.45 + 0.45 * cos(6.2831 * (mh + vec3f(0.0, 0.33, 0.67))), fk);
+    c = select(mag, vec3f(0.85), fract(pm.y / 0.28) < 0.12);
+    e = vec3f(0.0);
+    t = tm;
+  }
+  // Light falls off a little into the depth of the store.
+  return c * cool * L * mix(1.0, 0.75, clamp(t / 6.0, 0.0, 1.0)) + e;
+}
+
 fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
   let style = param & 0x1fffu;
@@ -1313,45 +1427,11 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         glow = vec3f(1.0, 0.8, 0.55) * 0.35;
       }
       if (shopType == 0u) {
-        // Konbini: bright cool interior, colored band across the top.
-        // Gondola shelves stocked with packaging, traced as parallax planes
-        // facing the street at three depths behind the glass.
-        var shelf = vec3f(0.0);
-        var hitShelf = false;
+        // Konbini: a lit store traced behind the glass, cold white tubes.
         let ndvS = max(-dot(V, n), 0.05);
         let vS = vec2f(dot(V, T), V.y) / ndvS;
-        for (var r = 0; r < 3; r++) {
-          let depth = 1.0 + f32(r) * 1.7;
-          let q = vec2f(lx, ly) + vS * depth;
-          let qTop = vec2f(lx, ly) + vS * (depth + 0.45);
-          if (q.y > 0.15 && q.y < 1.65) {
-            // Front face: product rows every 0.38 m with white shelf lips.
-            let row = floor((q.y - 0.15) / 0.38);
-            let fy = fract((q.y - 0.15) / 0.38);
-            let pw = mix(0.08, 0.16, hash21(vec2f(row, f32(r) + f32(shopSeed % 31u))));
-            let pid = floor(q.x / pw);
-            let ph = hash21(vec2f(pid, row * 7.0 + f32(r) * 13.0 + f32(shopSeed % 97u)));
-            // Products shrink below a pixel at a distance: fade to the
-            // average shelf tone instead of shimmering pastel stripes.
-            let pf = smoothstep(0.015, 0.06, max(length(dWorldX), length(dWorldY)));
-            let pack = mix(mix(vec3f(0.85, 0.82, 0.75), 0.5 + 0.5 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), mix(0.25, 0.6, step(0.8, ph))), vec3f(0.5, 0.48, 0.45), pf);
-            let gapX = fract(q.x / pw) < 0.08;
-            let fill = fy > 0.1 && fy < 0.1 + mix(0.55, 0.85, ph) && !gapX;
-            shelf = select(vec3f(0.12), pack, fill);
-            if (fy < 0.1) { shelf = vec3f(0.92); }
-            // Darker toward the aisle ends.
-            shelf *= 1.0 - 0.25 * f32(r);
-            hitShelf = true;
-            break;
-          }
-          if (q.y >= 1.65 && qTop.y < 1.65) {
-            shelf = vec3f(0.6) * (1.0 - 0.25 * f32(r));
-            hitShelf = true;
-            break;
-          }
-        }
-        if (!hitShelf) { shelf = inside * 2.0; }
-        inside = inside * 0.3 + shelf * vec3f(1.05, 1.1, 1.15) * mix(0.2, 0.85, night);
+        inside = konbiniInterior(vec2f(lxu, ly), 2.0 * st.bay, vS, shopSeed, foot);
+        glow = vec3f(0.0);
         if (ly > st.floorH * 0.66) {
           let bandC = array<vec3f, 3>(vec3f(0.1, 0.5, 0.25), vec3f(0.9, 0.3, 0.05), vec3f(0.1, 0.3, 0.8))[shopSeed % 3u];
           s.albedo = bandC;
@@ -1388,10 +1468,32 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         inside *= 0.3;
         glow = vec3f(0.0);
       }
+      // Posters taped inside the glass at eye level (sale, new product,
+      // part-timers wanted): a bold colour field, a white title band and a
+      // photo block, lit through from behind by the shop.
+      if (shopType <= 2u) {
+        let half = st.bay * 0.5;
+        let slot = floor(lx / half);
+        let ps = hashu(cellSeed ^ (u32(slot + 7.0) * 0x3d1u));
+        let pq = vec2f(lx - (slot + 0.5) * half - (hashuf(ps ^ 1u) - 0.5) * 0.25, ly - mix(1.05, 1.45, hashuf(ps ^ 2u)));
+        let psz = vec2f(mix(0.42, 0.6, hashuf(ps ^ 3u)), 0.7);
+        if (hashuf(ps) < select(0.4, 0.7, shopType == 0u) && abs(pq.x) < psz.x * 0.5 && abs(pq.y) < psz.y * 0.5) {
+          let pc = array<vec3f, 5>(vec3f(0.85, 0.12, 0.1), vec3f(0.95, 0.75, 0.1), vec3f(0.1, 0.35, 0.8), vec3f(0.1, 0.6, 0.3), vec3f(0.9, 0.4, 0.6))[hashu(ps ^ 4u) % 5u];
+          let v = pq.y / psz.y + 0.5;
+          var col = pc;
+          if (v > 0.74 && v < 0.94) { col = vec3f(0.92, 0.9, 0.86); }
+          if (v > 0.2 && v < 0.62 && abs(pq.x) < psz.x * 0.36) { col = mix(vec3f(0.7, 0.6, 0.5), 0.5 + 0.4 * cos(6.2831 * (hashuf(ps ^ 5u) + vec3f(0.0, 0.33, 0.67))), 0.6); }
+          s.albedo = col;
+          s.rough = 0.5;
+          s.emissive = col * luminance(inside) * 0.35;
+          return s;
+        }
+      }
       s.albedo = vec3f(0.02);
       s.rough = 0.04;
-      // Every shop is lit to its own level.
-      s.emissive = (inside * 1.2 * (1.0 - fres) + glow * mix(0.3, 1.0, night)) * mix(0.45, 1.15, hashuf(shopSeed ^ 0x1e1u));
+      // Every shop is lit to its own level; the konbini always at full.
+      let shopK = select(mix(0.45, 1.15, hashuf(shopSeed ^ 0x1e1u)), 1.3, shopType == 0u);
+      s.emissive = (inside * 1.2 * (1.0 - fres) + glow * mix(0.3, 1.0, night)) * shopK;
       s.cls = CLASS_GLASS;
       return s;
     }
