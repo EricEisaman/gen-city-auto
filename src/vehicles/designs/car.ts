@@ -20,8 +20,12 @@ import {
   blob,
   clamp,
   dot,
+  cross,
+  detailScale,
   lerp,
+  norm,
   panel,
+  place,
   projected,
   rect,
   smooth,
@@ -329,6 +333,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     mat: number,
     inner = true,
     off = 0.006,
+    trim = false,
   ) => {
     const map = (s: number, t: number): [number, number] => {
       const a = lerp(a0, a1, t);
@@ -345,17 +350,20 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       segS: ns - 1,
       segT: 6,
     });
-    // The inside trim is a little narrower so its edges never poke through the glass.
-    const mapIn = (s: number, t: number) => map(lerp(0.28, 0.72, s), t);
+    // The inside trim is a little narrower so its edges never poke through
+    // the glass; pillar trims are wide, rounded covers in headliner fabric.
+    const mapIn = (s: number, t: number) =>
+      map(trim ? s : lerp(0.28, 0.72, s), t);
     if (inner)
-      kit.decal(g, mapIn, Mat.interior, {
-        ns,
+      kit.decal(g, mapIn, trim ? Mat.headliner : Mat.interior, {
+        ns: trim ? Math.max(ns, 6) : ns,
         nt: 5,
         offset: 0.012,
         inner: true,
         mirror: true,
-        segS: ns - 1,
+        segS: trim ? Math.max(ns, 6) * 2 : ns - 1,
         segT: 6,
+        bump: trim ? s => 0.022 * Math.sin(Math.PI * s) : undefined,
       });
   };
   const pillarMat = (p: 'paint' | 'black') =>
@@ -367,6 +375,9 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     0,
     1,
     pillarMat(cfg.aPillar),
+    true,
+    0.006,
+    true,
   );
   // Windshield frit along base and top + header.
   glassDecal(
@@ -422,19 +433,20 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       mat,
       {ns: 3, nt: 4, offset: 0.006, mirror: true, segS: 2, segT: 4},
     );
-    const shapeIn = (s2: number, t: number) => shape(lerp(0.12, 0.88, s2), t);
+    const shapeIn = (s2: number, t: number) => shape(lerp(0.06, 0.94, s2), t);
     kit.decal(
       g,
       projected(g, [2, 1], shapeIn, p => p[0]),
-      Mat.interior,
+      Mat.headliner,
       {
-        ns: 3,
+        ns: 5,
         nt: 4,
         offset: 0.012,
         inner: true,
         mirror: true,
-        segS: 2,
+        segS: 6,
         segT: 4,
+        bump: s2 => 0.016 * Math.sin(Math.PI * s2),
       },
     );
   };
@@ -1219,6 +1231,9 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     );
   const eyeY = seatY(driverX, eyeZ + 0.12) + 0.62;
   if (cfg.interior !== 'none') {
+    // Small trim details only at full detail: LOD meshes see the cabin
+    // through glass from afar, and tiny blobs keep a minimum ring count.
+    const fine = detailScale() > 0.9;
     const zFire = cfg.zFire ?? Math.min(cowl - 0.1, wb / 2 - archR - 0.02);
     const zBulk =
       cfg.zBulk ??
@@ -1231,8 +1246,10 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     {
       const rows: Vec3[][] = [];
       const N = 10;
+      const zc0 = zBulk - 0.02,
+        zc1 = cowl - cfg.ghCornerBase;
       for (let i = 0; i <= N; i++) {
-        const z = lerp(zBulk - 0.02, cowl - cfg.ghCornerBase, i / N);
+        const z = lerp(zc0, zc1, i / N);
         const xe = xEdge(z);
         const ye = edgeY(z);
         const yBot = Math.max(
@@ -1249,16 +1266,105 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       }
       const card = new Sheet(rows, 1);
       kit.sheet(card, Mat.interior, {mirror: true, segU: 6, segV: 12});
-      // Armrests.
-      blob(
-        kit,
-        [xIn(zMid) - 0.07, beltIn(zMid) - 0.17, (zFire + zBulk) / 2],
-        [0.04, 0.025, (zFire - zBulk) * 0.3],
-        Mat.seat,
-        {mirror: true, segU: 8, segV: 4, m: 8},
-      );
+      // Soft-touch upper (window sill and shoulder), a satin strip along it.
+      const vA = card.v(0.02),
+        vB = card.v(N - 0.02);
+      if (fine) {
+        kit.decal(
+          card,
+          (s, t) => [lerp(card.u(0), card.u(2.15), s), lerp(vA, vB, t)],
+          Mat.softTouch,
+          {ns: 5, nt: 9, offset: 0.0015, mirror: true, segS: 4, segT: 10},
+        );
+        kit.decal(
+          card,
+          (s, t) => [lerp(card.u(1.55), card.u(1.68), s), lerp(vA, vB, t)],
+          Mat.satin,
+          {ns: 2, nt: 9, offset: 0.003, mirror: true, segS: 1, segT: 10},
+        );
+      }
+      // (u, v) on the card of the world point (z, y): rows are uniform in z,
+      // y falls monotonically along each row.
+      const cardUV = (z: number, y: number): [number, number] => {
+        const v = card.v(clamp(((z - zc0) / (zc1 - zc0)) * N, 0, N));
+        let lo = 0,
+          hi = 1;
+        for (let it = 0; it < 30; it++) {
+          const m = (lo + hi) / 2;
+          if (card.point(m, v)[1] > y) lo = m;
+          else hi = m;
+        }
+        return [(lo + hi) / 2, v];
+      };
+      const onCard =
+        (shape: (s: number, t: number) => [number, number]) =>
+        (s: number, t: number) =>
+          cardUV(...shape(s, t));
+      // Per-door inserts (trimmed like the seats), armrests, pulls, speakers.
+      const d = cfg.doors;
+      const doorSpans: [number, number][] =
+        d.length > 2
+          ? [
+              [d[1] + 0.06, Math.min(d[0], zc1) - 0.12],
+              [Math.max(d[2], zc0) + 0.1, d[1] - 0.06],
+            ]
+          : [[Math.max(zc0, zDashRear - 1.1) + 0.1, zc1 - 0.12]];
+      for (const [z0, z1] of doorSpans) {
+        if (z1 - z0 < 0.25) continue;
+        const zm = (z0 + z1) / 2;
+        const ye = beltIn(zm);
+        // (Plain rectangle: superellipse end rows collapse and fold.)
+        const xa = xIn(zm) - 0.075;
+        blob(
+          kit,
+          [xa, ye - 0.28, zm - 0.02],
+          [0.045, 0.028, (z1 - z0) * 0.38],
+          Mat.leather,
+          {mirror: true, n: 3, m: 5, segU: 10, segV: 4},
+        );
+        if (!fine) continue;
+        const insert = onCard(rect(z0, z1, ye - 0.25, ye - 0.15));
+        kit.decal(card, insert, Mat.seat, {
+          ns: 7,
+          nt: 4,
+          offset: 0.004,
+          mirror: true,
+          segS: 6,
+          segT: 4,
+          bump: (s, t) => 0.006 * Math.sin(Math.PI * s) * Math.sin(Math.PI * t),
+        });
+        blob(
+          kit,
+          [xa + 0.01, ye - 0.235, z1 - 0.05],
+          [0.012, 0.012, 0.055],
+          Mat.satin,
+          {mirror: true, n: 3, m: 3, segU: 8, segV: 3},
+        );
+        const yBot = Math.max(floorY, archYAt(axles, cfg.sill, zm + 0.1));
+        if (ye - 0.36 - yBot > 0.16) {
+          const zs = z1 - 0.13,
+            ys = yBot + 0.1;
+          const [su, sv] = cardUV(zs, ys);
+          const ps = card.point(su, sv);
+          // Disc facing the cabin (local z -> world x, a proper rotation).
+          blob(
+            kit,
+            [ps[0] - 0.002, ps[1], ps[2]],
+            [0.075, 0.075, 0.006],
+            Mat.rubber,
+            {
+              n: 2,
+              m: 3,
+              segU: 12,
+              segV: 3,
+              mirror: true,
+              xf: p => [p[2], p[1], -p[0]],
+            },
+          );
+        }
+      }
     }
-    // Floor and tunnel.
+    // Floor (carpet).
     const xf = xEdge(zMid) - 0.062;
     panel(
       kit,
@@ -1269,13 +1375,6 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       Mat.interior,
       {segU: 1, segV: 1},
     );
-    blob(
-      kit,
-      [0, floorY + 0.06, (zFire + zDashRear) / 2 - 0.25],
-      [0.12, 0.12, (zFire - zBulk) * 0.42],
-      Mat.plastic,
-      {n: 6, m: 6, segU: 10, segV: 4},
-    );
     // Dash: rows across x, stations along the dash's side profile.
     {
       const yb1 = baseY(0, cowl - 0.02);
@@ -1284,7 +1383,8 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         [yb1 - 0.005, cowl - 0.02],
         [yTop - 0.01, lerp(cowl, zDashRear, 0.45)],
         [yTop, zDashRear + 0.07],
-        [yTop - 0.04, zDashRear - 0.005],
+        [yTop - 0.012, zDashRear + 0.002],
+        [yTop - 0.045, zDashRear - 0.008],
         [yTop - 0.2, zDashRear + 0.03],
         [
           Math.min(yTop - 0.3, floorY + 0.3),
@@ -1314,63 +1414,390 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
           [xEnd, yEnd, z],
         ] as Vec3[];
       });
-      kit.sheet(new Sheet(rows, 1, {v: 2}), Mat.interior, {segU: 8, segV: 14});
-      // Instrument binnacle (driver on the right: Japan is RHD): a hooded
-      // recess with a dark back panel holding two round dials, plus a centre
-      // touch screen and rectangular vents.
-      const bz = zDashRear + 0.02;
-      const by = yTop + 0.05;
-      blob(
-        kit,
-        [driverX, by + 0.075, bz + 0.04],
-        [0.23, 0.025, 0.09],
-        Mat.plastic,
-        {n: 4, m: 3, segU: 16, segV: 4},
-      );
-      blob(kit, [driverX, by, bz + 0.05], [0.21, 0.075, 0.03], Mat.rubber, {
-        n: 6,
-        m: 6,
-        segU: 14,
-        segV: 3,
-      });
-      for (const dx of [-0.09, 0.09])
-        dial(kit, [driverX + dx, by, bz + 0.012], 0.055, -0.2);
-      blob(
-        kit,
-        [0, yTop - 0.1, zDashRear + 0.01],
-        [0.13, 0.08, 0.018],
-        Mat.plastic,
-        {n: 6, m: 8, segU: 12, segV: 3},
-      );
-      blob(
-        kit,
-        [0, yTop - 0.1, zDashRear - 0.005],
-        [0.115, 0.067, 0.004],
-        Mat.dash,
-        {n: 10, m: 8, segU: 12, segV: 3},
-      );
-      for (const vx of [-0.62, -0.2, 0.2, 0.62])
+      const dash = new Sheet(rows, 1, {v: 2});
+      kit.sheet(dash, Mat.softTouch, {segU: 12, segV: 18});
+      // Frame on a face with outward normal n: local x right, y up the face,
+      // z into the surface.
+      type Frame = {p: Vec3; n: Vec3; xf: (q: Vec3) => Vec3};
+      const frameAt = (p: Vec3, n: Vec3): Frame => {
+        const X = norm(cross(n, [0, 1, 0]));
+        const Y = cross(X, n);
+        const xf = (q: Vec3): Vec3 => [
+          X[0] * q[0] + Y[0] * q[1] - n[0] * q[2],
+          X[1] * q[0] + Y[1] * q[1] - n[1] * q[2],
+          X[2] * q[0] + Y[2] * q[1] - n[2] * q[2],
+        ];
+        return {p, n, xf};
+      };
+      const onDash = (x: number, y: number): Frame => {
+        const [u, v] = dash.solve([0, 1], [x, y], p => -p[2]);
+        return frameAt(dash.point(u, v), dash.normal(u, v));
+      };
+      // Point at local (x, y) on frame f, lifted along its normal.
+      const at = (f: Frame, lift: number, x = 0, y = 0): Vec3 => {
+        const q = f.xf([x, y, 0]);
+        return [
+          f.p[0] + q[0] + f.n[0] * lift,
+          f.p[1] + q[1] + f.n[1] * lift,
+          f.p[2] + q[2] + f.n[2] * lift,
+        ];
+      };
+      // Air vent: satin surround, dark throat and horizontal slats.
+      const vent = (f: Frame, hw: number, hh: number, mirror = false) => {
+        blob(kit, at(f, 0), [hw + 0.008, hh + 0.008, 0.007], Mat.satin, {
+          n: 6,
+          m: 3,
+          segU: 12,
+          segV: 3,
+          xf: f.xf,
+          mirror,
+        });
+        blob(kit, at(f, 0.0035), [hw, hh, 0.006], Mat.rubber, {
+          n: 7,
+          m: 3,
+          segU: 12,
+          segV: 3,
+          xf: f.xf,
+          mirror,
+        });
+        for (const k of [-0.35, 0.35])
+          blob(
+            kit,
+            at(f, 0.009, 0, k * hh * 1.2),
+            [hw * 0.97, 0.0025, 0.004],
+            Mat.plastic,
+            {
+              n: 4,
+              m: 3,
+              segU: 8,
+              segV: 3,
+              xf: f.xf,
+              mirror,
+            },
+          );
+      };
+      const xOut = xEdge(zDashRear) - 0.17;
+      if (fine) {
+        // Demister slot along the windscreen base and corner tweeter grilles.
+        kit.decal(
+          dash,
+          (s, t) => [
+            lerp(dash.u(0.55), dash.u(3.45), s),
+            lerp(dash.v(0.32), dash.v(0.4), t),
+          ],
+          Mat.rubber,
+          {ns: 9, nt: 2, offset: 0.0015, segS: 16, segT: 1},
+        );
+        for (const uc of [0.32, 3.68]) {
+          const p = dash.point(dash.u(uc), dash.v(0.5));
+          kit.decal(
+            dash,
+            projected(
+              dash,
+              [0, 2],
+              superellipse(p[0], p[2], 0.035, 0.035, 2),
+              p => p[1],
+            ),
+            Mat.rubber,
+            {ns: 7, nt: 7, offset: 0.0015, segS: 6, segT: 6},
+          );
+        }
+        vent(onDash(xOut, yTop - 0.085), 0.05, 0.026, true);
+        // Satin strip across the passenger side of the face, glovebox below.
+        kit.decal(
+          dash,
+          projected(
+            dash,
+            [0, 1],
+            rect(-xOut + 0.07, -0.17, yTop - 0.125, yTop - 0.107),
+            p => -p[2],
+          ),
+          Mat.satin,
+          {ns: 9, nt: 2, offset: 0.0025, segS: 10, segT: 1},
+        );
+        // Driver side: the strip continues under the cluster to the door,
+        // with the knee-pad seam below it.
+        kit.decal(
+          dash,
+          projected(
+            dash,
+            [0, 1],
+            rect(0.17, xOut - 0.07, yTop - 0.125, yTop - 0.107),
+            p => -p[2],
+          ),
+          Mat.satin,
+          {ns: 9, nt: 2, offset: 0.0025, segS: 10, segT: 1},
+        );
+        kit.decal(
+          dash,
+          projected(
+            dash,
+            [0, 1],
+            rect(0.16, xOut + 0.06, yTop - 0.215, yTop - 0.209),
+            p => -p[2],
+          ),
+          Mat.rubber,
+          {ns: 9, nt: 2, offset: 0.0015, segS: 10, segT: 1},
+        );
+        const gx = -driverX - 0.03,
+          gy = yTop - 0.205;
+        kit.decal(
+          dash,
+          projected(
+            dash,
+            [0, 1],
+            rect(gx - 0.175, gx + 0.175, gy - 0.062, gy + 0.062),
+            p => -p[2],
+          ),
+          Mat.rubber,
+          {ns: 9, nt: 5, offset: 0.0012, segS: 10, segT: 4},
+        );
+        kit.decal(
+          dash,
+          projected(
+            dash,
+            [0, 1],
+            rect(gx - 0.171, gx + 0.171, gy - 0.058, gy + 0.058),
+            p => -p[2],
+          ),
+          Mat.softTouch,
+          {ns: 9, nt: 5, offset: 0.0026, segS: 10, segT: 4},
+        );
+        {
+          const f = onDash(gx, gy + 0.035);
+          blob(kit, at(f, 0.004), [0.04, 0.007, 0.005], Mat.satin, {
+            n: 4,
+            m: 3,
+            segU: 8,
+            segV: 3,
+            xf: f.xf,
+          });
+        }
+      }
+      // Instrument hood over the cluster (Japan is RHD: driver on +x).
+      {
+        const hw = 0.25;
+        const hRows: Vec3[][] = [];
+        const NH = 10;
+        for (let i = 0; i <= NH; i++) {
+          const a = lerp(-1, 1, i / NH);
+          const e = Math.pow(Math.max(0, 1 - Math.pow(Math.abs(a), 3)), 1 / 3);
+          const h = 0.088 * e;
+          const x = driverX + a * hw;
+          const zl = zDashRear + 0.035 - 0.065 * e;
+          hRows.push([
+            [x, yTop - 0.012, zDashRear + 0.22],
+            [x, yTop + h * 0.72, zDashRear + 0.13],
+            [x, yTop + h, zDashRear + 0.04 - 0.03 * e],
+            [x, yTop + h - 0.012 * e, zl],
+            [x, yTop + h - 0.03 * e - 0.01, zl + 0.012],
+          ]);
+        }
+        kit.sheet(new Sheet(hRows, -1), Mat.softTouch, {
+          segU: 6,
+          segV: 14,
+          doubleSided: true,
+          backOffset: 0.002,
+        });
+        // Cluster: dark back panel in the recess, two dials, a small TFT.
+        const cy = yTop + 0.03,
+          cz = zDashRear + 0.05;
+        blob(kit, [driverX, cy, cz + 0.02], [0.21, 0.055, 0.02], Mat.rubber, {
+          n: 6,
+          m: 4,
+          segU: 16,
+          segV: 3,
+          xf: p => place(p, [0, 0, 0], -0.2),
+        });
+        for (const dx of [-0.095, 0.095])
+          dial(kit, [driverX + dx, cy, cz - 0.002], 0.046, -0.2);
+        if (fine)
+          blob(
+            kit,
+            [driverX, cy, cz - 0.001],
+            [0.035, 0.032, 0.002],
+            Mat.display,
+            {
+              n: 8,
+              m: 2,
+              segU: 8,
+              segV: 2,
+              xf: p => place(p, [0, 0, 0], -0.2),
+            },
+          );
+      }
+      // Centre stack: a panel standing proud of the face from under the lip
+      // to the console, holding the screen, vents and climate controls.
+      {
+        const A: Vec3 = [0, yTop - 0.05, zDashRear - 0.045];
+        const B: Vec3 = [
+          0,
+          floorY + 0.2,
+          Math.min(zDashRear + 0.1, zFire - 0.12),
+        ];
+        const dy = A[1] - B[1],
+          dz = A[2] - B[2];
+        const L = Math.hypot(dy, dz);
+        // Face frame: local y up the stack, local z into it.
+        const n: Vec3 = [0, -dz / L, dy / L];
+        const face: Vec3 = [0, -n[1], -n[2]];
+        const fAt = (t: number): Frame =>
+          frameAt([0, lerp(B[1], A[1], t), lerp(B[2], A[2], t)], face);
+        // Body: sheared box (local y along the face, depth horizontal) so
+        // its top never rises out of the dash.
+        const depth = 0.08;
+        const ay = dy / L,
+          az = dz / L;
         blob(
           kit,
-          [vx * W, yTop - 0.05, zDashRear - 0.004],
-          [0.055, 0.022, 0.006],
-          Mat.rubber,
-          {n: 3, m: 8, segU: 8, segV: 3},
+          [0, (A[1] + B[1]) / 2, (A[2] + B[2]) / 2 + depth],
+          [0.14, L / 2 + 0.01, depth],
+          Mat.softTouch,
+          {
+            n: 7,
+            m: 6,
+            segU: 16,
+            segV: 4,
+            xf: q => [q[0], q[1] * ay, q[1] * az + q[2]],
+          },
         );
-      // Steering column.
+        // Screen (gloss black bezel + display).
+        const fS = fAt(1 - 0.075 / L);
+        blob(kit, at(fS, 0.002), [0.118, 0.07, 0.006], Mat.plastic, {
+          n: 8,
+          m: 3,
+          segU: 12,
+          segV: 3,
+          xf: fS.xf,
+        });
+        blob(kit, at(fS, 0.006), [0.108, 0.06, 0.003], Mat.display, {
+          n: 10,
+          m: 2,
+          segU: 8,
+          segV: 2,
+          xf: fS.xf,
+        });
+        // Centre vents below the screen.
+        const fV = fAt(1 - 0.185 / L);
+        if (fine)
+          for (const vx of [-0.065, 0.065])
+            vent(frameAt(at(fV, 0, vx), face), 0.05, 0.022);
+        // Climate panel: satin band with two knobs and a row of buttons.
+        const tC = 1 - 0.27 / L;
+        if (fine && tC > 0.2) {
+          const fC = fAt(tC);
+          blob(kit, at(fC, 0.002), [0.12, 0.035, 0.005], Mat.satin, {
+            n: 8,
+            m: 3,
+            segU: 16,
+            segV: 3,
+            xf: fC.xf,
+          });
+          for (const kx of [-0.085, 0.085]) {
+            blob(kit, at(fC, 0.012, kx), [0.021, 0.021, 0.012], Mat.plastic, {
+              n: 2,
+              m: 6,
+              segU: 12,
+              segV: 3,
+              xf: fC.xf,
+            });
+            blob(kit, at(fC, 0.024, kx), [0.016, 0.016, 0.002], Mat.satin, {
+              n: 2,
+              m: 2,
+              segU: 8,
+              segV: 2,
+              xf: fC.xf,
+            });
+          }
+          for (const bx of [-0.03, -0.01, 0.01, 0.03])
+            blob(kit, at(fC, 0.007, bx), [0.008, 0.013, 0.004], Mat.rubber, {
+              n: 5,
+              m: 3,
+              segU: 8,
+              segV: 2,
+              xf: fC.xf,
+            });
+        }
+        // Console between the seats: shifter surround, gear lever, armrest.
+        const zc1 = B[2] + 0.02;
+        const zc0 = Math.max(eyeZ - 0.25, zBulk + 0.3);
+        const yc = floorY + 0.2;
+        const flat = (p: Vec3): Vec3 => [p[0], p[2], -p[1]];
+        blob(
+          kit,
+          [0, (floorY + yc) / 2, (zc0 + zc1) / 2],
+          [0.115, (yc - floorY) / 2 + 0.01, (zc1 - zc0) / 2],
+          Mat.softTouch,
+          {n: 6, m: 6, segU: 12, segV: 5},
+        );
+        const zg = Math.min(zc1 - 0.12, eyeZ + 0.45);
+        if (fine) {
+          blob(kit, [0, yc + 0.006, zg], [0.06, 0.09, 0.006], Mat.satin, {
+            n: 6,
+            m: 3,
+            segU: 10,
+            segV: 3,
+            xf: flat,
+          });
+          blob(kit, [0, yc + 0.012, zg], [0.05, 0.08, 0.006], Mat.rubber, {
+            n: 6,
+            m: 3,
+            segU: 10,
+            segV: 3,
+            xf: flat,
+          });
+          tube(
+            kit,
+            [
+              [0, yc + 0.01, zg],
+              [0, yc + 0.08, zg - 0.02],
+            ],
+            0.009,
+            Mat.satin,
+            {along: 1, seg: 6},
+          );
+          blob(
+            kit,
+            [0, yc + 0.1, zg - 0.025],
+            [0.024, 0.026, 0.032],
+            Mat.leather,
+            {
+              n: 2.2,
+              m: 2.2,
+              segU: 10,
+              segV: 4,
+              xf: flat,
+            },
+          );
+        }
+        // Armrest lid over a storage box between the front seats.
+        const za = eyeZ + 0.05;
+        const ya = Math.max(seatY(0, eyeZ) + 0.14, yc + 0.05);
+        blob(
+          kit,
+          [0, (floorY + ya) / 2, za],
+          [0.1, (ya - floorY) / 2, 0.16],
+          Mat.softTouch,
+          {n: 6, m: 6, segU: 10, segV: 4},
+        );
+        blob(kit, [0, ya + 0.02, za], [0.095, 0.028, 0.17], Mat.leather, {
+          n: 4,
+          m: 4,
+          segU: 10,
+          segV: 4,
+        });
+      }
+      // Steering column shroud.
       const sy = cfg.beltF - 0.1,
         sz = zDashRear - 0.26,
         ct = Math.sin(0.42),
         cc = Math.cos(0.42);
-      tube(
+      blob(
         kit,
-        [
-          [driverX, sy - ct * 0.04, sz + cc * 0.04],
-          [driverX, sy - ct * 0.32, sz + cc * 0.32],
-        ],
-        0.03,
+        [driverX, sy - ct * 0.2, sz + cc * 0.2],
+        [0.05, 0.045, 0.14],
         Mat.plastic,
-        {along: 1, seg: 6},
+        {n: 3, m: 4, segU: 10, segV: 4, xf: p => place(p, [0, 0, 0], 0.42)},
       );
     }
     // Seats.
@@ -1467,6 +1894,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         [xIn(zBulk), yTop, zBulk],
         [-xIn(zBulk), yTop, zBulk],
         Mat.interior,
+        {flip: true},
       );
       if (rearBase !== null) {
         const z1 = rearBase + 0.02;
@@ -1478,6 +1906,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
           [xIn(z1), yb, z1],
           [-xIn(z1), yb, z1],
           Mat.interior,
+          {flip: true},
         );
       }
     }
@@ -1487,9 +1916,17 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       const ym = roofY(0, zm) - 0.1;
       blob(kit, [0, ym, zm], [0.12, 0.035, 0.015], Mat.plastic, {
         n: 4,
-        segU: 10,
+        segU: 12,
         segV: 3,
       });
+      // Mirror glass facing the cabin.
+      if (fine)
+        blob(kit, [0, ym, zm - 0.014], [0.11, 0.027, 0.002], Mat.chrome, {
+          n: 5,
+          m: 2,
+          segU: 16,
+          segV: 2,
+        });
       tube(
         kit,
         [
@@ -1501,15 +1938,27 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         {along: 1, seg: 4},
       );
       for (const sx of [driverX, -driverX]) {
-        const yv = roofY(sx, zm) - 0.045;
-        panel(
-          kit,
-          [sx + 0.17, yv, zm - 0.02],
-          [sx - 0.17, yv, zm - 0.02],
-          [sx + 0.17, yv + 0.01, zm - 0.18],
-          [sx - 0.17, yv + 0.01, zm - 0.18],
-          Mat.interior,
-        );
+        // Padded visor folded up against the headliner, on a hinge rod.
+        const yv = roofY(sx, zm - 0.07) - 0.017;
+        const slope = (roofY(sx, zm) - roofY(sx, zm - 0.14)) / 0.14;
+        blob(kit, [sx, yv, zm - 0.07], [0.15, 0.007, 0.068], Mat.headliner, {
+          n: 6,
+          m: 2.5,
+          segU: 10,
+          segV: 3,
+          xf: p => [p[0], p[1] + p[2] * slope, p[2]],
+        });
+        if (fine)
+          tube(
+            kit,
+            [
+              [sx + 0.17 * Math.sign(sx), yv + 0.002, zm - 0.008],
+              [sx - 0.16 * Math.sign(sx), yv + 0.002, zm - 0.008],
+            ],
+            0.005,
+            Mat.plastic,
+            {along: 1, seg: 5},
+          );
       }
     }
   }

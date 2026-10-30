@@ -20,6 +20,7 @@ struct VOut {
   @location(3) prevClip: vec4f,
   @location(4) @interpolate(flat) mat: u32,
   @location(5) @interpolate(flat) inst: u32,
+  @location(6) lnormal: vec3f,
 };
 
 @vertex fn vs(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) m: u32, @builtin(instance_index) ii: u32) -> VOut {
@@ -33,10 +34,32 @@ struct VOut {
   o.prevClip = frame.prevViewProj * (I.prevModel * vec4f(p, 1.0));
   o.mat = m;
   o.inst = ii;
+  o.lnormal = n;
   return o;
 }
 
-fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
+// Fine interior grain (leather, soft-touch plastic). Tri-planar value noise in
+// the vehicle frame that fades to its mean once a cell shrinks towards a
+// pixel (fw = pixel footprint in meters), so it never aliases or crawls.
+fn interiorGrain(p: vec3f, ln: vec3f, freq: f32, fw: f32) -> f32 {
+  let fade = 1.0 - smoothstep(0.2, 0.6, fw * freq);
+  if (fade <= 0.0) { return 0.0; }
+  let a = abs(ln) + vec3f(1e-3);
+  let w = a / (a.x + a.y + a.z);
+  let q = p * freq;
+  let g = valueNoise(q.yz) * w.x + valueNoise(q.xz + 17.3) * w.y + valueNoise(q.xy + 31.7) * w.z;
+  return (g - 0.5) * 2.0 * fade;
+}
+
+// Per-car trim colour: mostly charcoal, some mid grey, a few beige cabins.
+fn trimTone(I: Instance) -> vec3f {
+  let h = hashuf(u32(I.color.r * 2111.0 + I.color.g * 977.0 + I.color.b * 5333.0 + I.color2.r * 313.0));
+  if (h < 0.62) { return vec3f(0.035, 0.034, 0.033); }
+  if (h < 0.85) { return vec3f(0.11, 0.105, 0.1); }
+  return vec3f(0.36, 0.29, 0.21);
+}
+
+fn vehicleSurf(i: VOut, n: vec3f, fw: f32) -> Surf {
   let I = instances[i.inst];
   var s = defaultSurf(n);
   if (i.mat <= 1u) { s.cls = CLASS_VEHICLE; }
@@ -67,25 +90,76 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
       s.emissive = vec3f(1.0, 0.04, 0.02) * (lightsOn * 3.0 + brake * 8.0);
     }
     case 8u: {
-      // Moulded trim with a fine leather-like grain.
-      let grain = valueNoise(i.local.xy * 90.0 + i.local.z * 37.0) * 0.5 + valueNoise(i.local.zy * 210.0) * 0.5;
-      s.albedo = vec3f(0.09, 0.085, 0.08) * (0.8 + 0.4 * grain);
-      s.rough = 0.7 + 0.2 * grain;
-      s.ao = 0.6;
+      // Moulded trim plastic (lower door cards, floor, kick panels).
+      let gr = interiorGrain(i.local, i.lnormal, 260.0, fw);
+      s.albedo = vec3f(0.05, 0.049, 0.047) * (1.0 + 0.06 * gr);
+      s.rough = 0.72 + 0.06 * gr;
+      s.ao = mix(0.5, 0.8, smoothstep(0.35, 1.0, i.local.y));
     }
     case 9u: {
-      // Seats: ribbed centre panels with stitched seams.
-      let rib = fract(i.local.y * 14.0 + i.local.z * 3.0);
-      let seam = smoothstep(0.06, 0.0, min(rib, 1.0 - rib));
-      s.albedo = vec3f(0.14, 0.13, 0.12) * (1.0 - 0.35 * seam) * (0.9 + 0.2 * valueNoise(i.local.xz * 60.0));
-      s.normal = normalize(n + vec3f(0.0, (rib - 0.5) * 0.25, 0.0));
-      s.rough = 0.9;
-      s.ao = 0.65;
+      // Seats: leather-like, ribbed centre panels with anti-aliased seams.
+      let tone = trimTone(I);
+      let f = 14.0;
+      let rib = fract(i.local.y * f + i.local.z * 3.0);
+      let px = fw * f;
+      let seamW = 0.05 + px;
+      let seam = (1.0 - smoothstep(0.0, seamW, min(rib, 1.0 - rib))) * (1.0 - smoothstep(0.3, 0.8, px));
+      let gr = interiorGrain(i.local, i.lnormal, 330.0, fw);
+      s.albedo = tone * (1.0 - 0.4 * seam) * (1.0 + 0.08 * gr);
+      s.rough = 0.62 + 0.08 * gr + 0.2 * seam;
+      s.ao = 0.7;
     }
     case 10u: {
       s.albedo = vec3f(0.03);
       s.rough = 0.5;
       s.emissive = vec3f(0.25, 0.7, 1.0) * (0.03 + lightsOn * 0.12);
+    }
+    case 19u: {
+      // Headliner: clean matte fabric of constant albedo.
+      s.albedo = vec3f(0.05, 0.049, 0.048);
+      s.rough = 0.95;
+      s.ao = 0.75;
+    }
+    case 20u: {
+      // Soft-touch plastic: dashboard and upper door cards, a fine grain.
+      let gr = interiorGrain(i.local, i.lnormal, 300.0, fw);
+      s.albedo = vec3f(0.042, 0.041, 0.04) * (1.0 + 0.05 * gr);
+      s.rough = 0.68 + 0.07 * gr;
+      s.ao = mix(0.6, 0.9, smoothstep(0.5, 1.1, i.local.y));
+    }
+    case 21u: {
+      // Satin trim (brushed-look aluminium inserts, vent surrounds).
+      // Rough enough (>= 0.5) to skip the sharp city/screen-space reflections,
+      // which sparkle on small curved trim inside a dark cabin.
+      s.albedo = vec3f(0.55, 0.55, 0.56);
+      s.metal = 0.85;
+      s.rough = 0.5;
+      s.ao = 0.85;
+    }
+    case 22u: {
+      // Leather (steering wheel rim, armrests, gear knob, seat inserts).
+      let gr = interiorGrain(i.local, i.lnormal, 420.0, fw);
+      s.albedo = trimTone(I) * 0.8 * (1.0 + 0.1 * gr);
+      s.rough = 0.56 + 0.05 * gr;
+      s.ao = 0.85;
+    }
+    case 23u: {
+      // Centre touch screen: glossy black glass with a dim UI (map panel and
+      // a side bar), brighter at night.
+      s.albedo = vec3f(0.01);
+      s.rough = 0.1;
+      let p = i.local.xy;
+      let bar = smoothstep(0.035 - fw, 0.035 + fw, p.x);
+      // Map: a sparse street grid and a highlighted route (anti-aliased).
+      let g = abs(fract(p * vec2f(28.0, 22.0) + vec2f(0.3, 0.1)) - 0.5) / vec2f(28.0, 22.0);
+      let roads = 1.0 - smoothstep(0.0012, 0.0012 + fw, min(g.x, g.y));
+      let route = 1.0 - smoothstep(0.0018, 0.0018 + fw, abs(p.x + 0.045));
+      let map = vec3f(0.035, 0.05, 0.07) + vec3f(0.06, 0.07, 0.08) * roads + vec3f(0.2, 0.12, 0.02) * route;
+      // Side bar: tiles separated by thin rules.
+      let rows = abs(fract(p.y * 30.0) - 0.5) / 30.0;
+      let rule = 1.0 - smoothstep(0.0008, 0.0008 + fw, rows);
+      let side = vec3f(0.03, 0.04, 0.06) + vec3f(0.05, 0.08, 0.11) * rule;
+      s.emissive = mix(map, side, bar) * (0.45 + lightsOn * 0.5);
     }
     case 11u: { s.albedo = vec3f(0.05); s.rough = 0.5; s.metal = 0.6; }
     case 12u: { s.albedo = vec3f(0.65); s.rough = 0.25; s.metal = 1.0; }
@@ -106,8 +180,9 @@ fn vehicleSurf(i: VOut, n: vec3f) -> Surf {
     case 15u: { s.albedo = mix(vec3f(0.62, 0.46, 0.36), vec3f(0.42, 0.28, 0.2), hashuf(u32(I.color.r * 1000.0 + I.color2.g * 7777.0)) * 0.6); s.rough = 0.55; }
     default: { s.albedo = vec3f(1.0, 0.0, 1.0); }
   }
-  // Wet bodywork gets glossier.
-  s.rough = mix(s.rough, s.rough * 0.5, frame.weather.z);
+  // Wet bodywork gets glossier (the cabin stays dry).
+  let cabin = (i.mat >= 8u && i.mat <= 10u) || (i.mat >= 19u && i.mat <= 23u);
+  if (!cabin) { s.rough = mix(s.rough, s.rough * 0.5, frame.weather.z); }
   return s;
 }
 
@@ -120,10 +195,12 @@ fn outwardFacing(inst: u32, ff: bool) -> bool {
 }
 
 @fragment fn fs(i: VOut, @builtin(front_facing) ff: bool) -> GOut {
+  // Pixel footprint for filtered interior detail (derivatives in uniform flow).
+  let fw = length(fwidth(i.local));
   if (i.mat == 2u) { discard; }
   var n = normalize(i.normal);
   if (!outwardFacing(i.inst, ff)) { n = -n; }
-  let s = vehicleSurf(i, n);
+  let s = vehicleSurf(i, n, fw);
   var o = writeG(s, i.world, i.pos);
   // Moving objects: motion from the previous model matrix.
   let prevUv = i.prevClip.xy / i.prevClip.w * vec2f(0.5, -0.5) + 0.5;
