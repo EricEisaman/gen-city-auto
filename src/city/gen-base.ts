@@ -2025,17 +2025,20 @@ function railViaduct(
       if (i % 24 === 0) {
         const d = fr[i].d;
         const f = c < 0 ? -1 : 1;
-        const hp = P(i, c + sg * 1.45, 7.45);
-        m.box(hp, [0.15, 0.35, 0.1], packMat(CM.frame), yaw);
+        // A 0.64 x 1.1 m dark backplate under the bottom chord with two
+        // 26 cm lenses, so the aspects still cover a pixel or two at mid
+        // range (lamps are not min-width tubes).
+        const hp = P(i, c + sg * 1.45, 7.3);
+        m.box(hp, [0.32, 0.55, 0.06], packMat(CM.frame), yaw);
         const a = railHash(ei * 3 + (c < 0 ? 1 : 2), i);
         const [up, lo] = a < 0.7 ? [4, 5] : a < 0.9 ? [5, 5] : [3, 3];
         for (const [dy, asp] of [
-          [0.15, up],
-          [-0.15, lo],
+          [0.24, up],
+          [-0.24, lo],
         ] as [number, number][])
           m.box(
-            [hp[0] + d[0] * f * 0.11, hp[1] + dy, hp[2] + d[1] * f * 0.11],
-            [0.06, 0.06, 0.02],
+            [hp[0] + d[0] * f * 0.08, hp[1] + dy, hp[2] + d[1] * f * 0.08],
+            [0.13, 0.13, 0.03],
             packMat(CM.lamp, asp),
             yaw,
           );
