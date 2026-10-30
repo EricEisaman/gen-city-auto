@@ -385,7 +385,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
           let bottom = mix(0.45, 0.9, gh);
           if (q.y > bottom && q.y < 1.75 && fract(q.x / 0.9 + f32(r) * 0.37) < 0.7 && fract(q.x / gw) > 0.12) {
             let cf = smoothstep(0.015, 0.06, max(length(dWorldX), length(dWorldY)));
-            let cloth = mix(mix(vec3f(0.08), 0.35 + 0.35 * cos(6.2831 * (gh * 0.7 + vec3f(0.0, 0.25, 0.55) + f32(shopSeed % 7u) * 0.1)), 0.8), vec3f(0.3, 0.28, 0.27), cf);
+            let cloth = mix(mix(vec3f(0.08), 0.35 + 0.35 * cos(6.2831 * (gh * 0.25 + vec3f(0.0, 0.25, 0.55) + f32(shopSeed % 7u) * 0.13)), 0.45), vec3f(0.3, 0.28, 0.27), cf);
             inside = cloth * (1.0 - 0.3 * f32(r)) * mix(0.35, 1.0, smoothstep(bottom, bottom + 0.6, q.y)) * mix(0.45, 1.1, night);
             break;
           }
@@ -415,7 +415,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
             // Products shrink below a pixel at a distance: fade to the
             // average shelf tone instead of shimmering pastel stripes.
             let pf = smoothstep(0.015, 0.06, max(length(dWorldX), length(dWorldY)));
-            let pack = mix(mix(vec3f(0.85, 0.82, 0.75), 0.5 + 0.5 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), 0.75), vec3f(0.5, 0.48, 0.45), pf);
+            let pack = mix(mix(vec3f(0.85, 0.82, 0.75), 0.5 + 0.5 * cos(6.2831 * (ph + vec3f(0.0, 0.33, 0.67))), mix(0.25, 0.6, step(0.8, ph))), vec3f(0.5, 0.48, 0.45), pf);
             let gapX = fract(q.x / pw) < 0.08;
             let fill = fy > 0.1 && fy < 0.1 + mix(0.55, 0.85, ph) && !gapX;
             shelf = select(vec3f(0.12), pack, fill);
