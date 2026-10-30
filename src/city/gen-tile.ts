@@ -38,6 +38,7 @@ import {
   SIGN,
   SIGN_FABRIC,
   SIGN_STRIPES,
+  TENANT_NOBORI,
   TENANT_SIGNS,
   TENANT_SQUARES,
   signColor,
@@ -330,10 +331,74 @@ function hashu(x: number) {
 }
 const hashuf = (x: number) => (hashu(x) & 0xffffff) / 16777216;
 
+/** The shaders' hash21 (common.wgsl), in f32 steps. */
+function hash21(x: number, y: number) {
+  const f = Math.fround;
+  const fr = (v: number) => f(v - Math.floor(v));
+  let p0 = fr(f(x * f(0.1031))),
+    p1 = fr(f(y * f(0.1031))),
+    p2 = p0;
+  const d = f(
+    f(p0 * f(p1 + f(33.33))) +
+      f(p1 * f(p2 + f(33.33))) +
+      f(p2 * f(p0 + f(33.33))),
+  );
+  p0 = f(p0 + d);
+  p1 = f(p1 + d);
+  p2 = f(p2 + d);
+  return fr(f(f(p0 + p1) * p2));
+}
+
+/**
+ * The demolished neighbour's ghost on a party wall (city-materials.wgsl
+ * partyWall): null where the wall has none, else its old roofline `top(u)`
+ * in body-zone uv (uv.y = y - vOff) and whether it was a gable. `partyAux`
+ * is the party-wall quads' aux.
+ */
+function partyGhost(partyAux: number) {
+  const aux = hashu(partyAux >>> 8);
+  const ab = aux & 255;
+  const gh = hashuf(aux ^ 0x6057);
+  if (gh >= 0.75) return null;
+  const h0 = 5.4 + 3.2 * hashuf(aux ^ 0x6058);
+  const segW = 3.5 + 3.0 * hashuf(aux ^ 0x6059);
+  const gable = gh < 0.28;
+  const top = (u: number) =>
+    gable
+      ? h0 + Math.max(0, 2.4 - Math.abs(u - segW * 1.6) * 0.55)
+      : h0 + Math.floor(hash21(Math.floor(u / segW), ab) * 3) * 0.9 - 0.9;
+  return {top, segW, gable, h0, ab};
+}
+
 /** Window bay width of a facade style (facadeStyle in city-materials.wgsl). */
 function facadeBay(style: number) {
   const h = hashu(Math.imul(style & 0x1fff, 747796405) + 1);
   return 1.5 + 1.7 * hashuf(h ^ 0x1234);
+}
+
+/**
+ * Window opening of a facade style on the street faces (facadeStyle in
+ * city-materials.wgsl): width and height as fractions of the bay and the
+ * floor, ribbon (strip) windows, and the facade family.
+ */
+function facadeWindows(style: number, kind: number) {
+  const h = hashu(Math.imul(style & 0x1fff, 747796405) + 1);
+  let winW = 0.42 + 0.38 * hashuf(h ^ 0x22);
+  let winH = 0.42 + 0.24 * hashuf(h ^ 0x33);
+  const strip = hashuf(h ^ 0x44) < (kind === 0 ? 0.6 : 0.28);
+  const fam = hashuf(h ^ 0x66);
+  let family =
+    fam < 0.12 ? 4 : fam < 0.28 ? 3 : fam < 0.44 ? 2 : fam < 0.62 ? 1 : 0;
+  if (strip) {
+    winW = 1;
+    family = 1;
+  }
+  if (family === 2) {
+    winW = 0.62;
+    winH = 0.72;
+  }
+  if (family === 3) winW = Math.min(winW, 0.5);
+  return {winW, winH, strip, family};
 }
 
 /**
@@ -576,22 +641,39 @@ function coping(m: CMesh, poly: Vec2[], y: number, lod: number) {
       ],
       packMat(CM.metal),
     );
-    m.beam(
+    // Cap: its top and inner face (the outer face is the drip edge).
+    const T = (t: number, out: number, h: number): Vec3 => [
+      lerp(a[0], c[0], t) + n[0] * out,
+      y + h,
+      lerp(a[1], c[1], t) + n[2] * out,
+    ];
+    const uvc: Vec2[] = [
+      [0, 0],
+      [len, 0],
+      [len, 0.34],
+      [0, 0.34],
+    ];
+    m.quad(
       [
-        a[0] - (c[0] - a[0]) * ex - n[0] * 0.1,
-        y + 0.03,
-        a[1] - (c[1] - a[1]) * ex - n[2] * 0.1,
+        T(-ex, -0.27, 0.06),
+        T(1 + ex, -0.27, 0.06),
+        T(1 + ex, 0.07, 0.06),
+        T(-ex, 0.07, 0.06),
       ],
-      [
-        c[0] + (c[0] - a[0]) * ex - n[0] * 0.1,
-        y + 0.03,
-        c[1] + (c[1] - a[1]) * ex - n[2] * 0.1,
-      ],
-      0.17,
-      0.03,
+      UP,
+      uvc,
       packMat(CM.metal),
-      0,
-      [0, -1, 0],
+    );
+    m.quad(
+      [
+        T(1 + ex, -0.27, 0),
+        T(-ex, -0.27, 0),
+        T(-ex, -0.27, 0.06),
+        T(1 + ex, -0.27, 0.06),
+      ],
+      [-n[0], 0, -n[2]],
+      uvc,
+      packMat(CM.metal),
     );
   }
 }
@@ -997,10 +1079,12 @@ function guardRail(m: CMesh, ring: Vec2[], y: number, mat: number) {
 
 /**
  * Drinks vending machine (1.0 x 1.83 x 0.7 m) standing on `p` and facing
- * `n`: a cabinet in vending colour `col` (red, blue or white), a recessed
- * lit display of sample cans, a lit button row, the coin and note panel, the
- * dispenser slot and a lit header strip. Vending uv.y in [0.7, 1.5] lights
- * up (M_VENDING), so unlit parts keep uv.y above it.
+ * `n`: a cabinet in vending colour `col` (red, blue or white) whose front
+ * door stands proud on a bevelled edge, a recessed lit display of four
+ * shelves of sample drinks on metal ledges, a lit button row, the coin and
+ * note panel, the dispenser slot and a lit header strip. Vending uv.y in
+ * [0.7, 1.5] lights up (M_VENDING), so unlit parts keep uv.y above it.
+
  */
 function vendingMachine(m: CMesh, p: Vec3, n: Vec3, col: number) {
   const r: Vec3 = [n[2], 0, -n[0]];
@@ -1020,14 +1104,15 @@ function vendingMachine(m: CMesh, p: Vec3, n: Vec3, col: number) {
     mat: number,
     v0 = 5,
     v1 = 5,
+    u1 = 1,
   ) =>
     m.quad(
       [P(x0, y0, z), P(x1, y0, z), P(x1, y1, z), P(x0, y1, z)],
       n,
       [
         [0, v0],
-        [1, v0],
-        [1, v1],
+        [u1, v0],
+        [u1, v1],
         [0, v1],
       ],
       mat,
@@ -1040,7 +1125,8 @@ function vendingMachine(m: CMesh, p: Vec3, n: Vec3, col: number) {
   ];
   const neg = (v: Vec3): Vec3 => [-v[0], -v[1], -v[2]];
   const Hc = 1.83;
-  // Cabinet: back, sides, top.
+  // Cabinet (back, sides, top) behind the door plane C.
+  const C = D - 0.05;
   m.quad(
     [P(0.5, 0, -D), P(-0.5, 0, -D), P(-0.5, Hc, -D), P(0.5, Hc, -D)],
     neg(n),
@@ -1048,70 +1134,105 @@ function vendingMachine(m: CMesh, p: Vec3, n: Vec3, col: number) {
     body,
   );
   m.quad(
-    [P(0.5, 0, D), P(0.5, 0, -D), P(0.5, Hc, -D), P(0.5, Hc, D)],
+    [P(0.5, 0, C), P(0.5, 0, -D), P(0.5, Hc, -D), P(0.5, Hc, C)],
     r,
     uv,
     body,
   );
   m.quad(
-    [P(-0.5, 0, -D), P(-0.5, 0, D), P(-0.5, Hc, D), P(-0.5, Hc, -D)],
+    [P(-0.5, 0, -D), P(-0.5, 0, C), P(-0.5, Hc, C), P(-0.5, Hc, -D)],
     neg(r),
     uv,
     body,
   );
   m.quad(
-    [P(-0.5, Hc, D), P(0.5, Hc, D), P(0.5, Hc, -D), P(-0.5, Hc, -D)],
+    [P(-0.5, Hc, C), P(0.5, Hc, C), P(0.5, Hc, -D), P(-0.5, Hc, -D)],
     UP,
     uv,
     body,
   );
-  // Front around the display opening [-0.44, 0.2] x [0.62, 1.6].
-  flat(-0.5, 0, 0.5, 0.62, D, body);
-  flat(-0.5, 1.6, 0.5, Hc, D, body);
-  flat(-0.5, 0.62, -0.44, 1.6, D, body);
-  flat(0.2, 0.62, 0.5, 1.6, D, body);
-  // Recessed display (lit rows of cans) and its reveal.
-  const dz = D - 0.06;
-  flat(-0.44, 0.62, 0.2, 1.6, dz, body, 0.7, 1.5);
+  // The door: its face at D, bevelled back to the cabinet edge on all four
+  // sides, so a bright rim catches the light round the machine.
+  const X0 = 0.47,
+    Y0 = 0.05,
+    Y1 = Hc - 0.04;
+  const bev = (a: Vec3, b: Vec3, c: Vec3, d: Vec3, nn: Vec3) =>
+    m.quad([a, b, c, d], nn, uv, body);
+  const k = Math.SQRT1_2;
+  bev(P(-X0, Y1, D), P(X0, Y1, D), P(0.5, Hc, C), P(-0.5, Hc, C), [
+    n[0] * k,
+    k,
+    n[2] * k,
+  ]);
+  bev(P(-0.5, 0, C), P(0.5, 0, C), P(X0, Y0, D), P(-X0, Y0, D), [
+    n[0] * k,
+    -k,
+    n[2] * k,
+  ]);
+  bev(P(X0, Y0, D), P(0.5, 0, C), P(0.5, Hc, C), P(X0, Y1, D), [
+    (n[0] + r[0]) * k,
+    0,
+    (n[2] + r[2]) * k,
+  ]);
+  bev(P(-0.5, 0, C), P(-X0, Y0, D), P(-X0, Y1, D), P(-0.5, Hc, C), [
+    (n[0] - r[0]) * k,
+    0,
+    (n[2] - r[2]) * k,
+  ]);
+  // Door face around the display opening [-0.42, 0.18] x [0.66, 1.56].
+  const DX0 = -0.42,
+    DX1 = 0.18,
+    DY0 = 0.66,
+    DY1 = 1.56;
+  flat(-X0, Y0, X0, DY0, D, body);
+  flat(-X0, DY1, X0, Y1, D, body);
+  flat(-X0, DY0, DX0, DY1, D, body);
+  flat(DX1, DY0, X0, DY1, D, body);
+  // Recessed display: four shelves of lit samples (M_VENDING draws the
+  // drinks and button strips in uv.y [0.7, 1.5], 0.2 per shelf) on metal
+  // ledges at the shelf edges, and its reveal.
+  const dz = D - 0.1;
+  flat(DX0, DY0, DX1, DY1, dz, body, 0.7, 1.5);
   const reveal = packMat(CM.metal);
+  for (let k = 1; k < 4; k++) {
+    const y = DY0 + (k * (DY1 - DY0)) / 4;
+    const lip = (z0: number, z1: number, y0: number, y1: number, nn: Vec3) =>
+      m.quad(
+        [P(DX0, y0, z0), P(DX1, y0, z0), P(DX1, y1, z1), P(DX0, y1, z1)],
+        nn,
+        uv,
+        reveal,
+      );
+    lip(dz + 0.06, dz, y, y, UP);
+    lip(dz + 0.06, dz + 0.06, y - 0.012, y, n);
+  }
   m.quad(
-    [P(-0.44, 1.6, dz), P(0.2, 1.6, dz), P(0.2, 1.6, D), P(-0.44, 1.6, D)],
+    [P(DX0, DY1, dz), P(DX1, DY1, dz), P(DX1, DY1, D), P(DX0, DY1, D)],
     [0, -1, 0],
     uv,
     reveal,
   );
   m.quad(
-    [P(-0.44, 0.62, D), P(0.2, 0.62, D), P(0.2, 0.62, dz), P(-0.44, 0.62, dz)],
-    UP,
-    uv,
-    reveal,
-  );
-  m.quad(
-    [
-      P(-0.44, 0.62, dz),
-      P(-0.44, 0.62, D),
-      P(-0.44, 1.6, D),
-      P(-0.44, 1.6, dz),
-    ],
+    [P(DX0, DY0, dz), P(DX0, DY0, D), P(DX0, DY1, D), P(DX0, DY1, dz)],
     r,
     uv,
     reveal,
   );
   m.quad(
-    [P(0.2, 0.62, D), P(0.2, 0.62, dz), P(0.2, 1.6, dz), P(0.2, 1.6, D)],
+    [P(DX1, DY0, D), P(DX1, DY0, dz), P(DX1, DY1, dz), P(DX1, DY1, D)],
     neg(r),
     uv,
     reveal,
   );
   // Button row under the display, header strip, coin panel, dispenser slot.
-  flat(-0.42, 0.55, 0.18, 0.6, D + 0.01, packMat(CM.lamp, 1));
-  flat(-0.46, 1.66, 0.46, 1.78, D + 0.005, body, 0.72, 0.74);
-  flat(0.25, 0.92, 0.45, 1.4, D + 0.012, reveal);
-  flat(0.3, 1.18, 0.4, 1.3, D + 0.018, packMat(CM.frame));
-  flat(0.3, 1.0, 0.4, 1.06, D + 0.018, packMat(CM.frame));
-  flat(-0.38, 0.1, 0.16, 0.34, D + 0.008, packMat(CM.frame));
+  flat(DX0 + 0.02, 0.58, DX1 - 0.02, 0.63, D + 0.01, packMat(CM.lamp, 1));
+  flat(-0.44, 1.64, 0.44, 1.75, D + 0.005, body, 0.72, 0.74);
+  flat(0.24, 0.92, 0.43, 1.4, D + 0.012, reveal);
+  flat(0.29, 1.18, 0.39, 1.3, D + 0.018, packMat(CM.frame));
+  flat(0.29, 1.0, 0.39, 1.06, D + 0.018, packMat(CM.frame));
+  flat(-0.38, 0.12, 0.16, 0.36, D + 0.008, packMat(CM.frame));
   m.box(
-    P(-0.11, 0.36, D + 0.03),
+    P(-0.11, 0.38, D + 0.03),
     [0.29, 0.02, 0.03],
     reveal,
     Math.atan2(n[0], n[2]),
@@ -1159,23 +1280,486 @@ function aFrameSign(m: CMesh, p: Vec3, n: Vec3, id: number) {
   }
 }
 
-/** A potted shrub on the pavement. */
+/** Local prop frame at `p` facing `n`: x to the right, y up, z out. */
+function propFrame(p: Vec3, n: Vec3) {
+  const r: Vec3 = [n[2], 0, -n[0]];
+  return (x: number, y: number, z: number): Vec3 => [
+    p[0] + r[0] * x + n[0] * z,
+    p[1] + y,
+    p[2] + r[2] * x + n[2] * z,
+  ];
+}
+
+/** Open tapered round shell from radius r0 at c.y to r1 at c.y + h. */
+function frustum(
+  m: CMesh,
+  c: Vec3,
+  r0: number,
+  r1: number,
+  h: number,
+  sides: number,
+  mat: number,
+) {
+  const slope = (r0 - r1) / h;
+  const l = Math.hypot(1, slope);
+  const ids: number[] = [];
+  for (let i = 0; i <= sides; i++) {
+    const a = (i / sides) * Math.PI * 2;
+    const cx = Math.cos(a),
+      cz = Math.sin(a);
+    const nn: Vec3 = [cx / l, slope / l, cz / l];
+    const u = (i / sides) * Math.PI * 2 * r1;
+    ids.push(
+      m.vertex([c[0] + cx * r0, c[1], c[2] + cz * r0], nn, u, 0, mat),
+      m.vertex([c[0] + cx * r1, c[1] + h, c[2] + cz * r1], nn, u, h, mat),
+    );
+  }
+  for (let i = 0; i < sides; i++) {
+    const a = (i + 0.5) / sides;
+    const nn: Vec3 = [Math.cos(a * Math.PI * 2), 0, Math.sin(a * Math.PI * 2)];
+    m.triFacing(ids[i * 2], ids[i * 2 + 1], ids[i * 2 + 3], nn);
+    m.triFacing(ids[i * 2], ids[i * 2 + 3], ids[i * 2 + 2], nn);
+  }
+}
+
+/**
+ * A potted plant on the pavement: a tapered glazed pot with a rolled lip
+ * and dark soil, and either a bushy shrub (a foliage core in crossed leaf
+ * cards) or a small standard tree (a stem with a leaf-card crown).
+ */
 function pottedPlant(m: CMesh, p: Vec3, rng: Rng) {
-  const r = rng.range(0.18, 0.28);
-  const h = rng.range(0.35, 0.6);
-  m.cylinder(p, r, h, 8, packMat(CM.paint, rng.chance(0.5) ? 0x9c : 0xd5));
-  blob(
-    m,
-    [p[0], p[1] + h + r * 0.9, p[2]],
-    r * rng.range(1.4, 2.0),
-    0,
-    rng.nextU32(),
-    rng,
+  const r = rng.range(0.2, 0.3);
+  const h = rng.range(0.4, 0.62);
+  const pot = packMat(CM.paint, [0xd5, 0x9c, 0x91, 0xa4, 0x90][rng.int(0, 5)]);
+  frustum(m, p, r * 0.72, r, h, 8, pot);
+  // Rolled lip, and the soil just under it.
+  m.cylinder([p[0], p[1] + h - 0.06, p[2]], r * 1.1, 0.07, 8, pot, false);
+  const soil = packMat(CM.bark);
+  const ring = [0, 1, 2, 3, 4, 5].map(j =>
+    m.vertex(
+      [
+        p[0] + Math.cos((j * Math.PI) / 3) * r * 1.02,
+        p[1] + h - 0.05,
+        p[2] + Math.sin((j * Math.PI) / 3) * r * 1.02,
+      ],
+      UP,
+      0,
+      0,
+      soil,
+    ),
+  );
+  for (let j = 1; j < 5; j++) m.triFacing(ring[0], ring[j], ring[j + 1], UP);
+  const aux = rng.nextU32();
+  const sp = rng.int(0, 3);
+  if (rng.chance(0.65)) {
+    const R = r * rng.range(1.2, 1.6);
+    const c: Vec3 = [p[0], p[1] + h + R * 0.7, p[2]];
+    blob(m, c, R * 0.62, 0, aux, rng, sp);
+    leafCards(m, c, R, 7, aux, rng, 0.7, sp);
+  } else {
+    const th = rng.range(0.7, 1.1);
+    m.tube(
+      [
+        [p[0], p[1] + h - 0.05, p[2]],
+        [p[0] + rng.range(-0.05, 0.05), p[1] + h + th, p[2]],
+      ],
+      0.025,
+      packMat(CM.bark),
+    );
+    const R = r * rng.range(1.3, 1.7);
+    const c: Vec3 = [p[0], p[1] + h + th + R * 0.4, p[2]];
+    blob(m, c, R * 0.55, 0, aux, rng, sp);
+    leafCards(m, c, R, 7, aux, rng, 0.7, sp);
+  }
+}
+
+/**
+ * Konbini recycling station: `count` bins side by side centred on `p`
+ * against the wall (facing `n`), each a pale cabinet with a sloped
+ * coloured lid holding a dark round-ish mouth, and a matching label band
+ * (cans, bottles, PET, burnable).
+ */
+const BIN_COLS = [0x5a, 0x79, 0xa4, 0x30];
+function recyclingBins(m: CMesh, p: Vec3, n: Vec3, count: number) {
+  const P = propFrame(p, n);
+  const yaw = Math.atan2(n[0], n[2]);
+  const body = packMat(CM.paint, 0xd0);
+  const dark = packMat(CM.paint, 0x91);
+  const W = 0.4;
+  const uv: Vec2[] = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ];
+  for (let k = 0; k < count; k++) {
+    const x = (k - (count - 1) / 2) * (W + 0.04);
+    const lid = packMat(CM.paint, BIN_COLS[k % BIN_COLS.length]);
+    m.box(P(x, 0.4, 0), [W / 2, 0.4, 0.21], body, yaw);
+    // Sloped lid: low at the front, up to the back.
+    const L = (sx: number, y: number, z: number) =>
+      P(x + sx * (W / 2 + 0.01), y, z);
+    const nl = Math.hypot(0.44, 0.16);
+    const ln: Vec3 = [(n[0] * 0.16) / nl, 0.44 / nl, (n[2] * 0.16) / nl];
+    m.quad(
+      [
+        L(-1, 0.8, 0.22),
+        L(1, 0.8, 0.22),
+        L(1, 0.96, -0.22),
+        L(-1, 0.96, -0.22),
+      ],
+      ln,
+      uv,
+      lid,
+    );
+    m.quad(
+      [L(-1, 0.8, 0.22), L(1, 0.8, 0.22), L(1, 0.76, 0.22), L(-1, 0.76, 0.22)],
+      n,
+      uv,
+      lid,
+    );
+    for (const s of [-1, 1]) {
+      const a = m.vertex(L(s, 0.8, 0.22), [n[2] * s, 0, -n[0] * s], 0, 0, body);
+      const b = m.vertex(
+        L(s, 0.8, -0.22),
+        [n[2] * s, 0, -n[0] * s],
+        0,
+        0,
+        body,
+      );
+      const c = m.vertex(
+        L(s, 0.96, -0.22),
+        [n[2] * s, 0, -n[0] * s],
+        0,
+        0,
+        body,
+      );
+      m.triFacing(a, b, c, [n[2] * s, 0, -n[0] * s]);
+    }
+    // The mouth, an octagon-ish dark hole on the lid (cans / bottles) or a
+    // slot (paper).
+    const hc = (dx: number, dz: number) => {
+      const z = 0.02 + dz;
+      return P(x + dx, 0.88 - (z / 0.22) * 0.08 + 0.006, z);
+    };
+    if (k % 4 === 3)
+      m.quad(
+        [hc(-0.13, -0.03), hc(0.13, -0.03), hc(0.13, 0.03), hc(-0.13, 0.03)],
+        ln,
+        uv,
+        dark,
+      );
+    else {
+      const ids = [0, 1, 2, 3, 4, 5].map(j => {
+        const a = (j / 6) * Math.PI * 2;
+        return m.vertex(
+          hc(Math.cos(a) * 0.08, Math.sin(a) * 0.08),
+          ln,
+          0,
+          0,
+          dark,
+        );
+      });
+      for (let j = 1; j < 5; j++) m.triFacing(ids[0], ids[j], ids[j + 1], ln);
+    }
+    // Label band.
+    m.quad(
+      [
+        P(x - W / 2 + 0.03, 0.56, 0.215),
+        P(x + W / 2 - 0.03, 0.56, 0.215),
+        P(x + W / 2 - 0.03, 0.68, 0.215),
+        P(x - W / 2 + 0.03, 0.68, 0.215),
+      ],
+      n,
+      uv,
+      lid,
+    );
+  }
+}
+
+/**
+ * Mamachari (a city bicycle) standing at `p`, pointing along `dir`: two
+ * wheels, a step-through frame in colour `col`, a chain guard, a rear
+ * carrier, a saddle, swept-back bars and (with `basket`) the front basket.
+ */
+function bicycle(m: CMesh, p: Vec3, dir: Vec3, col: number, basket: boolean) {
+  const sd: Vec3 = [dir[2], 0, -dir[0]];
+  const B = (x: number, y: number, s = 0): Vec3 => [
+    p[0] + dir[0] * x + sd[0] * s,
+    p[1] + y,
+    p[2] + dir[2] * x + sd[2] * s,
+  ];
+  const tyre = packMat(CM.wire);
+  const frame = packMat(CM.paint, col);
+  const metal = packMat(CM.metal);
+  const R = 0.31;
+  for (const wx of [-0.52, 0.52]) {
+    const ring: Vec3[] = [];
+    for (let i = 0; i <= 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      ring.push(B(wx + Math.cos(a) * R, 0.33 + Math.sin(a) * R));
+    }
+    m.tube(ring, 0.022, tyre);
+  }
+  // Step-through frame: head tube, a low curved down tube to the bottom
+  // bracket, seat tube; chain and seat stays to the rear axle.
+  m.tube(
+    [B(0.36, 0.95), B(0.33, 0.7), B(0.12, 0.38), B(-0.06, 0.3), B(-0.22, 0.86)],
+    0.022,
+    frame,
+  );
+  m.tube([B(-0.52, 0.33), B(-0.06, 0.3)], 0.015, frame);
+  m.tube([B(-0.52, 0.33), B(-0.19, 0.74)], 0.015, frame);
+  // Fork and stem.
+  m.tube([B(0.52, 0.33), B(0.35, 0.72), B(0.34, 1.02)], 0.016, metal);
+  // Swept-back handlebar.
+  m.tube(
+    [B(0.2, 1.02, -0.27), B(0.34, 1.03, 0), B(0.2, 1.02, 0.27)],
+    0.014,
+    metal,
+  );
+  // Saddle and carrier.
+  const yaw = Math.atan2(dir[0], dir[2]);
+  m.box(B(-0.24, 0.9), [0.08, 0.035, 0.13], packMat(CM.paint, 0x91), yaw);
+  m.quad(
+    [
+      B(-0.7, 0.72, -0.1),
+      B(-0.34, 0.72, -0.1),
+      B(-0.34, 0.72, 0.1),
+      B(-0.7, 0.72, 0.1),
+    ],
+    UP,
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+    metal,
+  );
+  m.tube([B(-0.52, 0.33), B(-0.52, 0.71)], 0.01, metal);
+  // Chain guard.
+  m.quad(
+    [
+      B(-0.5, 0.26, 0.05),
+      B(0.02, 0.22, 0.05),
+      B(0.02, 0.38, 0.05),
+      B(-0.5, 0.4, 0.05),
+    ],
+    sd,
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+    frame,
+  );
+  if (basket) m.box(B(0.6, 0.86), [0.18, 0.12, 0.15], tyre, yaw);
+}
+
+/**
+ * Nobori: a tall printed cloth banner on a white pole stuck in a weighted
+ * base, at `p` with the cloth facing `n` (both faces printed with vertical
+ * sign `id`).
+ */
+function nobori(m: CMesh, p: Vec3, n: Vec3, id: number) {
+  const P = propFrame(p, n);
+  const pole = packMat(CM.paint, 0xd5);
+  m.cylinder(p, 0.17, 0.12, 4, packMat(CM.paint, 0x91));
+  m.tube([P(0, 0.1, 0), P(0, 2.45, 0)], 0.018, pole);
+  m.tube([P(0, 2.4, 0), P(0.48, 2.4, 0)], 0.012, pole);
+  const mat = packMat(CM.sign, id | SIGN_FABRIC);
+  const q = [
+    P(0.03, 0.55, 0),
+    P(0.48, 0.55, 0),
+    P(0.48, 2.38, 0),
+    P(0.03, 2.38, 0),
+  ];
+  m.quad(
+    q,
+    n,
+    [
+      [0, 1],
+      [1, 1],
+      [1, 0],
+      [0, 0],
+    ],
+    mat,
+  );
+  m.quad(
+    q,
+    [-n[0], 0, -n[2]],
+    [
+      [1, 1],
+      [0, 1],
+      [0, 0],
+      [1, 0],
+    ],
+    mat,
   );
 }
 
+/**
+ * Umbrella stand by a door: an open steel drum with `count` closed
+ * umbrellas (mostly clear vinyl, a few coloured) leaning out of it.
+ */
+function umbrellaStand(m: CMesh, p: Vec3, rng: Rng, count: number) {
+  m.cylinder(p, 0.15, 0.48, 7, packMat(CM.metal), false);
+  for (let k = 0; k < count; k++) {
+    const a = rng.range(0, Math.PI * 2);
+    const lean = rng.range(0.06, 0.16);
+    const at = (t: number): Vec3 => [
+      p[0] + Math.cos(a) * (0.05 + lean * t),
+      p[1] + 0.12 + 0.85 * t,
+      p[2] + Math.sin(a) * (0.05 + lean * t),
+    ];
+    const col = rng.chance(0.6)
+      ? 0xd0
+      : [0x5a, 0xa4, 0x91, 0x79][rng.int(0, 4)];
+    m.tube([at(0), at(0.95)], 0.01, packMat(CM.metal));
+    m.tube([at(0.3), at(0.75)], 0.035, packMat(CM.paint, col));
+  }
+}
+
+/**
+ * Boutique clothes rail on the pavement: two posts and a rail along `along`
+ * at `p`, hung with `count` garments in assorted colours (double-sided
+ * cloth cards turned across the rail).
+ */
+function clothesRail(m: CMesh, p: Vec3, along: Vec3, rng: Rng, count: number) {
+  const metal = packMat(CM.metal);
+  const L = 1.1;
+  const A = (s: number, y: number, o = 0): Vec3 => [
+    p[0] + along[0] * s - along[2] * o,
+    p[1] + y,
+    p[2] + along[2] * s + along[0] * o,
+  ];
+  m.tube(
+    [A(-L / 2, 0.02), A(-L / 2, 1.45), A(L / 2, 1.45), A(L / 2, 0.02)],
+    0.014,
+    metal,
+  );
+  for (const s of [-L / 2, L / 2])
+    m.tube([A(s, 0.02, -0.25), A(s, 0.02, 0.25)], 0.014, metal);
+  const uv: Vec2[] = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ];
+  const cols = [0x2e, 0x91, 0xd5, 0x5a, 0x9c, 0xa4, 0x35, 0x90, 0x38];
+  for (let k = 0; k < count; k++) {
+    const s =
+      -L / 2 +
+      0.1 +
+      ((L - 0.2) * (k + rng.range(-0.2, 0.2))) / Math.max(1, count - 1);
+    const len = rng.range(0.55, 0.95);
+    const hw = rng.range(0.2, 0.26);
+    const mat = packMat(CM.paint, cols[rng.int(0, cols.length)]);
+    const q = [
+      A(s, 1.38 - len, -hw),
+      A(s, 1.38 - len, hw),
+      A(s, 1.4, hw * 0.8),
+      A(s, 1.4, -hw * 0.8),
+    ];
+    m.quad(q, along, uv, mat);
+    m.quad(q, [-along[0], 0, -along[2]], uv, mat);
+  }
+}
+
+/** Unit square uv. */
+const uv01: Vec2[] = [
+  [0, 0],
+  [1, 0],
+  [1, 1],
+  [0, 1],
+];
+
+/** Washing: white and pale sheets and towels, a few colours. */
+const LAUNDRY = [0xd5, 0xd5, 0xd0, 0x9c, 0x5a, 0xa4, 0xcf, 0x91];
+
 /** Yaw for CMesh.box so that its forward axis is the edge's outward normal. */
 const yawOf = (e: FacadeEdge) => Math.atan2(e.n[0], e.n[2]);
+
+/**
+ * Split-AC outdoor unit (0.8 x 0.55 x 0.29 m, light grey, a dark fan grille
+ * on its left) standing `out` metres in front of facade edge `e` at `s`,
+ * its foot at `y`. `bracket`: hung on a steel shelf bracket off the wall
+ * (else it stands on a slab); `line` runs its insulated refrigerant line
+ * from its right side back into the wall.
+ */
+function acUnit(
+  m: CMesh,
+  e: FacadeEdge,
+  s: number,
+  out: number,
+  y: number,
+  bracket: boolean,
+  line: boolean,
+) {
+  const yaw = yawOf(e);
+  m.box(
+    edgeAt(e, s, out, y + 0.275),
+    [0.4, 0.275, 0.145],
+    packMat(CM.paint, 0xe0),
+    yaw,
+    0,
+    true,
+    true,
+  );
+  const g = (ds: number, dy: number) => edgeAt(e, s + ds, out + 0.147, y + dy);
+  m.quad(
+    [g(-0.33, 0.09), g(0.05, 0.09), g(0.05, 0.47), g(-0.33, 0.47)],
+    e.n,
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+    packMat(CM.frame),
+  );
+  const steel = packMat(CM.paint, 0x90);
+  if (bracket) {
+    // Shelf bracket: the steel shelf under the unit and two raking struts
+    // from the wall below to its front edge.
+    const b = (ds: number, o: number, dy: number) =>
+      edgeAt(e, s + ds, o, y + dy);
+    m.quad(
+      [
+        b(-0.42, 0, -0.01),
+        b(0.42, 0, -0.01),
+        b(0.42, out + 0.15, -0.01),
+        b(-0.42, out + 0.15, -0.01),
+      ],
+      [0, -1, 0],
+      uv01,
+      steel,
+    );
+    for (const ds of [-0.3, 0.3])
+      m.quad(
+        [
+          b(ds - 0.02, 0, -0.4),
+          b(ds + 0.02, 0, -0.4),
+          b(ds + 0.02, out + 0.14, -0.02),
+          b(ds - 0.02, out + 0.14, -0.02),
+        ],
+        [e.n[0] * 0.7, -0.7, e.n[2] * 0.7],
+        uv01,
+        steel,
+      );
+  }
+  if (line)
+    m.tube(
+      [
+        edgeAt(e, s + 0.46, out - 0.05, y + 0.15),
+        edgeAt(e, s + 0.46, 0.03, y + 0.3),
+      ],
+      0.03,
+      packMat(CM.paint, 0xd2),
+    );
+}
 
 /**
  * Painted steel (fire stairs, ad frames, sign lattices): CM.paint with param
@@ -1480,11 +2064,52 @@ function fireStairShell(
 }
 
 /**
+ * Pavement slots in front of a shopfront: the wall lane (things standing
+ * against the glass) and the kerb lane (things further out), each a list
+ * of taken [s0, s1] ranges along the front edge.
+ */
+interface Pavement {
+  len: number;
+  wall: number[][];
+  kerb: number[][];
+  /** Street light / signal poles to keep clear of (kerb lane). */
+  poles: Vec2[];
+  e: FacadeEdge;
+}
+
+/** Reserves [s - hw, s + hw] in a lane if it is free (and clear of poles). */
+function take(
+  pv: Pavement,
+  lane: 'wall' | 'kerb' | 'both',
+  s: number,
+  hw: number,
+  out = 1.2,
+) {
+  if (s - hw < 0.25 || s + hw > pv.len - 0.25) return false;
+  const lanes = lane === 'both' ? [pv.wall, pv.kerb] : [pv[lane]];
+  if (lanes.some(l => l.some(([a, c]) => s + hw > a && s - hw < c)))
+    return false;
+  if (lane !== 'wall') {
+    const q = edgeAt(pv.e, s, out, 0);
+    if (pv.poles.some(p => Math.hypot(p[0] - q[0], p[1] - q[2]) < hw + 0.6))
+      return false;
+  }
+  for (const l of lanes) l.push([s - hw, s + hw]);
+  return true;
+}
+
+/** Bright, slightly faded frame paints for bicycles. */
+const BIKE_COLS = [0xd5, 0x91, 0x5a, 0xa4, 0x79, 0x30, 0x9c, 0xc4];
+
+/**
  * Street kit in front of one ground-floor tenant (`t`: its type, extent
  * [s0, s1] along the front edge and fascia sign id). `gy` is the pavement
- * and `head` the shopfront head. Restaurants hang a noren printed with
- * their name over the door, and put out a lit plastic-food display case
- * and stacked beer crates; a konbini has its row of recycling bins.
+ * and `head` the shopfront head; `pv` hands out pavement slots.
+ * Restaurants hang a noren printed with their name over the door, put out
+ * a lit plastic-food display case, stacked beer crates and a nobori
+ * banner; a konbini has its recycling station, an umbrella stand and
+ * banners; a boutique a clothes rail and plants; offices plants. Staff
+ * and customers' bicycles stand in front of most of them.
  */
 function tenantKit(
   m: CMesh,
@@ -1493,11 +2118,58 @@ function tenantKit(
   gy: number,
   head: number,
   rng: Rng,
+  pv: Pavement,
 ) {
   const w = t.s1 - t.s0;
   const yaw = yawOf(e);
   const P = (s: number, out: number, y: number) => edgeAt(e, s, out, y);
   const dark = packMat(CM.paint, 0x91);
+  const mid = (t.s0 + t.s1) / 2;
+  // A spot inside the tenant's frontage, `f` of the way along it.
+  const at = (f: number) => t.s0 + w * f;
+  const banner = () => {
+    // Nobori: 1-2 cloth banners out by the kerb, printed with a shop word.
+    const k = rng.chance(0.25) ? 2 : 1;
+    for (let j = 0; j < k; j++) {
+      const s = at(rng.range(0.15, 0.85));
+      if (!take(pv, 'kerb', s, 0.3, 1.5)) continue;
+      const tn: Vec3 = [
+        e.n[0] * Math.cos(0.3) + e.along[0] * Math.sin(0.3) * (j ? -1 : 1),
+        0,
+        e.n[2] * Math.cos(0.3) + e.along[2] * Math.sin(0.3) * (j ? -1 : 1),
+      ];
+      const ids = TENANT_NOBORI[t.type];
+      if (ids.length) nobori(m, P(s, 1.5, gy), tn, ids[rng.int(0, ids.length)]);
+    }
+  };
+  const bikes = (n: number) => {
+    // Parked bicycles side by side, nose to the shop.
+    const s0 = at(rng.range(0.1, 0.6));
+    for (let j = 0; j < n; j++) {
+      const s = s0 + j * 0.62;
+      if (s > t.s1 || !take(pv, 'both', s, 0.28, 0.9)) break;
+      const lean = rng.range(-0.12, 0.12);
+      const dir: Vec3 = [
+        -e.n[0] * Math.cos(lean) + e.along[0] * Math.sin(lean),
+        0,
+        -e.n[2] * Math.cos(lean) + e.along[2] * Math.sin(lean),
+      ];
+      bicycle(
+        m,
+        P(s, 0.95, gy),
+        dir,
+        BIKE_COLS[rng.int(0, BIKE_COLS.length)],
+        rng.chance(0.8),
+      );
+    }
+  };
+  const plants = () => {
+    for (const f of [0.08, 0.92])
+      if (rng.chance(0.55)) {
+        const s = at(f);
+        if (take(pv, 'wall', s, 0.35)) pottedPlant(m, P(s, 0.45, gy), rng);
+      }
+  };
   if (t.type === SHOP_TYPE.restaurant && w > 1.4) {
     const nw = Math.min(1.8, w * 0.6);
     const sc = t.s0 + w * rng.range(0.35, 0.65);
@@ -1530,11 +2202,18 @@ function tenantKit(
         mat,
       );
     }
+    // The door under the noren stays clear.
+    take(pv, 'wall', sc, nw / 2);
     // Plastic-food display case beside the door: a dark cabinet, and lit
     // shelves of samples behind glass (M_VENDING's lit rows).
     const right = sc + nw / 2 + 0.6 <= t.s1 - 0.5;
     const ds = right ? sc + nw / 2 + 0.6 : sc - nw / 2 - 0.6;
-    if (ds >= t.s0 + 0.5 && ds <= t.s1 - 0.5 && rng.chance(0.75)) {
+    if (
+      ds >= t.s0 + 0.5 &&
+      ds <= t.s1 - 0.5 &&
+      rng.chance(0.75) &&
+      take(pv, 'wall', ds, 0.5)
+    ) {
       m.box(P(ds, 0.3, gy + 0.4), [0.45, 0.4, 0.22], dark, yaw);
       m.box(P(ds, 0.3, gy + 1.07), [0.45, 0.27, 0.22], packMat(CM.metal), yaw);
       m.quad(
@@ -1555,12 +2234,12 @@ function tenantKit(
       );
     }
     // Beer crates stacked by the other end.
-    if (rng.chance(0.55)) {
-      const cs = right ? t.s0 + 0.4 : t.s1 - 0.4;
+    const cs = right ? t.s0 + 0.4 : t.s1 - 0.4;
+    if (rng.chance(0.65) && take(pv, 'wall', cs, 0.55)) {
       const crate = packMat(CM.paint, 0x92);
       for (const [d, n] of [
-        [-0.27, rng.int(2, 4)],
-        [0.27, rng.int(1, 3)],
+        [-0.27, rng.int(2, 5)],
+        [0.27, rng.int(1, 4)],
       ])
         m.box(
           P(cs + d, 0.3, gy + 0.155 * n),
@@ -1569,27 +2248,35 @@ function tenantKit(
           yaw + (d > 0 ? rng.range(-0.15, 0.15) : 0),
         );
     }
+    banner();
+    if (rng.chance(0.3)) bikes(1);
   } else if (t.type === SHOP_TYPE.konbini) {
-    // Recycling bins: one cabinet with three dark openings.
-    const bs = rng.chance(0.5) ? t.s1 - 0.7 : t.s0 + 0.7;
-    if (w > 1.6) {
-      m.box(
-        P(bs, 0.3, gy + 0.45),
-        [0.55, 0.45, 0.22],
-        packMat(CM.paint, 0xd0),
-        yaw,
-      );
-      for (let k = -1; k <= 1; k++)
-        flatQuad(
-          m,
-          P(bs + k * 0.36, 0.525, gy + 0.72),
-          e.along,
-          0.1,
-          0.05,
-          e.n,
-          dark,
-        );
+    // Recycling station at one end, an umbrella stand by the door, banners
+    // and customers' bicycles out front.
+    const n = w > 3 ? 4 : 3;
+    const half = n * 0.22;
+    const bs = rng.chance(0.5) ? t.s1 - half - 0.2 : t.s0 + half + 0.2;
+    if (w > 1.6 && take(pv, 'wall', bs, half))
+      recyclingBins(m, P(bs, 0.32, gy), e.n, n);
+    const us = mid + rng.range(-0.3, 0.3) * w;
+    if (take(pv, 'wall', us, 0.25))
+      umbrellaStand(m, P(us, 0.35, gy), rng, rng.int(3, 6));
+    banner();
+    bikes(rng.int(1, 3) - (rng.chance(0.3) ? 1 : 0));
+  } else if (t.type === SHOP_TYPE.boutique) {
+    const rs = at(rng.range(0.25, 0.75));
+    if (w > 2 && take(pv, 'wall', rs, 0.65))
+      clothesRail(m, P(rs, 0.55, gy), e.along, rng, rng.int(4, 8));
+    plants();
+    if (rng.chance(0.5)) bikes(1);
+  } else {
+    plants();
+    if (rng.chance(0.4)) {
+      const us = at(rng.range(0.3, 0.7));
+      if (take(pv, 'wall', us, 0.25))
+        umbrellaStand(m, P(us, 0.35, gy), rng, rng.int(2, 4));
     }
+    if (rng.chance(0.4)) bikes(rng.int(1, 3));
   }
 }
 
@@ -1601,9 +2288,13 @@ export function building(
   signDensity: number,
   hf?: Heightfield,
   poles: Vec2[] = [],
+  cover: number[] = [],
+  flush: number[] = [],
 ) {
   const rng = new Rng(b.seed);
   const fp = b.footprint;
+  // Whether edge i is hidden up to height y by a neighbour (edgeCover).
+  const hid = (i: number, y: number) => (cover[i] ?? -Infinity) >= y;
   const base = b.base;
   const top = base + b.height;
   const aux = b.seed;
@@ -1996,6 +2687,14 @@ export function building(
   ) => {
     es.forEach((e, i) => {
       if (e.len < 0.05) return;
+      // (Party and rear walls flush against a taller neighbour are never
+      // seen.)
+      if (
+        es === edges &&
+        e.role >= ROLE.party &&
+        (flush[i] ?? -Infinity) >= y1 + 0.05
+      )
+        return;
       const hasCore = !isNaN(e.core);
       const sA = hasCore && e.core === 0 ? CORE_W : 0;
       const sB = hasCore && e.core > 0 ? e.core : e.len;
@@ -2083,22 +2782,27 @@ export function building(
   // adds its inner face.
   const crown = (es: FacadeEdge[], poly: Vec2[], y0: number) => {
     let u = 0;
-    for (const e of es) {
+    for (const [i, e] of es.entries()) {
       const cm = fmat(e, FZ.crown, true);
-      edgeQuad(
-        m,
-        e,
-        0,
-        e.len,
-        y0,
-        y0 + CROWN_H,
-        0,
-        u,
-        u + e.len,
-        base,
-        cm,
-        aux,
-      );
+      if (!(
+        es === edges &&
+        e.role >= ROLE.party &&
+        (flush[i] ?? -Infinity) >= y0 + CROWN_H + 0.05
+      ))
+        edgeQuad(
+          m,
+          e,
+          0,
+          e.len,
+          y0,
+          y0 + CROWN_H,
+          0,
+          u,
+          u + e.len,
+          base,
+          cm,
+          aux,
+        );
       u += e.len;
     }
     coping(m, poly, y0 + CROWN_H, lod);
@@ -2475,6 +3179,8 @@ export function building(
   // stays in step between LODs.
   const ledgeNone = fr.chance(0.4);
   const vending = fr.chance(0.4);
+  // Balconies across the front of residential midrises (below).
+  const frontBalc = b.kind === 'midrise' && !office && fr.chance(0.7);
   const ar = new Rng(hash2(b.seed, 0xba1));
   if (lod === 0) {
     // Ledges on the street faces only: a deep course over the base, then
@@ -2483,8 +3189,13 @@ export function building(
     for (const e of edges) {
       if (e.role > ROLE.street || e.len < 1) continue;
       const hasCore = !isNaN(e.core);
+      // (Window sill courses take over above the base course.)
+      const sills =
+        b.kind !== 'apartment' &&
+        e.count > 0 &&
+        !(frontBalc && e.role === ROLE.front);
       for (let j = 0; j < bodyFloors - setF; j++) {
-        if (j > 0 && (every === 0 || j % every !== 0)) continue;
+        if (j > 0 && (sills || every === 0 || j % every !== 0)) continue;
         const depth = j === 0 ? 0.3 : office ? 0.35 : 0.18;
         const sA = hasCore && e.core === 0 ? CORE_W : -depth;
         const sB = hasCore && e.core > 0 ? e.core : e.len + depth;
@@ -2504,7 +3215,7 @@ export function building(
 
   // Balconies with solid upstands across the front of residential midrises
   // (deep shadow bands that read from afar): one slab and panel per floor.
-  if (b.kind === 'midrise' && !office && fr.chance(0.7)) {
+  if (frontBalc) {
     const e = edges[Math.max(0, roles.indexOf(ROLE.front))];
     const trim = fmat(e, FZ.trim, true);
     for (let f = 1; f <= bodyFloors - setF && e.count > 0; f++) {
@@ -2560,16 +3271,209 @@ export function building(
         0,
         [-e.n[0], 0, -e.n[2]],
       );
-      if (ar.chance(0.5)) {
-        const s = lerp(e.f0 + 0.6, e.f1 - 0.6, ar.next());
+      if (ar.chance(0.5))
+        acUnit(
+          m,
+          e,
+          lerp(e.f0 + 0.6, e.f1 - 0.6, ar.next()),
+          0.4,
+          y,
+          false,
+          false,
+        );
+    }
+  }
+
+  // Window sills and heads on the street faces (LOD0): under each window
+  // row a precast sill course whose sloped top steps out 9 cm to a drip
+  // edge, and over it a soffit lip, so every row draws a lit line over a
+  // shadow line (one run per floor over the window field; they replace the
+  // floor-line ledges above the base course). Heights follow facadeStyle
+  // in city-materials.wgsl.
+  if (lod === 0 && b.kind !== 'apartment') {
+    const win = facadeWindows(b.style, KIND_INDEX[b.kind]);
+    const sillMat = packMat(CM.concrete);
+    const lipMat = fmat(edges[0], FZ.trim, true);
+    edges.forEach((e, i) => {
+      if (e.role > ROLE.street || e.count === 0) return;
+      if (frontBalc && e.role === ROLE.front) return;
+      const sillY = (1 - win.winH) * H * 0.55;
+      const headY = sillY + win.winH * H;
+      const nUp: Vec3 = [e.n[0] * 0.55, 0.83, e.n[2] * 0.55];
+      const down: Vec3 = [0, -1, 0];
+      // A run [s0, s1] of sill (and lip) at floor base y.
+      const run = (s0: number, s1: number, y: number) => {
+        const Q = (s: number, out: number, dy: number) =>
+          edgeAt(e, s, out, y + dy);
+        const uvq: Vec2[] = [
+          [0, 0],
+          [s1 - s0, 0],
+          [s1 - s0, 1],
+          [0, 1],
+        ];
+        // Sill: a steep weathered top 15 cm out (lit from above and from
+        // the street) over its underside (a shadow line from below).
+        const D = 0.15;
+        m.quad(
+          [
+            Q(s0, D, sillY - 0.1),
+            Q(s1, D, sillY - 0.1),
+            Q(s1, 0, sillY),
+            Q(s0, 0, sillY),
+          ],
+          nUp,
+          uvq,
+          sillMat,
+        );
+        m.quad(
+          [
+            Q(s0, 0, sillY - 0.1),
+            Q(s1, 0, sillY - 0.1),
+            Q(s1, D, sillY - 0.1),
+            Q(s0, D, sillY - 0.1),
+          ],
+          down,
+          uvq,
+          sillMat,
+        );
+        // Soffit lip over the head: its underside and drip face.
+        if (headY < H - 0.14) {
+          m.quad(
+            [
+              Q(s0, 0, headY + 0.02),
+              Q(s1, 0, headY + 0.02),
+              Q(s1, 0.14, headY + 0.02),
+              Q(s0, 0.14, headY + 0.02),
+            ],
+            down,
+            uvq,
+            lipMat,
+            aux,
+          );
+          m.quad(
+            [
+              Q(s0, 0.14, headY + 0.02),
+              Q(s1, 0.14, headY + 0.02),
+              Q(s1, 0.14, headY + 0.11),
+              Q(s0, 0.14, headY + 0.11),
+            ],
+            e.n,
+            uvq,
+            lipMat,
+            aux,
+          );
+        }
+      };
+      // (Up to the sixth floor: higher rows are only seen from afar.)
+      for (let f = 1; f <= Math.min(bodyN, 6); f++) {
+        const y = base + GROUND_H + (f - 1) * H;
+        if (y >= solidTo[i]) run(e.f0 - 0.05, e.f1 + 0.05, y);
+      }
+    });
+  }
+
+  // Street-face services (LOD0): split-AC units on shelf brackets beside
+  // some windows (tenants without a balcony), a PVC drain pipe down the
+  // corner pier from a rain hopper under the coping, and the electric meter
+  // box with its conduit at grade by the shopfront. Clear of the blade sign
+  // slots on the front.
+  if (lod === 0 && b.kind !== 'apartment') {
+    const sv = new Rng(hash2(b.seed, 0x5e7c));
+    const pvc = packMat(CM.paint, 0xd2);
+    const wallTop = mainTop + CROWN_H;
+    const win = facadeWindows(b.style, KIND_INDEX[b.kind]);
+    edges.forEach((e, i) => {
+      if (e.role > ROLE.street || e.len < 3) return;
+      const front = e.role === ROLE.front;
+      const signSlot = (s: number) =>
+        i === b.front &&
+        [0.1, 0.9, 0.5, 0.3, 0.7].some(t => Math.abs(s - t * e.len) < 0.9);
+      const bw = bay / e.k;
+      // Between windows (punched) or on the spandrel under the sill
+      // course (ribbon windows).
+      const sillY = (1 - win.winH) * H * 0.55;
+      let units = 0;
+      const maxUnits = 2;
+      if (!(frontBalc && front))
+        for (let f = 1; f <= bodyN && units < maxUnits; f++) {
+          const y0 = base + GROUND_H + (f - 1) * H;
+          if (y0 < solidTo[i]) continue;
+          for (let j = 0; j < e.count && units < maxUnits; j++) {
+            if (!sv.chance(office ? 0.06 : 0.12)) continue;
+            const s =
+              e.f0 + (j + (win.strip ? 0.5 : sv.chance(0.5) ? 0 : 1)) * bw;
+            if (s < 0.6 || s > e.len - 0.6 || signSlot(s)) continue;
+            const y = win.strip ? y0 + sillY - 0.75 : y0 + sillY + 0.05;
+            if (y < y0 + 0.1) continue;
+            acUnit(m, e, s, 0.3, y, true, true);
+            units++;
+          }
+        }
+      // Drain pipe down one corner pier (away from the core strip).
+      const ps = !isNaN(e.core) && e.core < e.len / 2 ? e.len - 0.3 : 0.3;
+      if (sv.chance(front ? 0.6 : 0.85) && !signSlot(ps)) {
+        const g = Math.max(base, grade[i] - 0.05);
         m.box(
-          edgeAt(e, s, 0.4, y + 0.28),
-          [0.4, 0.275, 0.145],
-          packMat(CM.paint, 0xe0),
-          Math.atan2(e.n[0], e.n[2]),
+          edgeAt(e, ps, 0.16, wallTop - 0.45),
+          [0.14, 0.15, 0.1],
+          packMat(CM.paint, 0x90),
+          yawOf(e),
+          0,
+          false,
+          true,
+        );
+        m.tube(
+          [
+            edgeAt(e, ps, 0.16, wallTop - 0.6),
+            edgeAt(e, ps, 0.08, wallTop - 0.85),
+            edgeAt(e, ps, 0.08, g + 0.3),
+            edgeAt(e, ps, 0.2, g + 0.08),
+          ],
+          0.055,
+          pvc,
         );
       }
-    }
+      // Electric meter box with a window and its conduit into the wall,
+      // on the street side (or the front's far pier).
+      if (front || !sv.chance(0.5)) {
+        const ms = front
+          ? ps < e.len / 2
+            ? e.len - 0.32
+            : 0.32
+          : ps < e.len / 2
+            ? 1.0
+            : e.len - 1.0;
+        const g = Math.max(base, grade[i] - 0.05);
+        if (!front || !shop || e.len > 6) {
+          m.box(
+            edgeAt(e, ms, 0.07, g + 1.55),
+            [0.17, 0.24, 0.07],
+            packMat(CM.paint, 0xd6),
+            yawOf(e),
+            0,
+            true,
+            true,
+          );
+          flatQuad(
+            m,
+            edgeAt(e, ms, 0.145, g + 1.6),
+            e.along,
+            0.08,
+            0.08,
+            e.n,
+            packMat(CM.glass, 4),
+          );
+          m.tube(
+            [
+              edgeAt(e, ms, 0.04, g + 1.79),
+              edgeAt(e, ms, 0.04, base + GROUND_H - 0.2),
+            ],
+            0.02,
+            packMat(CM.paint, 0x90),
+          );
+        }
+      }
+    });
   }
 
   // Balconies on apartments.
@@ -2906,13 +3810,13 @@ export function building(
       }
       if (lod === 0)
         m.beam(wallAt(t, 0.28, y0), wallAt(t, 0.28, yTop), 0.04, 0.04, metal);
-      if (lod === 0)
-        lights.add(
-          wallAt(t, 1.8, (y0 + yTop) / 2),
-          10,
-          signColor(SIGN.vertical.first + zr.int(0, SIGN.vertical.count)),
-          LightKind.sign,
-        );
+      // (At every LOD: shells get the same neon wash at night.)
+      lights.add(
+        wallAt(t, 1.8, (y0 + yTop) / 2),
+        10,
+        signColor(SIGN.vertical.first + zr.int(0, SIGN.vertical.count)),
+        LightKind.sign,
+      );
     }
     // Signs on the side walls near the street corner.
     if (b.density > 0.3 && floors > 2) {
@@ -3064,23 +3968,51 @@ export function building(
             metal,
           );
         const gy = base + 0.16;
+        // Pavement slots: the core strip and its entrance, and the vending
+        // machines and bicycle row fillProps stands on this frontage, are
+        // taken before the tenants' kit goes down.
+        const pv: Pavement = {len, wall: [], kerb: [], poles, e: fe};
+        if (core?.edge === i) {
+          const c0 = edges[i].core;
+          pv.wall.push([c0 - 0.9, c0 + CORE_W + 0.9]);
+          if (b.density < 0.1 && vending) {
+            const vs = core.atEnd
+              ? c0 - 2.2 + CORE_W / 2
+              : c0 + CORE_W / 2 + 2.2;
+            pv.wall.push([vs - 0.6, vs + 0.6]);
+          }
+        }
+        if (b.density >= 0.1) {
+          const h = hash2(b.id, 55);
+          if (h % 3 === 0)
+            for (let k = 0; k < 1 + ((h >> 4) % 3); k++) {
+              const s = (0.15 + k * 0.09) * len;
+              pv.wall.push([s - 0.6, s + 0.6]);
+            }
+          if (h % 5 === 1 && len > 6) {
+            const count = 2 + ((h >> 6) % 2);
+            pv.wall.push([
+              0.55 * len - 0.4,
+              (0.55 + (0.35 * (count - 1)) / count) * len + 0.4,
+            ]);
+            pv.kerb.push(pv.wall[pv.wall.length - 1]);
+          }
+        }
         if (st.chance(0.7)) {
           const t = ftAt(st.range(0.2, 0.8));
           const k = st.int(0, SIGN.square.count);
           const tn =
             tenants.find(x => t * len >= x.s0 && t * len <= x.s1) ?? main;
           const sq = TENANT_SQUARES[tn.type];
-          aFrameSign(
-            m,
-            wallAt(t, st.range(1.1, 1.6), gy),
-            n,
-            sq[k % sq.length],
-          );
+          const out = st.range(1.1, 1.6);
+          if (take(pv, 'kerb', t * len, 0.4, out))
+            aFrameSign(m, wallAt(t, out, gy), n, sq[k % sq.length]);
         }
         for (const t of [0.06, 0.94])
-          if (st.chance(0.4)) pottedPlant(m, wallAt(ftAt(t), 0.45, gy), st);
+          if (st.chance(0.4) && take(pv, 'wall', ftAt(t) * len, 0.35))
+            pottedPlant(m, wallAt(ftAt(t), 0.45, gy), st);
         const kr = new Rng(hash2(b.seed, 0x7e4a));
-        for (const t of tenants) tenantKit(m, fe, t, gy, hy - 0.13, kr);
+        for (const t of tenants) tenantKit(m, fe, t, gy, hy - 0.13, kr, pv);
       }
       if (lod === 0) {
         const ay = base + GROUND_H * 0.62;
@@ -3200,7 +4132,7 @@ export function building(
               ],
               packMat(CM.sign, (konbini.id & 0xff) | SIGN_STRIPES),
             );
-          else quad(fasciaQ, n, metal);
+          else quad(fasciaQ, n, packMat(CM.metal, 0x2000 | (b.style & 0x1fff)));
           for (const [t, sg] of [
             [t0, -1],
             [t1, 1],
@@ -3382,7 +4314,7 @@ export function building(
     // Paving level just outside each wall.
     const paving = (i: number) => Math.max(base, grade[i] - 0.05);
     edges.forEach((e, i) => {
-      if (!plinth(i)) return;
+      if (!plinth(i) || hid(i, grade[i] + 0.3)) return;
       const top = Math.max(base + 0.35, grade[i] + 0.25);
       const ex0 = plinth((i + edges.length - 1) % edges.length) ? 0.05 : 0;
       const ex1 = plinth((i + 1) % edges.length) ? 0.05 : 0;
@@ -3531,6 +4463,164 @@ export function building(
         }
       }
     };
+    // Relief on the demolished neighbour's ghost (partyWall() in
+    // city-materials.wgsl paints it; partyGhost mirrors its old roofline):
+    // a galvanised flashing strip standing proud along the old roofline,
+    // broken stubs of its floor slabs, cut-off pipe and cable stubs, and a
+    // bricked-up doorway with its frame where a floor once met ours.
+    const ghost = partyGhost(partyAux);
+    const ghostRelief = (e: FacadeEdge, i: number) => {
+      if (!ghost || svc < 1) return;
+      const gr = new Rng(hash2(b.seed, 0x6a05 + i));
+      const uEnd = e.u0 + e.count * bay;
+      const uOf = (s: number) =>
+        s < e.f0
+          ? e.u0 - (e.f0 - s)
+          : s > e.f1
+            ? uEnd + (s - e.f1)
+            : e.u0 + (s - e.f0) * e.k;
+      const topY = (s: number) => ghost.top(uOf(s)) + vOff;
+      const clear = (s: number, pad: number) =>
+        !inStair(i, s, pad) &&
+        !(partyAd?.edge === i && Math.abs(s - partyAd.s) < partyAd.hw + pad);
+      const into: Vec3 = [-e.n[0], 0, -e.n[2]];
+      const ok = (s: number, y: number) =>
+        y < wallTop - 0.25 && y > grade[i] + 0.3 && !hid(i, y) && clear(s, 0.2);
+      // The old roofline, sampled every 5 cm and simplified to its steps
+      // and slopes.
+      const pts: [number, number][] = [];
+      for (let s = 0.1; s <= e.len - 0.1 + 1e-6; s += 0.05) {
+        const y = topY(s);
+        const n = pts.length;
+        if (n >= 2) {
+          const [s0, y0] = pts[n - 2],
+            [s1, y1] = pts[n - 1];
+          if (Math.abs((y1 - y0) / (s1 - s0) - (y - y1) / (s - s1)) < 1e-3) {
+            pts[n - 1] = [s, y];
+            continue;
+          }
+        }
+        pts.push([s, y]);
+      }
+      const flash = packMat(CM.paint, 0x90);
+      for (let k = 0; k + 1 < pts.length; k++) {
+        const [s0, y0] = pts[k],
+          [s1, y1] = pts[k + 1];
+        if (!ok(s0, y0) || !ok(s1, y1)) continue;
+        m.beam(
+          edgeAt(e, s0, 0.035, y0 + 0.02),
+          edgeAt(e, s1, 0.035, y1 + 0.02),
+          0.035,
+          0.045,
+          flash,
+          0,
+          into,
+        );
+      }
+      // Slab stubs along the old floor lines (2.7 m storeys).
+      const slab = packMat(CM.concrete);
+      let stubs = 0;
+      for (let fl = 1; fl < 4 && stubs < 5; fl++) {
+        const y = vOff + fl * 2.7 + 0.12;
+        let s = gr.range(0.3, 1.2);
+        while (s < e.len - 0.6 && stubs < 5) {
+          const l = gr.range(0.4, 1.6);
+          const s1 = Math.min(e.len - 0.3, s + l);
+          if (
+            ok(s, y) &&
+            ok(s1, y) &&
+            topY(s) > y + 0.4 &&
+            topY(s1) > y + 0.4
+          ) {
+            const d = gr.range(0.04, 0.1);
+            m.beam(
+              edgeAt(e, s, d, y),
+              edgeAt(e, s1, d, y),
+              d,
+              0.11,
+              slab,
+              0,
+              into,
+            );
+            stubs++;
+          }
+          s = s1 + gr.range(0.3, 2.2);
+        }
+      }
+      // Cut pipe and cable stubs, one capped.
+      for (let k = 0; k < 3; k++) {
+        const s = gr.range(0.6, e.len - 0.6);
+        const fl = gr.int(0, 3);
+        const y = vOff + fl * 2.7 + gr.range(0.5, 2.2);
+        if (!ok(s, y) || topY(s) < y + 0.3) continue;
+        if (k === 2) {
+          m.tube(
+            [
+              edgeAt(e, s, 0, y),
+              edgeAt(e, s, 0.12, y),
+              edgeAt(e, s + 0.05, 0.16, y - 0.3),
+            ],
+            0.012,
+            packMat(CM.wire),
+          );
+        } else {
+          const r = k === 0 ? 0.05 : 0.03;
+          m.tube(
+            [edgeAt(e, s, 0, y), edgeAt(e, s, 0.16, y)],
+            r,
+            k === 0 ? packMat(CM.paint, 0xd2) : flash,
+          );
+          if (k === 0)
+            m.box(
+              edgeAt(e, s, 0.18, y),
+              [r + 0.01, r + 0.01, 0.025],
+              flash,
+              yawOf(e),
+              0,
+              false,
+            );
+        }
+      }
+      // Bricked-up doorway on the old first floor: a concrete frame standing
+      // proud round a painted-over infill.
+      const dy = vOff + 2.7 + 0.24;
+      const ds = gr.range(1.2, e.len - 1.2);
+      if (
+        gr.chance(0.7) &&
+        ok(ds - 0.6, dy) &&
+        ok(ds + 0.6, dy + 2.2) &&
+        topY(ds) > dy + 2.5
+      ) {
+        const fm = slab;
+        for (const sx of [-0.5, 0.5])
+          m.beam(
+            edgeAt(e, ds + sx, 0.04, dy),
+            edgeAt(e, ds + sx, 0.04, dy + 2.1),
+            0.04,
+            0.06,
+            fm,
+            0,
+            into,
+          );
+        m.beam(
+          edgeAt(e, ds - 0.56, 0.05, dy + 2.15),
+          edgeAt(e, ds + 0.56, 0.05, dy + 2.15),
+          0.05,
+          0.08,
+          fm,
+          0,
+          into,
+        );
+        const q = (sx: number, y: number) => edgeAt(e, ds + sx, 0.015, y);
+        m.quad(
+          [q(-0.44, dy), q(0.44, dy), q(0.44, dy + 2.07), q(-0.44, dy + 2.07)],
+          e.n,
+          uv01,
+          fmat(e, FZ.trim, true),
+          aux,
+        );
+      }
+    };
     let meters = false;
     edges.forEach((e, i) => {
       if (e.role < ROLE.party || e.len < 3) return;
@@ -3545,7 +4635,8 @@ export function building(
             ? stairS + STAIR_L / 2 + 0.3
             : stairS - STAIR_L / 2 - 0.3
           : s0;
-        if (s > 0.2 && s < e.len - 0.2) downpipe(e, s, ground);
+        if (s > 0.2 && s < e.len - 0.2 && !hid(i, wallTop))
+          downpipe(e, s, ground);
       }
       if (e.role === ROLE.rear && e.count >= 4 && svc === 1) {
         const bw = bay / e.k;
@@ -3554,9 +4645,9 @@ export function building(
         const jy = base + GROUND_H + cr.int(0, Math.max(1, bodyN - 1)) * H;
         const jog = (cr.chance(0.5) ? 1 : -1) * 0.35;
         if (!inStair(i, s, 0.5) && !inStair(i, s + jog, 0.5))
-          downpipe(e, s, ground, jog, jy);
+          if (!hid(i, wallTop)) downpipe(e, s, ground, jog, jy);
       }
-      if (!meters && e.len > 4) {
+      if (!meters && e.len > 4 && !hid(i, ground + 2.2)) {
         meters = true;
         const s0 = backDoor?.edge === i ? backDoor.s1 + 0.25 : e.f0 + 0.3;
         // A gang of gas meters on one board, the electric meter box above
@@ -3600,7 +4691,8 @@ export function building(
         // Tie-rod anchor plates at alternate floor lines, one vent hood.
         for (let f = 2; f <= bodyN && svc === 1; f += 2) {
           const y = base + GROUND_H + (f - 1) * H - 0.15;
-          if (y < solidTo[i] && y < grade[i] + 0.5) continue;
+          if ((y < solidTo[i] && y < grade[i] + 0.5) || hid(i, y + 0.2))
+            continue;
           for (const t of [0.22, 0.78])
             flatQuad(
               m,
@@ -3612,11 +4704,14 @@ export function building(
               dark,
             );
         }
+        if (svc === 1 && !hid(i, wallTop)) partyKit(e, i, ground);
+        ghostRelief(e, i);
         if (bodyN >= 2 && svc === 1) {
           // Kitchen exhaust: a flush louvre under a sloped weather cowl.
           const f = cr.int(1, bodyN + 1);
           const s = lerp(e.len * 0.35, e.len * 0.65, cr.next());
           const y = base + GROUND_H + (f - 1) * H + 2.4;
+          if (hid(i, y + 0.3)) return;
           flatQuad(m, edgeAt(e, s, 0.01, y), e.along, 0.17, 0.15, e.n, metal);
           for (const dy of [-0.08, 0, 0.08])
             flatQuad(
@@ -3648,7 +4743,6 @@ export function building(
             metal,
           );
         }
-        if (svc === 1) partyKit(e, i, ground);
         return;
       }
       // Rear: deep precast sills under the punched windows (facadeRole:
@@ -3677,8 +4771,8 @@ export function building(
         f >= 1 && rearBalc?.edge === i && s > rearBalc.s0 && s < rearBalc.s1;
       for (let f = 0; f <= bodyN && svc === 1 && b.kind !== 'apartment'; f++) {
         const y0 = f === 0 ? base : base + GROUND_H + (f - 1) * H;
-        if (y0 < solidTo[i]) continue;
         const fh = f === 0 ? GROUND_H : H;
+        if (y0 < solidTo[i] || hid(i, y0 + fh)) continue;
         const sill = y0 + 0.55 * fh * 0.55;
         const head = sill + 0.45 * fh;
         for (let j = 0; j < e.count; j++) {
@@ -3796,6 +4890,7 @@ export function building(
           const y0 = base + GROUND_H + (f - 1) * H;
           if (
             y0 < solidTo[i] ||
+            hid(i, y0 + H * 0.5) ||
             behindBalc(f, s) ||
             glassBlock(f, j) ||
             !acCell(f, j)
@@ -3904,7 +4999,7 @@ export function building(
       const br = new Rng(hash2(b.seed, 0xbac3));
       for (let f = 1; f <= bodyN; f++) {
         const y = base + GROUND_H + (f - 1) * H;
-        if (y < solidTo[rearBalc.edge]) continue;
+        if (y < solidTo[rearBalc.edge] || hid(rearBalc.edge, y + 1.1)) continue;
         m.beam(
           P(s0, D / 2, y - 0.09),
           P(s1, D / 2, y - 0.09),
@@ -3967,13 +5062,55 @@ export function building(
             panel,
             aux,
           );
-        if (br.chance(0.35)) {
-          const s = lerp(s0 + 0.7, s1 - 0.7, br.next());
-          m.box(P(s, 0.45, y + 0.3), [0.4, 0.28, 0.15], acMat, yawOf(e));
+        // AC units: one or two per flat (homes: between partitions; offices
+        // per three bays), off on some.
+        const fw = (bay / e.k) * 3;
+        for (let a = s0; a < s1 - 1.2; a += fw) {
+          const b1 = Math.min(s1, a + fw);
+          const k = br.chance(0.4) ? 0 : br.chance(0.2) ? 2 : 1;
+          for (let j = 0; j < k; j++)
+            acUnit(
+              m,
+              e,
+              lerp(a + 0.55, b1 - 0.55, k === 1 ? br.next() : j),
+              0.3,
+              y + 0.02,
+              false,
+              false,
+            );
+        }
+        // Laundry poles on about a third of the flats' balconies (homes):
+        // two poles on hangers under the slab above, with washing on some.
+        if (!office && f < bodyN && br.chance(0.3)) {
+          const l0 = s0 + 0.3 + br.range(0, Math.max(0, s1 - s0 - 4)),
+            l1 = Math.min(s1 - 0.3, l0 + br.range(2.2, 3.6));
+          const hy = y + 2.0;
+          const pole = packMat(CM.paint, 0xd3);
+          for (const o of [0.55, 0.85]) {
+            m.tube([P(l0, o, hy), P(l1, o, hy)], 0.014, pole);
+            for (const s of [l0 + 0.15, l1 - 0.15])
+              m.tube([P(s, o, hy), P(s, o, y + H - 0.12)], 0.008, pole);
+          }
+          const nw = br.int(0, 6);
+          for (let k = 0; k < nw; k++) {
+            const s = lerp(l0 + 0.2, l1 - 0.6, br.next());
+            const w = br.range(0.35, 0.7),
+              h = br.range(0.4, 0.8);
+            const o = br.chance(0.5) ? 0.55 : 0.85;
+            const mat = packMat(CM.paint, LAUNDRY[br.int(0, LAUNDRY.length)]);
+            const q = [
+              P(s, o, hy - h),
+              P(s + w, o, hy - h),
+              P(s + w, o, hy),
+              P(s, o, hy),
+            ];
+            m.quad(q, e.n, uv01, mat);
+            m.quad(q, [-e.n[0], 0, -e.n[2]], uv01, mat);
+          }
         }
       }
     }
-    if (stair >= 0)
+    if (stair >= 0 && !hid(stair, base + GROUND_H + (bodyN - 1) * H + 1))
       fireStair(m, edges[stair], stairS, {
         levels: [
           paving(stair),
@@ -4146,11 +5283,14 @@ export function building(
         const q = at(spot[0], spot[1]);
         const ty = roofY + 2.4 * k;
         const th = 1.0 * k;
+        // (Its underside shows from the street below the stand.)
         m.box(
           [q[0], ty + th, q[1]],
           [hv, th, hu],
           packMat(CM.paint, 0xd1),
           yaw,
+          0,
+          lod > 0,
         );
         const steel = steelPaint(
           (rr.int(0, 64) << 2) | (rr.chance(0.6) ? 0 : 3),
@@ -4215,6 +5355,25 @@ export function building(
           const out: Vec3 = [U[0], 0, U[1]];
           for (let y = roofY + 0.5; y < yTop - 0.2; y += 0.6)
             flatQuad(m, lad(0, y), along, 0.22, 0.02, out, steel);
+          // Supply pipe: down a leg from the tank's floor,
+          // then on low stools across the roof to the penthouse (or over
+          // the parapet).
+          const pipe = packMat(CM.paint, 0xd2);
+          const goal: Vec2 = mast
+            ? [mast[0], mast[2]]
+            : at(spot[0] * -0.3, spot[1] * -0.3);
+          for (const [dv, r] of [[0.35, 0.05]]) {
+            const l0 = leg(1, dv > 0 ? 1 : -1, ty);
+            const a: Vec3 = [l0[0], ty, l0[2]];
+            const g: Vec3 = [
+              goal[0] + V[0] * dv,
+              roofY + 0.35,
+              goal[1] + V[1] * dv,
+            ];
+            const mid: Vec3 = [a[0], roofY + 0.35, a[2]];
+            const elbow: Vec3 = [g[0], roofY + 0.35, a[2]];
+            m.tube([a, mid, elbow, g], r, pipe);
+          }
         }
       }
     }
@@ -4397,7 +5556,8 @@ export function building(
     // Antenna mast with crossbars on the penthouse or stair house.
     const mastH = rr.range(4, 6);
     const bars = rr.int(2, 4);
-    if (rr.chance(0.25) && mast && lod === 0) {
+    const mastUp = rr.chance(0.25);
+    if (mastUp && mast && lod === 0) {
       m.beam(mast, [mast[0], mast[1] + mastH, mast[2]], 0.04, 0.04, metal);
       for (let k = 0; k < bars; k++) {
         const y = mast[1] + mastH - 0.3 - k * 0.7;
@@ -4408,6 +5568,95 @@ export function building(
           0.015,
           0.015,
           metal,
+        );
+      }
+    }
+    // TV aerials and satellite dishes (LOD0): a Yagi on a short pole on the
+    // penthouse when it has no mast (every Yagi in the city points the same
+    // way, at the broadcast tower), and on some roofs a dish on a stand
+    // aimed up to the south-west.
+    if (lod === 0 && mast) {
+      const ar2 = new Rng(hash2(b.seed, 0xa7e1));
+      const metalM = packMat(CM.metal);
+      if (!mastUp && ar2.chance(0.6)) {
+        const p: Vec3 = [mast[0] + U[0] * 0.6, mast[1], mast[2] + U[1] * 0.6];
+        const top = p[1] + ar2.range(1.4, 2.2);
+        m.tube([p, [p[0], top, p[2]]], 0.025, metalM);
+        const dx = Math.cos(0.6),
+          dz = Math.sin(0.6);
+        const B = (t: number, w: number): Vec3 => [
+          p[0] + dx * t - dz * w,
+          top - 0.1,
+          p[2] + dz * t + dx * w,
+        ];
+        m.tube([B(-0.5, 0), B(0.9, 0)], 0.015, metalM);
+        for (let k = 0; k < 4; k++) {
+          const t = -0.4 + k * 0.38;
+          const w = 0.32 - k * 0.04;
+          m.tube([B(t, -w), B(t, w)], 0.008, metalM);
+        }
+      }
+      if (ar2.chance(0.4)) {
+        // Dish (60 cm) on a pole by the penthouse, facing south-west and up.
+        const p: Vec3 = [
+          mast[0] - U[0] * 0.9 + V[0] * 0.5,
+          mast[1],
+          mast[2] - U[1] * 0.9 + V[1] * 0.5,
+        ];
+        const c: Vec3 = [p[0], p[1] + 0.75, p[2]];
+        m.tube([p, c], 0.025, metalM);
+        const f: Vec3 = [-0.62, 0.5, -0.6];
+        const fl = Math.hypot(f[0], f[1], f[2]);
+        const F: Vec3 = [f[0] / fl, f[1] / fl, f[2] / fl];
+        const R: Vec3 = [F[2], 0, -F[0]];
+        const rl = Math.hypot(R[0], R[2]);
+        R[0] /= rl;
+        R[2] /= rl;
+        const Up: Vec3 = [
+          F[1] * R[2] - F[2] * R[1],
+          F[2] * R[0] - F[0] * R[2],
+          F[0] * R[1] - F[1] * R[0],
+        ];
+        const dishMat = packMat(CM.paint, 0xd5);
+        const ctr = m.vertex(
+          [c[0] - F[0] * 0.06, c[1] - F[1] * 0.06, c[2] - F[2] * 0.06],
+          F,
+          0,
+          0,
+          dishMat,
+        );
+        const rim = Array.from({length: 8}, (_, k) => {
+          const a = (k / 8) * Math.PI * 2;
+          const x = Math.cos(a) * 0.3,
+            y = Math.sin(a) * 0.3;
+          return m.vertex(
+            [
+              c[0] + R[0] * x + Up[0] * y,
+              c[1] + R[1] * x + Up[1] * y,
+              c[2] + R[2] * x + Up[2] * y,
+            ],
+            [
+              F[0] + (R[0] * x + Up[0] * y) * 0.8,
+              F[1] + (R[1] * x + Up[1] * y) * 0.8,
+              F[2] + (R[2] * x + Up[2] * y) * 0.8,
+            ],
+            0,
+            0,
+            dishMat,
+          );
+        });
+        for (let k = 0; k < 8; k++) {
+          // Both sides (the back is the same shell).
+          m.triFacing(ctr, rim[k], rim[(k + 1) % 8], F);
+          m.triFacing(ctr, rim[(k + 1) % 8], rim[k], [-F[0], -F[1], -F[2]]);
+        }
+        m.tube(
+          [
+            [c[0] - Up[0] * 0.28, c[1] - Up[1] * 0.28, c[2] - Up[2] * 0.28],
+            [c[0] + F[0] * 0.38, c[1] + F[1] * 0.38, c[2] + F[2] * 0.38],
+          ],
+          0.012,
+          metalM,
         );
       }
     }
@@ -4612,7 +5861,7 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
     blob(m, c, r * 0.48, 0, aux, lr, sp);
     // Many smaller cards toward the crown surface give a broken, leafy
     // silhouette instead of a few big clumps.
-    leafCards(m, c, r, 16, aux, lr, 0.62, sp);
+    leafCards(m, c, r, 12, aux, lr, 0.68, sp);
   }
 }
 
@@ -4863,6 +6112,61 @@ function utilityPole(m: CMesh, p: Vec3) {
   );
 }
 
+/** A street face (footprint edge a -> c, normal n); drops land at y. */
+interface Front {
+  a: Vec2;
+  c: Vec2;
+  n: Vec3;
+  y: number;
+}
+
+/**
+ * Service drops from a utility pole at `p` to the nearest street face
+ * within reach: a pair of sagging lines from under the crossarm to
+ * a hook bracket on the facade, near its corner (Tokyo's overhead
+ * electricity and telephone service).
+ */
+function serviceDrops(m: CMesh, p: Vec3, fronts: Front[]) {
+  let best: {q: Vec3; d: number; f: Front} | null = null;
+  for (const f of fronts) {
+    const dx = f.c[0] - f.a[0],
+      dz = f.c[1] - f.a[1];
+    const l2 = dx * dx + dz * dz;
+    if (l2 < 4) continue;
+    const l = Math.sqrt(l2);
+    // On the corner pier nearer the pole.
+    const t0 = ((p[0] - f.a[0]) * dx + (p[2] - f.a[1]) * dz) / l2;
+    const t = t0 < 0.5 ? 0.35 / l : 1 - 0.35 / l;
+    const q: Vec3 = [
+      f.a[0] + dx * t + f.n[0] * 0.08,
+      f.y,
+      f.a[1] + dz * t + f.n[2] * 0.08,
+    ];
+    // The pole must stand in front of the face.
+    const side = (p[0] - q[0]) * f.n[0] + (p[2] - q[2]) * f.n[2];
+    const d = Math.hypot(p[0] - q[0], p[2] - q[2]);
+    if (side > 1 && d < 14 && (!best || d < best.d)) best = {q, d, f};
+  }
+  if (!best) return;
+  const {q, f} = best;
+  m.box(
+    q,
+    [0.06, 0.06, 0.08],
+    packMat(CM.paint, 0x90),
+    Math.atan2(f.n[0], f.n[2]),
+  );
+  for (const [dy, dq] of [
+    [7.6, 0.03],
+    [7.4, -0.03],
+  ])
+    wireSag(
+      m,
+      [p[0], p[1] + dy, p[2]],
+      [q[0] + f.n[2] * dq, q[1] + 0.04 - Math.abs(dq), q[2] - f.n[0] * dq],
+      0.35,
+    );
+}
+
 function wireSag(m: CMesh, a: Vec3, b: Vec3, sag: number) {
   const n = 5;
   const pts: Vec3[] = [];
@@ -4972,6 +6276,81 @@ export function makeTileContext(
     deckFloor: deckFloor(layout),
     tilesPerSide: n,
   };
+}
+
+/** Buildings by NB_CELL cell (bounding boxes), for neighbour lookups. */
+const NB_CELL = 16;
+const nbGrids = new WeakMap<CityLayout, Map<number, number[]>>();
+function neighbourGrid(L: CityLayout) {
+  let g = nbGrids.get(L);
+  if (g) return g;
+  g = new Map();
+  L.buildings.forEach((b, i) => {
+    let x0 = Infinity,
+      x1 = -Infinity,
+      z0 = Infinity,
+      z1 = -Infinity;
+    for (const q of b.footprint) {
+      x0 = Math.min(x0, q[0]);
+      x1 = Math.max(x1, q[0]);
+      z0 = Math.min(z0, q[1]);
+      z1 = Math.max(z1, q[1]);
+    }
+    for (let x = Math.floor(x0 / NB_CELL); x <= Math.floor(x1 / NB_CELL); x++)
+      for (
+        let z = Math.floor(z0 / NB_CELL);
+        z <= Math.floor(z1 / NB_CELL);
+        z++
+      ) {
+        const k = x * 65536 + z;
+        const l = g!.get(k);
+        if (l) l.push(i);
+        else g!.set(k, [i]);
+      }
+  });
+  nbGrids.set(L, g);
+  return g;
+}
+
+/**
+ * How high each footprint edge of building `bi` is hidden by neighbours
+ * standing against it (absolute y; -Infinity where any of it is open):
+ * samples `off` metres in front of the edge at fractions `ts`, each
+ * covered to the top of the building it falls in, the edge to the lowest
+ * of them. 1 m out: a gap too narrow to see into, where service kit would
+ * never be seen (or would stick into the neighbour); 0.3 m out, sampled
+ * to the corners: walls flush against a neighbour, not drawn at all.
+ */
+export function edgeCover(
+  L: CityLayout,
+  bi: number,
+  off = 1.0,
+  ts = [0.15, 0.5, 0.85],
+): number[] {
+  const b = L.buildings[bi];
+  const fp = b.footprint;
+  const g = neighbourGrid(L);
+  return fp.map((a, i) => {
+    const c = fp[(i + 1) % fp.length];
+    const n = edgeNormal(fp, i);
+    let cover = Infinity;
+    for (const t of ts) {
+      const q: Vec2 = [
+        lerp(a[0], c[0], t) + n[0] * off,
+        lerp(a[1], c[1], t) + n[2] * off,
+      ];
+      const k = Math.floor(q[0] / NB_CELL) * 65536 + Math.floor(q[1] / NB_CELL);
+      let top = -Infinity;
+      for (const j of g.get(k) ?? []) {
+        const o = L.buildings[j];
+        if (j !== bi && pointInPolygon(q, o.footprint))
+          top = Math.max(top, o.base + o.height);
+      }
+      cover = Math.min(cover, top);
+      if (cover === -Infinity) break;
+    }
+    return cover;
+  });
 }
 
 const DECK_CELL = 8;
@@ -5141,7 +6520,37 @@ export function buildTile(
       poles.push([p[0], p[2]]);
   });
   for (const bi of ctx.tileBuildings[tile] ?? [])
-    building(L.buildings[bi], m, lod, lights, L.params.signDensity, hf, poles);
+    building(
+      L.buildings[bi],
+      m,
+      lod,
+      lights,
+      L.params.signDensity,
+      hf,
+      poles,
+      lod === 0 ? edgeCover(L, bi) : undefined,
+      lod === 0
+        ? edgeCover(L, bi, 0.3, [0.02, 0.25, 0.5, 0.75, 0.98])
+        : undefined,
+    );
+
+  // Street faces of this tile's buildings, for the poles' service drops.
+  const fronts: Front[] = [];
+  if (lod === 0)
+    for (const bi of ctx.tileBuildings[tile] ?? []) {
+      const b = L.buildings[bi];
+      if (b.kind === 'house' || b.kind === 'station' || b.height < 7) continue;
+      b.footprint.forEach((a, i) => {
+        if (i !== b.front && !b.frontage[i]) return;
+        const c = b.footprint[(i + 1) % b.footprint.length];
+        fronts.push({
+          a,
+          c,
+          n: edgeNormal(b.footprint, i),
+          y: b.base + GROUND_H + 0.5,
+        });
+      });
+    }
 
   // Props along chains: utility poles + wires on small streets, trees on avenues.
   for (const ci of ctx.tileChains[tile] ?? []) {
@@ -5162,7 +6571,10 @@ export function buildTile(
         const z = q.p[1] + l[1] * off;
         const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
         const here = inTile(p[0], p[2]);
-        if (here && lod === 0) utilityPole(m, p);
+        if (here && lod === 0) {
+          utilityPole(m, p);
+          serviceDrops(m, p, fronts);
+        }
         if (prev && lod === 0 && here) {
           for (const dy of [9.05, 8.5, 8.0])
             wireSag(
@@ -5263,7 +6675,6 @@ export function buildTile(
       const a = b.footprint[b.front],
         c = b.footprint[(b.front + 1) % b.footprint.length];
       const n = edgeNormal(b.footprint, b.front);
-      const yaw = Math.atan2(n[0], n[2]);
       const h = hash2(b.id, 55);
       if (h % 3 === 0) {
         const count = 1 + ((h >> 4) % 3);
@@ -5283,40 +6694,25 @@ export function buildTile(
       }
       if (h % 5 === 1 && dist2(a, c) > 6) {
         // A row of parked bicycles against the frontage.
-        const count = 3 + ((h >> 6) % 5);
+        const count = 2 + ((h >> 6) % 2);
         for (let k = 0; k < count; k++) {
           const t = 0.55 + k * (0.35 / count);
           const x = lerp(a[0], c[0], t) + n[0] * 0.9;
           const z = lerp(a[1], c[1], t) + n[2] * 0.9;
           const base: Vec3 = [x, sidewalkY(hf, x, z, b.base), z];
-          const col = packMat(CM.paint, (h + k * 37) & 0xff);
-          // Two wheels and a frame, oriented toward the wall.
-          for (const off of [-0.5, 0.5]) {
-            const wc: Vec3 = [
-              base[0] + n[0] * off,
-              base[1] + 0.33,
-              base[2] + n[2] * off,
-            ];
-            m.beam(
-              [wc[0], wc[1] - 0.3, wc[2]],
-              [wc[0], wc[1] + 0.3, wc[2]],
-              0.02,
-              0.3,
-              packMat(CM.wire),
-            );
-          }
-          m.beam(
-            [base[0] - n[0] * 0.45, base[1] + 0.55, base[2] - n[2] * 0.45],
-            [base[0] + n[0] * 0.45, base[1] + 0.6, base[2] + n[2] * 0.45],
-            0.03,
-            0.03,
-            col,
-          );
-          m.box(
-            [base[0] - n[0] * 0.15, base[1] + 0.85, base[2] - n[2] * 0.15],
-            [0.25, 0.02, 0.06],
-            packMat(CM.metal),
-            yaw + Math.PI / 2,
+          // Nose to the wall, a little askew.
+          const lean = (((h >> (k + 3)) & 7) - 3.5) * 0.03;
+          const dir: Vec3 = [
+            -n[0] * Math.cos(lean) + n[2] * Math.sin(lean),
+            0,
+            -n[2] * Math.cos(lean) - n[0] * Math.sin(lean),
+          ];
+          bicycle(
+            m,
+            base,
+            dir,
+            BIKE_COLS[(h + k * 37) % BIKE_COLS.length],
+            ((h >> k) & 3) !== 0,
           );
         }
       }
@@ -5346,9 +6742,12 @@ export function buildTile(
             prev = null;
             continue;
           }
-          m.box(
-            [p[0], p[1] + (0.4 - SINK) / 2 + 0.2, p[2]],
-            [0.03, 0.4 + SINK / 2, 0.03],
+          m.tube(
+            [
+              [p[0], p[1] - SINK, p[2]],
+              [p[0], p[1] + 0.8, p[2]],
+            ],
+            0.042,
             packMat(CM.paint, 0xd0),
           );
           if (prev) {
@@ -5439,7 +6838,7 @@ export function buildTile(
           const z = q[1] + (d[1] / dl) * 0.7 + t[1] * k * 0.9;
           if (!onSidewalk(x, z)) continue;
           const bp: Vec3 = [x, sidewalkY(hf, x, z, j.h) - SINK, z];
-          m.cylinder(bp, 0.07, 0.8 + SINK, 6, packMat(CM.paint, 0xd8), true);
+          m.cylinder(bp, 0.07, 0.8 + SINK, 4, packMat(CM.paint, 0xd8), true);
         }
       }
     }

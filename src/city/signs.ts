@@ -70,7 +70,7 @@ export const SHOP_WORDS = [
   '時計',
   '電器',
   'ネットカフェ',
-  'landry',
+  'ランドリー',
   'BAR',
   'CAFE',
   'HOTEL',
@@ -78,6 +78,14 @@ export const SHOP_WORDS = [
   'カレー',
   'ダイニング',
 ];
+
+/**
+ * Word on vertical sign `id` (0..31). The stride is coprime to the word
+ * count, so all 32 vertical signs carry different words.
+ */
+export function verticalWord(id: number) {
+  return SHOP_WORDS[(id * 13 + 3) % SHOP_WORDS.length];
+}
 
 /**
  * Ground-floor tenant types, as the shader picks them per pair of shopfront
@@ -112,6 +120,34 @@ export const TENANT_SIGNS: number[][] = [
   [39, 40],
   [41, 42, 43],
 ];
+
+/**
+ * Vertical sign ids whose word suits a nobori banner outside each
+ * SHOP_TYPE (konbini: 24H, cafe, curry; restaurants: their dishes;
+ * boutiques: used clothes, watches, flowers; offices: none).
+ */
+const NOBORI_WORDS = [
+  ['24H', 'カフェ', 'カレー'],
+  [
+    'ラーメン',
+    '焼肉',
+    '寿司',
+    '牛丼',
+    'うどん',
+    'そば',
+    '天ぷら',
+    '焼鳥',
+    'カレー',
+    '居酒屋',
+  ],
+  ['古着', '時計', '花屋'],
+  [],
+];
+export const TENANT_NOBORI: number[][] = NOBORI_WORDS.map(ws =>
+  Array.from({length: 32}, (_, id) => id).filter(id =>
+    ws.includes(verticalWord(id)),
+  ),
+);
 
 /** Square (cube / A-board) sign ids per SHOP_TYPE (see SQUARE_TEXT). */
 export const TENANT_SQUARES: number[][] = [

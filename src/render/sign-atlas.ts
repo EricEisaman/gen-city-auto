@@ -7,10 +7,10 @@ import {
   ATLAS_W,
   BRAND_WORDS,
   HORIZONTAL_WORDS,
-  SHOP_WORDS,
   STATION_NAMES,
   signColor,
   signRect,
+  verticalWord,
 } from '../city/signs.ts';
 
 const FONT =
@@ -228,7 +228,7 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
   // Vertical shop signs: characters stacked top to bottom.
   for (let id = 0; id < 32; id++) {
     const {x, y, w, h} = paintSign(g, id, rng);
-    const word = SHOP_WORDS[(id * 5 + 3) % SHOP_WORDS.length];
+    const word = verticalWord(id);
     const chars = [...word].slice(0, 6);
     const size = Math.min(w * 0.72, (h * 0.86) / chars.length);
     g.font = `bold ${size}px ${FONT}`;
