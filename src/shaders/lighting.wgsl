@@ -804,7 +804,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
         let d = sqrt(d2);
         let l = dl / d;
         let fade = 1.0 - smoothstep(L.radius * (STREAK_REACH - 0.6), L.radius * STREAK_REACH, d);
-        let lcF = L.color * 0.4 * select(1.0, 1.3, (abs(L.kind) <= 0.01 && L.radius >= 19.0) || L.radius > 22.0);
+        let lcF = L.color * 0.4 * select(1.0, 2.0, abs(L.kind) <= 0.01 && L.radius >= 19.0);
         color += lcF * fade / (d2 + 1.0) * 60.0 * wetStreak(nFilm, v, l, fwdV) * wetGround;
       }
       continue;
@@ -842,12 +842,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       var e2 = 0.0;
       var back = 1.0;
       var ht = hash21(floor(L.pos.xz * 0.37));
-      // Junction luminaires on the signal poles (the 24 m lights, or kind
-      // exactly 0): whatever way their arm points, they light the box
-      // too (a wide round pool, no house-side cut-off), and at twice the
-      // road luminaires' output: the box is the best-lit place on the road.
-      // (Not the rail viaduct's under-deck LEDs: kind 0, radius 18.)
-      let junctionLum = (abs(L.kind) <= 0.01 && L.radius >= 19.0) || L.radius > 22.0;
+      // Junction pools (kind exactly 0, not the rail viaduct's radius-18
+      // under-deck LEDs): twice the road luminaires' output.
+      let junctionLum = abs(L.kind) <= 0.01 && L.radius >= 19.0;
       if (abs(L.kind) > 0.01) {
         var ra: vec2f;
         var fwd = vec2f(0.0);
@@ -888,12 +885,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       let w1 = clamp(1.0 - e2, 0.0, 1.0);
       var pool = select(0.0, (0.65 * exp(-e2 * 7.0) + 0.35 * w1 * w1 * w1) * back, l.y > 0.0);
       // Road luminaires: peak 25 % lower (pools, not floodlit discs).
-      if (L.kind < -0.01 && !junctionLum) { pool *= 0.75; }
-      if (junctionLum) {
-        let er = dot(q, q) / (1.8 * 1.8);
-        let wr = clamp(1.0 - er, 0.0, 1.0);
-        pool = max(pool * 0.8, select(0.0, 0.4 * exp(-er * 6.0) + 0.6 * wr * wr, l.y > 0.0));
-      }
+      if (abs(L.kind) <= 0.01) { pool = select(0.0, 0.45 * exp(-e2 * 9.0) + 0.55 * w1 * w1, l.y > 0.0); }
+      if (L.kind < -0.01) { pool *= 0.75; }
       // Arterial heads (the long-reach 20 m lights on avenues and
       // boulevards) are cool 4000-5000 K LED; side-street ones warmer.
       let arterial = L.radius > 17.0;
@@ -903,8 +896,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       // Junction luminaires stay the strongest: the box is the best-lit
       // place on the road. Road luminaires 30 % below the old peak.
       let deckLed = L.kind == 0.0 && L.radius < 19.0;
-      lc *= temp * mix(spill, 1.0, pool) * select(select(1.0, 1.3, junctionLum), 50.0 / 60.0, deckLed);
-      lcS = L.color * temp * max(pool, 0.4) * select(select(1.0, 1.3, junctionLum), 50.0 / 60.0, deckLed);
+      lc *= temp * mix(spill, 1.0, pool) * select(select(1.0, 2.0, junctionLum), 50.0 / 60.0, deckLed);
+      lcS = L.color * temp * max(pool, 0.4) * select(select(1.0, 2.0, junctionLum), 50.0 / 60.0, deckLed);
     } else if (L.kind > 2.5 && L.kind < 3.5) {
       // Fittings (soffit fluorescents, bracket and bulkhead lamps) hang under
       // a slab or hood and cast no shadow here: nothing much above the

@@ -4017,10 +4017,10 @@ fn hedgeClusters(q: vec2f) -> vec3f {
 
 // Sidewalk utility cover (WALK_COVER_MAT: CM.hedge 2, uv 0..1; u along the
 // road, v across from the kerb side; aux >> 16 = kind (bits 0-1: 0 NTT
-// telecom, 1 water meter / valve, 2 gas valve, 3 common-duct hatch) | hash
-// << 2). `uv` is the cover's 0..1 coordinate, `span` the uv range the mesh
-// spans (1 for the contract, 0.5 for the interim 1.1..1.6 tree-grate
-// borrow), so the lid's size in metres is |dP/du| * span.
+// telecom, 1 water meter / valve, 2 gas valve, 3 common-duct hatch), bit 2
+// round (a 10-gon lid in the uv square: radial ribs), bits 3-15 hash).
+// `span` is the uv range the mesh spans (1), so the lid's size in metres
+// is |dP/du| * span.
 // A ductile-iron lid in a steel frame: polished, worn-bright frame rim, a
 // dark 3 mm gap, a cast tread (diamond lugs on NTT / duct, square studs on
 // water and gas), a raised emblem roundel per utility (gas painted yellow,
@@ -4039,23 +4039,40 @@ fn coverMat(world: vec3f, n: vec3f, uv: vec2f, span: f32, aux: u32) -> Surf {
   T = normalize(tu + vec3f(1e-6, 0.0, 0.0));
   B = normalize(tv + vec3f(0.0, 0.0, 1e-6));
   let kind = (aux >> 16u) & 3u;
-  let h = aux >> 18u;
+  let isRound = ((aux >> 18u) & 1u) != 0u;
+  let h = aux >> 19u;
   let hf = hashuf(h * 0x9e3779b9u + 0x51u);
   let p = (uv - 0.5) * size;        // metres from the centre
   let hs = size * 0.5;
-  let e = min(hs.x - abs(p.x), hs.y - abs(p.y)); // distance in from the edge
+  // Distance in from the lid's edge (round lids: the disc inscribed in
+  // the uv square, an ellipse if the derivatives disagree).
+  let pe = p / max(hs, vec2f(1e-3));
+  let e = select(min(hs.x - abs(p.x), hs.y - abs(p.y)), (1.0 - length(pe)) * min(hs.x, hs.y), isRound);
   // Tread detail by the area footprint (the along-view rate alone lost it
   // within a couple of metres at eye level).
   let fk = 1.0 - smoothstep(0.004, 0.014, sqrt(length(dWorldX) * length(dWorldY)));
-  // Frame (2.5 cm), gap, lid.
-  let frameW = 0.025;
-  let inFrame = 1.0 - smoothstep(frameW - foot * 0.5, frameW + foot * 0.5, e);
-  let gap = paintLine(abs(e - frameW - 0.002), 0.004, foot);
+  // The lid mesh is the whole casting: from its edge in, a near-black
+  // 12 mm seating gap, then the cast frame ring (2.5 cm), a hairline gap,
+  // then the lid proper.
+  let seat = 0.012;
+  let frameW = seat + 0.025;
+  let outerGap = 1.0 - smoothstep(seat - foot * 0.5, seat + foot * 0.5, e);
+  let inFrame = (1.0 - smoothstep(frameW - foot * 0.5, frameW + foot * 0.5, e)) * (1.0 - outerGap);
+  let gap = max(paintLine(abs(e - frameW - 0.002), 0.004, foot), outerGap);
   let q = p;                        // lid coordinates
   // Tread.
   var tread = 0.0;
   var tg = vec2f(0.0);              // tread slope (outward from lug) for the normal
-  if (kind == 0u || kind == 3u) {
+  if (isRound) {
+    // Round lids: concentric ribs and radial spokes (a cast radial
+    // pattern), dense studs between.
+    let rr0 = length(q);
+    let ang = atan2(q.y, q.x);
+    let ringR = paintLine(abs(fract(rr0 / 0.035) - 0.5) * 0.035, 0.008, foot);
+    let spoke = paintLine(abs(fract(ang / 0.3927) - 0.5) * 0.3927 * rr0, 0.008, foot) * step(0.06, rr0);
+    tread = max(ringR, spoke);
+    tg = normalize(q + 1e-4) * (ringR - 0.5) * 0.6;
+  } else if (kind == 0u || kind == 3u) {
     // Diamond checker: elongated lugs, alternate ones at right angles.
     let pitch = select(0.03, 0.035, kind == 3u);
     let rq = mat2x2f(0.7071, -0.7071, 0.7071, 0.7071) * q / pitch;
@@ -4122,8 +4139,8 @@ fn coverMat(world: vec3f, n: vec3f, uv: vec2f, span: f32, aux: u32) -> Surf {
   col = mix(col, vec3f(0.36, 0.35, 0.33) * (0.85 + 0.25 * valueNoise(p * 30.0)), inFrame);
   col = mix(col, vec3f(0.02), gap * 0.85);
   s.albedo = col;
-  s.metal = mix(0.5, 0.75, inFrame) * (1.0 - rustR * 0.7) * (1.0 - 0.6 * f32(kind == 2u) * disc);
-  s.rough = mix(mix(0.6, 0.38, lift * fk), 0.32, inFrame);
+  s.metal = mix(0.8, 0.85, inFrame) * (1.0 - rustR * 0.7) * (1.0 - 0.6 * f32(kind == 2u) * disc) * (1.0 - gap);
+  s.rough = mix(mix(0.58, 0.42, lift * fk), 0.4, inFrame);
   s.rough = mix(s.rough, 0.8, rustR * 0.8);
   // Relief: the lugs' flanks and the emblem's rim.
   let sl = tg * 0.6 * fk * (1.0 - disc);
@@ -4140,9 +4157,6 @@ fn coverMat(world: vec3f, n: vec3f, uv: vec2f, span: f32, aux: u32) -> Surf {
 fn hedgeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
   if (param == 2u) { return coverMat(world, n, uv, 1.0, aux); }
-  // (Until the covers have their own param they borrow the grate with uv
-  // 1.1..1.6: no grate reaches past 1.)
-  if (param == 1u && uv.x > 1.05 && uv.y > 1.05) { return coverMat(world, n, (uv - 1.1) / 0.5, 0.5, aux); }
   if (param == 1u) {
     let p = (uv - 0.5) * 1.2;
     let r = length(p);
