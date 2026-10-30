@@ -2290,7 +2290,7 @@ function railViaduct(
       lights.add(
         [p[0], gy + 5.2, p[2]],
         8,
-        [col[0] * 0.6, col[1] * 0.6, col[2] * 0.6],
+        [col[0] * 0.4, col[1] * 0.4, col[2] * 0.4],
         LightKind.station,
       );
   };

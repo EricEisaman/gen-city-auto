@@ -703,7 +703,7 @@ but these are the hooks:
   roof top's grazing view would gain from a stronger rib / sheet-lap contrast that survives
   foreshortening (the 0.9 m laps are ~1 px tall there).
 - **Station under-deck pools:** where a station's under-deck fitting is too high for its light to
-  reach the ground, a second `LightKind.station` light (radius 8, 0.6x colour) 5.2 m above the
+  reach the ground, a second `LightKind.station` light (radius 8, 0.4x colour) 5.2 m above the
   ground under it throws a pool (lighting.wgsl's high-fitting cone).
 - **Lab:** rail sites hide the park / lawn blocks the `side` preset's sight line crosses in the 30 m
   in front of the eye (their trees go with them): a park crown filled `rail-station0-side-*`. The
