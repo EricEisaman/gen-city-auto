@@ -7193,14 +7193,15 @@ function hedgeRun(m: CMesh, pts: Vec3[], out: Vec2[], seed: number) {
     const backT: Vec3 = [p[0] + o[0] * W, p[1] + top, p[2] + o[1] * W];
     const back: Vec3 = [p[0] + o[0] * W, b, p[2] + o[1] * W];
     // Profile: road-side bottom, road-side top (x2: side and top normals),
-    // back top (x2), back bottom. uv: x along, y up the profile.
+    // back top (x2), back bottom. uv: x along, y metres up each side
+    // (the top continues from the front edge).
     prof.push([
       m.vertex(front, nf, along, 0, mat),
       m.vertex(frontT, nf, along, top, mat),
       m.vertex(frontT, [0, 1, 0], along, top, mat),
       m.vertex(backT, [0, 1, 0], along, top + W, mat),
-      m.vertex(backT, nb, along, top + W, mat),
-      m.vertex(back, nb, along, 2 * top + W, mat),
+      m.vertex(backT, nb, along, top, mat),
+      m.vertex(back, nb, along, 0, mat),
     ]);
   }
   for (let i = 0; i + 1 < pts.length; i++) {
