@@ -195,3 +195,92 @@ export function signColor(id: number): [number, number, number] {
   ];
   return palette[(id * 7 + (id >> 3)) % palette.length];
 }
+
+/**
+ * Shop sign colourways. The shop sign cells of the atlas (vertical,
+ * horizontal and square ids) hold masks, not colours: R the lettering, G the
+ * frame ring and letter outlines, B the lettering's bevel height. signMat in
+ * city-materials.wgsl paints them in one of these schemes, so every word is
+ * reused in many colourways:
+ *   box      lit light box (the whole face glows, dark ink stays dark)
+ *   channel  raised channel letters lit from inside, on an unlit panel
+ *   neon     tube lettering on a dark backing, with a halo
+ *   painted  printed / enamelled board: unlit, floodlit a little at night
+ * Colours are linear RGB.
+ */
+export const SIGN_STYLE = {box: 0, channel: 1, neon: 2, painted: 3} as const;
+type Rgb = [number, number, number];
+const INK: Record<string, Rgb> = {
+  black: [0.012, 0.012, 0.014],
+  white: [0.86, 0.86, 0.83],
+  red: [0.78, 0.025, 0.02],
+  yellow: [0.98, 0.68, 0.02],
+  blue: [0.015, 0.08, 0.5],
+  navy: [0.008, 0.02, 0.12],
+  sky: [0.12, 0.45, 0.9],
+  green: [0.01, 0.32, 0.07],
+  charcoal: [0.035, 0.035, 0.04],
+  orange: [1.0, 0.28, 0.02],
+  neonRed: [1.0, 0.06, 0.03],
+  neonPink: [1.0, 0.08, 0.42],
+  neonCyan: [0.08, 0.75, 1.0],
+  steel: [0.3, 0.3, 0.31],
+};
+/** [background, lettering, frame/outline, style] */
+export const SIGN_WAYS: [Rgb, Rgb, Rgb, number][] = [
+  [INK.yellow, INK.black, INK.black, SIGN_STYLE.box],
+  [INK.red, INK.white, INK.white, SIGN_STYLE.box],
+  [INK.black, INK.red, INK.red, SIGN_STYLE.box],
+  [INK.yellow, INK.red, INK.red, SIGN_STYLE.box],
+  [INK.white, INK.red, INK.red, SIGN_STYLE.box],
+  [INK.white, INK.black, INK.black, SIGN_STYLE.painted],
+  [INK.blue, INK.red, INK.white, SIGN_STYLE.box],
+  [INK.green, INK.white, INK.white, SIGN_STYLE.box],
+  [INK.sky, INK.white, INK.white, SIGN_STYLE.box],
+  [INK.navy, INK.white, INK.yellow, SIGN_STYLE.box],
+  [INK.yellow, INK.blue, INK.blue, SIGN_STYLE.painted],
+  [INK.white, INK.yellow, INK.red, SIGN_STYLE.box],
+  [INK.white, INK.white, INK.steel, SIGN_STYLE.channel],
+  [INK.charcoal, INK.neonRed, INK.neonRed, SIGN_STYLE.neon],
+  [INK.charcoal, INK.neonPink, INK.neonCyan, SIGN_STYLE.neon],
+  [INK.charcoal, INK.orange, INK.steel, SIGN_STYLE.channel],
+];
+/** Param bits 10-13 of a shop sign: a per-building colourway offset. */
+export const SIGN_WAY_SHIFT = 10;
+
+/** Whether atlas id `id` is a mask-painted shop sign (recoloured by SIGN_WAYS). */
+export function isShopSign(id: number) {
+  return id < SIGN.station.first || id >= SIGN.square.first;
+}
+
+/** Colourway index of shop sign `id` with offset `bits` (0-15). */
+export function signWay(id: number, bits: number) {
+  return (id * 5 + bits) & 15;
+}
+
+/** Colour a shop sign casts on its surroundings at night (linear RGB). */
+export function signGlow(id: number, bits: number): Rgb {
+  if (!isShopSign(id)) return signColor(id);
+  const [bg, fg, , style] = SIGN_WAYS[signWay(id, bits)];
+  const mix = (a: Rgb, b: Rgb, t: number): Rgb => [
+    a[0] + (b[0] - a[0]) * t,
+    a[1] + (b[1] - a[1]) * t,
+    a[2] + (b[2] - a[2]) * t,
+  ];
+  if (style === SIGN_STYLE.box) return mix(bg, fg, 0.25);
+  if (style === SIGN_STYLE.painted)
+    return mix(bg, fg, 0.2).map(v => v * 0.4) as Rgb;
+  return fg;
+}
+
+/** WGSL table of SIGN_WAYS (prepended to the city shader). */
+export function signWaysWgsl(): string {
+  const v = (c: Rgb) => `vec3f(${c.map(x => x.toFixed(3)).join(', ')})`;
+  const rows = SIGN_WAYS.map(
+    ([bg, fg, ed, st]) => `  SignWay(${v(bg)}, ${v(fg)}, ${v(ed)}, ${st}u)`,
+  );
+  return [
+    'struct SignWay { bg: vec3f, fg: vec3f, edge: vec3f, style: u32 };',
+    `const SIGN_WAYS = array<SignWay, ${SIGN_WAYS.length}>(\n${rows.join(',\n')}\n);`,
+  ].join('\n');
+}
