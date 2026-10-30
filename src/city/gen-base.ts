@@ -1020,18 +1020,48 @@ function railViaduct(
       const yaw = Math.atan2(fr[si].d[0], fr[si].d[1]);
       m.box(sgn, [1.6, 0.35, 0.06], packMat(CM.sign, 64 + (si % 8)), yaw);
     }
-    // Stairs block down to the street.
-    const q = P(si, halfW + 7, 0);
-    const ground = hf.sample(q[0], q[1]);
-    const h = hs[si] - ground;
-    const yaw = Math.atan2(fr[si].d[0], fr[si].d[1]);
-    if (h > 1)
-      m.box(
-        [q[0], ground + h / 2, q[2]],
-        [2.5, h / 2, 6],
-        packMat(CM.facade, 0x3a000 | (si & 0xfff)),
-        yaw,
-      );
+    // Stairs block down to the street, on whichever side and position along
+    // the platform keeps its whole footprint off the roads.
+    const clear = (k: number, side: number) => {
+      const c = P(k, side * (halfW + 7), 0);
+      const d = fr[k].d;
+      const l = fr[k].l;
+      for (const [a, b] of [
+        [0, 0],
+        [-1, -1],
+        [1, -1],
+        [-1, 1],
+        [1, 1],
+      ])
+        if (
+          onRoad([
+            c[0] + l[0] * a * 2.5 + d[0] * b * 6,
+            c[2] + l[1] * a * 2.5 + d[1] * b * 6,
+          ])
+        )
+          return false;
+      return true;
+    };
+    let spot: [number, number] | null = null;
+    for (const dk of [0, 1, -1, 2, -2, 3, -3])
+      for (const side of [1, -1]) {
+        const k = si + dk;
+        if (!spot && k >= 0 && k < n && clear(k, side)) spot = [k, side];
+      }
+    if (spot) {
+      const [k, side] = spot;
+      const q = P(k, side * (halfW + 7), 0);
+      const ground = hf.sample(q[0], q[2]);
+      const h = hs[k] - ground;
+      const yaw = Math.atan2(fr[k].d[0], fr[k].d[1]);
+      if (h > 1)
+        m.box(
+          [q[0], ground + h / 2, q[2]],
+          [2.5, h / 2, 6],
+          packMat(CM.facade, 0x3a000 | (si & 0xfff)),
+          yaw,
+        );
+    }
   }
 }
 
