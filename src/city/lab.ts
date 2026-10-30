@@ -911,8 +911,10 @@ export function labInfo(
     };
     let under = A;
     let off = 2.5;
+    // Up to 40 m either way: at a station the concourse box fills the
+    // first 12 m, and the old 12 m search fell back to an eye inside it.
     search: for (const o of [2.5, -2.5, 4, -4]) {
-      for (let k = 0; k <= 24; k++) {
+      for (let k = 0; k <= 80; k++) {
         const s = site.s + (k % 2 ? 1 : -1) * Math.ceil(k / 2);
         const q = along(e, arc, s);
         const p: Vec2 = [q.p[0] - q.d[1] * o, q.p[1] + q.d[0] * o];
