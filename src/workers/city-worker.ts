@@ -69,7 +69,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         const summary: LayoutSummary = {
           layout: {
             ...rest,
-            heights: terrain.heights.data,
+            heights: base.terrainHeights,
             heightN: terrain.heights.n,
             cell: terrain.heights.cell,
           },

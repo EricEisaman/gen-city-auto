@@ -7,6 +7,8 @@ import {
   dist2,
   lerp,
   pointInPolygon,
+  pointSegment,
+  polygonArea,
   type Vec2,
   type Vec3,
 } from '../math/vec.ts';
@@ -21,7 +23,7 @@ import {
   type Elevated,
 } from './layout.ts';
 import {chainAt, computeRoadGeom, type RoadGeom} from './roadgeom.ts';
-import {SEA_LEVEL, type Heightfield} from './terrain.ts';
+import {Heightfield, SEA_LEVEL} from './terrain.ts';
 
 export const LIGHT_FLOATS = 8;
 
@@ -215,10 +217,14 @@ function roads(
   m: CMesh,
   lights: LightList,
   piers: CMesh,
+  settled: Float32Array,
 ) {
   const hf = L.terrain.heights;
+  // The rendered terrain (lowered under the roads), for keeping plates above.
+  const ground = new Heightfield(hf.size, hf.cell, settled);
+  const land = landing(L, geom);
   L.chains.forEach((c, ci) => {
-    if (L.hidden?.chains[ci]) return;
+    if (L.hidden?.chains[ci] || geom.absorbed[ci]) return;
     const [s0, s1] = geom.setbacks[ci];
     const arc = geom.arc[ci];
     const total = arc[arc.length - 1];
@@ -255,7 +261,8 @@ function roads(
       along.map(a => [w / 2, a] as Vec2),
       along.map(a => [-w / 2, a] as Vec2),
       mat,
-      LANES[c.kind],
+      // Lanes, and the chain seed for the shader's resurfacing sections.
+      LANES[c.kind] | ((hash2(ci, 0x5eed) & 0xffffff) << 8),
     );
     // Bridge deck structure where the road is well above the ground.
     const elevated = pts.map(
@@ -472,18 +479,97 @@ function roads(
       }
     }
   });
-  // Junction surfaces.
+  // Junction surfaces: a two-ring fan whose rim takes each arm's end height
+  // (no step where the plate meets the strips), plus the slivers between
+  // kerb-return fillets and the strip edges.
   geom.junctions.forEach((jg, ji) => {
     const j = L.junctions[ji];
-    if (jg.outline.length < 3 || L.hidden?.junctions[ji]) return;
-    const h = j.h + 0.02;
-    const mat = packMat(CM.asphaltPlain);
-    const center = m.vertex([j.p[0], h, j.p[1]], UP, j.p[0], j.p[1], mat);
-    const ring = jg.outline.map(q =>
-      m.vertex([q[0], h, q[1]], UP, q[0], q[1], mat),
+    if (L.hidden?.junctions[ji]) return;
+    const mat = packMat(
+      CM.asphaltPlain,
+      (hash2(ji, 7) & 0xff) | (j.signal ? 0x100 : 0),
     );
-    for (let i = 0; i < ring.length; i++)
-      m.triFacing(center, ring[i], ring[(i + 1) % ring.length], UP);
+    // Interior vertices never dip under the carved terrain (which follows
+    // the nearest road, not the plate's interpolation).
+    const vert = (q: Vec2, h: number, rim = false) =>
+      m.vertex(
+        [q[0], rim ? h : Math.max(h, ground.sample(q[0], q[1]) + 0.07), q[1]],
+        UP,
+        q[0],
+        q[1],
+        mat,
+      );
+    const n = jg.plate.length;
+    if (n >= 3 && !jg.low) {
+      const cx = j.p[0],
+        cz = j.p[1];
+      const ch = jg.centerH;
+      const center = vert([cx, cz], ch);
+      const mid = jg.plate.map((q, i) =>
+        vert(
+          [(cx + q[0]) / 2, (cz + q[1]) / 2],
+          ch + (jg.plateH[i] - ch) * 0.5,
+        ),
+      );
+      const rim = jg.plate.map((q, i) => vert(q, jg.plateH[i], true));
+      for (let i = 0; i < n; i++) {
+        const k = (i + 1) % n;
+        m.triFacing(center, mid[i], mid[k], UP);
+        m.triFacing(mid[i], rim[i], rim[k], UP);
+        m.triFacing(mid[i], rim[k], mid[k], UP);
+      }
+    } else if (n >= 3) {
+      // Merged cluster: the hull may overlap strips (it sits 8 mm under
+      // them) and spans uneven ground, so it is tessellated to 6 m and
+      // follows the terrain wherever that is higher.
+      let cx = 0,
+        cz = 0;
+      for (const q of jg.plate) {
+        cx += q[0] / n;
+        cz += q[1] / n;
+      }
+      const P = jg.plate.map((q, i): Vec3 => [q[0], jg.plateH[i], q[1]]);
+      const C: Vec3 = [cx, jg.centerH, cz];
+      const tris: Vec3[][] = P.map((p, i) => [C, p, P[(i + 1) % n]]);
+      const cache = new Map<string, number>();
+      const vid = (p: Vec3) => {
+        const key = `${p[0].toFixed(2)},${p[2].toFixed(2)}`;
+        let v = cache.get(key);
+        if (v === undefined) {
+          // Under a strip it overlaps, stay 1 cm below that strip.
+          let y = p[1] - 0.008;
+          const r = land.nearest(p[0], p[2], 0);
+          if (r && !geom.absorbed[r.ci]) {
+            const c = L.chains[r.ci];
+            const ar = geom.arc[r.ci];
+            const [s0, s1] = geom.setbacks[r.ci];
+            const t1 = ar[ar.length - 1] - s1;
+            if (
+              r.d < ROAD_WIDTH[c.kind] / 2 + 0.1 &&
+              r.s > s0 - 0.5 &&
+              r.s < t1 + 0.5
+            )
+              y = Math.min(
+                y,
+                chainAt(c, ar, Math.max(s0, Math.min(t1, r.s))).h + 0.01,
+              );
+          }
+          y = Math.max(y, ground.sample(p[0], p[2]) + 0.07);
+          v = m.vertex([p[0], y, p[2]], UP, p[0], p[2], mat);
+          cache.set(key, v);
+        }
+        return v;
+      };
+      for (const t of subdivide3(tris, 6))
+        m.triFacing(vid(t[0]), vid(t[1]), vid(t[2]), UP);
+    }
+    for (const s of jg.slivers) {
+      const ids = s.pts.map((q, i) =>
+        m.vertex([q[0], s.h[i], q[1]], UP, q[0], q[1], mat),
+      );
+      for (let i = 1; i + 1 < ids.length; i++)
+        m.triFacing(ids[0], ids[i], ids[i + 1], UP);
+    }
   });
 }
 
@@ -492,131 +578,612 @@ function norm(v: Vec3): Vec3 {
   return [v[0] / l, v[1] / l, v[2] / l];
 }
 
-/** Subdivide a triangle list until edges are short, so slabs follow terrain. */
-function subdivide(tris: Vec2[][], maxEdge: number): Vec2[][] {
-  const out: Vec2[][] = [];
+/**
+ * Keep the terrain under the road surface. Block grading (a plane through
+ * the curb heights, relaxed inward) and the carve's nearest-road rule leave
+ * terrain cells that stand above the road at curbs and between close
+ * parallel roads; the terrain's raster "road" colour then pokes through the
+ * strips as saw-edged dark blobs. Vertices under the carriageway drop below
+ * it, and those under the first metres of sidewalk to the road level (so a
+ * bilinear terrain cell cannot rise above the curb line). Only lowers,
+ * and only the rendered copy: sidewalks and props keep the graded field
+ * (lowering it would let unlowered cells poke through 9 m sidewalk
+ * triangles).
+ */
+function settleRoadbed(L: CityLayout): Float32Array {
+  const hf = L.terrain.heights;
+  const data = hf.data.slice();
+  const n = hf.n;
+  const S = hf.size / 2;
+  const cell = hf.cell;
+  for (const c of L.chains) {
+    const half = ROAD_WIDTH[c.kind] / 2;
+    const reach = half + Math.min(cell * 0.8, SIDEWALK[c.kind]);
+    for (let i = 0; i + 1 < c.pts.length; i++) {
+      if (c.bridge[i] || c.bridge[i + 1]) continue;
+      const a = c.pts[i];
+      const b = c.pts[i + 1];
+      const x0 = Math.max(
+        0,
+        Math.floor((Math.min(a[0], b[0]) - reach + S) / cell),
+      );
+      const x1 = Math.min(
+        n - 1,
+        Math.ceil((Math.max(a[0], b[0]) + reach + S) / cell),
+      );
+      const z0 = Math.max(
+        0,
+        Math.floor((Math.min(a[1], b[1]) - reach + S) / cell),
+      );
+      const z1 = Math.min(
+        n - 1,
+        Math.ceil((Math.max(a[1], b[1]) + reach + S) / cell),
+      );
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const l2 = dx * dx + dz * dz || 1;
+      for (let gz = z0; gz <= z1; gz++) {
+        for (let gx = x0; gx <= x1; gx++) {
+          const x = gx * cell - S;
+          const z = gz * cell - S;
+          const t = Math.max(
+            0,
+            Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / l2),
+          );
+          const d = Math.hypot(a[0] + dx * t - x, a[1] + dz * t - z);
+          if (d > reach) continue;
+          const h = lerp(c.heights[i], c.heights[i + 1], t);
+          const k = gz * n + gx;
+          data[k] = Math.min(data[k], h + (d < half + 0.5 ? -0.08 : 0));
+        }
+      }
+    }
+  }
+  return data;
+}
+
+/** A fill point: position, and a fixed height when it lies on the ring. */
+type FillPt = {p: Vec2; h?: number};
+
+/**
+ * Triangulate polygon `ring` (with optional per-point heights) clipped to a
+ * `cell` grid: about one vertex per cell (bisecting ear-clipped triangles
+ * instead turns long skinny ears into fans of tiny triangles). Points on the ring keep a
+ * height interpolated along it (so they meet strips built on the ring
+ * exactly); interior points have none (the caller samples the terrain).
+ */
+function gridFill(ring: FillPt[], cell: number): FillPt[][] {
+  let x0 = Infinity,
+    x1 = -Infinity,
+    z0 = Infinity,
+    z1 = -Infinity;
+  for (const {p} of ring) {
+    x0 = Math.min(x0, p[0]);
+    x1 = Math.max(x1, p[0]);
+    z0 = Math.min(z0, p[1]);
+    z1 = Math.max(z1, p[1]);
+  }
+  const out: FillPt[][] = [];
+  const clip = (poly: FillPt[], ax: 0 | 1, v: number, keepBelow: boolean) => {
+    const res: FillPt[] = [];
+    const inside = (q: FillPt) => (keepBelow ? q.p[ax] <= v : q.p[ax] >= v);
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      const ia = inside(a);
+      const ib = inside(b);
+      if (ia) res.push(a);
+      if (ia !== ib) {
+        const t = (v - a.p[ax]) / (b.p[ax] - a.p[ax]);
+        const p: Vec2 = [lerp(a.p[0], b.p[0], t), lerp(a.p[1], b.p[1], t)];
+        p[ax] = v;
+        res.push({
+          p,
+          h:
+            a.h !== undefined && b.h !== undefined
+              ? lerp(a.h, b.h, t)
+              : undefined,
+        });
+      }
+    }
+    return res;
+  };
+  const gx0 = Math.floor(x0 / cell);
+  const gz0 = Math.floor(z0 / cell);
+  for (let gz = gz0; gz * cell < z1; gz++) {
+    // One row strip, then its cells.
+    let row = clip(ring, 1, gz * cell, false);
+    row = clip(row, 1, (gz + 1) * cell, true);
+    if (row.length < 3) continue;
+    for (let gx = gx0; gx * cell < x1; gx++) {
+      let c = clip(row, 0, gx * cell, false);
+      c = clip(c, 0, (gx + 1) * cell, true);
+      // Drop repeated points (clip corners).
+      c = c.filter(
+        (q, i) => dist2(q.p, c[(i + c.length - 1) % c.length].p) > 1e-4,
+      );
+      if (c.length < 3) continue;
+      const pts = c.map(q => q.p);
+      if (Math.abs(polygonArea(pts)) < 1e-3) continue;
+      const idx = triangulate(pts);
+      for (let i = 0; i < idx.length; i += 3)
+        out.push([c[idx[i]], c[idx[i + 1]], c[idx[i + 2]]]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Emit gridFill() triangles, shared vertices, world-xz uv; points without a
+ * ring height sit `lift` above the terrain. `uvOf` overrides uv and aux.
+ */
+function fillMesh(
+  m: CMesh,
+  hf: Heightfield,
+  tris: FillPt[][],
+  mat: number,
+  lift: number,
+  uvOf?: (p: Vec2) => [number, number, number],
+) {
+  const cache = new Map<string, number>();
+  const vid = (q: FillPt) => {
+    const k = `${q.p[0].toFixed(2)},${q.p[1].toFixed(2)}`;
+    let v = cache.get(k);
+    if (v === undefined) {
+      const [u, w, aux] = uvOf ? uvOf(q.p) : [q.p[0], q.p[1], 0];
+      v = m.vertex(
+        [q.p[0], q.h ?? hf.sample(q.p[0], q.p[1]) + lift, q.p[1]],
+        UP,
+        u,
+        w,
+        mat,
+        aux,
+      );
+      cache.set(k, v);
+    }
+    return v;
+  };
+  for (const t of tris) m.triFacing(vid(t[0]), vid(t[1]), vid(t[2]), UP);
+}
+
+/**
+ * Longest-edge bisection in x/z of 3D triangles until edges are short
+ * (heights interpolate linearly; shared edges split identically).
+ */
+function subdivide3(tris: Vec3[][], maxEdge: number): Vec3[][] {
+  const out: Vec3[][] = [];
   const stack = tris.slice();
+  const d = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[2] - b[2]);
   while (stack.length) {
     const t = stack.pop()!;
-    const e = [dist2(t[0], t[1]), dist2(t[1], t[2]), dist2(t[2], t[0])];
-    const m = Math.max(...e);
-    if (m <= maxEdge || out.length > 200000) {
+    const e = [d(t[0], t[1]), d(t[1], t[2]), d(t[2], t[0])];
+    const mx = Math.max(...e);
+    if (mx <= maxEdge || out.length > 20000) {
       out.push(t);
       continue;
     }
-    const i = e.indexOf(m);
+    const i = e.indexOf(mx);
     const a = t[i],
       b = t[(i + 1) % 3],
       c = t[(i + 2) % 3];
-    const mid: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const mid: Vec3 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
     stack.push([a, mid, c], [mid, b, c]);
   }
   return out;
 }
 
-function blocks(L: CityLayout, m: CMesh) {
+/** Kerb face height above the road surface (curb top = road + this). */
+const CURB_UP = 0.15;
+/** Curb sampling along an edge. */
+const CURB_STEP = 9;
+
+/**
+ * Block surfaces. Each paved block is a curb band (a strip of up to 2.5 m
+ * inside the curb line whose outer edge follows the road surface, uv x =
+ * metres along the curb, y = metres in from it; aux per the road contract:
+ * road kind, crossing apron, planting strip, tree pit, band width) and the
+ * interior plaza inside it (coarser, mostly under buildings). Curb faces
+ * are one shared-vertex strip per edge, from road - 0.05 to the band edge.
+ * Corners at junctions follow the kerb-return fillets of the road geometry.
+ */
+function blocks(L: CityLayout, m: CMesh, geom: RoadGeom) {
   const hf = L.terrain.heights;
+  const land = landing(L, geom);
+  const lift = 0.16;
+  // Crossing aprons: near the mouth corners of junctions with crossings.
+  const mouths = new Map<number, Vec2[]>();
+  const mkey = (x: number, z: number) =>
+    (Math.floor(z / 16) + 4096) * 8192 + Math.floor(x / 16) + 4096;
+  geom.junctions.forEach((jg, ji) => {
+    if (jg.arms.length < 3 || !L.junctions[ji].signal) return;
+    for (const q of jg.outline) {
+      const k = mkey(q[0], q[1]);
+      const l = mouths.get(k);
+      if (l) l.push(q);
+      else mouths.set(k, [q]);
+    }
+  });
+  const nearMouth = (q: Vec2, r: number) => {
+    for (let dz = -1; dz <= 1; dz++)
+      for (let dx = -1; dx <= 1; dx++)
+        for (const p of mouths.get(mkey(q[0] + dx * 16, q[1] + dz * 16)) ?? [])
+          if (dist2(p, q) < r) return true;
+    return false;
+  };
+  /** Road surface beside a curb point, and what the band there carries. */
+  const roadside = (q: Vec2) => {
+    const r = land.nearest(q[0], q[1], 2.5);
+    if (!r) return null;
+    const c = L.chains[r.ci];
+    const arc = geom.arc[r.ci];
+    const total = arc[arc.length - 1];
+    const [s0, s1] = geom.setbacks[r.ci];
+    // Inside a junction the plate rim takes the arm end's height.
+    const s = Math.max(s0, Math.min(total - s1, r.s));
+    const h = chainAt(c, arc, s).h + 0.02;
+    let bits = c.kind & 3;
+    const apron = nearMouth(q, 7);
+    if (apron) bits |= 4;
+    if (c.kind >= 2 && !apron && r.s > s0 + 8 && r.s < total - s1 - 8) {
+      // Bus stops (see buildTile) interrupt the planting strip.
+      let stop = false;
+      for (
+        let b = s0 + 40 + (hash2(r.ci, r.side) % 120);
+        b < total - s1 - 20;
+        b += 300
+      )
+        if (Math.abs(b - r.s) < 4.8) stop = true;
+      if (!stop) bits |= 8;
+      // Avenue trees every 13 m from s0 + 10.
+      const k = Math.round((r.s - s0 - 10) / 13);
+      const ts = s0 + 10 + k * 13;
+      if (k >= 0 && ts < total - s1 - 8 && Math.abs(ts - r.s) < 4.5) bits |= 16;
+    }
+    return {h, kind: c.kind, bits};
+  };
   for (const [bi, b] of L.blocks.entries()) {
     if (L.hidden?.blocks[bi]) continue;
     const poly = b.curb;
-    const idx = triangulate(poly);
-    const tris: Vec2[][] = [];
-    for (let i = 0; i < idx.length; i += 3)
-      tris.push([poly[idx[i]], poly[idx[i + 1]], poly[idx[i + 2]]]);
-    const fine = subdivide(tris, b.park ? 10 : 9);
-    const mat = packMat(b.park ? CM.grass : CM.sidewalk);
-    const lift = 0.16;
-    const cache = new Map<string, number>();
-    const vid = (q: Vec2) => {
-      const k = `${q[0].toFixed(2)},${q[1].toFixed(2)}`;
-      let v = cache.get(k);
-      if (v === undefined) {
-        v = m.vertex(
-          [q[0], hf.sample(q[0], q[1]) + lift, q[1]],
-          UP,
-          q[0],
-          q[1],
-          mat,
-        );
-        cache.set(k, v);
-      }
-      return v;
-    };
-    for (const t of fine) m.triFacing(vid(t[0]), vid(t[1]), vid(t[2]), UP);
-    // Lawns and car parks laid over the paving (a few cm proud of it), as
-    // terrain-following grids; uv is the fill frame (stall pattern space).
-    for (const f of b.fill ?? []) {
-      const fmat = packMat(f.kind === 'parking' ? CM.carPark : CM.grass);
-      const V: Vec2 = [-f.u[1], f.u[0]];
-      const P = (u: number, v: number): Vec2 => [
-        f.o[0] + f.u[0] * u + V[0] * v,
-        f.o[1] + f.u[1] * u + V[1] * v,
-      ];
-      for (const r of f.rects) {
-        const nu = Math.max(1, Math.ceil((r[2] - r[0]) / 7.5));
-        const nv = Math.max(1, Math.ceil((r[3] - r[1]) / 7.5));
-        const ids: number[] = [];
-        for (let j = 0; j <= nv; j++) {
-          for (let i = 0; i <= nu; i++) {
-            const u = lerp(r[0], r[2], i / nu);
-            const v = lerp(r[1], r[3], j / nv);
-            const q = P(u, v);
-            ids.push(
-              m.vertex(
-                [q[0], hf.sample(q[0], q[1]) + lift + 0.05, q[1]],
-                UP,
-                u,
-                v,
-                fmat,
-              ),
-            );
-          }
-        }
-        for (let j = 0; j < nv; j++) {
-          for (let i = 0; i < nu; i++) {
-            const a = ids[j * (nu + 1) + i];
-            const c = ids[(j + 1) * (nu + 1) + i + 1];
-            m.triFacing(a, ids[j * (nu + 1) + i + 1], c, UP);
-            m.triFacing(a, c, ids[(j + 1) * (nu + 1) + i], UP);
-          }
-        }
-      }
+    const n = poly.length;
+    const fil = geom.fillets.get(bi);
+    // Outer ring: per sharp vertex, its fillet arc (or itself).
+    const corner = poly.map((q, i) => {
+      const f = fil?.get(i);
+      return f
+        ? {pts: f.pts, h: f.h as (number | null)[]}
+        : {pts: [q], h: [null]};
+    });
+    const ring: Vec2[] = corner.flatMap(c => c.pts);
+    if (b.park) {
+      parkBlock(L, m, b, ring);
+      continue;
     }
-    // Curb faces around the edge (subdivided to follow the road).
-    const cm = packMat(CM.curb);
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i];
-      const c = poly[(i + 1) % poly.length];
-      const len = dist2(a, c);
-      const k = Math.max(1, Math.ceil(len / 9));
-      const out: Vec3 = norm([c[1] - a[1], 0, -(c[0] - a[0])]);
-      for (let s = 0; s < k; s++) {
-        const p0: Vec2 = [lerp(a[0], c[0], s / k), lerp(a[1], c[1], s / k)];
-        const p1: Vec2 = [
-          lerp(a[0], c[0], (s + 1) / k),
-          lerp(a[1], c[1], (s + 1) / k),
+    const area = Math.abs(polygonArea(poly));
+    const orient = polygonArea(poly) > 0 ? 1 : -1;
+    // Per sharp edge i (vertex i -> i+1): road kind and band width.
+    const edges = poly.map((a, i) => {
+      const c = poly[(i + 1) % n];
+      const mid: Vec2 = [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2];
+      const r = roadside(mid);
+      const kind = r ? r.kind : 1;
+      const len = dist2(a, c) || 1;
+      const d: Vec2 = [(c[0] - a[0]) / len, (c[1] - a[1]) / len];
+      // Inward normal (inside is left of a CCW polygon).
+      const nrm: Vec2 = [-d[1] * orient, d[0] * orient];
+      return {d, nrm, len, bw: Math.min(SIDEWALK[kind], 2.5)};
+    });
+    // Inner ring: the edges' inset lines meet at mitred corners.
+    const inner: Vec2[] = poly.map((q, i) => {
+      const A = edges[(i + n - 1) % n];
+      const B = edges[i];
+      const pa: Vec2 = [q[0] + A.nrm[0] * A.bw, q[1] + A.nrm[1] * A.bw];
+      const pb: Vec2 = [q[0] + B.nrm[0] * B.bw, q[1] + B.nrm[1] * B.bw];
+      const den = A.d[0] * B.d[1] - A.d[1] * B.d[0];
+      if (Math.abs(den) < 0.05)
+        return [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2];
+      const t = ((pb[0] - pa[0]) * B.d[1] - (pb[1] - pa[1]) * B.d[0]) / den;
+      const x: Vec2 = [pa[0] + A.d[0] * t, pa[1] + A.d[1] * t];
+      const ml = dist2(x, q);
+      const cap = 3 * Math.max(A.bw, B.bw);
+      return ml > cap
+        ? [q[0] + ((x[0] - q[0]) * cap) / ml, q[1] + ((x[1] - q[1]) * cap) / ml]
+        : x;
+    });
+    // Inner edges that come out reversed (short edges at concave corners)
+    // collapse to their midpoint; the band fans there.
+    const innerAlong = (i: number) => {
+      const a = inner[i];
+      const c = inner[(i + 1) % n];
+      return (c[0] - a[0]) * edges[i].d[0] + (c[1] - a[1]) * edges[i].d[1];
+    };
+    for (let it = 0; it < 4 * n; it++) {
+      let worst = -1;
+      let wv = -1e-3;
+      for (let i = 0; i < n; i++) {
+        const v = innerAlong(i);
+        if (v < wv) {
+          wv = v;
+          worst = i;
+        }
+      }
+      if (worst < 0) break;
+      const a = inner[worst];
+      const c = inner[(worst + 1) % n];
+      const mid: Vec2 = [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2];
+      inner[worst] = mid;
+      inner[(worst + 1) % n] = mid;
+    }
+    let ok = polygonArea(inner) * orient > 0.3 * area;
+    for (let i = 0; ok && i < n; i++) if (innerAlong(i) < -1e-3) ok = false;
+    if (!ok) {
+      fallbackBlock(L, m, ring, roadside);
+      continue;
+    }
+    // Outer samples per edge strip: the corner arc at its start (all on the
+    // corner's inner point, a fan), then the edge every <= 9 m up to the
+    // next corner's arc.
+    const bandMat = packMat(CM.sidewalk, 1);
+    const plaza: Vec2[] = [];
+    let along = 0;
+    const curbTops: {p: Vec2; y: number; hr: number}[][] = [];
+    for (let i = 0; i < n; i++) {
+      const e = edges[i];
+      const j = (i + 1) % n;
+      const outer: Vec2[] = [];
+      const ins: Vec2[] = [];
+      const hs: (number | null)[] = [];
+      for (let k = 0; k < corner[i].pts.length; k++) {
+        outer.push(corner[i].pts[k]);
+        ins.push(inner[i]);
+        hs.push(corner[i].h[k]);
+      }
+      const start = outer[outer.length - 1];
+      const end = corner[j].pts[0];
+      const span = dist2(start, end);
+      const K = Math.max(1, Math.ceil(span / CURB_STEP));
+      const P = poly[i];
+      for (let k = 1; k <= K; k++) {
+        const q: Vec2 = [
+          lerp(start[0], end[0], k / K),
+          lerp(start[1], end[1], k / K),
         ];
-        const h0 = hf.sample(p0[0], p0[1]);
-        const h1 = hf.sample(p1[0], p1[1]);
-        m.quad(
-          [
-            [p0[0], h0 - 0.3, p0[1]],
-            [p1[0], h1 - 0.3, p1[1]],
-            [p1[0], h1 + lift, p1[1]],
-            [p0[0], h0 + lift, p0[1]],
-          ],
-          out,
-          [
-            [0, 0],
-            [len / k, 0],
-            [len / k, lift + 0.3],
-            [0, lift + 0.3],
-          ],
-          cm,
+        const u = Math.max(
+          0,
+          Math.min(
+            1,
+            ((q[0] - P[0]) * e.d[0] + (q[1] - P[1]) * e.d[1]) / e.len,
+          ),
         );
+        outer.push(q);
+        // The last sample meets the next corner's inner point exactly.
+        ins.push(
+          k === K
+            ? inner[j]
+            : [
+                lerp(inner[i][0], inner[j][0], u),
+                lerp(inner[i][1], inner[j][1], u),
+              ],
+        );
+        hs.push(k === K ? corner[j].h[0] : null);
+      }
+      // Plaza ring: this edge's inner points (the next edge adds the end).
+      for (let k = corner[i].pts.length - 1; k < ins.length - 1; k++)
+        plaza.push(ins[k]);
+      const bwBits = Math.min(255, Math.round(e.bw / 0.02)) << 8;
+      const tops: {p: Vec2; y: number; hr: number}[] = [];
+      let prevO = -1;
+      let prevI = -1;
+      let prevIn: Vec2 | null = null;
+      for (let k = 0; k < outer.length; k++) {
+        const q = outer[k];
+        if (k > 0) along += dist2(outer[k - 1], q);
+        const g = hf.sample(q[0], q[1]) + lift;
+        const rs = roadside(q);
+        const hr = hs[k] ?? (rs ? rs.h : g - lift + 0.05);
+        let y = hr + CURB_UP;
+        if (Math.abs(y - g) > 0.6) y = g;
+        const aux = (rs ? rs.bits : edges[i].bw > 2 ? 3 : 1) | bwBits;
+        tops.push({p: q, y, hr});
+        const o = m.vertex([q[0], y, q[1]], UP, along, 0, bandMat, aux);
+        let iv = prevI;
+        const qi = ins[k];
+        if (!prevIn || qi[0] !== prevIn[0] || qi[1] !== prevIn[1]) {
+          iv = m.vertex(
+            [qi[0], hf.sample(qi[0], qi[1]) + lift, qi[1]],
+            UP,
+            along,
+            e.bw,
+            bandMat,
+            aux,
+          );
+        }
+        if (prevO >= 0) {
+          if (iv === prevI) m.triFacing(prevO, o, iv, UP);
+          else {
+            m.triFacing(prevO, o, iv, UP);
+            m.triFacing(prevO, iv, prevI, UP);
+          }
+        }
+        prevO = o;
+        prevI = iv;
+        prevIn = qi;
+      }
+      curbTops.push(tops);
+    }
+    // Interior plaza (param 0, world uv), coarse: the band carries the
+    // terrain-following edge where it shows.
+    const ringIn: FillPt[] = plaza
+      .filter(
+        (q, i) => dist2(q, plaza[(i + plaza.length - 1) % plaza.length]) > 0.01,
+      )
+      .map(p => ({p, h: hf.sample(p[0], p[1]) + lift}));
+    fillMesh(m, hf, gridFill(ringIn, 14), packMat(CM.sidewalk), lift);
+    blockFill(L, m, b);
+    for (const tops of curbTops) curbStrip(m, tops, orient);
+  }
+}
+
+/**
+ * Curb face along one edge's outer samples: a shared-vertex strip from the
+ * road (hr - 0.05) to the band edge, normals from the neighbouring samples
+ * (smooth around kerb returns). uv: x metres along, y metres up.
+ */
+function curbStrip(
+  m: CMesh,
+  tops: {p: Vec2; y: number; hr: number}[],
+  orient: number,
+) {
+  const cm = packMat(CM.curb);
+  let along = 0;
+  let pb = -1;
+  let pt = -1;
+  for (let k = 0; k < tops.length; k++) {
+    const {p, y, hr} = tops[k];
+    if (k > 0) along += dist2(tops[k - 1].p, p);
+    const a = tops[Math.max(0, k - 1)].p;
+    const c = tops[Math.min(tops.length - 1, k + 1)].p;
+    // Outward (toward the road): right of a CCW polygon's direction.
+    const n = norm([(c[1] - a[1]) * orient, 0, -(c[0] - a[0]) * orient]);
+    const bot = Math.min(hr - 0.05, y - 0.2);
+    const vb = m.vertex([p[0], bot, p[1]], n, along, 0, cm);
+    const vt = m.vertex([p[0], y, p[1]], n, along, y - bot, cm);
+    if (pb >= 0) {
+      m.triFacing(pb, vb, vt, n);
+      m.triFacing(pb, vt, pt, n);
+    }
+    pb = vb;
+    pt = vt;
+  }
+}
+
+/** Lawns and car parks laid over a block's paving. */
+function blockFill(L: CityLayout, m: CMesh, b: CityLayout['blocks'][number]) {
+  const hf = L.terrain.heights;
+  const lift = 0.16;
+  // Lawns and car parks laid over the paving (a few cm proud of it), as
+  // terrain-following grids; uv is the fill frame (stall pattern space).
+  for (const f of b.fill ?? []) {
+    const fmat = packMat(f.kind === 'parking' ? CM.carPark : CM.grass);
+    const V: Vec2 = [-f.u[1], f.u[0]];
+    const P = (u: number, v: number): Vec2 => [
+      f.o[0] + f.u[0] * u + V[0] * v,
+      f.o[1] + f.u[1] * u + V[1] * v,
+    ];
+    for (const r of f.rects) {
+      const nu = Math.max(1, Math.ceil((r[2] - r[0]) / 7.5));
+      const nv = Math.max(1, Math.ceil((r[3] - r[1]) / 7.5));
+      const ids: number[] = [];
+      for (let j = 0; j <= nv; j++) {
+        for (let i = 0; i <= nu; i++) {
+          const u = lerp(r[0], r[2], i / nu);
+          const v = lerp(r[1], r[3], j / nv);
+          const q = P(u, v);
+          ids.push(
+            m.vertex(
+              [q[0], hf.sample(q[0], q[1]) + lift + 0.05, q[1]],
+              UP,
+              u,
+              v,
+              fmat,
+            ),
+          );
+        }
+      }
+      for (let j = 0; j < nv; j++) {
+        for (let i = 0; i < nu; i++) {
+          const a = ids[j * (nu + 1) + i];
+          const c = ids[(j + 1) * (nu + 1) + i + 1];
+          m.triFacing(a, ids[j * (nu + 1) + i + 1], c, UP);
+          m.triFacing(a, c, ids[(j + 1) * (nu + 1) + i], UP);
+        }
       }
     }
   }
+}
+
+/** Ring resampled at <= CURB_STEP, closed (first point not repeated). */
+function resampleRing(ring: Vec2[]): Vec2[] {
+  const out: Vec2[] = [];
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const c = ring[(i + 1) % ring.length];
+    const K = Math.max(1, Math.ceil(dist2(a, c) / CURB_STEP));
+    for (let k = 0; k < K; k++)
+      out.push([lerp(a[0], c[0], k / K), lerp(a[1], c[1], k / K)]);
+  }
+  return out;
+}
+
+/** A park: grass to the curb (terrain heights), curb faces as one strip. */
+function parkBlock(
+  L: CityLayout,
+  m: CMesh,
+  b: CityLayout['blocks'][number],
+  ring: Vec2[],
+) {
+  const hf = L.terrain.heights;
+  const lift = 0.16;
+  const pts = resampleRing(ring);
+  fillMesh(
+    m,
+    hf,
+    gridFill(
+      pts.map(p => ({p, h: hf.sample(p[0], p[1]) + lift})),
+      10,
+    ),
+    packMat(CM.grass),
+    lift,
+  );
+  blockFill(L, m, b);
+  const orient = polygonArea(ring) > 0 ? 1 : -1;
+  const tops = pts.map(p => {
+    const g = hf.sample(p[0], p[1]);
+    return {p, y: g + lift, hr: g - 0.25};
+  });
+  tops.push(tops[0]);
+  curbStrip(m, tops, orient);
+}
+
+/**
+ * Fallback when the band cannot be inset (thin or odd blocks): today's
+ * whole-block paving, as band material with uv.y = distance to the curb.
+ */
+function fallbackBlock(
+  L: CityLayout,
+  m: CMesh,
+  ring: Vec2[],
+  roadside: (q: Vec2) => {h: number; kind: number; bits: number} | null,
+) {
+  const hf = L.terrain.heights;
+  const lift = 0.16;
+  const pts = resampleRing(ring);
+  const edgeDist = (q: Vec2) => {
+    let d = Infinity;
+    for (let i = 0; i < ring.length; i++)
+      d = Math.min(d, pointSegment(q, ring[i], ring[(i + 1) % ring.length])[0]);
+    return d;
+  };
+  fillMesh(
+    m,
+    hf,
+    gridFill(
+      pts.map(p => ({p, h: hf.sample(p[0], p[1]) + lift})),
+      10,
+    ),
+    packMat(CM.sidewalk, 1),
+    lift,
+    q => {
+      const r = roadside(q);
+      return [0, edgeDist(q), (r ? r.kind & 3 : 1) | (125 << 8)];
+    },
+  );
+  const orient = polygonArea(ring) > 0 ? 1 : -1;
+  const tops = pts.map(p => {
+    const g = hf.sample(p[0], p[1]);
+    return {p, y: g + lift, hr: g - 0.25};
+  });
+  tops.push(tops[0]);
+  curbStrip(m, tops, orient);
 }
 
 function frames(pts: Vec2[]) {
@@ -1342,6 +1909,8 @@ export interface BaseGeometry {
   landUse: Uint8Array;
   roadMask: Uint8Array;
   geom: RoadGeom;
+  /** Terrain heights as rendered (lowered under the roads). */
+  terrainHeights: Float32Array;
   /** Solid boxes of bridges and viaducts (piers, portal frames, station
    * stairs) for camera collision: cx, cy, cz, hx, hy, hz, yaw per box. */
   solids: number[];
@@ -1369,8 +1938,9 @@ export function buildBase(L: CityLayout): BaseGeometry {
   };
   const unM = record(m);
   const unP = record(piers);
-  roads(L, geom, m, lights, piers);
-  blocks(L, m);
+  const settled = settleRoadbed(L);
+  roads(L, geom, m, lights, piers, settled);
+  blocks(L, m, geom);
   elevatedStructures(L, mask, m, lights);
   unM();
   unP();
@@ -1384,6 +1954,7 @@ export function buildBase(L: CityLayout): BaseGeometry {
     landUse: landUse(L, mask, L.hidden ? roadMask(L, true) : undefined),
     roadMask: mask,
     geom,
+    terrainHeights: settled,
     solids,
   };
 }
@@ -1404,51 +1975,324 @@ export function sidewalkY(
   return Math.abs(g - roadH) < 2.5 ? g : roadH + 0.16;
 }
 
+/**
+ * Where street furniture may stand: spatial lookups over road strips,
+ * junction plates and block curbs, built once per layout.
+ */
+export interface Landing {
+  /**
+   * True if (x, z) is on a road surface: within ROAD_WIDTH/2 + 0.25 of any
+   * chain but `own` (the prop's own chain, placed by offset from it), or on
+   * a junction plate.
+   */
+  onCarriageway(x: number, z: number, own: number): boolean;
+  /** Inside a block's curb polygon (hidden lab blocks included). */
+  onSidewalk(x: number, z: number): boolean;
+  /** Both tests: a sidewalk point clear of every other road. */
+  ok(x: number, z: number, own: number): boolean;
+  /**
+   * Nearest chain within ROAD_WIDTH/2 + 0.25 + `pad` (segment i, parameter
+   * t, distance d, arc length s, side +1 = left of the chain), or null.
+   */
+  nearest(
+    x: number,
+    z: number,
+    pad: number,
+  ): {
+    ci: number;
+    i: number;
+    t: number;
+    d: number;
+    s: number;
+    side: number;
+  } | null;
+}
+
+const LAND_CELL = 16;
+const landings = new WeakMap<CityLayout, Landing>();
+
+export function landing(L: CityLayout, geom: RoadGeom): Landing {
+  const hit = landings.get(L);
+  if (hit) return hit;
+  const key = (gx: number, gz: number) => (gz + 4096) * 8192 + gx + 4096;
+  const add = (
+    g: Map<number, number[]>,
+    x0: number,
+    z0: number,
+    x1: number,
+    z1: number,
+    v: number,
+  ) => {
+    for (
+      let gz = Math.floor(z0 / LAND_CELL);
+      gz <= Math.floor(z1 / LAND_CELL);
+      gz++
+    )
+      for (
+        let gx = Math.floor(x0 / LAND_CELL);
+        gx <= Math.floor(x1 / LAND_CELL);
+        gx++
+      ) {
+        const k = key(gx, gz);
+        const l = g.get(k);
+        if (l) l.push(v);
+        else g.set(k, [v]);
+      }
+  };
+  // Segments (chain * 4096 + segment), plates and blocks by cell. Segment
+  // boxes are padded 3 m more than the carriageway test needs, for nearest().
+  const segs = new Map<number, number[]>();
+  L.chains.forEach((c, ci) => {
+    const r = ROAD_WIDTH[c.kind] / 2 + 3.25;
+    for (let i = 0; i + 1 < c.pts.length; i++) {
+      const a = c.pts[i];
+      const b = c.pts[i + 1];
+      add(
+        segs,
+        Math.min(a[0], b[0]) - r,
+        Math.min(a[1], b[1]) - r,
+        Math.max(a[0], b[0]) + r,
+        Math.max(a[1], b[1]) + r,
+        ci * 4096 + i,
+      );
+    }
+  });
+  const box = (poly: Vec2[]) => {
+    let x0 = Infinity,
+      x1 = -Infinity,
+      z0 = Infinity,
+      z1 = -Infinity;
+    for (const q of poly) {
+      x0 = Math.min(x0, q[0]);
+      x1 = Math.max(x1, q[0]);
+      z0 = Math.min(z0, q[1]);
+      z1 = Math.max(z1, q[1]);
+    }
+    return [x0, z0, x1, z1] as const;
+  };
+  const plates = new Map<number, number[]>();
+  const covers: Vec2[][] = [];
+  for (const jg of geom.junctions)
+    for (const c of jg.cover) {
+      add(plates, ...box(c), covers.length);
+      covers.push(c);
+    }
+  const blockGrid = new Map<number, number[]>();
+  // Hidden (asset lab) blocks count too: the lab keeps the city's props.
+  L.blocks.forEach((b, bi) => add(blockGrid, ...box(b.curb), bi));
+  const at = (g: Map<number, number[]>, x: number, z: number) =>
+    g.get(key(Math.floor(x / LAND_CELL), Math.floor(z / LAND_CELL))) ?? [];
+  const onCarriageway = (x: number, z: number, own: number) => {
+    for (const v of at(segs, x, z)) {
+      const ci = Math.floor(v / 4096);
+      if (ci === own) continue;
+      const c = L.chains[ci];
+      const i = v % 4096;
+      const a = c.pts[i];
+      const b = c.pts[i + 1];
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(
+        0,
+        Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / l2),
+      );
+      const d = Math.hypot(a[0] + dx * t - x, a[1] + dz * t - z);
+      if (d < ROAD_WIDTH[c.kind] / 2 + 0.25) return true;
+    }
+    for (const k of at(plates, x, z))
+      if (pointInPolygon([x, z], covers[k])) return true;
+    return false;
+  };
+  const onSidewalk = (x: number, z: number) =>
+    at(blockGrid, x, z).some(bi => pointInPolygon([x, z], L.blocks[bi].curb));
+  const nearest = (x: number, z: number, pad: number) => {
+    let best: ReturnType<Landing['nearest']> = null;
+    let bd = Infinity;
+    for (const v of at(segs, x, z)) {
+      const ci = Math.floor(v / 4096);
+      const c = L.chains[ci];
+      const i = v % 4096;
+      const a = c.pts[i];
+      const b = c.pts[i + 1];
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(
+        0,
+        Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / l2),
+      );
+      const d = Math.hypot(a[0] + dx * t - x, a[1] + dz * t - z);
+      // Rank by distance past the kerb, so a wide road's curb beats a
+      // narrow road's centre line.
+      const e = d - ROAD_WIDTH[c.kind] / 2;
+      if (e < pad + 0.25 && e < bd) {
+        bd = e;
+        const cr = dx * (z - a[1]) - dz * (x - a[0]);
+        best = {
+          ci,
+          i,
+          t,
+          d,
+          s: geom.arc[ci][i] + t * Math.sqrt(l2),
+          side: cr >= 0 ? 1 : -1,
+        };
+      }
+    }
+    return best;
+  };
+  const out: Landing = {
+    onCarriageway,
+    onSidewalk,
+    ok: (x, z, own) => onSidewalk(x, z) && !onCarriageway(x, z, own),
+    nearest,
+  };
+  landings.set(L, out);
+  return out;
+}
+
+export interface LightSpot {
+  p: Vec3;
+  /** Unit vector from the pole toward the road. */
+  dir: Vec2;
+  kind: number;
+  sodium: boolean;
+  /** Road axis angle (radians, atan2 of the chain tangent). */
+  angle: number;
+}
+
+/**
+ * Street light positions (the poles themselves are props in detail tiles),
+ * computed once per layout (in the worker; kept in the RoadGeom so the main
+ * thread, which has no blocks, reuses them). Spots that would stand on
+ * another road or off the sidewalk are dropped.
+ */
 export function streetLightSpots(
   L: CityLayout,
   geom: RoadGeom,
   hf: Heightfield,
-  cb: (p: Vec3, dir: Vec2, kind: number, sodium: boolean) => void,
+  cb: (
+    p: Vec3,
+    dir: Vec2,
+    kind: number,
+    sodium: boolean,
+    angle: number,
+  ) => void,
 ) {
-  L.chains.forEach((c, ci) => {
-    if (c.bridge.some(b => b) || L.hidden?.chains[ci]) return;
-    const arc = geom.arc[ci];
-    const total = arc[arc.length - 1];
-    const [s0, s1] = geom.setbacks[ci];
-    const spacing = c.kind >= 2 ? 30 : 34;
-    const sodium = c.kind >= 3 || hash2(ci, 77) % 6 === 0;
-    const sides = c.kind >= 2 ? [-1, 1] : [hash2(ci, 5) % 2 ? 1 : -1];
-    for (const side of sides) {
-      for (
-        let s = s0 + 6 + (side > 0 ? spacing / 2 : 0);
-        s < total - s1 - 6;
-        s += spacing
-      ) {
-        const q = chainAt(c, arc, s);
-        const off =
-          (ROAD_WIDTH[c.kind] / 2 + Math.min(0.8, SIDEWALK[c.kind] * 0.4)) *
-          side;
-        const l: Vec2 = [-q.d[1], q.d[0]];
-        const x = q.p[0] + l[0] * off;
-        const z = q.p[1] + l[1] * off;
-        const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
-        cb(p, [-l[0] * side, -l[1] * side], c.kind, sodium);
+  let spots = geom.lightSpots;
+  if (!spots) {
+    const list: LightSpot[] = [];
+    const land = landing(L, geom);
+    L.chains.forEach((c, ci) => {
+      if (c.bridge.some(b => b) || L.hidden?.chains[ci]) return;
+      const arc = geom.arc[ci];
+      const total = arc[arc.length - 1];
+      const [s0, s1] = geom.setbacks[ci];
+      const spacing = c.kind >= 2 ? 30 : 34;
+      const sodium = c.kind >= 3 || hash2(ci, 77) % 6 === 0;
+      const sides = c.kind >= 2 ? [-1, 1] : [hash2(ci, 5) % 2 ? 1 : -1];
+      for (const side of sides) {
+        for (
+          let s = s0 + 6 + (side > 0 ? spacing / 2 : 0);
+          s < total - s1 - 6;
+          s += spacing
+        ) {
+          const q = chainAt(c, arc, s);
+          const off =
+            (ROAD_WIDTH[c.kind] / 2 + Math.min(0.8, SIDEWALK[c.kind] * 0.4)) *
+            side;
+          const l: Vec2 = [-q.d[1], q.d[0]];
+          const x = q.p[0] + l[0] * off;
+          const z = q.p[1] + l[1] * off;
+          if (!land.ok(x, z, ci)) continue;
+          list.push({
+            p: [x, sidewalkY(hf, x, z, q.h), z],
+            dir: [-l[0] * side, -l[1] * side],
+            kind: c.kind,
+            sodium,
+            angle: Math.atan2(q.d[1], q.d[0]),
+          });
+        }
+      }
+    });
+    geom.lightSpots = spots = list;
+  }
+  for (const s of spots) cb(s.p, s.dir, s.kind, s.sodium, s.angle);
+}
+
+/**
+ * Signal poles of signalized junctions (Japanese horizontal heads on an arm
+ * over the approach), shared by the tile props (pole, heads, luminaire) and
+ * the base light list (the junction luminaire's light). `arm` indexes
+ * geom.junctions[ji].arms.
+ */
+export function signalSpots(
+  L: CityLayout,
+  geom: RoadGeom,
+  hf: Heightfield,
+  ji: number,
+  cb: (p: Vec3, armDir: Vec2, reach: number, arm: number) => void,
+) {
+  const j = L.junctions[ji];
+  if (!j.signal || L.hidden?.junctions[ji]) return;
+  const jg = geom.junctions[ji];
+  const land = landing(L, geom);
+  jg.arms.forEach((a, k) => {
+    const l: Vec2 = [-a.dir[1], a.dir[0]];
+    // Pole on the right corner of the approach (traffic drives on the left in
+    // Tokyo, so oncoming traffic sees the pole on its left/curb side).
+    // Where that corner is not sidewalk (close parallel roads), look a
+    // little further out and back for one; the arm reaches further.
+    if (geom.absorbed[a.chain]) return;
+    for (const extra of [0, 1.2, 2.4, 3.6]) {
+      for (const back of [1.5, 4, 7]) {
+        const off = a.width / 2 + 0.8 + extra;
+        const x = j.p[0] + a.dir[0] * (a.setback + back) + l[0] * off;
+        const z = j.p[1] + a.dir[1] * (a.setback + back) + l[1] * off;
+        if (!land.ok(x, z, a.chain)) continue;
+        const p: Vec3 = [x, sidewalkY(hf, x, z, j.h), z];
+        cb(p, [-l[0], -l[1]], Math.min(a.width * 0.45, 6) + extra, k);
+        return;
       }
     }
   });
 }
 
+/** Junction luminaire on a signal pole: arm height and reach over the road. */
+export const SIGNAL_LUM = {h: 9.5, reach: 2.5} as const;
+
 function streetLights(L: CityLayout, geom: RoadGeom, lights: LightList) {
-  streetLightSpots(L, geom, L.terrain.heights, (p, dir, kind, sodium) => {
+  const hf = L.terrain.heights;
+  streetLightSpots(L, geom, hf, (p, dir, kind, sodium, angle) => {
     const reach = kind >= 2 ? 2.2 : 1.2;
     const h = kind >= 2 ? 9 : 6.5;
+    // Kind carries the road axis for an elongated pool (S7): 0.05 + 0.4 *
+    // fract(angle / pi), undirected; still < 0.5 = street light.
+    const a = angle / Math.PI;
     lights.add(
       [p[0] + dir[0] * reach, p[1] + h - 0.4, p[2] + dir[1] * reach],
       kind >= 2 ? 20 : 14,
       sodium ? SODIUM : LED,
-      LightKind.street,
+      LightKind.street + 0.05 + 0.4 * (a - Math.floor(a)),
     );
   });
+  // Junction luminaires (round pools, kind exactly 0), brighter than the
+  // arterial lights so the box is the best-lit place on the road.
+  const s = 1.3;
+  L.junctions.forEach((_, ji) =>
+    signalSpots(L, geom, hf, ji, (p, armDir) => {
+      lights.add(
+        [
+          p[0] + armDir[0] * SIGNAL_LUM.reach,
+          p[1] + SIGNAL_LUM.h - 0.35,
+          p[2] + armDir[1] * SIGNAL_LUM.reach,
+        ],
+        24,
+        [LED[0] * s, LED[1] * s, LED[2] * s],
+        LightKind.street,
+      );
+    }),
+  );
 }
 
 export {Rng};
