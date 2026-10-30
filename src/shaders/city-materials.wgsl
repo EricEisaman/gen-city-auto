@@ -237,7 +237,7 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   s.floorH = select(3.3, 3.9, kind <= 1u);
   if (kind == 4u) { s.floorH = 2.9; }
   if (podium) { s.floorH = 4.6; }
-  s.bay = mix(1.5, 3.2, hashuf(h ^ 0x1234u));
+  s.bay = mix(1.5, 3.2, hashuf(h ^ 0x1234u));  // facadeBay() in gen-tile.ts mirrors this
   if (kind == 4u) { s.bay = mix(2.2, 3.4, hashuf(h ^ 0x1234u)); }
   s.winW = mix(0.42, 0.8, hashuf(h ^ 0x22u));
   s.winH = mix(0.42, 0.66, hashuf(h ^ 0x33u));
@@ -254,13 +254,178 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   return s;
 }
 
+// ---- Facade programs (zones, roles, piers) ---------------------------------
+// gen-tile.ts splits every wall into zones (param bits 13-15) and gives each
+// footprint edge a role (bits 21-22: 0 front, 1 street side, 2 party wall,
+// 3 rear). Bit 23 marks solid wall (corner piers, blank bays): no windows.
+// Window fields hold whole bays of facadeStyle's `bay` (facadeBay() in
+// gen-tile.ts mirrors it), so windows are never cut at corners.
+const FZ_BODY = 0u;
+const FZ_BASE = 1u;   // ground floor, FACADE_GROUND tall: granite on street faces
+const FZ_LOBBY = 2u;  // entrance glazing; uv.x in metres from its left edge
+const FZ_CROWN = 3u;  // parapet, penthouse, core sides: accent tone, solid
+const FZ_CORE = 4u;   // stair core strip: accent tone, one stair window per floor
+const FZ_TRIM = 5u;   // balcony upstands: body tone (light on dark bodies), solid
+const FACADE_GROUND = 4.2;
+const FACADE_CORE_W = 2.8;
+
+struct FacadeZone {
+  role: u32,
+  zone: u32,
+  solid: bool,
+};
+
+fn facadeZone(param: u32) -> FacadeZone {
+  var z: FacadeZone;
+  z.zone = (param >> 13u) & 7u;
+  z.role = (param >> 21u) & 3u;
+  z.solid = ((param >> 23u) & 1u) == 1u || z.zone == FZ_CROWN || z.zone == FZ_TRIM;
+  return z;
+}
+
+// Crown and core tone: clearly lighter or darker than the body, and light on
+// dark bodies, so base / body / crown read as three values from afar.
+fn facadeAccent(body: vec3f, aux: u32) -> vec3f {
+  let l = luminance(body);
+  let h = hashuf(aux ^ 0x3c1u);
+  // (Tile textures darken the palette colour a lot, so most bodies count
+  // as dark here.)
+  if (l < 0.45) { return vec3f(0.62, 0.6, 0.56) * mix(0.85, 1.05, h); }
+  return body * select(0.5, 0.65, h < 0.5);
+}
+
+// Adjusts the facade style for this wall's role and zone, before the wall
+// colour is computed. May mark the wall solid (blank party-wall bays).
+fn facadeRole(st: ptr<function, FacadeStyle>, z: ptr<function, FacadeZone>, uv: vec2f, aux: u32) {
+  let zone = (*z).zone;
+  let role = (*z).role;
+  if (zone == FZ_BASE || zone == FZ_LOBBY) { (*st).floorH = FACADE_GROUND; }
+  if (zone == FZ_CROWN || zone == FZ_TRIM) { (*st).floorH = 1e4; }
+  if (zone == FZ_CROWN || zone == FZ_CORE) { (*st).wall = facadeAccent((*st).wall, aux); }
+  if (zone == FZ_TRIM && luminance((*st).wall) < 0.2) { (*st).wall = vec3f(0.6, 0.58, 0.55); }
+  if (zone == FZ_CORE) {
+    (*st).bay = FACADE_CORE_W;
+    (*st).strip = false;
+    (*st).family = 5u;
+    (*st).winW = 0.9 / FACADE_CORE_W;
+    (*st).winH = 1.2 / (*st).floorH;
+    return;
+  }
+  if (role >= 2u) {
+    // Party walls and the rear: painted render / ALC, few small windows.
+    (*st).wall = vec3f(0.47, 0.46, 0.43) * mix(0.85, 1.12, hashuf(aux ^ 0x4e1u));
+    (*st).family = 5u;
+    (*st).strip = false;
+    if (role == 3u) {
+      (*st).winW = 0.45;
+      (*st).winH = 0.45;
+    } else {
+      (*st).winW = 0.6 / (*st).bay;
+      (*st).winH = 0.9 / (*st).floorH;
+      let col = u32(max(floor(uv.x / (*st).bay), 0.0)) % 3u;
+      if (hashuf(aux ^ 0x9a7u) < 0.7 || col != 1u) { (*z).solid = true; }
+    }
+    return;
+  }
+  if (zone == FZ_BASE) {
+    // Granite-clad ground floor with big fixed lights.
+    (*st).wall = mix(vec3f(0.11, 0.105, 0.1), vec3f(0.2, 0.19, 0.18), hashuf(aux ^ 0x6a1u));
+    (*st).family = 4u;
+    (*st).strip = false;
+    (*st).winW = 0.8;
+    (*st).winH = 0.7;
+    return;
+  }
+  if (role == 1u && !(*st).strip) { (*st).winW *= 0.8; }
+}
+
+// Entrance lobby: aluminium-framed glass doors and sidelights in front of a
+// bright lobby (stone back wall, mailbox bank, downlights).
+fn facadeLobby(uv: vec2f, n: vec3f, T: vec3f, V: vec3f) -> Surf {
+  var s = defaultSurf(n);
+  let lx = uv.x;
+  let ly = uv.y;
+  let top = 3.3;
+  if (ly < 0.0 || ly > top + 0.05) {
+    s.albedo = vec3f(0.14, 0.135, 0.13);
+    s.rough = 0.35;
+    return s;
+  }
+  let mx = fract(lx / 0.9) * 0.9;
+  if (min(mx, 0.9 - mx) < 0.035 || abs(ly - 2.5) < 0.035 || ly < 0.07 || ly > top - 0.02) {
+    s.albedo = vec3f(0.55, 0.56, 0.57);
+    s.metal = 0.8;
+    s.rough = 0.3;
+    return s;
+  }
+  let night = nightLight();
+  let ndv = max(-dot(V, n), 0.05);
+  let q = vec2f(lx, ly) + vec2f(dot(V, T), V.y) / ndv * 4.0;
+  var c = vec3f(0.72, 0.68, 0.62);
+  if (q.y < 0.0) { c = vec3f(0.32, 0.3, 0.28); }
+  if (q.y > top) {
+    c = vec3f(0.8);
+    if (length(vec2f(fract(q.x / 1.2) - 0.5, q.y - top - 0.6)) < 0.12) { c = vec3f(6.0); }
+  }
+  if (q.y > 0.9 && q.y < 1.8 && fract(q.x / 4.0) < 0.35) {
+    c = vec3f(0.5, 0.52, 0.55) * (0.75 + 0.25 * step(0.08, fract(q.y / 0.3)));
+  }
+  let light = vec3f(1.0, 0.92, 0.8) * (luminance(frame.skyAmbient.rgb) * 0.3 + night * 0.7);
+  let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
+  s.albedo = vec3f(0.02);
+  s.rough = 0.05;
+  s.emissive = c * light * (1.0 - fres);
+  s.cls = CLASS_GLASS;
+  return s;
+}
+
+// Surface overrides once the wall material is done: the granite finish on
+// the base, the lobby, and solid walls (no windows). True: `s` is final.
+fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32) -> bool {
+  if (z.zone == FZ_LOBBY) {
+    *s = facadeLobby(uv, n, T, V);
+    return true;
+  }
+  if (z.zone == FZ_BASE && z.role <= 1u) {
+    // 900 x 600 mm granite slabs, slab-to-slab tone, 4 mm joints that fade
+    // out by pixel footprint.
+    let foot = max(length(dWorldX), length(dWorldY));
+    let g = uv / vec2f(0.9, 0.6);
+    let f = abs(fract(g) - 0.5) * vec2f(0.9, 0.6);
+    let d = min(0.45 - f.x, 0.3 - f.y);
+    let joint = (1.0 - smoothstep(0.002, 0.002 + foot * 1.5, d)) * clamp(0.006 / max(foot, 1e-4), 0.0, 1.0);
+    let ly = uv.y - floor(uv.y / FACADE_GROUND) * FACADE_GROUND;
+    var a = wall * (0.88 + 0.24 * hash21(floor(g) + f32(aux & 255u)));
+    if (ly < 0.18) { a *= 0.8; }
+    (*s).albedo = a * (1.0 - 0.6 * joint);
+    (*s).rough = 0.35;
+    (*s).normal = n;
+  }
+  if (z.role >= 2u && z.zone != FZ_CROWN) {
+    // Render and ALC panels: no ledges to cast floor shadows; ALC shows a
+    // joint every 0.6 m.
+    (*s).sunVis = 1.0;
+    if (hashuf(aux ^ 0x41cu) < 0.5) {
+      let foot = max(length(dWorldX), length(dWorldY));
+      let d = abs(fract(uv.y / 0.6) - 0.5) * 0.6;
+      let joint = (1.0 - smoothstep(0.004, 0.004 + foot * 1.5, 0.3 - d)) * clamp(0.01 / max(foot, 1e-4), 0.0, 1.0);
+      (*s).albedo *= 1.0 - 0.35 * joint;
+    }
+  }
+  if (z.zone == FZ_CROWN || z.zone == FZ_CORE || z.zone == FZ_TRIM) { (*s).sunVis = 1.0; }
+  return z.solid;
+}
+// ---- end facade programs ---------------------------------------------------
+
 fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
-  let style = param & 0xffffu;
+  let style = param & 0x1fffu;
   let kind = (param >> 16u) & 7u;
   let shop = ((param >> 19u) & 1u) == 1u;
   let podium = ((param >> 20u) & 1u) == 1u;
-  let st = facadeStyle(style, kind, podium);
+  var st = facadeStyle(style, kind, podium);
+  var fz = facadeZone(param);
+  facadeRole(&st, &fz, uv, aux);
   let V = normalize(world - frame.camPos.xyz);
   let T = vec3f(-n.z, 0.0, n.x);
   let sl = facadeLight(n, T);
@@ -340,6 +505,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let sy = P * min(sT.y, 6.0);
     s.sunVis = smoothstep(sy - 0.04, sy + 0.04, st.floorH - ly);
   }
+
+  if (facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux)) { return s; }
 
   // Ground floor shopfront.
   if (shop && abs(floorIdx) < 0.5) {

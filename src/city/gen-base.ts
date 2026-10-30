@@ -1076,7 +1076,7 @@ function railViaduct(
         m.box(
           [q[0], ground + h / 2, q[2]],
           [2.5, h / 2, 6],
-          packMat(CM.facade, 0x3a000 | (si & 0xfff)),
+          packMat(CM.facade, 0x30000 | (si & 0xfff)),
           yaw,
         );
     }
@@ -1326,7 +1326,7 @@ function outskirts(L: CityLayout, m: CMesh) {
         m.box(
           [cx, ground + h / 2 - 2, cz],
           [w / 2, h / 2 + 2, d / 2],
-          packMat(CM.facade, style | (2 << 16)),
+          packMat(CM.facade, (style & 0x1fff) | (2 << 16)),
           0,
           rng.nextU32(),
         );
