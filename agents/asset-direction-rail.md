@@ -705,6 +705,12 @@ but these are the hooks:
 - **Station under-deck pools:** where a station's under-deck fitting is too high for its light to
   reach the ground, a second `LightKind.station` light (radius 8, 0.4x colour) 5.2 m above the
   ground under it throws a pool (lighting.wgsl's high-fitting cone).
+- **`CANOPY_FASCIA` = `CM.paint 0xd7`** (new) on all station canopy fascia faces (track-side
+  0.45 m fascia, both faces, and the 0.3 m back fascia; uv.x metres along, uv.y metres down from the
+  roof edge), replacing the shared 0xd0. Pale-grey fallback until the shader panels it (this is the
+  big flat slab seen from the train in `station0-along-day`).
+- **Vending flags:** platform machines' proud lower-door box is `CM.vending VENDING_DOOR (0x100) |
+  body`, the header box `VENDING_HEADER (0x200) | body` (box UVs; uv.y from each box's bottom).
 - **Lab:** rail sites hide the park / lawn blocks the `side` preset's sight line crosses in the 30 m
   in front of the eye (their trees go with them): a park crown filled `rail-station0-side-*`. The
   station0 site stands in a big park, so its views (ctx and not) now show bare ground around it.

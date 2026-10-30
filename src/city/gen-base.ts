@@ -2223,6 +2223,21 @@ export const VENDING_FRONT = 0x300;
  * glow from the lit platform below at night) it renders as pale grey.
  */
 export const SKYLIGHT = 0xd2;
+/**
+ * CM.paint param on the station canopy fascias (track side, both faces, and
+ * the 0.3 m back fascia; uv.x metres along the segment, uv.y metres down
+ * from the roof edge). Its own code so the shader can panel it without
+ * touching 0xd0 (AC units, bins, plant boxes); in the 0xd0..0xef range, so
+ * it falls back to the plain pale-grey paint.
+ */
+export const CANOPY_FASCIA = 0xd7;
+/**
+ * CM.vending flags (| body 0..2) on the platform machines' proud lower-door
+ * box (0x100: uv.y from its own bottom) and header box (0x200: uv.y from
+ * its own bottom + 1.5); 0x300 is VENDING_FRONT.
+ */
+export const VENDING_DOOR = 0x100;
+export const VENDING_HEADER = 0x200;
 /** Railhead top above the deck top (trains.ts sits cars on it). */
 export const RAIL_TOP = 0.37;
 
@@ -3888,7 +3903,7 @@ function railViaduct(
   const PL = 1.45;
   const CY = PL + 3.2;
   const metal = packMat(CM.metal);
-  const fasciaM = packMat(CM.paint, 0xd0);
+  const fasciaM = packMat(CM.paint, CANOPY_FASCIA);
   const flat = (
     a: Vec3,
     b: Vec3,
@@ -4488,8 +4503,25 @@ function railViaduct(
               const p = mid(k, 0.45 + v * 0.08, o(9.15 - x), 0);
               return [p[0], PL + y, p[2]];
             };
-            m.box(fx(0.41, 0.35), [0.03, 0.35, 0.45], vm, vy, 0, true, true);
-            m.box(fx(0.41, 1.65), [0.03, 0.15, 0.45], vm, vy, 0, true, true);
+            const body = (k + v + (side > 0 ? 1 : 0)) % 3;
+            m.box(
+              fx(0.41, 0.35),
+              [0.03, 0.35, 0.45],
+              packMat(CM.vending, VENDING_DOOR | body),
+              vy,
+              0,
+              true,
+              true,
+            );
+            m.box(
+              fx(0.41, 1.65),
+              [0.03, 0.15, 0.45],
+              packMat(CM.vending, VENDING_HEADER | body),
+              vy,
+              0,
+              true,
+              true,
+            );
           }
         }
         // Car-position floor markers behind the tactile strip, every 6 m:
