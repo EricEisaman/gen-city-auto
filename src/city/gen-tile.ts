@@ -14,9 +14,12 @@ import {CM, CMesh, packMat, triangulate} from './cmesh.ts';
 import {
   LightKind,
   LightList,
+  SIGNAL_LUM,
   SODIUM,
   LED,
+  landing,
   sidewalkY,
+  signalSpots,
   streetLightSpots,
 } from './gen-base.ts';
 import {insetPolygon} from './graph.ts';
@@ -6589,11 +6592,18 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
     false,
   );
   if (lod !== 0) {
-    // Far LOD: one crown with the species' overall proportions.
-    const r = h * (S.r0 + S.r1) * 0.55;
-    const c: Vec3 = [p[0], p[1] + trunkH + r * (0.6 + S.step * 0.8), p[2]];
-    blob(m, c, r * 0.62, 0, aux, lr, sp);
-    leafCards(m, c, r, 4, aux, lr, 1, sp);
+    // Far LOD: one crown filling the envelope of LOD0's four stacked crowns
+    // (same base, top and width), so the tree keeps its species' mass
+    // instead of becoming a small ball on a tall pole.
+    const r = h * (S.r0 + S.r1) * 0.5;
+    const rise = h * S.step * 0.9; // LOD0 crown centres span this
+    const c: Vec3 = [p[0], p[1] + trunkH + r * 0.6 + rise * 0.5, p[2]];
+    const rh = r * (0.9 + S.spread * 2);
+    blob(m, c, rh, 0, aux, lr, sp, (rise * 0.5 + r * 0.8) / (rh * 0.85));
+    const lo: Vec3 = [c[0], c[1] - rise * 0.3, c[2]];
+    const hi: Vec3 = [c[0], c[1] + rise * 0.3, c[2]];
+    leafCards(m, lo, r * (1 + S.taper * 0.3), 2, aux, lr, 1, sp);
+    leafCards(m, hi, r * (1 - S.taper * 0.3), 2, aux, lr, 1, sp);
     return;
   }
   for (let k = 0; k < 4; k++) {
@@ -6678,6 +6688,8 @@ function blob(
   aux: number,
   rng: Rng,
   species = 0,
+  /** Vertical stretch (1 = the usual slightly flattened ball). */
+  tall = 1,
 ) {
   let tris: Vec3[][] = [];
   const V: Vec3[] = [
@@ -6725,7 +6737,7 @@ function blob(
     const ids = t.map(v => {
       const d = disp(v) * r;
       return m.vertex(
-        [c[0] + v[0] * d, c[1] + v[1] * d * 0.85, c[2] + v[2] * d],
+        [c[0] + v[0] * d, c[1] + v[1] * d * 0.85 * tall, c[2] + v[2] * d],
         v,
         v[0],
         v[2],
@@ -6807,6 +6819,150 @@ function streetLight(
   );
 }
 
+/**
+ * Flat one-sided disc facing horizontal `f` (unit 2D), centre c; uv 0..1
+ * over its square.
+ */
+function disc(
+  m: CMesh,
+  c: Vec3,
+  f: Vec2,
+  r: number,
+  sides: number,
+  mat: number,
+) {
+  const n: Vec3 = [f[0], 0, f[1]];
+  // Right-hand axis seen from the front.
+  const rx = -f[1];
+  const rz = f[0];
+  const mid = m.vertex(c, n, 0.5, 0.5, mat);
+  const ring: number[] = [];
+  for (let i = 0; i <= sides; i++) {
+    const a = (i / sides) * Math.PI * 2;
+    const u = Math.cos(a);
+    const v = Math.sin(a);
+    ring.push(
+      m.vertex(
+        [c[0] + rx * u * r, c[1] + v * r, c[2] + rz * u * r],
+        n,
+        0.5 + u * 0.5,
+        0.5 - v * 0.5,
+        mat,
+      ),
+    );
+  }
+  for (let i = 0; i < sides; i++) m.triFacing(mid, ring[i], ring[i + 1], n);
+}
+
+/**
+ * A sign panel facing horizontal `f`: a box in `back` (sides, rear) plus a
+ * face quad in `front` with uv 0..1 (u left to right, v top to bottom as
+ * seen by the reader). `hw`, `hh`, `hd`: half width, height, depth.
+ */
+function signBoard(
+  m: CMesh,
+  c: Vec3,
+  f: Vec2,
+  hw: number,
+  hh: number,
+  hd: number,
+  front: number,
+  back: number,
+) {
+  // The box's skipped -z face is the front (the quad covers it).
+  m.box(c, [hw, hh, hd], back, Math.atan2(-f[0], -f[1]), 0, false, true);
+  const rx = -f[1];
+  const rz = f[0];
+  const fc: Vec3 = [
+    c[0] + f[0] * (hd + 0.002),
+    c[1],
+    c[2] + f[1] * (hd + 0.002),
+  ];
+  const P = (u: number, v: number): Vec3 => [
+    fc[0] + rx * u * hw,
+    fc[1] + v * hh,
+    fc[2] + rz * u * hw,
+  ];
+  m.quad(
+    [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)],
+    [f[0], 0, f[1]],
+    [
+      [0, 1],
+      [1, 1],
+      [1, 0],
+      [0, 0],
+    ],
+    front,
+  );
+}
+
+/** Signal param: lamp | group << 2 | phase << 3 (bits 3-10) | upper 0x800. */
+const signalParam = (lamp: number, group: number, phase: number) =>
+  lamp | (group << 2) | ((phase & 0xff) << 3);
+
+/**
+ * Pedestrian signal head (two lamp faces, red man over green man, with a
+ * top visor) facing `f`, centre at c.
+ */
+function pedSignal(m: CMesh, c: Vec3, f: Vec2, group: number, phase: number) {
+  const yaw = Math.atan2(f[0], f[1]);
+  m.box(c, [0.22, 0.4, 0.12], packMat(CM.paint, 0x90), yaw);
+  for (const [dy, upper] of [
+    [0.19, true],
+    [-0.19, false],
+  ] as const) {
+    signBoardFace(
+      m,
+      [c[0] + f[0] * 0.122, c[1] + dy, c[2] + f[1] * 0.122],
+      f,
+      0.17,
+      0.17,
+      packMat(CM.signal, signalParam(3, group, phase) | (upper ? 0x800 : 0)),
+    );
+  }
+  m.box(
+    [c[0] + f[0] * 0.2, c[1] + 0.41, c[2] + f[1] * 0.2],
+    [0.22, 0.012, 0.09],
+    packMat(CM.paint, 0x90),
+    yaw,
+  );
+}
+
+/** A lone face quad (uv 0..1) facing `f`. */
+function signBoardFace(
+  m: CMesh,
+  c: Vec3,
+  f: Vec2,
+  hw: number,
+  hh: number,
+  mat: number,
+) {
+  const rx = -f[1];
+  const rz = f[0];
+  const P = (u: number, v: number): Vec3 => [
+    c[0] + rx * u * hw,
+    c[1] + v * hh,
+    c[2] + rz * u * hw,
+  ];
+  m.quad(
+    [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)],
+    [f[0], 0, f[1]],
+    [
+      [0, 1],
+      [1, 1],
+      [1, 0],
+      [0, 0],
+    ],
+    mat,
+  );
+}
+
+/**
+ * Japanese horizontal signal on its pole: grey head with three dark lenses
+ * (the lit one glows), a visor over each and a dark backing frame; the
+ * intersection-name plate above it; the junction luminaire on a second arm
+ * at SIGNAL_LUM.h (shared pole); optionally the controller cabinet.
+ */
 function signal(
   m: CMesh,
   p: Vec3,
@@ -6814,14 +6970,16 @@ function signal(
   reach: number,
   phase: number,
   group: number,
+  name: number,
+  cabinet: boolean,
 ) {
-  // Japanese-style horizontal signal head on an arm over the road.
+  const grey = packMat(CM.paint, 0x90);
   m.cylinder(
     [p[0], p[1] - SINK, p[2]],
     0.12,
-    6.2 + SINK,
+    SIGNAL_LUM.h + 0.25 + SINK,
     8,
-    packMat(CM.paint, 0x90),
+    grey,
     false,
   );
   const top: Vec3 = [p[0], p[1] + 5.8, p[2]];
@@ -6830,34 +6988,262 @@ function signal(
     p[1] + 5.8,
     p[2] + armDir[1] * reach,
   ];
-  m.beam(top, end, 0.06, 0.06, packMat(CM.paint, 0x90));
+  m.beam(top, end, 0.06, 0.06, grey);
   // Head faces back toward oncoming traffic (perpendicular to the arm).
   const face: Vec2 = [armDir[1], -armDir[0]];
-  const yaw = Math.atan2(armDir[0], armDir[1]);
+  const fyaw = Math.atan2(face[0], face[1]);
   const hc: Vec3 = [
-    end[0] - armDir[0] * 0.8,
-    end[1] - 0.1,
-    end[2] - armDir[1] * 0.8,
+    end[0] - armDir[0] * 0.7,
+    end[1] - 0.12,
+    end[2] - armDir[1] * 0.7,
   ];
+  m.box(hc, [0.62, 0.2, 0.12], grey, fyaw);
+  // Backing frame: 3 cm of black around the head, just behind its face.
   m.box(
-    hc,
-    [0.85, 0.22, 0.14],
+    [hc[0] - face[0] * 0.04, hc[1], hc[2] - face[1] * 0.04],
+    [0.65, 0.23, 0.07],
     packMat(CM.paint, 0x91),
-    yaw + Math.PI / 2 + Math.PI / 2,
+    fyaw,
   );
   for (let k = 0; k < 3; k++) {
-    const off = (k - 1) * 0.55;
+    const off = (k - 1) * 0.4;
     const lp: Vec3 = [
-      hc[0] - armDir[0] * off + face[0] * 0.15,
+      hc[0] - armDir[0] * off + face[0] * 0.125,
       hc[1],
-      hc[2] - armDir[1] * off + face[1] * 0.15,
+      hc[2] - armDir[1] * off + face[1] * 0.125,
     ];
-    // param: lamp (0 green/blue, 1 yellow, 2 red) | group << 2 | phase << 3
-    m.box(
+    // Lamp 0 green/blue, 1 yellow, 2 red: dark glass unless lit.
+    disc(
+      m,
       lp,
-      [0.17, 0.17, 0.03],
-      packMat(CM.signal, k | (group << 2) | ((phase & 0xff) << 3)),
-      Math.atan2(face[0], face[1]),
+      face,
+      0.15,
+      10,
+      packMat(CM.signal, signalParam(k, group, phase)),
+    );
+    m.box(
+      [lp[0] + face[0] * 0.07, lp[1] + 0.165, lp[2] + face[1] * 0.07],
+      [0.17, 0.015, 0.1],
+      grey,
+      fyaw,
+    );
+  }
+  // Intersection-name plate on the arm, 0.3 m above the head.
+  signBoard(
+    m,
+    [hc[0], hc[1] + 0.2 + 0.3 + 0.14, hc[2]],
+    face,
+    0.5,
+    0.14,
+    0.015,
+    packMat(CM.roadSign, 24 + (name & 7)),
+    packMat(CM.roadSign, (24 + (name & 7)) | 0x100),
+  );
+  // Junction luminaire (shared pole): arm and flat LED head.
+  const lt: Vec3 = [p[0], p[1] + SIGNAL_LUM.h, p[2]];
+  const le: Vec3 = [
+    p[0] + armDir[0] * SIGNAL_LUM.reach,
+    p[1] + SIGNAL_LUM.h,
+    p[2] + armDir[1] * SIGNAL_LUM.reach,
+  ];
+  m.beam(lt, le, 0.05, 0.05, grey);
+  m.box(
+    [le[0], le[1] - 0.1, le[2]],
+    [0.35, 0.06, 0.15],
+    packMat(CM.lamp, 1),
+    Math.atan2(face[0], face[1]),
+  );
+  if (cabinet) {
+    // Controller cabinet on the back of the pole.
+    m.box(
+      [p[0] - armDir[0] * 0.3, p[1] + 2.6, p[2] - armDir[1] * 0.3],
+      [0.3, 0.45, 0.2],
+      grey,
+      fyaw,
+    );
+  }
+}
+
+/**
+ * Overhead guide sign (案内標識) on an F-type pole at `p`: column, arm at
+ * 7.2 m reaching `reach` toward the road (`in`), a 4.4 x 2.2 m blue panel
+ * (bottom at 5 m, centred `at` metres out) facing oncoming traffic `f`. LOD1
+ * keeps panel and column.
+ */
+function guideSign(
+  m: CMesh,
+  p: Vec3,
+  inward: Vec2,
+  f: Vec2,
+  reach: number,
+  at: number,
+  variant: number,
+  lod: number,
+) {
+  const grey = packMat(CM.paint, 0x90);
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.18,
+    7.6 + SINK,
+    lod === 0 ? 8 : 4,
+    grey,
+    lod === 0,
+  );
+  const pc: Vec3 = [p[0] + inward[0] * at, p[1] + 6.1, p[2] + inward[1] * at];
+  const front = packMat(CM.roadSign, 16 + (variant & 7));
+  const back = packMat(CM.roadSign, (16 + (variant & 7)) | 0x100);
+  if (lod !== 0) {
+    // Far: just the two faces (18 vertices with the column).
+    signBoardFace(
+      m,
+      [pc[0] + f[0] * 0.04, pc[1], pc[2] + f[1] * 0.04],
+      f,
+      2.2,
+      1.1,
+      front,
+    );
+    signBoardFace(
+      m,
+      [pc[0] - f[0] * 0.04, pc[1], pc[2] - f[1] * 0.04],
+      [-f[0], -f[1]],
+      2.2,
+      1.1,
+      back,
+    );
+    return;
+  }
+  signBoard(m, pc, f, 2.2, 1.1, 0.04, front, back);
+  const behind = 0.08;
+  for (const y of [7.2, 6.9]) {
+    m.beam(
+      [p[0] - f[0] * behind, p[1] + y, p[2] - f[1] * behind],
+      [
+        p[0] + inward[0] * reach - f[0] * behind,
+        p[1] + y,
+        p[2] + inward[1] * reach - f[1] * behind,
+      ],
+      0.06,
+      0.06,
+      grey,
+    );
+  }
+}
+
+/**
+ * Regulatory sign post at p facing f: a disc (kind 0-3, 5) at 2.3-2.8 m,
+ * optionally a 0.6 m pedestrian-crossing square (kind 4) above it.
+ */
+function regSign(
+  m: CMesh,
+  p: Vec3,
+  f: Vec2,
+  kind: number,
+  square: boolean,
+  h: number,
+) {
+  const grey = packMat(CM.paint, 0x90);
+  const top = h + (square ? 0.75 : 0.32);
+  m.cylinder([p[0], p[1] - SINK, p[2]], 0.03, top + SINK, 5, grey, true);
+  const c: Vec3 = [p[0] + f[0] * 0.04, p[1] + h, p[2] + f[1] * 0.04];
+  disc(m, c, f, 0.3, 12, packMat(CM.roadSign, kind));
+  disc(
+    m,
+    [c[0] - f[0] * 0.02, c[1], c[2] - f[1] * 0.02],
+    [-f[0], -f[1]],
+    0.3,
+    12,
+    packMat(CM.roadSign, kind | 0x100),
+  );
+  if (square)
+    signBoard(
+      m,
+      [c[0], c[1] + 0.68, c[2]],
+      f,
+      0.3,
+      0.3,
+      0.01,
+      packMat(CM.roadSign, 4),
+      packMat(CM.roadSign, 4 | 0x100),
+    );
+}
+
+/**
+ * Clipped hedge run along `pts` (sidewalk-level base points) offset by
+ * `side` (unit 2D normal toward the back of the hedge per point): a 4-point
+ * profile strip with shared vertices, top undulating, plus end caps.
+ */
+function hedgeRun(m: CMesh, pts: Vec3[], out: Vec2[], seed: number) {
+  if (pts.length < 2) return;
+  const mat = packMat(CM.hedge, 0);
+  const W = 0.87;
+  const H = 0.7;
+  let along = 0;
+  const prof: number[][] = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (i > 0)
+      along += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][2] - pts[i - 1][2]);
+    const p = pts[i];
+    const o = out[i];
+    const top = H + ((hash2(seed, i) & 0xff) / 255 - 0.5) * 0.1;
+    const b = p[1] - 0.05;
+    const nf: Vec3 = [-o[0], 0, -o[1]];
+    const nb: Vec3 = [o[0], 0, o[1]];
+    const front: Vec3 = [p[0], b, p[2]];
+    const frontT: Vec3 = [p[0], p[1] + top, p[2]];
+    const backT: Vec3 = [p[0] + o[0] * W, p[1] + top, p[2] + o[1] * W];
+    const back: Vec3 = [p[0] + o[0] * W, b, p[2] + o[1] * W];
+    // Profile: road-side bottom, road-side top (x2: side and top normals),
+    // back top (x2), back bottom. uv: x along, y metres up each side
+    // (the top continues from the front edge).
+    prof.push([
+      m.vertex(front, nf, along, 0, mat),
+      m.vertex(frontT, nf, along, top, mat),
+      m.vertex(frontT, [0, 1, 0], along, top, mat),
+      m.vertex(backT, [0, 1, 0], along, top + W, mat),
+      m.vertex(backT, nb, along, top, mat),
+      m.vertex(back, nb, along, 0, mat),
+    ]);
+  }
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = prof[i];
+    const c = prof[i + 1];
+    const o = out[i];
+    const nf: Vec3 = [-o[0], 0, -o[1]];
+    const nb: Vec3 = [o[0], 0, o[1]];
+    m.triFacing(a[0], c[0], c[1], nf);
+    m.triFacing(a[0], c[1], a[1], nf);
+    m.triFacing(a[2], c[2], c[3], [0, 1, 0]);
+    m.triFacing(a[2], c[3], a[3], [0, 1, 0]);
+    m.triFacing(a[4], c[4], c[5], nb);
+    m.triFacing(a[4], c[5], a[5], nb);
+  }
+  // End caps.
+  for (const [i, j] of [
+    [0, 1],
+    [pts.length - 1, pts.length - 2],
+  ]) {
+    const p = pts[i];
+    const q = pts[j];
+    const d = Math.hypot(p[0] - q[0], p[2] - q[2]) || 1;
+    const n: Vec3 = [(p[0] - q[0]) / d, 0, (p[2] - q[2]) / d];
+    const o = out[i];
+    const top = m.pos(prof[i][1])[1] - p[1];
+    const b = p[1] - 0.05;
+    m.quad(
+      [
+        [p[0], b, p[2]],
+        [p[0] + o[0] * W, b, p[2] + o[1] * W],
+        [p[0] + o[0] * W, p[1] + top, p[2] + o[1] * W],
+        [p[0], p[1] + top, p[2]],
+      ],
+      n,
+      [
+        [0, 0],
+        [W, 0],
+        [W, top],
+        [0, top],
+      ],
+      mat,
     );
   }
 }
@@ -7287,6 +7673,20 @@ function fillProps(
   }
 }
 
+const chainEnds = new WeakMap<CityLayout, Map<number, number>>();
+/** Junction at a chain's end (-1 if none). */
+function guideJunction(L: CityLayout, ci: number, end: 0 | 1) {
+  let g = chainEnds.get(L);
+  if (!g) {
+    g = new Map();
+    L.junctions.forEach((j, ji) =>
+      j.arms.forEach(a => g!.set(a.chain * 2 + a.end, ji)),
+    );
+    chainEnds.set(L, g);
+  }
+  return g.get(ci * 2 + end) ?? -1;
+}
+
 export function buildTile(
   ctx: TileContext,
   tile: number,
@@ -7346,10 +7746,15 @@ export function buildTile(
       });
     }
 
+  // Every street prop placed by offset from its chain must land on a
+  // sidewalk and clear of every other road (close parallel chains would
+  // otherwise get each other's trees and rails in their lanes).
+  const land = landing(L, ctx.geom);
+
   // Props along chains: utility poles + wires on small streets, trees on avenues.
   for (const ci of ctx.tileChains[tile] ?? []) {
     const c = L.chains[ci];
-    if (c.bridge.some(b => b)) continue;
+    if (c.bridge.some(b => b) || ctx.geom.absorbed[ci]) continue;
     const arc = ctx.geom.arc[ci];
     const total = arc[arc.length - 1];
     const [s0, s1] = ctx.geom.setbacks[ci];
@@ -7363,6 +7768,10 @@ export function buildTile(
         const l: Vec2 = [-q.d[1], q.d[0]];
         const x = q.p[0] + l[0] * off;
         const z = q.p[1] + l[1] * off;
+        if (!land.ok(x, z, ci)) {
+          prev = null;
+          continue;
+        }
         const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
         const here = inTile(p[0], p[2]);
         if (here && lod === 0 && clearOfDecks(ctx, p, p, 10.2)) {
@@ -7391,38 +7800,161 @@ export function buildTile(
           const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
           if (!inTile(p[0], p[2])) continue;
           const th = rng.range(6, 9);
-          if (deckClearance(ctx, p[0], p[2], p[1]) < th + 1) continue;
+          if (
+            !land.ok(x, z, ci) ||
+            deckClearance(ctx, p[0], p[2], p[1]) < th + 1
+          ) {
+            rng.nextU32(); // as tree() would, so the next trees keep theirs
+            continue;
+          }
           tree(m, p, th, lod, rng);
+          if (lod === 0) {
+            // Cast-iron grate in its 1.2 m pit, square to the kerb.
+            const d = q.d;
+            const P = (u: number, v: number): Vec3 => [
+              x + d[0] * u * 0.6 + l[0] * v * 0.6,
+              p[1] + 0.012,
+              z + d[1] * u * 0.6 + l[1] * v * 0.6,
+            ];
+            m.quad(
+              [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)],
+              [0, 1, 0],
+              [
+                [0, 0],
+                [1, 0],
+                [1, 1],
+                [0, 1],
+              ],
+              packMat(CM.hedge, 1),
+            );
+          }
         }
       }
     }
   }
 
-  // Traffic signals.
-  for (const ji of ctx.tileJunctions[tile] ?? []) {
-    const j = L.junctions[ji];
-    if (!j.signal || lod !== 0) continue;
-    const jg = ctx.geom.junctions[ji];
-    const phase = hash2(ji, 17) & 0xff;
-    jg.arms.forEach((a, k) => {
-      const l: Vec2 = [-a.dir[1], a.dir[0]];
-      // Pole on the right corner of the approach (traffic drives on the left in
-      // Tokyo, so oncoming traffic sees the pole on its left/curb side).
-      const off = a.width / 2 + 0.8;
-      const x = j.p[0] + a.dir[0] * (a.setback + 1.5) + l[0] * off;
-      const z = j.p[1] + a.dir[1] * (a.setback + 1.5) + l[1] * off;
-      const p: Vec3 = [x, sidewalkY(hf, x, z, j.h), z];
-      const group = Math.round((a.angle / Math.PI) * 2) & 1;
-      signal(
-        m,
-        p,
-        [-l[0], -l[1]],
-        Math.min(a.width * 0.45, 6),
-        phase,
-        group ^ (k & 0),
-      );
-    });
+  // Overhead guide signs before signalized junctions (LOD1 keeps panel and
+  // column: the one road prop that must read at 300 m).
+  for (const ci of ctx.tileChains[tile] ?? []) {
+    const c = L.chains[ci];
+    if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
+    const arc = ctx.geom.arc[ci];
+    const total = arc[arc.length - 1];
+    const [s0, s1] = ctx.geom.setbacks[ci];
+    if (total - s0 - s1 < 70) continue;
+    for (const end of [0, 1] as const) {
+      const ji = guideJunction(L, ci, end);
+      if (ji < 0 || !L.junctions[ji].signal || L.hidden?.junctions[ji])
+        continue;
+      const h = hash2(ci * 2 + end, 0x5197);
+      if (c.kind === Road.avenue && h % 2) continue;
+      const back = 60 + ((h >>> 4) % 30);
+      const s = end === 0 ? s0 + back : total - s1 - back;
+      const q = chainAt(c, arc, s);
+      const l: Vec2 = [-q.d[1], q.d[0]];
+      // Incoming traffic toward this end keeps left; the sign faces it.
+      const side = end === 1 ? 1 : -1;
+      const f: Vec2 = end === 1 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
+      const W = ROAD_WIDTH[c.kind];
+      const off = W / 2 + 0.6;
+      const x = q.p[0] + l[0] * off * side;
+      const z = q.p[1] + l[1] * off * side;
+      if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
+      const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
+      const inward: Vec2 = [-l[0] * side, -l[1] * side];
+      guideSign(m, p, inward, f, W / 2 - 0.5, off - W / 4, h >>> 8, lod);
+    }
   }
+
+  // Traffic signals (LOD0): vehicle heads with name plates and the
+  // junction luminaire on each pole, pedestrian signals at both ends of
+  // every crossing, a controller cabinet, regulatory signs at the corners.
+  if (lod === 0)
+    for (const ji of ctx.tileJunctions[tile] ?? []) {
+      const j = L.junctions[ji];
+      if (!j.signal) continue;
+      const jg = ctx.geom.junctions[ji];
+      const phase = hash2(ji, 17) & 0xff;
+      let first = true;
+      signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach, k) => {
+        const a = jg.arms[k];
+        const group = Math.round((a.angle / Math.PI) * 2) & 1;
+        signal(m, p, armDir, reach, phase, group, ji, first);
+        first = false;
+        // Pedestrian signals across this arm's crossing: one on the signal
+        // pole, one on its own pole at the far corner, each facing across.
+        const l: Vec2 = [-a.dir[1], a.dir[0]];
+        pedSignal(
+          m,
+          [p[0] - l[0] * 0.2, p[1] + 2.8, p[2] - l[1] * 0.2],
+          [-l[0], -l[1]],
+          group,
+          phase,
+        );
+        m.box(
+          [p[0] - l[0] * 0.14, p[1] + 1.2, p[2] - l[1] * 0.14],
+          [0.08, 0.12, 0.06],
+          packMat(CM.paint, 0x92),
+          Math.atan2(-l[0], -l[1]),
+        );
+        // Far corner, level with the signal pole along the arm.
+        const along = (p[0] - j.p[0]) * a.dir[0] + (p[2] - j.p[1]) * a.dir[1];
+        let fx = NaN;
+        let fz = NaN;
+        for (const extra of [0, 1.2, 2.4]) {
+          const off = a.width / 2 + 0.8 + extra;
+          const x = j.p[0] + a.dir[0] * along - l[0] * off;
+          const z = j.p[1] + a.dir[1] * along - l[1] * off;
+          if (land.ok(x, z, a.chain)) {
+            fx = x;
+            fz = z;
+            break;
+          }
+        }
+        if (!isNaN(fx)) {
+          const fp: Vec3 = [fx, sidewalkY(hf, fx, fz, j.h), fz];
+          m.cylinder(
+            [fp[0], fp[1] - SINK, fp[2]],
+            0.07,
+            3.4 + SINK,
+            6,
+            packMat(CM.paint, 0x90),
+            true,
+          );
+          pedSignal(
+            m,
+            [fp[0] + l[0] * 0.2, fp[1] + 2.8, fp[2] + l[1] * 0.2],
+            l,
+            group,
+            phase,
+          );
+          m.box(
+            [fp[0] + l[0] * 0.1, fp[1] + 1.2, fp[2] + l[1] * 0.1],
+            [0.08, 0.12, 0.06],
+            packMat(CM.paint, 0x92),
+            Math.atan2(l[0], l[1]),
+          );
+        }
+        // Regulatory sign beyond the crossing on the approach's kerb side,
+        // facing approaching traffic: speed limit on avenues and up, no
+        // parking on small streets; some also carry the crossing square.
+        const hs = hash2(ji * 8 + k, 0x7e9);
+        const kind = L.chains[a.chain].kind;
+        const rs = a.setback + 7 + (hs % 5);
+        const rx = j.p[0] + a.dir[0] * rs - l[0] * (a.width / 2 + 0.5);
+        const rz = j.p[1] + a.dir[1] * rs - l[1] * (a.width / 2 + 0.5);
+        if (hs % 3 !== 0 && land.ok(rx, rz, a.chain)) {
+          regSign(
+            m,
+            [rx, sidewalkY(hf, rx, rz, j.h), rz],
+            a.dir,
+            kind >= Road.avenue ? (hs >>> 3) & 1 : 2,
+            ((hs >>> 5) & 3) === 0,
+            2.3 + ((hs >>> 7) % 6) * 0.1,
+          );
+        }
+      });
+    }
 
   // Park trees.
   const tx = (tile % Math.ceil(size / TILE_SIZE)) * TILE_SIZE - size / 2;
@@ -7511,15 +8043,17 @@ export function buildTile(
         }
       }
     }
-    // Guardrails along arterial curbs, bollards at corners, bus stops.
+    // Guardrails along arterial curbs, hedges in the planting strip behind
+    // them, bus stops, bollards at corners.
     for (const ci of ctx.tileChains[tile] ?? []) {
       const c = L.chains[ci];
       if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
       const arc = ctx.geom.arc[ci];
       const total = arc[arc.length - 1];
       const [s0, s1] = ctx.geom.setbacks[ci];
+      const W = ROAD_WIDTH[c.kind];
       for (const side of [-1, 1]) {
-        const off = (ROAD_WIDTH[c.kind] / 2 + 0.35) * side;
+        const off = (W / 2 + 0.3) * side;
         let prev: Vec3 | null = null;
         for (let s = s0 + 6; s < total - s1 - 6; s += 2) {
           const q = chainAt(c, arc, s);
@@ -7527,7 +8061,7 @@ export function buildTile(
           const x = q.p[0] + l[0] * off;
           const z = q.p[1] + l[1] * off;
           const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
-          if (!inTile(p[0], p[2])) {
+          if (!inTile(p[0], p[2]) || !land.ok(x, z, ci)) {
             prev = null;
             continue;
           }
@@ -7563,6 +8097,7 @@ export function buildTile(
           prev = p;
         }
         // Bus stop every ~300 m on one side.
+        const stops: number[] = [];
         for (
           let s = s0 + 40 + (hash2(ci, side) % 120);
           s < total - s1 - 20;
@@ -7570,9 +8105,11 @@ export function buildTile(
         ) {
           const q = chainAt(c, arc, s);
           const l: Vec2 = [-q.d[1], q.d[0]];
-          const o = (ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] * 0.6) * side;
+          const o = (W / 2 + SIDEWALK[c.kind] * 0.6) * side;
           const x = q.p[0] + l[0] * o;
           const z = q.p[1] + l[1] * o;
+          if (!land.ok(x, z, ci)) continue;
+          stops.push(s);
           const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
           if (!inTile(p[0], p[2])) continue;
           const yaw = Math.atan2(q.d[0], q.d[1]);
@@ -7611,14 +8148,64 @@ export function buildTile(
             LightKind.vending,
           );
         }
+        // Clipped hedge in the planting strip (front face 0.38 m behind the
+        // kerb, behind the fence), every 6.5 m; gaps at bus stops, a 2 m
+        // driveway gap every 35-50 m, none within 8 m of a junction mouth.
+        const ho = W / 2 + 0.38;
+        let gapAt = s0 + 8 + 35 + (hash2(ci * 2 + side, 0x4ed) % 16);
+        let run: {p: Vec3; o: Vec2; mine: boolean}[] = [];
+        const flush = () => {
+          // Segments belong to the tile of their start point.
+          let k = 0;
+          while (k < run.length - 1) {
+            if (!run[k].mine) {
+              k++;
+              continue;
+            }
+            let e = k;
+            while (e < run.length - 1 && run[e].mine) e++;
+            hedgeRun(
+              m,
+              run.slice(k, e + 1).map(r => r.p),
+              run.slice(k, e + 1).map(r => r.o),
+              hash2(ci * 2 + side, k),
+            );
+            k = e;
+          }
+          run = [];
+        };
+        for (let s = s0 + 8; s <= total - s1 - 8; s += 6.5) {
+          if (s > gapAt) {
+            // Stop the run just short of the gap and resume 2 m on.
+            flush();
+            s = gapAt + 2;
+            gapAt += 35 + (hash2(ci * 2 + side, Math.floor(s)) % 16);
+          }
+          if (stops.some(b => Math.abs(b - s) < 4.8)) {
+            flush();
+            continue;
+          }
+          const q = chainAt(c, arc, s);
+          const l: Vec2 = [-q.d[1], q.d[0]];
+          const x = q.p[0] + l[0] * ho * side;
+          const z = q.p[1] + l[1] * ho * side;
+          const bx = x + l[0] * 0.87 * side;
+          const bz = z + l[1] * 0.87 * side;
+          if (!land.ok(x, z, ci) || !land.ok(bx, bz, ci)) {
+            flush();
+            continue;
+          }
+          run.push({
+            p: [x, sidewalkY(hf, x, z, q.h), z],
+            o: [l[0] * side, l[1] * side],
+            mine: inTile(x, z),
+          });
+        }
+        flush();
       }
     }
     // Bollards at signalized corners, only where they land on the corner
     // sidewalk (not out in the carriageway).
-    const onSidewalk = (x: number, z: number) =>
-      (ctx.tileBlocks[tileOf(size, x, z)] ?? []).some(bi =>
-        pointInPolygon([x, z], L.blocks[bi].curb),
-      );
     for (const ji of ctx.tileJunctions[tile] ?? []) {
       const j = L.junctions[ji];
       if (!j.signal) continue;
@@ -7630,7 +8217,7 @@ export function buildTile(
           const t: Vec2 = [-d[1] / dl, d[0] / dl];
           const x = q[0] + (d[0] / dl) * 0.7 + t[0] * k * 0.9;
           const z = q[1] + (d[1] / dl) * 0.7 + t[1] * k * 0.9;
-          if (!onSidewalk(x, z)) continue;
+          if (!land.ok(x, z, -1)) continue;
           const bp: Vec3 = [x, sidewalkY(hf, x, z, j.h) - SINK, z];
           m.cylinder(bp, 0.07, 0.8 + SINK, 4, packMat(CM.paint, 0xd8), true);
         }

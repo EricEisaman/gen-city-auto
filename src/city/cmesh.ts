@@ -41,6 +41,10 @@ export const CM = {
   asphaltPlain: 24,
   leaves: 25,
   carPark: 26,
+  /** Road signs: param & 0xff = sign kind, 0x100 = back face; uv 0..1. */
+  roadSign: 27,
+  /** Clipped hedge (param 0, box uv in metres) or tree grate (param 1). */
+  hedge: 28,
 } as const;
 
 /** Materials whose aux low 16 bits carry a tube radius (see header). */
