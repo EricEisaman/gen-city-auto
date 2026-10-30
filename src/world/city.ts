@@ -376,7 +376,7 @@ export class City {
       const {src, i} = cand[k];
       const kind = src[i * 8 + 7];
       const scale =
-        (kind === LightKind.street
+        (kind < 0.5 // street lights carry their road axis in the fraction
           ? 3.5
           : kind === LightKind.sign
             ? 0.55 * flicker
