@@ -4841,28 +4841,16 @@ fn fauxKanji(p: vec2f, h: u32) -> f32 {
 // rasterised from the sign atlas' station cells, the car count) and an
 // orange ticker scrolling along the bottom. The dots fall back to their
 // lit mean once the pitch is under ~2 px.
-fn departureBoard(n: vec3f, uv: vec2f, si: u32) -> Surf {
-  var s = defaultSurf(n);
-  var tu: vec3f;
-  var tv: vec3f;
-  uvDirs(&tu, &tv);
-  let rgt = cross(-n, vec3f(0.0, 1.0, 0.0));
-  let ux = select(1.0 - uv.x, uv.x, dot(tu, rgt) >= 0.0);
-  let q = vec2f(ux * 1.8, uv.y * 0.44);
-  let fp = max(length(dWorldX), length(dWorldY));
-  let pitch = 0.0075;
-  let dc = (floor(q / pitch) + 0.5) * pitch;
+fn depGlyph(dc: vec2f, si: u32, t: f32) -> vec4f {
   let amber = vec3f(1.0, 0.42, 0.04);
   let green = vec3f(0.25, 1.0, 0.3);
   let orange = vec3f(1.0, 0.2, 0.02);
   var on = 0.0;
   var col = amber;
-  let field = step(0.03, q.x) * step(q.x, 1.77) * step(0.03, q.y) * step(q.y, 0.41);
   // Row r (0 = top), 0.1 m glyphs on a 0.125 m pitch.
   let r = clamp(floor((0.41 - dc.y) / 0.125), 0.0, 2.0);
   let yb = 0.41 - (r + 1.0) * 0.125 + 0.0125;
   let ly = (dc.y - yb) / 0.1 - 0.5;
-  let t = frame.time.x;
   if (abs(ly) < 0.5 && r < 2.0) {
     let hr = hashu(si * 0x9e37u + u32(r) * 0x51u + u32(floor(t / 90.0)));
     let x = dc.x;
@@ -4925,6 +4913,46 @@ fn departureBoard(n: vec3f, uv: vec2f, si: u32) -> Surf {
     let gap = (u32(i32(ci) + 100000) % 9u) == 8u;
     on = select(fauxKanji(vec2f(fract(sx / 0.1) - 0.5, ly) * 1.15, hashu(u32(i32(ci) + 100000) * 0x2c1bu + si)), 0.0, gap);
   }
+  return vec4f(col, on);
+}
+
+fn departureBoard(n: vec3f, uv: vec2f, si: u32) -> Surf {
+  var s = defaultSurf(n);
+  var tu: vec3f;
+  var tv: vec3f;
+  uvDirs(&tu, &tv);
+  let rgt = cross(-n, vec3f(0.0, 1.0, 0.0));
+  let ux = select(1.0 - uv.x, uv.x, dot(tu, rgt) >= 0.0);
+  let q = vec2f(ux * 1.8, uv.y * 0.44);
+  let fp = max(length(dWorldX), length(dWorldY));
+  let pitch = 0.0075;
+  let dc = (floor(q / pitch) + 0.5) * pitch;
+  let t = frame.time.x;
+  let field = step(0.03, q.x) * step(q.x, 1.77) * step(0.03, q.y) * step(q.y, 0.41);
+  // Glyphs on the dot grid while the dots resolve; once a pixel covers
+  // more than ~1 dot they are drawn as smooth shapes, 2x2 supersampled
+  // over the pixel footprint, so the rows keep crisp, steady edges at
+  // 10-20 m instead of breaking into blocky dot-centre noise.
+  let blend = smoothstep(pitch * 0.6, pitch * 1.6, fp);
+  var col = vec3f(1.0, 0.42, 0.04);
+  var on = 0.0;
+  if (blend < 1.0) {
+    let g = depGlyph(dc, si, t);
+    col = g.rgb;
+    on = g.w;
+  }
+  if (blend > 0.0) {
+    let dqx = vec2f(dUvX.x * 1.8, dUvX.y * 0.44);
+    let dqy = vec2f(dUvY.x * 1.8, dUvY.y * 0.44);
+    var acc = vec4f(0.0);
+    for (var k = 0u; k < 4u; k++) {
+      let o = vec2f(f32(k & 1u), f32(k >> 1u)) * 0.5 - 0.25;
+      let g = depGlyph(q + dqx * o.x + dqy * o.y, si, t);
+      acc += vec4f(g.rgb * g.w, g.w);
+    }
+    col = mix(col, acc.rgb / max(acc.w, 1e-4), blend * step(1e-4, acc.w));
+    on = mix(on, acc.w * 0.25, blend);
+  }
   on *= field;
   // Each LED a round dot (~60 % of the pitch); past ~2 px a pitch the dots
   // blur into their area mean.
@@ -4936,6 +4964,87 @@ fn departureBoard(n: vec3f, uv: vec2f, si: u32) -> Surf {
   s.albedo = mix(vec3f(0.015), vec3f(0.12, 0.12, 0.13), housing);
   s.rough = mix(0.25, 0.5, housing);
   s.emissive = (col * on * dotF * mix(2.2, 4.0, gloomLight()) + vec3f(0.02, 0.012, 0.005) * dotF) * field;
+  return s;
+}
+
+// Platform vending machine display front (CM.vending VENDING_FRONT, box UV
+// u 0..0.9, v 0.7..1.5 visible between the proud lower door and header):
+// a white moulded frame, a lit logo strip along the top, three rows of
+// sample drinks each over a dark strip of lit selection buttons, and the
+// coin / IC-card panel at the bottom right (grey, a blue IC reader, a red
+// price LED). Rows and gaps are >= 4 cm, so they hold at 10-20 m.
+fn vendingWindow(n: vec3f, uv: vec2f, brand: vec3f, seed: u32) -> Surf {
+  var s = defaultSurf(n);
+  let fu = uvFoot();
+  let foot = max(length(dWorldX), length(dWorldY));
+  let u = clamp(uv.x, 0.0, 0.9);
+  let v = uv.y;
+  let gl = gloomLight();
+  let inner = bandF(u, 0.035, 0.865, fu.x) * bandF(v, 0.735, 1.465, fu.y);
+  // Frame: white plastic, a little yellowed, a dark reveal line inside it.
+  var a = vec3f(0.82, 0.82, 0.78);
+  var e = vec3f(0.0);
+  s.rough = 0.35;
+  let reveal = bandF(u, 0.03, 0.87, fu.x) * bandF(v, 0.73, 1.47, fu.y) * (1.0 - inner);
+  a = mix(a, vec3f(0.05), reveal);
+  if (inner > 0.0) {
+    var c = vec3f(0.0);
+    var ce = vec3f(0.0);
+    if (v > 1.38) {
+      // Logo strip: a lit white light box with the brand colour and a
+      // chunky wordmark.
+      let lx = (u - 0.07) / 0.065;
+      let li = floor(lx);
+      let wk = bandF(v, 1.395, 1.45, fu.y) * step(0.0, lx) * step(li, 7.0) * step(0.18, fract(lx)) * step(fract(lx), 0.86);
+      let gx = vec2f(fract(lx), (v - 1.395) / 0.055);
+      let gh = hashu(seed * 0x9e37u + u32(li + 1.0));
+      let glyph = fauxKanji((gx - 0.5) * vec2f(1.0, 1.1), gh) * (1.0 - smoothstep(0.004, 0.012, foot));
+      let wmk = mix(0.55 * wk, wk * glyph, 1.0 - smoothstep(0.006, 0.015, foot));
+      c = mix(brand, vec3f(0.95), wmk);
+      ce = c * mix(0.9, 3.2, gl);
+    } else {
+      let ry = v - 0.735;
+      let row = floor(ry / 0.215);
+      let fy = ry - row * 0.215;
+      let ic = bandF(u, 0.63, 0.865, fu.x) * step(row, 0.5);
+      if (ic > 0.5) {
+        // Coin / IC panel: brushed grey; IC reader (lit blue square), coin
+        // slot (a dark slit in a chrome bezel), red price LED, bill slot.
+        let pu = u - 0.63;
+        c = vec3f(0.3, 0.31, 0.32);
+        let rd = bandF(pu, 0.04, 0.12, fu.x) * bandF(fy, 0.11, 0.19, fu.y);
+        c = mix(c, vec3f(0.05, 0.12, 0.3), rd);
+        ce = vec3f(0.25, 0.55, 1.0) * rd * mix(0.6, 2.4, gl) * (0.7 + 0.3 * step(0.06, abs(pu - 0.08) + abs(fy - 0.15)));
+        let coin = bandF(pu, 0.16, 0.2, fu.x) * bandF(fy, 0.1, 0.2, fu.y);
+        c = mix(c, vec3f(0.7), coin);
+        c = mix(c, vec3f(0.02), bandF(pu, 0.175, 0.185, 0.002 + fu.x) * bandF(fy, 0.115, 0.185, fu.y));
+        let led = bandF(pu, 0.04, 0.2, fu.x) * bandF(fy, 0.04, 0.075, fu.y);
+        c = mix(c, vec3f(0.03), led);
+        ce += vec3f(1.0, 0.12, 0.03) * led * step(0.4, fract(pu * 70.0)) * mix(0.6, 2.2, gl);
+        c = mix(c, vec3f(0.03), bandF(pu, 0.03, 0.2, fu.x) * bandF(fy, 0.0, 0.015, fu.y));
+        s.rough = 0.45;
+      } else if (fy < 0.045) {
+        // Button strip: dark, with a lit green-white button under each
+        // sample (every 0.083 m), the price tags just above it.
+        let bx = fract(u / 0.0833 + 0.5);
+        let btn = bandF(bx, 0.3, 0.7, fu.x / 0.0833) * bandF(fy, 0.012, 0.03, fu.y);
+        c = vec3f(0.03);
+        ce = vec3f(0.35, 1.0, 0.5) * btn * mix(0.4, 2.2, gl) + vec3f(0.6, 0.62, 0.6) * 0.15 * bandF(fy, 0.034, 0.045, fu.y) * mix(0.5, 2.0, gl);
+        s.rough = 0.3;
+      } else {
+        // Samples on the lit white backing.
+        let g = shelfGoods(u, fy - 0.045 + 0.04, 0.17 + 0.04, row + f32(seed * 7u), true, foot);
+        let k = min(g.w * 1.4, 1.0);
+        c = mix(vec3f(0.72), g.rgb, k);
+        ce = mix(vec3f(0.5, 0.52, 0.55), g.rgb * 1.15, k) * mix(0.8, 3.0, gl);
+        s.rough = 0.08;
+      }
+    }
+    a = mix(a, c, inner);
+    e = ce * inner;
+  }
+  s.albedo = a;
+  s.emissive = e;
   return s;
 }
 
@@ -5621,6 +5730,28 @@ fn soffitPattern(p: vec2f, seed: u32, fp: f32, fu: vec2f) -> vec4f {
   let fine = 1.0 - smoothstep(0.01, 0.03, fp);
   let drip = smoothstep(0.78, 0.86, valueNoise(p * 7.0 + sd)) * (1.0 - smoothstep(0.2, 0.9, jd)) * fine;
   eff = max(eff * step(0.25, hj), drip);
+  // Precast deck planks between the girders: a transverse joint every
+  // 3 m, a dark sealed line with lime crusting out of it in patches.
+  {
+    let tj = abs(fract(p.x / 3.0 + 0.5) - 0.5) * 3.0;
+    let tl = jointCov(p.x / 3.0 + 0.5, fu.x / 3.0, 0.025 / 3.0);
+    m *= 1.0 - 0.35 * tl;
+    let tcell = floor(p.x / 3.0 + 0.5);
+    let tef = (1.0 - smoothstep(0.02, 0.12 + fp, tj)) * smoothstep(0.4, 0.7, valueNoise(vec2f(p.y * 1.7, tcell * 3.1 + sd)));
+    eff = max(eff, 0.75 * tef * step(0.3, hash21(vec2f(tcell, sd + 9.0))));
+  }
+  // Damp patch round the drain under each span's scupper (the same x0 as
+  // the fascia's scupper streak): a broad dark blotch with a pale lime
+  // tide mark at its edge, patchy across the deck.
+  {
+    let sb = floor(p.x / 12.0);
+    let hsc = hashu((seed * 0x9e3779b1u) ^ u32(i32(sb) + 65536));
+    let scx = sb * 12.0 + 6.0 + (hashuf(hsc ^ 0x22u) - 0.5) * 1.8;
+    let dr = abs(p.x - scx) + 0.9 * (fbm2(p * 0.7 + sd) - 0.5);
+    let dmp = (1.0 - smoothstep(0.5, mix(1.2, 2.2, hashuf(hsc ^ 0x5u)), dr)) * smoothstep(0.3, 0.6, fbm2(vec2f(p.y * 0.35, sb + sd)));
+    m *= mix(vec3f(1.0), vec3f(0.6, 0.63, 0.59), dmp);
+    eff = max(eff, 0.45 * dmp * (1.0 - smoothstep(0.0, 0.25, abs(dmp - 0.35))));
+  }
   // Rust blooms round drain fittings, one per bay.
   let rp = vec2f(fract(p.x / 12.0) * 12.0 - mix(3.0, 9.0, hj), p.y - mix(0.5, 3.0, fract(hj * 7.0)));
   let rust = 1.0 - smoothstep(0.1, 0.6, length(rp * vec2f(0.6, 1.0)) + 0.15 * valueNoise(p * 5.0));
@@ -5760,6 +5891,57 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         let zs = 1.0 - smoothstep(0.35, 0.9, abs(ux - scx) / (0.6 + 0.6 * smoothstep(0.2, 2.0, uy)));
         let zj = 1.0 - smoothstep(0.15, 0.45, abs(ux - round(ux / 12.0) * 12.0));
         a *= 1.0 - mix(0.18, 0.34, hashuf(hsc ^ 0x44u)) * zs * smoothstep(0.1, 0.4, uy) - 0.16 * zj;
+        // Span identity (all terms >= 0.8 m, so they hold at 300 m and in
+        // the low mips): each span its own value and a warm or cool cast,
+        // 2-3 broad rain curtains hanging from the coping, and one accent
+        // span in every five (a fresh pale repair pour, a dark waterproof
+        // recoat, or a repainted lower band with a hard top edge).
+        {
+          let eid = (seed - u32(i32(bent))) & 0xffffu;
+          let hsi = hashu((eid * 0x632be5abu) ^ u32(i32(bent) + 65536));
+          let sv = mix(0.8, 1.16, hashuf(hsi));
+          let sh = mix(vec3f(1.09, 1.0, 0.86), vec3f(0.9, 0.98, 1.09), hashuf(hsi ^ 0x3u));
+          a *= sv * sh;
+          var cur = 0.0;
+          for (var q = 0u; q < 3u; q++) {
+            let hq = hashu(hsi ^ (0x71u + q * 0x2fu));
+            if (q == 2u && hashuf(hq ^ 7u) < 0.5) { continue; }
+            let xc = bent * 12.0 + mix(0.8, 11.2, hashuf(hq));
+            let hw = mix(0.45, 1.3, hashuf(hq ^ 1u));
+            let wob = 0.25 * (valueNoise(vec2f(uy * 0.9, f32(hq & 0xffu))) - 0.5);
+            let pr = 1.0 - smoothstep(0.35, 1.0, abs(ux - xc + wob) / hw);
+            let vlen = mix(1.2, 2.4, hashuf(hq ^ 2u));
+            let vk = smoothstep(0.05, 0.35, uy) * (1.0 - smoothstep(vlen * 0.6, vlen, uy));
+            cur = max(cur, pr * vk * mix(0.12, 0.3, hashuf(hq ^ 3u)));
+          }
+          a *= 1.0 - cur;
+          let grp = floor(bent / 5.0);
+          let hg = hashu((eid * 0x2c1b3c6du) ^ u32(i32(grp) + 65536));
+          if (bent - grp * 5.0 == f32(hg % 5u)) {
+            let kind = (hg >> 8u) % 3u;
+            let jk = jointCov(ux / 12.0, fu.x / 12.0, 0.03 / 12.0);
+            if (kind == 0u) {
+              // Repair pour: paler, cooler, its drips and lime mostly gone.
+              a = mix(a, vec3f(0.5, 0.505, 0.5) * mix(0.9, 1.05, blot), 0.6);
+              stain *= 0.35;
+            } else if (kind == 1u) {
+              // Dark grey waterproof / anti-graffiti coat, satin.
+              a = vec3f(0.2, 0.205, 0.205) * mix(0.92, 1.06, blot) * (1.0 - 0.3 * cur);
+              stain *= 0.5;
+              s.rough = 0.55;
+            } else {
+              // Repainted lower band: a light grey coat from 0.75 m down,
+              // hard top edge, over the whole span.
+              let bk = smoothstep(0.73 - fu.y, 0.75 + fu.y, uy);
+              a = mix(a, vec3f(0.46, 0.46, 0.44) * mix(0.95, 1.04, blot), bk * 0.85);
+              stain *= 1.0 - 0.7 * bk;
+            }
+            a *= 1.0 - 0.4 * jk;
+          }
+        }
+        // Recessed band under the coping (RC_RECESS): set back in the lip's
+        // shadow and damp, so it reads as a dark line in flat light too.
+        if ((param & 0x40u) != 0u) { a *= vec3f(0.58, 0.6, 0.58); }
         // Bent joints: 2 cm sealed gaps on uv.x = 0 mod 12, and white
         // efflorescence crusting along and fanning below half of them (from
         // the deck cold joint), plus a lime run from some scuppers.
@@ -6010,17 +6192,59 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       let jx = jointCov(x / 0.6, fu.x / 0.6, 0.016 / 0.6);
       let jy = jointCov(uy / 0.6, fu.y / 0.6, 0.016 / 0.6);
       a *= 1.0 - 0.58 * max(jx, jy);
-      // Worn walking band, and chewing-gum / drip spots.
-      a *= 1.0 - 0.14 * bandF(x, 1.4, 3.0, 0.6) * (0.7 + 0.3 * valueNoise(vec2f(x * 2.0, uy * 0.3)));
-      let gum = smoothstep(0.82, 0.86, valueNoise(vec2f(x, uy) * 9.0)) * fine;
-      a = mix(a, vec3f(0.12, 0.115, 0.11), 0.6 * gum);
+      // Grout dirt: a soft dark halo 2-4 cm either side of every joint
+      // (mopped grime settles there), falling to its mean at range.
+      {
+        let gq = abs(fract(vec2f(x, uy) / 0.6 + 0.5) - 0.5) * 0.6;
+        let gd = min(gq.x, gq.y);
+        let gk = 1.0 - smoothstep(0.03, 0.09, fp);
+        a *= 1.0 - mix(0.05, 0.16 * (1.0 - smoothstep(0.008, 0.045, gd)), gk);
+      }
+      // Worn centre lane behind the tactile strip: polished darker and
+      // smoother where the crowds walk, its edges ragged by low noise.
+      let lane = smoothstep(1.2, 1.7, x + 0.3 * (fbm2(vec2f(x * 0.5, uy * 0.15)) - 0.5)) * (1.0 - smoothstep(3.0, 3.8, x + 0.4 * (fbm2(vec2f(x * 0.4 + 5.0, uy * 0.12)) - 0.5)));
+      a *= 1.0 - 0.1 * lane * (0.7 + 0.3 * valueNoise(vec2f(x * 2.0, uy * 0.3)));
+      s.rough = mix(s.rough, 0.55, lane);
+      // Grime along the back fence foot and soft dirt shadows round the
+      // benches / vending slots (0.3, 0.5, 0.62 of each bay).
+      a *= 1.0 - 0.18 * smoothstep(5.0, 5.75, x) * (0.6 + 0.4 * valueNoise(vec2f(uy * 0.8, x)));
+      {
+        let bf = fract(uy / 12.0) * 12.0;
+        let bd = min(min(abs(bf - 3.6), abs(bf - 6.0)), abs(bf - 7.44));
+        let under = (1.0 - smoothstep(0.7, 1.3, bd)) * smoothstep(4.4, 4.9, x);
+        a *= 1.0 - 0.2 * under * (0.55 + 0.45 * fbm2(vec2f(x * 1.5, uy * 1.5)));
+      }
+      // Chewing gum: small soft grey-black discs (1-3 cm) flattened into
+      // the slab, scattered on a jittered 0.2 m grid by an fbm density mask
+      // (thick in the walking lane, by the doors), low contrast; they
+      // average into a faint mottle at range.
+      {
+        let dens = smoothstep(0.35, 0.75, fbm2(vec2f(x, uy) * 0.35 + 3.0)) * (0.4 + 0.6 * lane);
+        let gc = floor(vec2f(x, uy) / 0.2);
+        let hg = hash21(gc + 17.0);
+        let gp = (gc + 0.2 + 0.6 * vec2f(hg, fract(hg * 47.0))) * 0.2;
+        let gr = mix(0.008, 0.02, fract(hg * 91.0));
+        let gw = max(fp, 1e-3);
+        let dot0 = (1.0 - smoothstep(gr - gw * 0.5, gr + gw, length(vec2f(x, uy) - gp))) * min(1.0, gr * gr / (gw * gw) * 2.0);
+        let on = step(hg, 0.12 + dens * 0.6);
+        a = mix(a, a * vec3f(0.5, 0.49, 0.47), 0.7 * dot0 * on);
+        a *= 1.0 - 0.04 * dens;
+        // Soft spill / mop marks: fbm-thresholded with a wide ramp, so
+        // they are faint clouds, never hard-edged blobs.
+        a *= 1.0 - 0.1 * smoothstep(0.52, 0.78, fbm2(vec2f(x, uy) * 0.9 + 21.0));
+      }
       // Coping stone along the edge: a paler 0.5 m precast strip with 1 m
       // joints, and the white edge line painted on it.
       let cope = bandF(x, -0.2, 0.4, fu.x);
       let cj = jointCov(uy, fu.y, 0.01);
-      a = mix(a, vec3f(0.5, 0.49, 0.46) * tex * (1.0 - 0.5 * cj), cope);
+      // (A mid-grey precast stone, so the white line on it reads: 0.9 vs
+      // ~0.36, not the old 0.8 on 0.5.)
+      a = mix(a, vec3f(0.37, 0.365, 0.35) * tex * (1.0 - 0.5 * cj) * (1.0 - 0.15 * smoothstep(0.5, 0.8, valueNoise(vec2f(x * 3.0, uy * 0.7)))), cope);
       a *= 1.0 - 0.45 * bandF(x, 0.39, 0.42, fu.x);
-      a = mix(a, vec3f(0.8, 0.8, 0.77) * mix(0.85, 1.0, d.a), bandF(x, 0.04, 0.16, fu.x));
+      // White edge line, 15 cm, fresh paint (a little worn at the joints).
+      let wl = bandF(x, 0.05, 0.2, fu.x);
+      a = mix(a, vec3f(0.9, 0.9, 0.87) * mix(0.9, 1.0, d.a) * (1.0 - 0.25 * cj), wl);
+      s.rough = mix(s.rough, 0.5, wl);
       // Yellow tactile warning strip (0.3 m blocks of domed dots on a 75 mm
       // grid). The dots are drawn into the albedo too (dark gaps, lit caps)
       // so they read in canopy shade, and keep a speckled mean tone and the
@@ -6117,8 +6341,12 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         // band between the mullions, dim by day, bright at night, so the
         // station box's upper storey reads as lit from the street. ---
         if ((param & 0x80u) != 0u) {
-          let band = vec3f(1.0, 0.86, 0.64) * (0.8 + 0.2 * hp);
-          s.emissive = max(s.emissive, band * (1.0 - mull) * mix(0.15, 1.4, nightLight()));
+          // (Brighter than the hall below: it is a thin ribbon seen from
+          // 30-300 m, and must read as a lit line at night.) Ceiling tube
+          // rows show as brighter bars every 3 m behind the glass.
+          let tube = 1.0 + 0.6 * (1.0 - smoothstep(0.1, 0.35, abs(fract(ux / 3.0) - 0.5) * 3.0));
+          let band = vec3f(1.0, 0.88, 0.68) * (0.8 + 0.2 * hp) * tube;
+          s.emissive = max(s.emissive, band * (1.0 - mull) * mix(0.3, 3.0, nightLight()));
         }
         // --- end clerestory band ---
       } else if (vert) {
@@ -6180,7 +6408,11 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         let up = bandF(rf, 0.0, 0.14, fu.y / rp);
         let dn = bandF(rf, 0.5, 0.64, fu.y / rp);
         let rd = select(1.0, 0.55, repl);
-        a = vec3f(0.44, 0.45, 0.43) * ptone * mix(1.0, d.b * 2.0, 0.25) * mix(0.95, 1.0 + (0.1 * up - 0.22 * dn) * rd, ribK);
+        // (Each 12 m span of wall its own batch too, so the run reads as
+        // spans at range.)
+        let hsw = hashu((seed * 0x7f4a7c15u) ^ u32(i32(bent) + 65536));
+        let stn = mix(0.9, 1.09, hashuf(hsw)) * mix(vec3f(1.04, 1.0, 0.93), vec3f(0.95, 0.99, 1.05), hashuf(hsw ^ 1u));
+        a = vec3f(0.44, 0.45, 0.43) * ptone * stn * mix(1.0, d.b * 2.0, 0.25) * mix(0.95, 1.0 + (0.1 * up - 0.22 * dn) * rd, ribK);
         s.normal = normalize(n + tv * (dn - up) * 0.9 * rd * ribK);
         s.rough = 0.6;
         // Top-down grime: dust settles on the cap and washes down the panel
@@ -6381,16 +6613,17 @@ fn railBed(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
     let heap = smoothstep(0.6, 0.75, d.a) * smoothstep(0.9, 1.0, atx) + smoothstep(0.7, 0.85, d.a) * 0.6 * smoothstep(0.09, 0.12, ds);
     let onS = step(ds, 0.12) * step(atx, 1.0) * (1.0 - step(0.5, heap));
     let cd = detailUV(uv, 1.0, DETAIL_CONCRETE);
-    // Prestressed concrete: pale grey, each its own age (one in eight a
-    // fresh near-white replacement, one in six weathered darker), with
-    // only a light oil stain in the four-foot.
-    var sBase = vec3f(0.34, 0.335, 0.32);
+    // Prestressed concrete: mid grey (~0.5 on screen in sun, not the old
+    // off-white), each sleeper +-10 % and its own age (one in eight a
+    // fresher replacement, one in six weathered darker), with only a light
+    // oil stain in the four-foot.
+    var sBase = vec3f(0.215, 0.212, 0.203);
     if (hs2 < 0.12) {
-      sBase = vec3f(0.43, 0.425, 0.41);
+      sBase = vec3f(0.27, 0.268, 0.258);
     } else if (hs2 > 0.8) {
-      sBase = vec3f(0.25, 0.24, 0.225);
+      sBase = vec3f(0.165, 0.16, 0.15);
     }
-    sBase *= mix(0.88, 1.06, hs) * mix(0.9, 1.05, valueNoise(vec2f(x * 1.3, uv.y * 0.3)));
+    sBase *= mix(0.9, 1.1, hs) * mix(0.92, 1.05, valueNoise(vec2f(x * 1.3, uv.y * 0.3)));
     var sa = sBase * mix(1.0, cd.b * 2.0, 0.45) * mix(0.8, 1.0, cd.a);
     // Oil soaked into the centre between the rails, ragged-edged, heavier on
     // some sleepers than others.
@@ -6409,6 +6642,19 @@ fn railBed(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
     // Rust run-off round each clip onto the sleeper top.
     sa = mix(sa, vec3f(0.28, 0.15, 0.08), 0.35 * (1.0 - clip) * (1.0 - smoothstep(0.0, 0.6, length(cq) - 1.0)));
     sa = mix(sa, vec3f(0.04), (1.0 - step(0.07, abs(atx - 0.53))) * step(ds, 0.1));
+    // Rail seat: the shoulder casting's footprint, a darker greasy, dusty
+    // pad zone round each rail (+-0.17 m), soft-edged.
+    sa *= 1.0 - 0.3 * (1.0 - smoothstep(0.12, 0.18, abs(atx - 0.53)));
+    // Chipped arrises and corners: spalls along the long edges and bitten
+    // corners at the ends, paler fresh aggregate with a dark rim.
+    {
+      let ch = valueNoise(vec2f(x * 14.0, uv.y * 30.0) + hs * 17.0);
+      let edge = smoothstep(0.085, 0.115, ds) * smoothstep(0.62, 0.72, ch);
+      let cq2 = vec2f(1.0 - atx, 0.12 - ds);
+      let corner = 1.0 - smoothstep(0.02, 0.05 + 0.04 * fract(hs * 13.0), length(max(cq2, vec2f(0.0))) + 0.02 * ch);
+      let chip = max(edge, corner * step(0.4, fract(hs * 7.7))) * (1.0 - smoothstep(0.004, 0.012, fp));
+      sa = mix(sa, sBase * 1.25, chip * 0.8);
+    }
     // Bevel: 3 cm tilt at all four edges.
     var tu: vec3f;
     var tv: vec3f;
@@ -6432,7 +6678,7 @@ fn railBed(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
     // centre in it), 60 % ballast with its contact shadow; the mean of a
     // run of 5 sleepers varies, so a distant track is not one even stripe.
     let hg = hash21(vec2f(floor(uv.y / 3.0), c));
-    let meanS = mix(vec3f(0.4, 0.395, 0.38), vec3f(0.16, 0.15, 0.14), 0.45 * (1.0 - smoothstep(0.15, 0.3, atx))) * mix(0.88, 1.08, hg);
+    let meanS = mix(vec3f(0.24, 0.237, 0.228), vec3f(0.13, 0.12, 0.11), 0.45 * (1.0 - smoothstep(0.15, 0.3, atx))) * mix(0.88, 1.08, hg);
     let meanA = mix(a * 0.85, meanS, 0.4);
     let sharpA = mix(a, sa, onS);
     a = mix(meanA, sharpA, sk);
@@ -6540,6 +6786,32 @@ fn railGirder(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     let rb = step(0.45, hashuf(hr)) * fanStreak(ux, uy, st * 1.5 + (hashuf(hr ^ 1u) - 0.5) * 0.3, 0.1, mix(0.05, 0.14, hashuf(hr ^ 2u)), mix(0.3, 1.2, hashuf(hr ^ 3u)), f32(hr & 0xffu), fp);
     s.albedo = mix(s.albedo, vec3f(0.33, 0.15, 0.06), 0.75 * rb);
     s.rough = mix(s.rough, 0.85, rb);
+  }
+  // Chalky fade on the sun-facing (south, -z) webs: the paint's binder
+  // has weathered to a pale, flat bloom, patchy, strongest up top.
+  {
+    let sunF = smoothstep(-0.1, 0.8, dot(normalize(n.xz + vec2f(1e-4, 0.0)), vec2f(0.17, -0.985)));
+    let ch = sunF * mix(0.55, 1.0, valueNoise(vec2f(ux * 0.4, uy * 0.8) + f32(seed))) * (1.0 - 0.4 * smoothstep(0.4, 1.6, uy));
+    s.albedo = mix(s.albedo, vec3f(luminance(s.albedo)) * 1.35 + vec3f(0.06, 0.065, 0.065), 0.5 * ch);
+    s.rough = mix(s.rough, 0.85, ch);
+  }
+  // Bottom flange: road grime and soot thrown up by traffic over the lower
+  // 0.4 m, a rust tide line along the flange weld with short rust runs
+  // from the bottom rivet row (every 0.15 m, ~1 in 4 bleeding).
+  {
+    let low = smoothstep(1.25, 1.7, uy) * (0.7 + 0.3 * valueNoise(vec2f(ux * 1.3, 4.0 + f32(seed))));
+    s.albedo *= 1.0 - 0.32 * low;
+    let tide = smoothstep(1.56, 1.66, uy) * (0.5 + 0.5 * valueNoise(vec2f(ux * 3.0, 9.0)));
+    s.albedo = mix(s.albedo, vec3f(0.3, 0.14, 0.055), 0.6 * tide);
+    let bc = round(ux / 0.6);
+    let hb = hashu(hsp ^ u32(i32(bc) + 9000));
+    let br = step(0.7, hashuf(hb)) * runStain(ux, uy, bc * 0.6 + (hashuf(hb ^ 1u) - 0.5) * 0.3, 1.6, 0.07, 0.12, fp);
+    // (Hanging down from the top rivet row too, longer.)
+    let tc = round(ux / 0.45);
+    let ht = hashu(hsp ^ u32(i32(tc) + 19000));
+    let tr = step(0.72, hashuf(ht)) * runStain(ux, uy, tc * 0.45 + (hashuf(ht ^ 1u) - 0.5) * 0.2, 0.08, 0.05, mix(0.3, 1.0, hashuf(ht ^ 2u)), fp);
+    s.albedo = mix(s.albedo, vec3f(0.32, 0.14, 0.05), 0.7 * max(br, tr));
+    s.rough = mix(s.rough, 0.85, max(low * 0.5, max(br, tr)));
   }
   // Stiffeners: a 4 cm lit edge and a 4 cm shadow edge per 1.5 m.
   let sx = (fract(ux / 1.5) - 0.5) * 1.5;
@@ -6895,6 +7167,52 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s = insulatorMat(n, uv);
       } else if (param == 0xd1u) {
         s = frpTank(world, n, uv);
+      } else if (param == 0xd0u && abs(n.y) < 0.5) {
+        // Pale painted sheet steel (station canopy fascias, plant boxes, AC
+        // units, bins): 1.8 m panels with a lit / shadowed cover-strip
+        // seam, each panel its own tone and sheen, faint rain streaks down
+        // the face (world space) and a dark drip line along the uv.y = 0
+        // edge (the canopy fascia's top lip; a box's foot).
+        var tu: vec3f;
+        var tv: vec3f;
+        uvDirs(&tu, &tv);
+        let fu = uvFoot();
+        let fp = railFoot();
+        let pi = floor(uv.x / 1.8);
+        let hp = hash21(vec2f(pi, floor(world.y * 0.25)) + floor(world.xz * 0.02));
+        let sq = (fract(uv.x / 1.8 + 0.5) - 0.5) * 1.8;
+        let lit = bandF(sq, -0.025, 0.0, fu.x);
+        let shd = bandF(sq, 0.0, 0.02, fu.x);
+        let sk = 1.0 - smoothstep(0.02, 0.06, fu.x);
+        let horiz = normalize(vec2f(-n.z, n.x) + vec2f(1e-4, 0.0));
+        let hp2 = dot(world.xz, horiz);
+        let streak = smoothstep(0.55, 0.85, valueNoise(vec2f(hp2 * 6.0, world.y * 0.9))) * (1.0 - smoothstep(0.02, 0.08, fp)) + 0.25 * smoothstep(0.5, 0.8, valueNoise(vec2f(hp2 * 0.8, world.y * 0.3)));
+        var c = paintColor(0xd0u) * mix(0.93, 1.05, hp) * (1.0 - 0.14 * streak);
+        c *= 1.0 + (0.18 * lit - 0.3 * shd) * mix(0.4, 1.0, sk);
+        c *= 1.0 - 0.45 * bandF(uv.y, -1.0, 0.025, fu.y);
+        s.albedo = c;
+        s.normal = normalize(n + tu * (shd - lit) * 0.6 * sk);
+        s.rough = mix(0.45, 0.72, fract(hp * 13.0)) + 0.1 * streak;
+      } else if (param == 0xd2u) {
+        // SKYLIGHT: twin-wall polycarbonate strip on the canopy roof. Milky
+        // pale and glossy, faint 0.1 m ribs along u, dust silting against
+        // the low edge and in the ribs, and the canopy lights glowing
+        // through it at night.
+        var tu: vec3f;
+        var tv: vec3f;
+        uvDirs(&tu, &tv);
+        let fu = uvFoot();
+        let k = 1.0 - smoothstep(0.012, 0.035, fu.x);
+        let rp = uv.x * 62.831853;
+        s.normal = normalize(n + tu * cos(rp) * 0.2 * k);
+        let dust = 0.6 + 0.4 * valueNoise(world.xz * 1.3);
+        s.albedo = vec3f(0.6, 0.65, 0.66) * (1.0 - 0.12 * k * (0.5 - 0.5 * sin(rp))) * mix(1.0, 0.78, 0.4 * dust);
+        s.albedo = mix(s.albedo, vec3f(0.32, 0.3, 0.26), 0.35 * smoothstep(0.6, 0.85, valueNoise(world.xz * 0.6 + 3.0)));
+        s.rough = mix(0.12, 0.3, dust * 0.6);
+        s.metal = 0.0;
+        if (n.y > 0.5) {
+          s.emissive = vec3f(0.9, 0.95, 1.0) * nightLight() * 0.6 * (0.8 + 0.2 * dust);
+        }
       } else if (param == 0xf8u) {
         // Corrugated steel sheet (ribs every 20 cm along u), band-limited by
         // the footprint along u: the ribs are gone before their period
@@ -6921,8 +7239,21 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
           // box gutter full of silt and moss with a bright folded lip.
           let fu = uvFoot();
           let fp = railFoot();
-          let sh = hash21(vec2f(floor(uv.x / 0.9), 3.0));
-          s.albedo *= mix(0.82, 1.1, sh) * (1.0 - 0.4 * jointCov(uv.x / 0.9, fu.x / 0.9, 0.04 / 0.9));
+          // (Sheet and bay identity from the world position too: uv.x
+          // restarts at every bay, so a pure uv hash repeats each 12 m.)
+          let bayN = valueNoise(world.xz * 0.07 + 11.0);
+          let sh = hash21(vec2f(floor(uv.x / 0.9), floor(bayN * 6.0) + 3.0));
+          s.albedo *= mix(0.82, 1.1, sh) * mix(0.84, 1.1, bayN) * (1.0 - 0.4 * jointCov(uv.x / 0.9, fu.x / 0.9, 0.04 / 0.9));
+          // Standing seams at each sheet lap: a raised rib that keeps a lit
+          // crest and a shadow line out to where the corrugation has gone.
+          {
+            let sq = (fract(uv.x / 0.9 + 0.5) - 0.5) * 0.9;
+            let sk = 1.0 - smoothstep(0.02, 0.08, fu.x);
+            let crest = bandF(sq, -0.03, 0.0, fu.x);
+            let shade = bandF(sq, 0.0, 0.035, fu.x);
+            s.albedo *= 1.0 + (0.3 * crest - 0.3 * shade) * mix(0.35, 1.0, sk);
+            s.normal = normalize(s.normal + tu * (shade - crest) * 0.7 * sk);
+          }
           let ribV = 1.0 - smoothstep(0.03, 0.09, fu.x);
           s.albedo *= 1.0 - 0.18 * mix(0.5, smoothstep(0.2, 0.9, -rib), ribV);
           let cell = floor(uv.x / 0.9);
@@ -6939,6 +7270,27 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
           let fix = jointCov(pv / 1.45, fu.y / 1.45, 0.05 / 1.45) * step(0.0, pv);
           let rs = smoothstep(0.55, 0.8, valueNoise(vec2f(uv.x * 4.0, uv.y * 1.3) + 7.0));
           s.albedo = mix(s.albedo, vec3f(0.36, 0.18, 0.08), 0.5 * max(rs * 0.6, fix * rs * 1.5));
+          // Sheet-wise metal sheen: each sheet's coating weathered its own
+          // way (rough 0.32-0.65), so the roof glints unevenly at grazing.
+          s.rough = mix(0.32, 0.65, fract(sh * 17.0) * 0.6 + 0.4 * bayN);
+          s.metal = 0.45;
+          // Bird droppings: white splats along the high edge (perches on
+          // the ridge and the vents) and the purlin fixing rows, clustered,
+          // averaging into a faint whitening at range.
+          {
+            let bc = floor(vec2f(uv.x, uv.y) / 0.16);
+            let hb = hash21(bc + floor(bayN * 9.0) * 7.3);
+            let perch = smoothstep(4.6, 5.5, uv.y) + 0.5 * (1.0 - smoothstep(0.0, 0.25, abs(fract((uv.y - 0.4) / 1.45 + 0.5) - 0.5) * 1.45));
+            let dens = clamp(perch * smoothstep(0.3, 0.75, valueNoise(vec2f(uv.x * 0.6, uv.y * 0.4) + floor(bayN * 5.0))), 0.0, 1.0);
+            let bp = (bc + 0.25 + 0.5 * vec2f(hb, fract(hb * 31.0))) * 0.16;
+            let br = mix(0.012, 0.035, fract(hb * 57.0));
+            let dd = length((vec2f(uv.x, uv.y) - bp) * vec2f(1.0, 0.8)) + 0.006 * (valueNoise(vec2f(uv.x, uv.y) * 90.0) - 0.5);
+            let bw = max(fp, 1e-3);
+            let splat = (1.0 - smoothstep(br - bw * 0.5, br + bw, dd)) * min(1.0, br * br / (bw * bw) * 2.0) * step(hb, dens * 0.6);
+            s.albedo = mix(s.albedo, vec3f(0.78, 0.77, 0.72), 0.85 * splat);
+            s.albedo = mix(s.albedo, vec3f(0.7, 0.69, 0.65), 0.06 * dens);
+            s.rough = mix(s.rough, 0.9, splat);
+          }
           let silt = 1.0 - smoothstep(0.25, 1.0 + 0.6 * valueNoise(vec2f(uv.x * 1.5, 1.0)), uv.y);
           s.albedo = mix(s.albedo, vec3f(0.2, 0.19, 0.16), 0.5 * silt);
           // Gutter (bottom 0.22 m): dark silt and moss, a pale lip.
@@ -6980,53 +7332,91 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     }
     case M_VENDING: {
       let body = array<vec3f, 3>(vec3f(0.75, 0.08, 0.06), vec3f(0.08, 0.2, 0.6), vec3f(0.85));
-      s.albedo = body[param % 3u];
+      let bc = body[(param & 0xffu) % 3u];
+      s.albedo = bc;
       s.rough = 0.4;
-      let vside = abs(n.y) < 0.5;
+      // The platform machines are boxes with metre UVs on every face; only
+      // their display front quad (VENDING_FRONT 0x300) carries the window
+      // (0x100 / 0x200 would mark a separate lower door / header box, uv.y
+      // from its own bottom). The street machine's mesh is unflagged but
+      // its display quad is not metre-scaled, so the isometry test keeps
+      // its window and leaves the platform boxes' sides plain.
+      let vf = param & 0x300u;
+      var vuv = uv;
+      if (vf == 0x200u) { vuv.y += 1.5; }
+      let jx = length(dUvX) / max(length(dWorldX), 1e-6);
+      let jy = length(dUvY) / max(length(dWorldY), 1e-6);
+      let plain = vf == 0u && abs(jx - 1.0) < 0.03 && abs(jy - 1.0) < 0.03;
+      let vside = abs(n.y) < 0.5 && !plain;
+      if (plain && abs(n.y) < 0.5) {
+        // Plain cabinet side: a pressed seam every 0.9 m (the face edges)
+        // and a little dust toward the foot.
+        let fu = uvFoot();
+        let seam = jointCov(uv.x / 0.9, fu.x / 0.9, 0.012 / 0.9);
+        s.albedo = bc * (1.0 - 0.25 * seam) * mix(0.9, 1.0, smoothstep(0.0, 0.4, uv.y));
+        s.rough = 0.45;
+      }
       // Plain box machines (the station platform's: box UV, v = metres up,
       // 0..1.8): the street machine's mesh carries its slot, coin panel and
       // header as geometry (its unlit parts keep v = 5), so they are
       // painted here for v under 0.7 and over 1.5 only.
-      if (vside && uv.y >= 1.5 && uv.y < 1.78) {
+      if (vside && vuv.y >= 1.5 && vuv.y < 1.78) {
         // Lit header: a white light box with the brand's colour blocks.
-        let hb = bandF(uv.y, 1.54, 1.74, 0.01) * step(0.04, fract(uv.x / 0.9) * 0.9) * step(fract(uv.x / 0.9) * 0.9, 0.86);
-        let logo = step(0.5, valueNoise(vec2f(floor(uv.x / 0.06), f32(param) * 3.0))) * bandF(uv.y, 1.58, 1.7, 0.01);
-        var hc = mix(vec3f(0.92), body[(param + 1u) % 3u] * 1.2, logo);
+        let hb = bandF(vuv.y, 1.54, 1.74, 0.01) * step(0.04, fract(vuv.x / 0.9) * 0.9) * step(fract(vuv.x / 0.9) * 0.9, 0.86);
+        // Brand light box: a colour field with a white wordmark (four
+        // chunky glyphs) and a round logo at the left.
+        let hu = fract(vuv.x / 0.9) * 0.9;
+        let foot = max(length(dWorldX), length(dWorldY));
+        let gk = 1.0 - smoothstep(0.006, 0.016, foot);
+        let gx = (hu - 0.26) / 0.13;
+        let gi = floor(gx);
+        let wm = fauxKanji(vec2f(fract(gx) - 0.5, (vuv.y - 1.64) / 0.11) * vec2f(1.15, 1.0), hashu((param & 0xffu) * 0x9e37u + u32(gi + 2.0))) * step(0.0, gx) * step(gi, 3.0);
+        let disc = 1.0 - smoothstep(0.045, 0.045 + foot, length(vec2f(hu - 0.15, vuv.y - 1.64)));
+        let logo = mix(0.35 * step(0.0, gx) * step(gi, 3.0) * bandF(vuv.y, 1.59, 1.69, 0.01), wm, gk) + disc * 0.8;
+        let bi = (param & 0xffu) % 3u;
+        let field = select(vec3f(0.93), vec3f(0.85, 0.08, 0.06), bi == 2u);
+        let ink = select(select(vec3f(0.85, 0.08, 0.06), vec3f(0.06, 0.2, 0.7), bi == 1u), vec3f(0.95), bi == 2u);
+        var hc = mix(field, ink, clamp(logo, 0.0, 1.0));
         s.albedo = mix(s.albedo, hc * 0.8, hb);
         s.emissive = hc * hb * mix(0.5, 2.2, gloomLight());
-      } else if (vside && uv.y > 0.08 && uv.y <= 0.7) {
-        let lu = fract(uv.x / 0.9) * 0.9;
+      } else if (vside && vuv.y > 0.08 && vuv.y <= 0.7) {
+        let lu = fract(vuv.x / 0.9) * 0.9;
         // Dispenser flap: a dark recessed slot with a grey flap and a
         // bright lower lip; the coin / bill / card panel on the right
         // with its small lit price display and a coin-return cup.
-        let slot = bandF(uv.y, 0.14, 0.34, 0.01) * bandF(lu, 0.08, 0.6, 0.01);
+        let slot = bandF(vuv.y, 0.14, 0.34, 0.01) * bandF(lu, 0.08, 0.6, 0.01);
         var c = mix(s.albedo, vec3f(0.035), slot);
-        c = mix(c, vec3f(0.22, 0.22, 0.23), bandF(uv.y, 0.17, 0.31, 0.01) * bandF(lu, 0.1, 0.58, 0.01) * 0.85);
-        c = mix(c, vec3f(0.65), bandF(uv.y, 0.135, 0.15, 0.01) * bandF(lu, 0.08, 0.6, 0.01));
-        let pan = bandF(uv.y, 0.4, 0.68, 0.01) * bandF(lu, 0.64, 0.84, 0.01);
+        c = mix(c, vec3f(0.22, 0.22, 0.23), bandF(vuv.y, 0.17, 0.31, 0.01) * bandF(lu, 0.1, 0.58, 0.01) * 0.85);
+        c = mix(c, vec3f(0.65), bandF(vuv.y, 0.135, 0.15, 0.01) * bandF(lu, 0.08, 0.6, 0.01));
+        let pan = bandF(vuv.y, 0.4, 0.68, 0.01) * bandF(lu, 0.64, 0.84, 0.01);
         c = mix(c, vec3f(0.16, 0.16, 0.17), pan);
-        c = mix(c, vec3f(0.02), (bandF(uv.y, 0.6, 0.64, 0.005) * bandF(lu, 0.7, 0.72, 0.005) + bandF(uv.y, 0.5, 0.54, 0.005) * bandF(lu, 0.68, 0.8, 0.005)) * pan);
-        c = mix(c, vec3f(0.05), bandF(uv.y, 0.16, 0.26, 0.01) * bandF(lu, 0.68, 0.8, 0.01));
-        let disp = bandF(uv.y, 0.44, 0.48, 0.005) * bandF(lu, 0.67, 0.81, 0.005);
+        c = mix(c, vec3f(0.02), (bandF(vuv.y, 0.6, 0.64, 0.005) * bandF(lu, 0.7, 0.72, 0.005) + bandF(vuv.y, 0.5, 0.54, 0.005) * bandF(lu, 0.68, 0.8, 0.005)) * pan);
+        c = mix(c, vec3f(0.05), bandF(vuv.y, 0.16, 0.26, 0.01) * bandF(lu, 0.68, 0.8, 0.01));
+        let disp = bandF(vuv.y, 0.44, 0.48, 0.005) * bandF(lu, 0.67, 0.81, 0.005);
         c = mix(c, vec3f(0.05), disp);
         s.albedo = c;
         s.emissive = vec3f(1.0, 0.25, 0.05) * disp * step(0.5, fract(lu * 60.0)) * mix(0.6, 2.0, gloomLight());
         s.rough = mix(0.4, 0.6, slot + pan);
       }
-      if (vside && uv.y > 0.7 && uv.y < 1.5 && fract(uv.x * 4.0) > 0.1) {
+      if (vside && vf == 0x300u && vuv.y > 0.7 && vuv.y < 1.5) {
+        let vw = vendingWindow(n, vuv, select(vec3f(0.85, 0.08, 0.06), vec3f(0.06, 0.2, 0.7), (param & 0xffu) % 3u == 1u), param & 0xffu);
+        s.albedo = vw.albedo;
+        s.emissive = vw.emissive;
+        s.rough = vw.rough;
+      } else if (vside && vuv.y > 0.7 && vuv.y < 1.5 && fract(vuv.x * 4.0) > 0.1) {
         // Display window: four rows of sample drinks (cans and PET
         // bottles) silhouetted against the lit white backing, each row over
         // a dark strip of lit selection buttons.
         let foot = max(length(dWorldX), length(dWorldY));
-        let ry = fract((uv.y - 0.7) / 0.2) * 0.2;
-        let row = floor((uv.y - 0.7) / 0.2) + f32(param * 7u);
+        let ry = fract((vuv.y - 0.7) / 0.2) * 0.2;
+        let row = floor((vuv.y - 0.7) / 0.2) + f32(param * 7u);
         var c: vec3f;
         if (ry < 0.035) {
-          let btn = step(0.6, fract(uv.x / 0.083 + 0.5)) * step(0.012, ry) * step(ry, 0.025);
+          let btn = step(0.6, fract(vuv.x / 0.083 + 0.5)) * step(0.012, ry) * step(ry, 0.025);
           s.albedo = vec3f(0.05);
           c = mix(vec3f(0.02), vec3f(0.3, 1.0, 0.4), btn * (1.0 - smoothstep(0.004, 0.012, foot)));
         } else {
-          let g = shelfGoods(uv.x, ry + 0.005, 0.2, row, true, foot);
+          let g = shelfGoods(vuv.x, ry + 0.005, 0.2, row, true, foot);
           // (The backing a softer white so the cans' colours carry the read
           // rather than a glaring white window grid.)
           s.albedo = mix(vec3f(0.7), g.rgb, min(g.w * 1.4, 1.0));
