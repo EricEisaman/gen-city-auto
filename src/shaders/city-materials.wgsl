@@ -987,12 +987,29 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       var b: vec3f;
       let d = detailTri(world, n, 2.0, DETAIL_CONCRETE, &t, &b);
       s.normal = detailNormal(n, t, b, d, 0.8);
-      s.albedo = vec3f(0.5, 0.49, 0.46) * (0.75 + 0.25 * fbm2(world.xz * 0.3 + world.y * 0.2)) * (d.b * 2.0) * mix(0.6, 1.0, d.a);
-      // Formwork joints, water stains and darker undersides.
-      let fw = fract((world.x + world.z) / 1.8);
+      // Each precast segment (10 m) gets its own pour tone; blotches stay
+      // subtle so the surface reads as concrete, not noise.
+      let along = dot(world, t);
+      let seg = floor(along / 10.0);
+      s.albedo = vec3f(0.5, 0.49, 0.46) * mix(0.88, 1.04, hash21(vec2f(seg, floor(world.y / 6.0)))) * (0.9 + 0.1 * fbm2(world.xz * 0.3 + world.y * 0.2)) * mix(1.0, d.b * 2.0, 0.45) * mix(0.75, 1.0, d.a);
+      let foot = max(length(dWorldX), length(dWorldY));
+      // Segment joints (sealed, dark) and fine formwork tie lines.
+      let sj = abs(fract(along / 10.0 + 0.5) - 0.5) * 10.0;
+      s.albedo *= 1.0 - 0.45 * (1.0 - smoothstep(0.015, 0.04 + foot, sj)) * clamp(0.04 / max(foot, 1e-4), 0.0, 1.0);
+      let fw = fract(along / 1.8);
       let fv = fract(world.y / 0.9);
-      if (min(fw, 1.0 - fw) < 0.006 || min(fv, 1.0 - fv) < 0.01) { s.albedo *= 0.8; }
-      s.albedo *= 1.0 - 0.25 * smoothstep(0.55, 0.8, valueNoise(vec2f((world.x + world.z) * 0.4, world.y * 0.08)));
+      if ((min(fw, 1.0 - fw) < 0.006 || min(fv, 1.0 - fv) < 0.01) && foot < 0.03) { s.albedo *= 0.85; }
+      if (abs(n.y) < 0.5) {
+        // Rain run-off: dark vertical streaks hanging from the deck edge and
+        // pale efflorescence below joints.
+        let col = valueNoise(vec2f(along * 1.7, 3.0)) * 0.7 + valueNoise(vec2f(along * 6.0, 9.0)) * 0.3;
+        let len = valueNoise(vec2f(along * 0.9, world.y * 0.05));
+        let streak = smoothstep(0.55, 0.8, col) * smoothstep(0.25, 0.75, len);
+        s.albedo *= 1.0 - 0.4 * streak;
+        s.albedo = mix(s.albedo, vec3f(0.62, 0.61, 0.58), 0.25 * (1.0 - smoothstep(0.0, 0.5, sj)) * smoothstep(0.4, 0.7, len));
+      } else {
+        s.albedo *= 1.0 - 0.2 * smoothstep(0.55, 0.8, valueNoise(world.xz * 0.15));
+      }
       if (n.y < -0.5) { s.albedo *= 0.6; }
       s.rough = 0.85;
       applyWetness(&s, world, 0.0, 0.5);
