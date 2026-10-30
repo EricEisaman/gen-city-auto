@@ -700,7 +700,15 @@ fn facadeLobby(uv: vec2f, n: vec3f, T: vec3f, V: vec3f) -> Surf {
 // roofline (a black flashing line with tar smeared above it). Everything
 // that must read at 50-300 m is at least 0.25 m wide, and every fine line
 // fades to its mean by pixel footprint.
-fn partyWall(s: ptr<function, Surf>, uv: vec2f, aux: u32) {
+//
+// gen-tile.ts gives party-wall quads aux = seed << 8 | coping height: the
+// wall top in body-zone uv.y, in 0.25 m steps. Base quads' uv.y starts
+// FACADE_GROUND - bodyH lower; uv is moved into the body frame here so the
+// patterns run on unbroken across the base/body seam.
+fn partyWall(s: ptr<function, Surf>, uvIn: vec2f, auxIn: u32, bodyH: f32, base: bool) {
+  let aux = hashu(auxIn >> 8u);
+  let uv = uvIn + vec2f(0.0, select(0.0, FACADE_GROUND - bodyH, base));
+  let coping = f32(auxIn & 0xffu) * 0.25;
   let foot = max(length(dWorldX), length(dWorldY));
   let fFine = 1.0 - smoothstep(0.02, 0.06, foot);
   let ab = f32(aux & 255u);
@@ -794,19 +802,23 @@ fn partyWall(s: ptr<function, Surf>, uv: vec2f, aux: u32) {
     // The flashing line itself: a hard black edge.
     a = mix(a, vec3f(0.04), 1.0 - smoothstep(0.1, 0.16 + foot, abs(d)));
   }
-  // Black grime hanging from the coping: soot and algae streaks, heavier
-  // toward the top of the wall (where they start) and in rain.
+  // Black grime hanging from the coping: soot and algae streaks starting
+  // at the wall top, each running down its own length, over a dark band of
+  // dirt right under the coping.
   {
+    let below = coping - uv.y;
     let cw = 0.9;
     let col = floor(uv.x / cw);
     let ch = hash21(vec2f(col, ab + 7.0));
     let cx = (uv.x - (col + 0.5 + (fract(ch * 23.0) - 0.5) * 0.5) * cw) / (cw * mix(0.12, 0.4, fract(ch * 5.0)));
-    // Each streak tails off at its own height on the way down.
-    let endY = mix(1.5, 10.0, fract(ch * 11.0));
-    let topK = smoothstep(endY, endY + 3.0, uv.y) * mix(0.6, 1.0, smoothstep(4.0, 14.0, uv.y));
+    // Each streak tails off at its own length on the way down.
+    let len = mix(2.0, 11.0, fract(ch * 11.0));
+    let topK = smoothstep(len, len * 0.3, below) * step(0.0, below);
     let body = (1.0 - smoothstep(0.3, 1.0, abs(cx))) * mix(1.0, 0.6 + 0.4 * valueNoise(vec2f(uv.x * 9.0, uv.y * 0.3)), fFine);
     let streak = body * step(0.5, ch) * mix(0.45, 1.0, fract(ch * 31.0)) * topK * (0.55 + 0.45 * valueNoise(vec2f(uv.x * 0.8, uv.y * 0.12)));
     a = mix(a, vec3f(0.06, 0.06, 0.055), clamp(streak * 0.75, 0.0, 0.75));
+    let band = smoothstep(0.9 + 0.4 * valueNoise(vec2f(uv.x * 1.3, 2.0)), 0.0, below) * step(0.0, below);
+    a *= 1.0 - 0.45 * band;
   }
   // Repairs: ragged patches of fresh render or dark waterproofing coat over
   // cracks. Both stay matte (rough 0.75+): a glossy patch catches a grazing
@@ -853,7 +865,7 @@ fn partyWall(s: ptr<function, Surf>, uv: vec2f, aux: u32) {
 
 // Surface overrides once the wall material is done: the granite finish on
 // the base, the lobby, and solid walls (no windows). True: `s` is final.
-fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32) -> bool {
+fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32, bodyH: f32) -> bool {
   if (z.zone == FZ_LOBBY) {
     *s = facadeLobby(uv, n, T, V);
     return true;
@@ -873,7 +885,7 @@ fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f,
     (*s).rough = 0.35;
     (*s).normal = n;
   }
-  if (z.role == 2u && z.zone != FZ_CROWN) { partyWall(s, uv, aux); }
+  if (z.role == 2u && z.zone != FZ_CROWN) { partyWall(s, uv, aux, bodyH, z.zone == FZ_BASE); }
   if (z.role == 3u && z.zone != FZ_CROWN) {
     // Render and ALC panels: no ledges to cast floor shadows; ALC shows a
     // joint every 0.6 m.
@@ -1016,6 +1028,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let podium = ((param >> 20u) & 1u) == 1u;
   var st = facadeStyle(style, kind, podium);
   var fz = facadeZone(param);
+  let bodyH = st.floorH;
   facadeRole(&st, &fz, uv, aux);
   let V = normalize(world - frame.camPos.xyz);
   let T = vec3f(-n.z, 0.0, n.x);
@@ -1172,7 +1185,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     s.sunVis = smoothstep(sy - 0.04, sy + 0.04, st.floorH - ly);
   }
 
-  let zoneDone = facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux);
+  let zoneDone = facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux, bodyH);
   if (fz.zone != FZ_LOBBY) { facadeRain(&s, uv, n, T, washAmt, underSill, select(0.6, 0.3, tiled)); }
   if (zoneDone) { return s; }
 
@@ -1412,10 +1425,13 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       // Light from a lit room spills onto the reveal. In sun, the shaded
       // faces of the recess are lit by the sunlit ones opposite them: without
       // that bounce a shaded jamb goes as dark as the glass and the opening
-      // reads as a slanted (keystoned) shape.
+      // reads as a slanted (keystoned) shape. Faces turned away from the sun
+      // (the head soffit, the far jamb) get it too: seen at a grazing angle
+      // they fill a large wedge of the opening, black without it.
       s.emissive = roomL * wall * 0.2;
       if (sunLit && frame.sunDir.w > 0.0) {
-        s.emissive += s.albedo * frame.sunColor.rgb * clamp(sl.z, 0.0, 1.0) * 0.9 * (1.0 - s.sunVis);
+        let direct = s.sunVis * smoothstep(0.0, 0.25, dot(s.normal, frame.sunDir.xyz));
+        s.emissive += s.albedo * frame.sunColor.rgb * clamp(sl.z, 0.0, 1.0) * 0.4 * (1.0 - direct);
       }
       return s;
     }
