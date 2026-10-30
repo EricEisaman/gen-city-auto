@@ -474,6 +474,24 @@ fn brdf(n: vec3f, v: vec3f, l: vec3f, albedo: vec3f, f0: vec3f, rough: f32, meta
   return (diff + spec) * nl;
 }
 
+// How far (x the light radius) street-light streaks reach on wet ground.
+const STREAK_REACH = 2.5;
+
+// A lamp mirrored in a wet road's water film (film normal nF): GGX with
+// the half vector's component along the view squashed, so the highlight
+// stretches ~5x toward the eye (vertical on screen) and stays narrow
+// across. Returns the BRDF x cos term (scaled), capped.
+fn wetStreak(nF: vec3f, v: vec3f, l: vec3f, fwdV: vec3f) -> f32 {
+  let hv = normalize(l + v);
+  let hs = normalize(hv - fwdV * dot(hv, fwdV) * 0.8);
+  let nlF = max(dot(nF, l), 0.0);
+  let nvF = max(dot(nF, v), 0.05);
+  let aF = 0.022;
+  let Fw = 0.02 + 0.98 * pow(1.0 - max(dot(v, hv), 0.0), 5.0);
+  let sp = D_GGX(max(dot(nF, hs), 0.0), aF) * V_SmithJoint(nvF, nlF, aF) * Fw * nlF;
+  return min(sp, 60.0) * 0.2;
+}
+
 fn shadow(world: vec3f, n: vec3f, vdepth: f32) -> f32 {
   var cascade = 0u;
   for (var k = 0u; k < 3u; k++) {
@@ -513,7 +531,10 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool, thi
   if (aniso) {
     let side = normalize(cross(n, v));
     let fwd = cross(side, n);
-    r = normalize(r + side * j.x * rough * 0.08 + fwd * j.y * rough * 0.7);
+    // (A floor on the stretch: a glossy film still smears a lamp into a
+    // streak several times longer than wide.)
+    let sr = max(rough, 0.2);
+    r = normalize(r + side * j.x * sr * 0.06 + fwd * j.y * sr * 0.9);
   } else {
     r = normalize(r + vec3f(j.x, 0.0, j.y) * rough * 0.6);
   }
@@ -660,16 +681,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let tileMax = tileMin + f32(TILE);
   for (var i = li; i < lightBuf.count; i += 256u) {
     let L = lightBuf.lights[i];
+    // In the wet, street lights reach 2.5x further: their streaks on the
+    // film (and only those) carry well beyond the pool.
+    let R = L.radius * select(1.0, STREAK_REACH, frame.weather.z > 0.3 && L.kind < 0.5);
     let vp = frame.view * vec4f(L.pos, 1.0);
     let lz = -vp.z;
-    if (lz + L.radius < zMin || lz - L.radius > zMax) { continue; }
+    if (lz + R < zMin || lz - R > zMax) { continue; }
     // Conservative screen-space bounds of the light sphere.
     let clip = frame.viewProj * vec4f(L.pos, 1.0);
     var inside = true;
-    if (lz > L.radius) {
+    if (lz > R) {
       let c = clip.xy / clip.w;
       let spx = vec2f(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5) * frame.resolution.xy;
-      let rpx = L.radius * frame.proj[1][1] * 0.5 * frame.resolution.y / (lz - L.radius * 0.9);
+      let rpx = R * frame.proj[1][1] * 0.5 * frame.resolution.y / (lz - R * 0.9);
       inside = all(spx + rpx >= tileMin) && all(spx - rpx <= tileMax);
     }
     if (!inside) { continue; }
@@ -760,133 +784,165 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     * (1.0 - smoothstep(0.02, 0.1, luminance(em.rgb)));
   // How glossy a wet wall is (its rain streaks and run-off sheets).
   let wetGloss = 1.0 - smoothstep(0.06, 0.22, rough);
+  // Wet ground (carriageway, pavement): the water film mirrors every lamp
+  // as a long streak running toward the eye (Forza / GTA rain nights). Only
+  // where the film is glossy (paint and dry patches stay satin).
+  let wetGround = select(0.0, frame.weather.z, cls == CLASS_GROUND) * smoothstep(0.8, 0.95, n.y)
+    * (1.0 - smoothstep(0.1, 0.22, rough));
+  // The film's normal: the aggregate's bump drowned (a streak, not glitter).
+  let nFilm = normalize(n + vec3f(0.0, 3.0, 0.0));
+  let fwdV = normalize(vec3f(v.x, 0.0, v.z) + vec3f(1e-5, 0.0, 0.0));
   let count = min(atomicLoad(&tileCount), MAX_TILE_LIGHTS);
   for (var k = 0u; k < count; k++) {
     let L = lightBuf.lights[tileLights[k]];
     let dl = L.pos - world;
     let d2 = dot(dl, dl);
-    if (d2 > L.radius * L.radius) { continue; }
+    // Beyond the pool, on the wet film, only the lamp's streak (the head
+    // glaring at a low angle; plain inverse square, faded out by 2.5 R).
+    let outR = d2 > L.radius * L.radius;
+    if (outR && !(wetGround > 0.0 && L.kind < 0.5 && d2 < L.radius * L.radius * STREAK_REACH * STREAK_REACH)) { continue; }
     let d = sqrt(d2);
     let l = dl / d;
-    let win = pow(clamp(1.0 - pow(d / L.radius, 4.0), 0.0, 1.0), 2.0);
-    let atten = win / (d2 + 1.0);
-    var lc = L.color;
-    if (L.kind >= 5.0) {
-      // Vehicle headlight: forward cone, slightly downward.
-      let a = fract(L.kind) * 6.2831853;
-      let dir = normalize(vec3f(sin(a), -0.12, cos(a)));
-      lc *= smoothstep(0.9, 0.97, dot(-l, dir));
-    } else if (L.kind < 0.5) {
-      // Street lights: a hotspot under the head falling off fast to a dim,
-      // wide tail (mid-grey asphalt between poles, not overlapping discs),
-      // in direction space (horizontal offset over drop, so it scales with
-      // pole height).
-      // - Road luminaires, undirected (kind 0.05 .. 0.45 = 0.05 + 0.4 *
-      //   road angle / pi): elongated 1.5 x 0.9 pole heights along/across.
-      // - Road luminaires, directed (kind -0.05 .. -0.95 = -(0.05 + 0.9 *
-      //   arm angle / 2 pi), the arm pointing from the pole over the road):
-      //   the same ellipse thrown forward 0.35 pole heights onto the
-      //   carriageway (Type II/III), cut off behind the pole.
-      // - Junction luminaires (kind exactly 0): round, 1.25 pole heights.
-      // Colour temperature varies per street (by its axis), warm to cool.
-      let lyc = max(l.y, 0.02);
-      // Fragment offset from under the head, in pole heights.
-      let q = -l.xz / lyc;
-      var e2 = 0.0;
-      var back = 1.0;
-      var ht = hash21(floor(L.pos.xz * 0.37));
-      if (abs(L.kind) > 0.01) {
-        var ra: vec2f;
-        var fwd = vec2f(0.0);
-        if (L.kind > 0.0) {
-          let axis = (L.kind - 0.05) / 0.4 * PI;
-          ra = vec2f(cos(axis), sin(axis));
-          ht = hash11(floor(fract(axis / PI) * 24.0) + 0.5);
+    // What the film mirrors (one wetStreak call site per light: two
+    // inlined copies in this loop stalled the Metal compile).
+    var streakC = vec3f(0.0);
+    if (outR) {
+      let fade = 1.0 - smoothstep(L.radius * (STREAK_REACH - 0.6), L.radius * STREAK_REACH, d);
+      streakC = L.color * 0.4 * select(1.0, 2.0, abs(L.kind) <= 0.01 && L.radius >= 19.0) * fade / (d2 + 1.0);
+    } else {
+      let win = pow(clamp(1.0 - pow(d / L.radius, 4.0), 0.0, 1.0), 2.0);
+      let atten = win / (d2 + 1.0);
+      var lc = L.color;
+      // What the film mirrors: the luminaire as seen from the reflection
+      // point. A cut-off head still glares at low angles (its lens and
+      // reflector), so the streak keeps a floor where the pool has gone.
+      var lcS = vec3f(-1.0);
+      if (L.kind >= 5.0) {
+        // Vehicle headlight: forward cone, slightly downward.
+        let a = fract(L.kind) * 6.2831853;
+        let dir = normalize(vec3f(sin(a), -0.12, cos(a)));
+        lc *= smoothstep(0.9, 0.97, dot(-l, dir));
+      } else if (L.kind < 0.5) {
+        // Street lights: a hotspot under the head falling off fast to a dim,
+        // wide tail (mid-grey asphalt between poles, not overlapping discs),
+        // in direction space (horizontal offset over drop, so it scales with
+        // pole height).
+        // - Road luminaires, undirected (kind 0.05 .. 0.45 = 0.05 + 0.4 *
+        //   road angle / pi): elongated 1.5 x 0.9 pole heights along/across.
+        // - Road luminaires, directed (kind -0.05 .. -0.95 = -(0.05 + 0.9 *
+        //   arm angle / 2 pi), the arm pointing from the pole over the road):
+        //   the same ellipse thrown forward 0.35 pole heights onto the
+        //   carriageway (Type II/III), cut off behind the pole.
+        // - Junction luminaires (kind exactly 0): round, 1.25 pole heights.
+        // Colour temperature varies per street (by its axis), warm to cool.
+        let lyc = max(l.y, 0.02);
+        // Fragment offset from under the head, in pole heights.
+        let q = -l.xz / lyc;
+        var e2 = 0.0;
+        var back = 1.0;
+        var ht = hash21(floor(L.pos.xz * 0.37));
+        // Junction pools (kind exactly 0, not the rail viaduct's radius-18
+        // under-deck LEDs): twice the road luminaires' output.
+        let junctionLum = abs(L.kind) <= 0.01 && L.radius >= 19.0;
+        if (abs(L.kind) > 0.01) {
+          var ra: vec2f;
+          var fwd = vec2f(0.0);
+          if (L.kind > 0.0) {
+            let axis = (L.kind - 0.05) / 0.4 * PI;
+            ra = vec2f(cos(axis), sin(axis));
+            ht = hash11(floor(fract(axis / PI) * 24.0) + 0.5);
+          } else {
+            let arm = (-L.kind - 0.05) / 0.9 * 2.0 * PI;
+            let ad = vec2f(cos(arm), sin(arm));
+            ra = vec2f(-ad.y, ad.x);
+            fwd = ad;
+            ht = hash11(floor(fract(arm / PI) * 24.0) + 0.5);
+            // House side of the pole: the luminaire's cut-off (back-throw
+            // 40 % of the forward lobe, gone a third of a pole height back).
+            let fq = dot(q, ad);
+            back = mix(0.4, 1.0, smoothstep(-0.15, 0.25, fq)) * smoothstep(-0.6, -0.3, fq);
+          }
+          // Asymmetric Type II/III lobe: thrown forward half a pole height,
+          // reaching further forward than back.
+          let qq = q - fwd * 0.5;
+          let fa = dot(qq, fwd);
+          let pa = dot(qq, ra) / 1.5;
+          let pc = dot(qq, vec2f(-ra.y, ra.x)) / select(0.9, select(0.6, 1.0, fa > 0.0), L.kind < 0.0);
+          e2 = pa * pa + pc * pc;
+        } else if (L.radius < 19.0) {
+          // Kind exactly 0 with a short reach: the rail viaduct's under-deck
+          // LED (gen-base, radius 18). A tight pool (0.75 drop) so the
+          // ground under the deck reads as a run of pools, not one floodlit
+          // floor.
+          e2 = dot(q, q) / (0.75 * 0.75);
         } else {
-          let arm = (-L.kind - 0.05) / 0.9 * 2.0 * PI;
-          let ad = vec2f(cos(arm), sin(arm));
-          ra = vec2f(-ad.y, ad.x);
-          fwd = ad;
-          ht = hash11(floor(fract(arm / PI) * 24.0) + 0.5);
-          // House side of the pole: the luminaire's cut-off (back-throw
-          // 40 % of the forward lobe, gone a third of a pole height back).
-          let fq = dot(q, ad);
-          back = mix(0.4, 1.0, smoothstep(-0.15, 0.25, fq)) * smoothstep(-0.6, -0.3, fq);
+          // Junction luminaires: a wide round pool (1.7 pole heights) so the
+          // four corners' overlap carries the middle of the box: the
+          // junction is the best-lit place on the road.
+          e2 = dot(q, q) / (1.7 * 1.7);
         }
-        // Asymmetric Type II/III lobe: thrown forward half a pole height,
-        // reaching further forward than back.
-        let qq = q - fwd * 0.5;
-        let fa = dot(qq, fwd);
-        let pa = dot(qq, ra) / 1.5;
-        let pc = dot(qq, vec2f(-ra.y, ra.x)) / select(0.9, select(0.6, 1.0, fa > 0.0), L.kind < 0.0);
-        e2 = pa * pa + pc * pc;
-      } else if (L.radius < 19.0) {
-        // Kind exactly 0 with a short reach: the rail viaduct's under-deck
-        // LED (gen-base, radius 18). A tight pool (0.75 drop) so the
-        // ground under the deck reads as a run of pools, not one floodlit
-        // floor.
-        e2 = dot(q, q) / (0.75 * 0.75);
-      } else {
-        // Junction luminaires: a wide round pool (1.7 pole heights) so the
-        // four corners' overlap carries the middle of the box: the
-        // junction is the best-lit place on the road.
-        e2 = dot(q, q) / (1.7 * 1.7);
+        let w1 = clamp(1.0 - e2, 0.0, 1.0);
+        var pool = select(0.0, (0.65 * exp(-e2 * 7.0) + 0.35 * w1 * w1 * w1) * back, l.y > 0.0);
+        // Road luminaires: peak 25 % lower (pools, not floodlit discs).
+        if (abs(L.kind) <= 0.01) { pool = select(0.0, 0.45 * exp(-e2 * 9.0) + 0.55 * w1 * w1, l.y > 0.0); }
+        if (L.kind < -0.01) { pool *= 0.75; }
+        // Arterial heads (the long-reach 20 m lights on avenues and
+        // boulevards) are cool 4000-5000 K LED; side-street ones warmer.
+        let arterial = L.radius > 17.0;
+        let temp = select(mix(vec3f(1.1, 0.95, 0.78), vec3f(1.04, 0.97, 0.88), ht), mix(vec3f(0.95, 0.98, 1.06), vec3f(0.99, 0.99, 1.0), ht), arterial);
+        // Foliage scatters what reaches its outer leaves: a softer cut-off.
+        let spill = select(0.02, 0.15, cls == CLASS_FOLIAGE);
+        // Junction luminaires stay the strongest: the box is the best-lit
+        // place on the road. Road luminaires 30 % below the old peak.
+        let deckLed = L.kind == 0.0 && L.radius < 19.0;
+        lc *= temp * mix(spill, 1.0, pool) * select(select(1.0, 2.0, junctionLum), 50.0 / 60.0, deckLed);
+        lcS = L.color * temp * max(pool, 0.4) * select(select(1.0, 2.0, junctionLum), 50.0 / 60.0, deckLed);
+      } else if (L.kind > 2.5 && L.kind < 3.5) {
+        // Fittings (soffit fluorescents, bracket and bulkhead lamps) hang under
+        // a slab or hood and cast no shadow here: nothing much above the
+        // fitting sees it. Without this the under-deck lights shone up
+        // through the viaduct deck and lit the soundwall and parapet inner
+        // faces evenly all night.
+        lc *= smoothstep(0.8, 0.1, world.y - L.pos.y);
+        // High fittings (under-deck soffit tubes, trough lamps: more than
+        // 3.5 m over the floor they light) throw a pool, not a flood: on
+        // the ground the light falls off with the angle from straight down
+        // (a batwing-free diffuser's cos^n), so the ground under the viaduct
+        // is a sequence of pools with darker ground between bents.
+        let drop = L.pos.y - world.y;
+        if (drop > 3.5 && n.y > 0.6) {
+          let cone = pow(clamp(l.y, 0.0, 1.0), 6.0);
+          lc *= mix(1.0, mix(0.08, 3.0, cone), smoothstep(3.5, 5.0, drop));
+        }
       }
-      let w1 = clamp(1.0 - e2, 0.0, 1.0);
-      var pool = select(0.0, (0.65 * exp(-e2 * 7.0) + 0.35 * w1 * w1 * w1) * back, l.y > 0.0);
-      if (abs(L.kind) <= 0.01) { pool = select(0.0, 0.45 * exp(-e2 * 9.0) + 0.55 * w1 * w1, l.y > 0.0); }
-      // Road luminaires: peak 25 % lower (pools, not floodlit discs).
-      if (L.kind < -0.01) { pool *= 0.75; }
-      // Arterial heads (the long-reach 20 m lights on avenues and
-      // boulevards) are cool 4000-5000 K LED; side-street ones warmer.
-      let arterial = L.radius > 17.0;
-      let temp = select(mix(vec3f(1.1, 0.95, 0.78), vec3f(1.04, 0.97, 0.88), ht), mix(vec3f(0.95, 0.98, 1.06), vec3f(0.99, 0.99, 1.0), ht), arterial);
-      // Foliage scatters what reaches its outer leaves: a softer cut-off.
-      let spill = select(0.02, 0.15, cls == CLASS_FOLIAGE);
-      // Junction luminaires stay the strongest: the box is the best-lit
-      // place on the road. Road luminaires 30 % below the old peak.
-      lc *= temp * mix(spill, 1.0, pool) * select(60.0 / 60.0, select(120.0, 50.0, L.radius < 19.0) / 60.0, L.kind == 0.0);
-    } else if (L.kind > 2.5 && L.kind < 3.5) {
-      // Fittings (soffit fluorescents, bracket and bulkhead lamps) hang under
-      // a slab or hood and cast no shadow here: nothing much above the
-      // fitting sees it. Without this the under-deck lights shone up
-      // through the viaduct deck and lit the soundwall and parapet inner
-      // faces evenly all night.
-      lc *= smoothstep(0.8, 0.1, world.y - L.pos.y);
-      // High fittings (under-deck soffit tubes, trough lamps: more than
-      // 3.5 m over the floor they light) throw a pool, not a flood: on
-      // the ground the light falls off with the angle from straight down
-      // (a batwing-free diffuser's cos^n), so the ground under the viaduct
-      // is a sequence of pools with darker ground between bents.
-      let drop = L.pos.y - world.y;
-      if (drop > 3.5 && n.y > 0.6) {
-        let cone = pow(clamp(l.y, 0.0, 1.0), 6.0);
-        lc *= mix(1.0, mix(0.08, 3.0, cone), smoothstep(3.5, 5.0, drop));
+      let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
+      // Point lights cast no shadows: the vehicle contact term stands in under cars.
+      color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
+      streakC = select(lc, lcS, lcS.x >= 0.0) * atten;
+      if (L.kind > 0.5 && L.kind < 1.5 && wetWall > 0.0) {
+        // Neon on a soaked wall: the water film spreads each sign's colour
+        // over the wall around it (a soft, view-independent sheen; the GGX
+        // lobe alone is a pin-prick at this roughness).
+        color += lc * atten * 60.0 * 0.04 * wetWall * smoothstep(4.5, 2.2, d) * smoothstep(1.5, 2.0, d);
+        // And a coloured specular smear: the sign mirrored in the film, a
+        // broad lobe stretched down the wall (run-off ripples are vertical),
+        // moving with the eye. Only where the wall is glossy-wet.
+        let hv = normalize(l + v);
+        let nh = max(dot(n, normalize(vec3f(hv.x, hv.y * 0.35, hv.z))), 0.0);
+        color += lc * atten * 60.0 * D_GGX(nh, 0.14) * 0.2 * max(dot(n, l), 0.15) * wetWall * wetGloss;
+      }
+      if (cls == CLASS_FOLIAGE) {
+        // Two-sided leaves: street and sign light scatters through the crown
+        // (a soft non-directional fill) and transmits through back-lit cards,
+        // so canopies glow at night instead of going black on the far side.
+        // A wrap term on the lit side as well: clipped hedges and crown
+        // sides facing a lamp across the pavement read green, not black.
+        let wrap = max((dot(n, l) + 0.5) / 1.5, 0.0);
+        color += albedo * (0.25 + 0.6 * max(dot(-n, l), 0.0) + 0.5 * wrap) * lc * atten * (60.0 / PI) * 0.4;
       }
     }
-    let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
-    // Point lights cast no shadows: the vehicle contact term stands in under cars.
-    color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
-    if (L.kind > 0.5 && L.kind < 1.5 && wetWall > 0.0) {
-      // Neon on a soaked wall: the water film spreads each sign's colour
-      // over the wall around it (a soft, view-independent sheen; the GGX
-      // lobe alone is a pin-prick at this roughness).
-      color += lc * atten * 60.0 * 0.04 * wetWall * smoothstep(4.5, 2.2, d) * smoothstep(1.5, 2.0, d);
-      // And a coloured specular smear: the sign mirrored in the film, a
-      // broad lobe stretched down the wall (run-off ripples are vertical),
-      // moving with the eye. Only where the wall is glossy-wet.
-      let hv = normalize(l + v);
-      let nh = max(dot(n, normalize(vec3f(hv.x, hv.y * 0.35, hv.z))), 0.0);
-      color += lc * atten * 60.0 * D_GGX(nh, 0.14) * 0.2 * max(dot(n, l), 0.15) * wetWall * wetGloss;
-    }
-    if (cls == CLASS_FOLIAGE) {
-      // Two-sided leaves: street and sign light scatters through the crown
-      // (a soft non-directional fill) and transmits through back-lit cards,
-      // so canopies glow at night instead of going black on the far side.
-      // A wrap term on the lit side as well: clipped hedges and crown
-      // sides facing a lamp across the pavement read green, not black.
-      let wrap = max((dot(n, l) + 0.5) / 1.5, 0.0);
-      color += albedo * (0.25 + 0.6 * max(dot(-n, l), 0.0) + 0.5 * wrap) * lc * atten * (60.0 / PI) * 0.4;
+    if (wetGround > 0.0) {
+      color += streakC * 60.0 * wetStreak(nFilm, v, l, fwdV) * wetGround;
     }
   }
   // Ambient: hemisphere sky + ground bounce.
