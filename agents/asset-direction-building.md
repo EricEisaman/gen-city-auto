@@ -350,3 +350,297 @@ line, a tank silhouette, and a column of stair lights at night.
   Penthouses sit at an edge over the core.
 - **Don't add bloom or post effects to fake richness.** The fixes are
   structural.
+
+---
+
+## Round 6: from 6 to 8
+
+Scores so far: 4.0, 5.0, 5.3, 5.5, 6.0, 6.0. The judge's lists have turned
+into inventory ("add laundry poles, add a lamp"). The inventory is now
+basically complete: canopy, konbini, vending, signs, fire stair, tank,
+railings, balconies, party-wall ghost, vinyl, rain. Another round of props
+will not move the score, because **every new prop is rendered with the
+same flat image formation**. What separates this 6 from an 8 is not
+content. It is how light, edges and materials behave across *all* content
+at once:
+
+- **Nothing is grounded.** Canopies, ledges, sills, signs and the wall foot
+  get no occlusion. I measured this with `debug=8` (AO view), using
+  `node test/puppeteer/lab.mjs building --kind=midrise --views=street,facade,rear --times=day --debug=8`.
+  AO under the 1.5 m konbini canopy, at the foot of the 17 m wall, under
+  the floor ledges and on open wall all tonemap to 148-158/255. That means
+  AO is about 0.95-1.0 everywhere. Under the canopy it should be about 0.4.
+  The pavement at the wall foot is 191 vs 195 in the open: no darkening
+  at all. This is the single biggest "CG / last-gen" tell in
+  `street-day`, `facade-day`, `rear-day` and `service-day`. It is also why
+  the judge keeps calling detail "too subtle": in shade, lighting is ambient
+  only, and ambient without occlusion erases relief.
+- **Edges are last-gen.** Wires and rails break into dashes (`service-day`
+  pole wires, `street-day` roof rail, `aerial-day` railings). Every beam and
+  corner is a razor 90-degree edge with no highlight line. Ledge beams map
+  the tile texture stretched (cmesh `beam()` writes v = 0..1 per face
+  regardless of thickness, so a 0.18 m ledge face squeezes a 0.96 m tile
+  into it: the smeared brick on the ledges in `facade-day`).
+- **Materials respond to light like a texture, not a surface.** In shade
+  (the whole front in day views), tile relief and cavity do nothing, because
+  they only modulate albedo and ambient is nearly isotropic. Five or six
+  overlapping low-frequency noises (0.7 m mottling, 2.4 m patches, wash,
+  fringe, efflorescence, face tone) average into grey mud. That is the
+  "smeary brick" in r5.
+- **Night breaks across LOD.** I confirmed this with `far-night` vs
+  `shell-night` crops. The shell has a cyan/pink wash over the upper floors
+  and top floor that LOD0 does not have. That is the `shellLod` neon block
+  in `facadeMat()` (city-materials.wgsl ~1619-1630), stacked on the zakkyo
+  sign lights that `building()` now emits at LOD1 too.
+- **The lab undersells it** (see S2): 4 of 9 views are a 40-150 px building
+  in sand dunes, with no neighbours for the skyline-based sky occlusion,
+  city reflection and canyon bounce to work with.
+
+### Verdict on the candidate list
+
+| Candidate | Verdict |
+|---|---|
+| Light transport (AO, contact shadows, bounce) | **Agree, #1.** Measured as absent. Moves every daytime view. |
+| Lab context penalty | **Agree, #2 by impact per hour.** Glass reflects empty sky. `skyVisibility()` and `cityReflection()` find no neighbours. Far/shell frame the asset at ~40 px. The judge's distance score (5.0) is partly an artefact of this. |
+| Thin-geometry AA | **Agree, #3**, together with chamfered edges (edge quality as one system). |
+| Material texel quality (procedural brick) | **Partly disagree.** The detail texture is 512 px per 0.96 m (1.9 mm/texel) with full mips and 8x aniso, so resolution is not the bottleneck. The problems are response (cavity not used as occlusion, no per-tile hash beyond tilt), contrast (grout/tile tones too close), UVs (beams) and noise stacking (mud). Fix those (#4). Do not write a procedural brick generator. |
+| Real window depth everywhere | **Partly agree.** The main window grid already has a good 0.30 m shader reveal (city-materials.wgsl ~1992-2045). The windows that read flush take *other code paths with no reveal*: the stair/core glass-block bay (`stairBay`, ~1963), party-wall and side small windows, and frosted rear panes. Fix: one opening function for all of them (shader), plus real reveal geometry only on LOD0 punched windows (#5). |
+| Value structure / colour grade | **Not the lever.** The albedo pass (`debug=1`) shows sane zoning: party wall ~0.55, tile ~0.45, dark glazed base. Relative values will fall into place once occlusion exists. The very saturated navy zenith in day shots (sky RGB about 20,50,140) makes every grey look dead. That is a global atmosphere/grade issue for another owner, not a building task. |
+| LOD-consistent emissives | **Agree, but it is a bug fix, not a system.** Do it first (S0) because the judge flags it as BROKEN every round. |
+
+### Moratorium
+
+No new prop types this round. Every hour goes into S0-S5. The judge must
+compare A/B crops of the *same* views.
+
+---
+
+### S0. Night LOD parity (shader + geometry, 2-3 h): do first
+
+- **Shader (B)**: delete the `shellLod` neon wash in `facadeMat()`
+  (city-materials.wgsl ~1619-1630). Emissive must be a function of
+  `(param, aux, uv, time)` only, never of `shellLod`. Grep for any other
+  `shellLod` branch that changes emissive and remove it the same way.
+- **Geometry (A)**: in `building()` (gen-tile.ts), `lights.add(...)` must
+  run on exactly the same decisions at LOD0 and LOD1. Gate the sign light
+  loops (~2546, 2984, 3529, 3774, 3818, 3945, 4210) on the LOD0 placement
+  decision, not on whether the LOD1 sign geometry exists. If the LOD1 shell
+  needs the bounce colour, it gets it from the same point lights, not from a
+  second approximation.
+- **Acceptance**: mean luminance of `far-night` vs `shell-night`, in 8x8
+  blocks over the building's bounding box, within ±10 %. No block shifts
+  hue by more than about 15 degrees.
+
+### S1. Occlusion that actually occludes (shader/render, engineer B, 1.5-2 days): biggest lever
+
+**Files**: `src/shaders/ao.wgsl` `main`, `src/shaders/lighting.wgsl`
+`main`/`skyVisibility()`/`bilateralAo()`,
+`src/shaders/city-materials.wgsl` `facadeMatBase()`.
+
+1. **Replace the SSAO kernel with GTAO** (Jimenez 2016, horizon-based,
+   cosine-weighted). Run it at half resolution, as now.
+   - Use 2 slice directions per pixel × 2 sides × 6 steps. Rotate slices
+     per pixel with the existing 4x4 interleave plus `frame.time.z` jitter,
+     resolved by the existing bilateral 4x4 and TAA.
+   - Use a world radius of 1.5 m, clamped to [6 px, 64 px] on screen. Add a
+     falloff `w = saturate((R² - d²) / (0.4 R²))` so distant geometry fades
+     out of the horizon search rather than being rejected outright. Today's
+     `smoothstep(R*1.5, R*0.5, diff)` throws away exactly the occluders that
+     matter (canopy, ledge).
+   - Keep one extra short slice at 0.35 m for creases if it is cheap.
+     Otherwise one GTAO radius covers it.
+   - Integrate the visibility per slice analytically (the standard GTAO arc
+     integral against the projected normal). Do not count hits.
+   - Before replacing it, put one log/debug line in the current kernel to
+     find which test makes it return ~1. My suspects are the `occ / total`
+     normalisation across 3 scales and the range smoothstep.
+2. **Multi-bounce** (Jimenez): in lighting `main`, after `bilateralAo`:
+   `ao = max(ao, ((ao*a + b)*ao + c)*ao)` with `a = 2.0404*alb - 0.3324`,
+   `b = -4.7951*alb + 0.6417`, `c = 2.7552*alb + 0.6903` (per channel,
+   `alb = albedo`). This keeps pale Tokyo walls from going grey-dirty in
+   corners.
+3. **Specular occlusion**: replace `specOcc = ao*ao` with Lagarde's
+   `so = saturate(pow(nv + ao, exp2(-16*rough - 1)) - 1 + ao)`. Glass
+   inside reveals and wet ledges under canopies stop glowing with sky.
+4. **Sun**: drop the `mix(1.0, ao, 0.25)` on direct light, since AO on
+   direct light reads as dirt. Add a **screen-space contact shadow** for the
+   sun instead:
+   - March 12 steps over 0.6 m (scaled ×dist/30, max 2 m) toward `sunDir`
+     in the depth buffer, with a thickness of 0.15 m.
+   - Multiply into `sh` only where the shadow cascade texel is larger than
+     5 cm.
+   - This catches sign brackets, AC units, sills, mailboxes, vending and
+     the plant, which the cascades smear today.
+5. **Wall-foot sky term** in `skyVisibility()`: the march starts at
+   `dist = 2.0`, so occluders closer than 2 m are never seen. Pavement
+   within 2 m of a 17 m wall reports a full sky. Start at 0.5 m with 8
+   doubling steps (0.5 → 64 m), and sample the skyline texel *edges*: take
+   the max of the texel and its neighbour toward `dir`, since texels are
+   several metres. Target: ground 0.5 m from a tall wall has `skyVis` ≤
+   0.6, and the wall's own bottom metre ≤ 0.65.
+6. **Analytic facade AO** (works at LOD1, where the geometry is gone). In
+   `facadeMatBase()`, multiply into `s.ao` (not albedo):
+   - under every slab/ledge: `mix(0.55, 1.0, smoothstep(0.0, 0.5, slabBelow))`
+     wherever a ledge or band projects (both LODs, since LOD1 has no ledge
+     geometry);
+   - wall foot: `mix(0.7, 1.0, smoothstep(0.0, 0.9, uv.y))`;
+   - the base zone under the canopy line (`fz.zone == FZ_BASE`, top 0.8 m
+     of the ground floor): `mix(0.5, 1.0, smoothstep(0.0, 0.8, floorTop - ly))`;
+   - **tile cavity**: `s.ao *= mix(0.55, 1.0, wd.a)` and remove the same
+     factor from albedo (`mix(0.6, 1.0, wd.a)` in the `wall =` line), so
+     grout darkens ambient and specular, not the diffuse sun term. This is
+     what makes tile read in shade.
+   GTAO and the analytic term are multiplied; clamp the product at ≥ 0.3.
+7. **Acceptance** (`debug=8`, `street-day`/`facade-day`/`rear-day`):
+   under the canopy ≤ 0.45; wall 0-0.3 m below a ledge ≤ 0.7; reveal
+   corners ≤ 0.5; pavement within 0.5 m of the wall foot ≤ 0.7; open wall
+   and open pavement ≥ 0.95. No halo wider than 0.5 m around the building
+   silhouette against sky (the current rear-day balconies show soft blurry
+   halos: tighten the bilateral depth weight).
+
+Expected: canopy, sills, ledges, signs, AC units and the building's
+contact with the street all "land". This is +0.5 to +0.8 on lighting,
+relief, close-up and wear simultaneously.
+
+### S2. Judge it in context (tooling, engineer A, 2-3 h)
+
+**File**: `src/city/lab.ts` (building branch, ~355/414 and the views at
+~546-580).
+
+- Let `ctx=1` work for buildings: `buildings: spec.ctx ? keepBuildings(...) : []`
+  already exists for road/rail. For a building lab, keep every building
+  whose footprint centroid is within 120 m of the subject, and hide only
+  the ones that occlude the `street`/`facade` cameras. A building in the same
+  block between the camera and the subject must go.
+- New presets so distance is judged at the size a player sees it:
+  - `far`: 180 m, fov 0.55. The subject should be ≥ 150 px tall at
+    1280×720, not 40.
+  - `mid`: 70 m, fov 0.8.
+  - Keep the old isolated `far` as `far-iso` for silhouette checks.
+- Run the judge on `--ctx=1`. Keep isolated shots for the rear, party-wall
+  and roof checks only.
+- Why this is not cheating: the lab shows `cityReflection()`,
+  `skyVisibility()` and canyon `bounce` running against nothing. The glass
+  reflects open sky over a desert, the walls see a full sky hemisphere, and
+  the night building glows alone in black dunes. The asset will never be
+  seen like that. I estimate this costs 0.5-0.8 of the overall score across
+  `mid`, `far`, `shell`, `aerial` and `orbit`.
+
+### S3. Edge quality: thin geometry and chamfers (A: geometry + vertex shader, 1-1.5 days)
+
+**Files**: `src/shaders/city.wgsl` `vs`/`fs`, `src/city/cmesh.ts`
+`tube()`/`beam()`, `src/city/gen-tile.ts` `band()`/`coping()`/`walls()`/`guardRail()`.
+
+1. **Minimum pixel width for tubes** (wires, rails, posts, pipes, aerials):
+   - `tube()` writes its radius into `aux` for `CM.wire`, `CM.frame`,
+     `CM.paint` and `CM.metal` tubes, as `round(r * 2000)` (0.5 mm units, 16
+     bits). Leave the hash seed in the upper 16 bits.
+   - In `vs`, compute the world size of one pixel:
+     `px = 2 * clipW / (proj[1][1] * resolution.y)`.
+   - If `r < 0.7 * px`, push the vertex out along its radial normal by
+     `0.7*px - r` and pass `cov = r / (0.7*px)` to the fragment.
+   - In `fs`, apply a hashed coverage test with the same `leafDither()`
+     band used for leaves: `if (cov < 1 && cov <= hash(pos.xy, frame)) discard;`.
+     TAA resolves it into a continuous, correctly thin, non-crawling line.
+   - Fade to nothing past `cov < 0.08`, and let the cluster cull drop the
+     cluster past that distance.
+   - Shadows keep the true radius.
+   - Acceptance: the `service-day` pole wires are continuous lines and the
+     `aerial-day` railing does not break into dashes.
+2. **Chamfered beams and corners** (the 1-px highlight line that every AAA
+   building edge has):
+   - `beam()` gets an optional `chamfer` (default 0). For ledges, bands,
+     coping and sills, use 0.02 m: 8 faces, where the 4 bevel strips carry
+     normals at 45°. That is +16 tris per beam and the only geometry cost here.
+   - The building's own vertical corners: in `walls()`/`facadeEdges`, cut
+     each corner with a 0.03 m bevel quad (normal = bisector), in the
+     corner-pier material. +2 tris per corner.
+   - LOD1 skips the chamfer.
+3. **Beam UVs in metres**: in `beam()`, set v = `sy*hgt`-based metres
+   (0..2·hgt, and 0..2·w for the r faces) instead of 0..1. Tile and concrete
+   on ledges then keep their real scale, which removes the smeared ledge
+   tile in `facade-day`. Do the same for any `quad()` with `[0,0]..[1,1]`
+   UVs that uses a tiled material (`guardRail` posts are fine).
+
+### S4. Material discipline: response over noise (shader, engineer B, 1 day)
+
+**Files**: `city-materials.wgsl` `facadeMatBase()`, `paintedRender()`,
+`partyWall()`; `src/render/detail-tex.ts` `tile()`, `concrete()`.
+
+- **Cut the noise stack.** In `facadeMatBase()`:
+  - remove `(0.88 + 0.12*valueNoise(uv*0.7))`;
+  - remove the 2.4 m `patchC` multiplier on tiled walls (keep it on render
+    at 0.5);
+  - halve the efflorescence.
+  What remains is one per-face tone (`faceH`), the batch patches (tile), and
+  the *structural* grime that is tied to geometry (sill ends, slab wash,
+  soot fringe, ground grime, rust tails). Rule: every darkening must be
+  explainable by water or dirt from a named edge.
+- **Per-tile response, hashed in world space.** The `th` hash (already
+  computed for tilt) also drives albedo `*= 0.88 + 0.24*th.y` and roughness,
+  faded by `fT`. This breaks the 0.96 m texture repeat (4 × 14 fixed tones)
+  that shows as a grid at 10-30 m.
+- **Contrast in the texture.** In `detail-tex.ts` `tile()`:
+  - tones `rng.range(0.4, 0.6)` → `rng.range(0.34, 0.66)`;
+  - grout albedo `0.22` → `0.30` (lighter cement grout, but with cavity 0
+    so S1's cavity-AO darkens it in shade);
+  - groove depth: face rise `4 + ...` → `6 + ...`.
+  The joint then shows in shade through AO and in sun through the normal,
+  rather than as a painted dark line that turns to mud in the mips.
+- **Wet = response, not tint.** Leave rain alone this round except to check
+  that S1's specular occlusion does not kill the wet-ledge glints under
+  the canopy (`street-rain`).
+- **Acceptance**: `facade-day` spandrels read as crisp tile with a visible
+  grout grid at 8 m and as an even, slightly speckled field at 30 m (`mid`).
+  `street-day` side wall render shows streaks from sills and ledges, not
+  blotches.
+
+### S5. One opening model; real reveals on LOD0 (B: shader 0.5 day; A: geometry 1 day)
+
+- **Shader (B)**: factor the reveal block (city-materials.wgsl ~1992-2045:
+  reveal parallax, jamb/head/sill choice, contact AO, `castVis` sun, bounce
+  emissive) into `fn opening(lx, ly, wx0, wx1, sill, wy1, D, ...) -> OpeningHit`.
+  Call it from every path that draws a window:
+  - the `stairBay` glass block (D = 0.15);
+  - the party-wall and side small windows in `partyWall()`/`facadeRole()`
+    (D = 0.12);
+  - the frosted rear panes (D = 0.15, already inside the main branch but
+    check that `role == 3` widths get the reveal);
+  - the shop/lobby glazing (D = 0.08).
+  After this no opening on the building is flush. That was the r5 judge's
+  "most PS2 element" (`street-day` left face, x 380-560).
+- **Geometry (A), LOD0 only, punched-window families** (not ribbon or
+  curtain), front and street-side roles:
+  - in `building()`, after the bay grid is known (`facadeBay`/`facadeWindows`),
+    emit per window 4 reveal quads (jambs, head, sill) of depth D and a
+    0.06 m projecting precast sill beam (chamfered, S3) under the opening;
+  - leave the wall quad unbroken behind them: the shader already paints
+    the glass recessed, so the geometry only needs to supply the silhouette,
+    shadow-map and GTAO response at grazing angles. That costs about 10
+    quads per window, ≈ 2 k tris for this specimen;
+  - LOD1 keeps the shader-only reveal.
+  - Acceptance: `street-day` grazing view along the front shows reveal
+    edges in silhouette, and `golden` shows sun shadows of the jambs that
+    match the shader's `castVis` within 2 px.
+
+---
+
+### Who does what (two engineers in parallel, no shared files)
+
+| | Engineer A: geometry and tooling | Engineer B: shading and lighting |
+|---|---|---|
+| Files | `gen-tile.ts`, `cmesh.ts`, `lab.ts`, `city.wgsl` (vs/fs coverage) | `ao.wgsl`, `lighting.wgsl`, `city-materials.wgsl`, `detail-tex.ts` |
+| Order | S2 lab context (first, so B's work is judged in context) → S0 light parity → S3 tubes, chamfers, beam UVs → S5 reveal geometry | S0 remove `shellLod` wash → S1 GTAO, multi-bounce, spec occlusion, contact shadow, wall-foot sky, analytic AO → S4 material → S5 `opening()` |
+| Interface | `aux` low 16 bits = tube radius (0.5 mm) for tube mats; `beam` chamfer flag needs no shader change | S1's analytic AO must not double-count where A's reveal and sill geometry exists. Key it on `shellLod` *only for AO*, never for emissive |
+
+Run order for the judge: both merge, then run the lab with `--ctx=1`
+**and** without it, all 4 times. Give the judge this section, and ask for
+scores per view, not per prop.
+
+### Projected effect
+
+S0 removes a "BROKEN" (+0.2). S1 is the round's real jump (+0.6-0.8:
+relief, lighting, close-up, wear). S2 gives an honest distance and colour
+read (+0.4-0.6 on distance, mid and far). S3 is IQ and close-up (+0.3).
+S4 is material (+0.3). S5 is relief and close-up (+0.2-0.3). Total is about
+7.6-8.2, if the next judge round compares the same views in context.
