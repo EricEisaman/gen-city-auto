@@ -19,6 +19,7 @@ import {
   LED,
   landing,
   sidewalkY,
+  avenueTreeS,
   signalSpots,
   streetLightSpots,
 } from './gen-base.ts';
@@ -6609,18 +6610,50 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
     leafCards(m, hi, r * 1.15 * (1 - S.taper * 0.3), 4, aux, lr, 0.95, sp);
     return;
   }
-  for (let k = 0; k < 4; k++) {
-    const t = k / 3 - 0.5;
-    const r = h * lr.range(S.r0, S.r1) * (1 - S.taper * t * 2);
+  // The crown as 4-6 lobes, the leaf masses at the branch ends: each a
+  // small dark core and a tight cluster of leaf cards, on a bark limb from
+  // the top of the trunk. Lobes climb a golden-angle spiral through the
+  // crown's height (the species' spread and taper set how far out), so the
+  // silhouette breaks into clumps with sky between them instead of one
+  // even ball of cards.
+  const n = 4 + (aux % 3);
+  const rAvg = h * (S.r0 + S.r1) * 0.5;
+  const y0 = p[1] + trunkH + rAvg * 0.6;
+  const span = h * S.step * 0.9;
+  const fork: Vec3 = [p[0], p[1] + trunkH * 0.9, p[2]];
+  const a0 = lr.range(0, Math.PI * 2);
+  for (let k = 0; k < n; k++) {
+    const t = n > 1 ? k / (n - 1) : 0.5;
+    const taper = 1 - S.taper * (t - 0.5) * 2;
+    const r = rAvg * lr.range(0.5, 0.6) * taper;
+    // The top lobe sits near the axis; the rest ring outward.
+    const out =
+      k === n - 1
+        ? rAvg * 0.15
+        : (rAvg * 0.45 + h * S.spread * (0.5 + t * 0.5)) *
+          taper *
+          lr.range(0.85, 1.1);
+    const a = a0 + k * 2.39996 + lr.range(-0.3, 0.3);
     const c: Vec3 = [
-      p[0] + lr.range(-1, 1) * h * S.spread * (1 + t),
-      p[1] + trunkH + r * 0.6 + h * S.step * 0.3 * k,
-      p[2] + lr.range(-1, 1) * h * S.spread * (1 + t),
+      p[0] + Math.cos(a) * out,
+      y0 + span * t + lr.range(-0.1, 0.1) * rAvg,
+      p[2] + Math.sin(a) * out,
     ];
-    blob(m, c, r * 0.48, 0, aux, lr, sp);
-    // Many smaller cards toward the crown surface give a broken, leafy
-    // silhouette instead of a few big clumps.
-    leafCards(m, c, r, 12, aux, lr, 0.68, sp);
+    m.tube(
+      [
+        fork,
+        [
+          lerp(fork[0], c[0], 0.85),
+          lerp(fork[1], c[1], 0.85),
+          lerp(fork[2], c[2], 0.85),
+        ],
+      ],
+      r0 * 0.3,
+      packMat(CM.bark),
+      aux,
+    );
+    blob(m, c, r * 0.5, 0, aux, lr, sp);
+    leafCards(m, c, r, 10, aux, lr, 0.72, sp);
   }
 }
 
@@ -6813,6 +6846,103 @@ function blob(
 /** How far street furniture extends below the sidewalk so slopes show no gap. */
 const SINK = 0.3;
 
+/**
+ * Foot of a steel street pole of radius r at paving point p (LOD0), one
+ * lathe of `sides`: a concrete footing collar (CM.concrete) 29 cm across
+ * standing 4 cm proud of the paving, the 0.4 m base flange and a flared
+ * base cover over the bottom 0.6 m (the pole's `mat`). `full` adds four
+ * anchor nuts on the flange (dark paint 0x91 squares), a handhole door
+ * facing `back` (unit 2D) at 0.95 m and a clamp band at each of `bands`
+ * (heights above the paving). About 70 vertices, 130 when full.
+ * Lathe uv: u = metres around, v = metres up the profile (collar from 0,
+ * metal from 0); the pole's own cylinder: u metres around, v metres up
+ * from SINK under the paving.
+ */
+function poleFoot(
+  m: CMesh,
+  p: Vec3,
+  r: number,
+  mat: number,
+  sides: number,
+  back: Vec2,
+  bands: number[],
+  full: boolean,
+) {
+  const conc = packMat(CM.concrete);
+  // Profile rows: radius, height, normal (radial, up), material.
+  const rows: [number, number, number, number, number][] = [
+    [0.29, -0.06, 1, 0, conc],
+    [0.29, 0.04, 0.7, 0.7, conc],
+    [0.2, 0.04, 0, 1, conc],
+    [0.2, 0.04, 1, 0, mat],
+    [0.2, 0.065, 0.6, 0.8, mat],
+    [r * 1.6, 0.065, 0.5, 0.85, mat],
+    [r * 1.15, 0.665, 1, 0.12, mat],
+  ];
+  let v = 0;
+  const ids = rows.map(([rr, y, nr, ny, mt], k) => {
+    if (k && rows[k - 1][4] === mt)
+      v += Math.hypot(rr - rows[k - 1][0], y - rows[k - 1][1]);
+    else v = 0;
+    const row: number[] = [];
+    for (let i = 0; i <= sides; i++) {
+      const a = (i / sides) * Math.PI * 2;
+      const c = Math.cos(a);
+      const sn = Math.sin(a);
+      row.push(
+        m.vertex(
+          [p[0] + c * rr, p[1] + y, p[2] + sn * rr],
+          [c * nr, ny, sn * nr],
+          (i / sides) * Math.PI * 2 * rr,
+          v,
+          mt,
+        ),
+      );
+    }
+    return row;
+  });
+  for (let k = 0; k + 1 < rows.length; k++) {
+    if (k === 2) continue; // material seam (same ring twice)
+    for (let i = 0; i < sides; i++) {
+      const a = ((i + 0.5) / sides) * Math.PI * 2;
+      const n: Vec3 = [
+        Math.cos(a) * (rows[k][2] + rows[k + 1][2]),
+        rows[k][3] + rows[k + 1][3],
+        Math.sin(a) * (rows[k][2] + rows[k + 1][2]),
+      ];
+      m.triFacing(ids[k][i], ids[k + 1][i], ids[k + 1][i + 1], n);
+      m.triFacing(ids[k][i], ids[k + 1][i + 1], ids[k][i + 1], n);
+    }
+  }
+  if (!full) return;
+  const nut = packMat(CM.paint, 0x91);
+  for (let k = 0; k < 4; k++) {
+    const a = Math.PI / 4 + (k * Math.PI) / 2;
+    const cx = p[0] + Math.cos(a) * 0.17;
+    const cz = p[2] + Math.sin(a) * 0.17;
+    const e = 0.022;
+    m.quad(
+      [
+        [cx - e, p[1] + 0.075, cz - e],
+        [cx + e, p[1] + 0.075, cz - e],
+        [cx + e, p[1] + 0.075, cz + e],
+        [cx - e, p[1] + 0.075, cz + e],
+      ],
+      UP,
+      uv01,
+      nut,
+    );
+  }
+  m.box(
+    [p[0] + back[0] * (r + 0.008), p[1] + 0.95, p[2] + back[1] * (r + 0.008)],
+    [0.055, 0.12, 0.012],
+    mat,
+    Math.atan2(back[0], back[1]),
+  );
+  for (const y of bands)
+    m.cylinder([p[0], p[1] + y, p[2]], r + 0.02, 0.08, sides, mat, false);
+}
+
 function streetLight(
   m: CMesh,
   p: Vec3,
@@ -6862,9 +6992,19 @@ function streetLight(
     [p[0], p[1] - SINK, p[2]],
     0.09,
     h + SINK,
-    6,
+    kind >= 2 ? 8 : 6,
     packMat(CM.metal),
     false,
+  );
+  poleFoot(
+    m,
+    p,
+    0.09,
+    packMat(CM.metal),
+    kind >= 2 ? 8 : 6,
+    [-dir[0], -dir[1]],
+    [2.3],
+    kind >= 2,
   );
   m.beam(top, head, 0.05, 0.05, packMat(CM.metal));
   m.box(
@@ -7149,10 +7289,13 @@ function signal(
     [p[0], p[1] - SINK, p[2]],
     0.12,
     SIGNAL_LUM.h + 0.25 + SINK,
-    8,
+    12,
     grey,
     false,
   );
+  // Footing, flange and handhole on the side away from the road; clamp
+  // bands where the pedestrian head and push button are strapped on.
+  poleFoot(m, p, 0.12, grey, 12, [-armDir[0], -armDir[1]], [2.45, 3.15], true);
   const top: Vec3 = [p[0], p[1] + 5.8, p[2]];
   const end: Vec3 = [
     p[0] + armDir[0] * reach,
@@ -7401,6 +7544,15 @@ const PLANTER = {w: 0.9, kerb: 0.09, h: 0.18} as const;
 /** Clipped hedge top above the paving. */
 const HEDGE_H = 0.95;
 
+/** Smooth 1D value noise in 0..1 (cubic fade between integer hashes). */
+function vnoise1(x: number, seed: number) {
+  const i = Math.floor(x);
+  const f = x - i;
+  const a = (hash2(seed, i) & 0xffff) / 0xffff;
+  const b = (hash2(seed, i + 1) & 0xffff) / 0xffff;
+  return a + (b - a) * f * f * (3 - 2 * f);
+}
+
 /**
  * Planting-strip hedge run along `pts` (paving-level points on the planter's
  * road-side face) with `out` (unit 2D normal toward the back per point).
@@ -7508,13 +7660,21 @@ function hedgeRun(
   ];
   const rows = pts.map((_, i) =>
     prof.map(([x, y, nx, ny], k) => {
-      // Lumps: push along the normal (more on the shoulders and top).
+      // Low-frequency swell (+-12-15 cm, 3-5 m bulges, each side and the top
+      // on its own noise) plus a little per-sample lumpiness, pushed along
+      // the normal; the base stays tucked on the kerb.
       const hv = hash2(seed + i * 7, k);
-      const amp = k === 0 || k === 5 ? 0.015 : k === 1 || k === 4 ? 0.06 : 0.08;
-      const d = ((hv & 0xff) / 255 - 0.4) * 2 * amp;
+      const side = k < 3 ? 0 : 1;
+      const swell = vnoise1(along[i] / 3.6 + side * 17.3, seed) * 2 - 1;
+      const amp = k === 0 || k === 5 ? 0.015 : k === 1 || k === 4 ? 0.15 : 0.12;
+      const d =
+        swell * amp + ((hv & 0xff) / 255 - 0.4) * 2 * (k % 5 ? 0.035 : 0.01);
       const l = Math.hypot(nx, ny);
       const lift =
-        k === 2 || k === 3 ? (((hv >>> 8) & 0xff) / 255 - 0.5) * 0.1 : 0;
+        k === 2 || k === 3
+          ? (vnoise1(along[i] / 4.4 + 41.7, seed) * 2 - 1) * 0.15 +
+            (((hv >>> 8) & 0xff) / 255 - 0.5) * 0.06
+          : 0;
       return m.vertex(
         P(i, x + (nx / l) * d, y + (ny / l) * d + lift),
         N(i, nx, ny),
@@ -7569,64 +7729,109 @@ function hedgeRun(
       kerb,
     );
   }
-  // Leaf-card shell (the tree leaf path, CM.leaves): clumps lying 3-6 cm
-  // off the hull, one on the top and one on alternating sides per segment,
-  // lighter than the clipped mass (new growth at the tips) and breaking its
-  // outline.
+  // Leaf-card shell (the tree leaf path, CM.leaves), lighter than the
+  // clipped mass (new growth at the tips): per segment two fringe tufts on
+  // each top shoulder, tilted up and out and half past the hull so the
+  // edges break into leaves against the sky and the walk, one lying on the
+  // top and one on alternating sides. Placed on the swollen hull.
   const leaf = packMat(CM.leaves, 0);
+  const card = (
+    c: Vec3,
+    ax: Vec3,
+    ay: Vec3,
+    n: Vec3,
+    hw: number,
+    hh: number,
+  ) => {
+    const ids = [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ].map(([u, v]) =>
+      m.vertex(
+        [
+          c[0] + ax[0] * u * hw + ay[0] * v * hh,
+          c[1] + ax[1] * u * hw + ay[1] * v * hh,
+          c[2] + ax[2] * u * hw + ay[2] * v * hh,
+        ],
+        n,
+        (u + 1) / 2,
+        (1 - v) / 2,
+        leaf,
+        seed,
+      ),
+    );
+    // Double-sided, as the tree cards.
+    m.tri(ids[0], ids[1], ids[2]);
+    m.tri(ids[0], ids[2], ids[3]);
+    m.tri(ids[0], ids[2], ids[1]);
+    m.tri(ids[0], ids[3], ids[2]);
+  };
   for (let i = 0; i + 1 < pts.length; i++) {
     const hv = hash2(seed ^ 0x1eaf, i);
-    const t = 0.25 + (((hv >>> 4) & 0xff) / 255) * 0.5;
+    const fr = (b: number) => ((hv >>> b) & 0xff) / 255;
     const dx = pts[i + 1][0] - pts[i][0];
     const dz = pts[i + 1][2] - pts[i][2];
     const dl = Math.hypot(dx, dz) || 1;
     const ax: Vec3 = [dx / dl, 0, dz / dl];
     const o = out[i];
-    const at = (x: number, y: number): Vec3 => {
-      const q = P(i, x, y);
-      const r = P(i + 1, x, y);
-      return [lerp(q[0], r[0], t), lerp(q[1], r[1], t), lerp(q[2], r[2], t)];
+    /** Hull profile point k at fraction t of this segment. */
+    const hull = (k: number, t: number): Vec3 => {
+      const a = m.pos(rows[i][k]);
+      const b = m.pos(rows[i + 1][k]);
+      return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
     };
-    const side = hv & 1 ? 1 : -1;
-    const cards: [Vec3, Vec3, Vec3][] = [
-      [
-        at(0.2 + (((hv >>> 12) & 0xff) / 255) * (W - 0.4), HEDGE_H + 0.05),
-        [o[0] * 0.25 * side, 0.97, o[1] * 0.25 * side],
-        [o[0], 0, o[1]],
-      ],
-      [
-        at(
-          side > 0 ? -0.08 : W + 0.08,
-          0.42 + (((hv >>> 20) & 0xff) / 255) * 0.3,
-        ),
-        [-o[0] * side, 0.2, -o[1] * side],
-        [0, 1, 0],
-      ],
-    ];
-    for (const [c, n, ay] of [cards[i & 1]]) {
-      const hw = 0.42;
-      const hh = 0.3;
-      const ids = [
-        [-1, -1],
-        [1, -1],
-        [1, 1],
-        [-1, 1],
-      ].map(([u, v]) =>
-        m.vertex(
-          [
-            c[0] + ax[0] * u * hw + ay[0] * v * hh,
-            c[1] + ax[1] * u * hw + ay[1] * v * hh,
-            c[2] + ax[2] * u * hw + ay[2] * v * hh,
-          ],
+    // Shoulders: k 2 (front, toward the road) and 3 (back), two tufts each.
+    for (const [k, s] of [
+      [2, -1],
+      [3, 1],
+    ] as const)
+      for (let j = 0; j < 2; j++) {
+        const t = 0.05 + j * 0.5 + fr(k * 8 + j * 4) * 0.4;
+        const c = hull(k, t);
+        // Yawed 30-60 degrees off the run, so a view along the hedge
+        // does not see them edge-on.
+        const yaw = (j ? 1 : -1) * (0.5 + fr(k * 8 + 16 + j * 4) * 0.5);
+        const cy = Math.cos(yaw);
+        const sy = Math.sin(yaw);
+        const bx: Vec3 = [ax[0] * cy + o[0] * sy, 0, ax[2] * cy + o[1] * sy];
+        const bo: Vec2 = [-ax[0] * sy + o[0] * cy, -ax[2] * sy + o[1] * cy];
+        const ay: Vec3 = [bo[0] * s * 0.5, 0.87, bo[1] * s * 0.5];
+        const n: Vec3 = [o[0] * s * 0.55, 0.85, o[1] * s * 0.55];
+        card(
+          [c[0] + o[0] * s * 0.08, c[1] + 0.07, c[2] + o[1] * s * 0.08],
+          bx,
+          ay,
           n,
-          (u + 1) / 2,
-          (1 - v) / 2,
-          leaf,
-          seed,
-        ),
+          0.4 + fr(4 + j * 8) * 0.15,
+          0.3,
+        );
+      }
+    // Lying on the top, or on alternating sides.
+    const side = hv & 1 ? 1 : -1;
+    if (i & 1) {
+      const a = hull(2, 0.5);
+      const b = hull(3, 0.5);
+      const f = 0.2 + fr(12) * 0.6;
+      card(
+        [lerp(a[0], b[0], f), lerp(a[1], b[1], f) + 0.05, lerp(a[2], b[2], f)],
+        ax,
+        [o[0], 0, o[1]],
+        [o[0] * 0.25 * side, 0.97, o[1] * 0.25 * side],
+        0.42,
+        0.3,
       );
-      m.triFacing(ids[0], ids[1], ids[2], n);
-      m.triFacing(ids[0], ids[2], ids[3], n);
+    } else {
+      const c = hull(side > 0 ? 4 : 1, 0.3 + fr(20) * 0.4);
+      card(
+        [c[0] + o[0] * side * 0.04, c[1] - 0.05, c[2] + o[1] * side * 0.04],
+        ax,
+        [0, 1, 0],
+        [o[0] * side, 0.2, o[1] * side],
+        0.42,
+        0.3,
+      );
     }
   }
 }
@@ -8300,8 +8505,10 @@ export function buildTile(
     } else {
       for (const side of [-1, 1]) {
         const off = (ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] * 0.55) * side;
-        for (let s = s0 + 10; s < total - s1 - 8; s += 13) {
-          const q = chainAt(c, arc, s);
+        for (let s0t = s0 + 10; s0t < total - s1 - 8; s0t += 13) {
+          // Shifted clear of lamp heads (NaN: dropped, as off the walk).
+          const s = avenueTreeS(L, ctx.geom, ci, side, s0t);
+          const q = chainAt(c, arc, Number.isNaN(s) ? s0t : s);
           const l: Vec2 = [-q.d[1], q.d[0]];
           const x = q.p[0] + l[0] * off;
           const z = q.p[1] + l[1] * off;
@@ -8316,9 +8523,15 @@ export function buildTile(
             ),
             z,
           ];
-          if (!inTile(p[0], p[2])) continue;
+          // The tile owning the nominal spot builds it (shifted or not),
+          // so each tile's stream of tree draws stays as before.
+          const n0 = chainAt(c, arc, s0t);
+          if (!inTile(n0.p[0] - n0.d[1] * off, n0.p[1] + n0.d[0] * off))
+            continue;
           const th = rng.range(6, 9);
           if (
+            Number.isNaN(s) ||
+            s >= total - s1 - 8 ||
             !land.ok(x, z, ci) ||
             deckClearance(ctx, p[0], p[2], p[1]) < th + 1
           ) {

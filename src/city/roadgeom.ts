@@ -35,6 +35,8 @@ export interface JunctionGeom {
   centerH: number;
   /** Merged cluster: the plate (a hull) may overlap strips; drawn low. */
   low: boolean;
+  /** Merged cluster lead: every member junction (itself first). */
+  members?: number[];
   /**
    * The road surface proper, for prop landing tests: [plate], or for a
    * merged cluster's lead its members' own plates (the hull also spans
@@ -429,6 +431,7 @@ export function computeRoadGeom(L: CityLayout): RoadGeom {
     lead.plateH = h.map(i => hs[i]);
     lead.centerH = ch / g.length;
     lead.low = true;
+    lead.members = g;
     for (const ji of g.slice(1)) {
       // Partners keep their slivers but draw no plate of their own.
       lead.slivers.push(...junctions[ji].slivers);
