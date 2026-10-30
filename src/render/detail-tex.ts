@@ -70,6 +70,7 @@ function stones(
   r1: number,
   tone: () => number,
   lift: number,
+  angular = false,
 ) {
   for (let i = 0; i < count; i++) {
     const cx = rng.range(0, N);
@@ -89,7 +90,17 @@ function stones(
         const v = (-dx * sa + dy * ca) / (r * sq);
         const d2 = u * u + v * v;
         if (d2 >= 1) continue;
-        const h = top * Math.sqrt(1 - d2);
+        // Angular (crushed rock): an octagonal pyramid with a flattened
+        // crown, so the stones get facets and crisp ridges, not domes.
+        const m = Math.max(
+          Math.abs(u),
+          Math.abs(v),
+          (Math.abs(u) + Math.abs(v)) * 0.72,
+        );
+        if (angular && m >= 1) continue;
+        const h = angular
+          ? top * Math.min(1, (1 - m) * 1.8)
+          : top * Math.sqrt(1 - d2);
         const k = idx(Math.round(cx) + dx, Math.round(cy) + dy);
         if (h > L.h[k]) {
           L.h[k] = h;
@@ -255,9 +266,15 @@ function ballast(): Layer {
   const L = layer();
   const rng = new Rng(51);
   for (let k = 0; k < N * N; k++) L.a[k] = 0.15;
+  // Crushed granite: angular, higher contrast, a fifth of the stones dark.
+  // (The rust-tinted ones are tinted in the shader: this channel is grey.)
+  const tone = () => {
+    const r = rng.next();
+    return r < 0.2 ? rng.range(0.22, 0.3) : rng.range(0.4, 0.78);
+  };
   for (let pass = 0; pass < 3; pass++)
-    stones(L, rng, 2600, 5, 12, () => rng.range(0.35, 0.7), pass * 2);
-  L.bump = 0.25;
+    stones(L, rng, 2600, 5, 12, tone, pass * 2, true);
+  L.bump = 0.45;
   return L;
 }
 
