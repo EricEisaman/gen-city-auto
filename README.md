@@ -52,7 +52,7 @@ Asset lab (one asset alone in the full renderer, for art review):
 central signalized junction / first straight viaduct section),
 `kind=tower|glass|midrise|pencil|house|apartment|station` (buildings),
 `station=1` (rail: a station), `ctx=1` (road/rail: keep the buildings around),
-`view=<preset>`: building `street|facade|mid|far|shell|aerial|rear|orbit`,
+`view=<preset>`: building `street|facade|mid|far|shell|aerial|rear|service|orbit`,
 road `eye|low|top|mid|far|shell|curb|orbit`, rail
 `side|under|along|mid|far|shell|station|orbit`. `shell` is `far` with every
 tile forced to LOD1. Traffic, pedestrians, trains and the director are off;

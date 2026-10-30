@@ -577,6 +577,17 @@ export function labInfo(
       ),
       C,
     );
+    // Service: the rear at eye level, 3/4 from the other side.
+    const svc = rot([-n[0], -n[1]], 0.75 * dirU);
+    const sq: Vec2 = [
+      C[0] + svc[0] * Math.max(20, span * 1.2),
+      C[2] + svc[1] * Math.max(20, span * 1.2),
+    ];
+    views.service = look(
+      v3(sq, g(sq) + 1.7),
+      v3([C[0], C[2]], y0 + Math.min(b.height, 20) * 0.4),
+      1.1,
+    );
     orbit = {
       center: C,
       radius: Math.max(60, fit * 1.15),
