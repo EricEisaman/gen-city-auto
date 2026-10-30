@@ -505,15 +505,10 @@ fn shadow(world: vec3f, n: vec3f, vdepth: f32) -> f32 {
   if (any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) { return 1.0; }
   let z = lp.z - 0.0005;
   let size = vec2f(textureDimensions(shadowMap));
-  // The 3x3 kernel jittered by up to a texel per pixel and frame (TAA
-  // resolves it): a fixed kernel left the staircase of a caster's texel
-  // edges as parallel stripes on grazing receivers (the planter wall under
-  // a hedge, kerb faces).
-  let jt = (hash22(floor(world.xz * 211.0) + floor(world.y * 211.0) * 0.37 + fract(frame.time.z * 0.618) * 97.0) - 0.5) * 1.2;
   var sum = 0.0;
   for (var y = -1; y <= 1; y++) {
     for (var x = -1; x <= 1; x++) {
-      sum += textureSampleCompareLevel(shadowMap, shadowSampler, uv + (vec2f(f32(x), f32(y)) + jt) / size, i32(cascade), z);
+      sum += textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(f32(x), f32(y)) / size, i32(cascade), z);
     }
   }
   var s = sum / 9.0;
