@@ -20,47 +20,95 @@ function css(c: [number, number, number], k = 1) {
   return `rgb(${Math.round(Math.min(1, c[0] * k) * 255)}, ${Math.round(Math.min(1, c[1] * k) * 255)}, ${Math.round(Math.min(1, c[2] * k) * 255)})`;
 }
 
-function paintSign(g: OffscreenCanvasRenderingContext2D, id: number, rng: Rng) {
+// Shop sign cells are masks (see SIGN_WAYS in src/city/signs.ts), painted
+// white on black into three layers: lettering (R), frame ring and letter
+// outlines (G), and the lettering's bevel height (B, the lettering blurred).
+interface MaskLayers {
+  text: OffscreenCanvasRenderingContext2D;
+  edge: OffscreenCanvasRenderingContext2D;
+}
+
+/** Frame ring of shop sign `id`; returns its cell. */
+function maskCell(L: MaskLayers, id: number) {
   const [x, y, w, h] = signRect(id);
-  const col = signColor(id);
-  const style = rng.int(0, 4);
-  g.save();
-  g.beginPath();
-  g.rect(x, y, w, h);
-  g.clip();
-  // Background: lit box (bright) or dark panel with neon text.
-  const lightBox = style < 2;
-  if (lightBox) {
-    const grad = g.createLinearGradient(x, y, x + w, y + h);
-    grad.addColorStop(0, css(col, 1));
-    grad.addColorStop(1, css(col, 0.7));
-    g.fillStyle = grad;
+  const lw = Math.max(4, Math.min(w, h) * 0.05);
+  const e = L.edge;
+  e.strokeStyle = '#fff';
+  e.lineWidth = lw;
+  e.strokeRect(x + lw * 1.5, y + lw * 1.5, w - lw * 3, h - lw * 3);
+  for (const g of [L.text, L.edge]) {
+    g.save();
+    g.beginPath();
+    g.rect(x, y, w, h);
+    g.clip();
+    g.fillStyle = '#fff';
+    g.strokeStyle = '#fff';
+    g.lineJoin = 'round';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+  }
+  return {x, y, w, h};
+}
+
+function endCell(L: MaskLayers) {
+  L.text.restore();
+  L.edge.restore();
+}
+
+/**
+ * Lettering at (tx, ty): fill into the text layer and, on every other sign,
+ * a heavy outline into the edge layer (a contrasting rim, as on many
+ * Japanese shop signs).
+ */
+function letter(
+  L: MaskLayers,
+  id: number,
+  ch: string,
+  tx: number,
+  ty: number,
+  size: number,
+) {
+  const font = `bold ${size}px ${FONT}`;
+  L.text.font = font;
+  L.edge.font = font;
+  if (id % 2 === 0) {
+    L.edge.lineWidth = Math.max(3, size * 0.14);
+    L.edge.strokeText(ch, tx, ty);
+  }
+  L.text.fillText(ch, tx, ty);
+}
+
+// In vertical writing these turn a quarter (the long-vowel mark becomes a
+// vertical bar, brackets open downwards), and small kana sit in the upper
+// right of their cell.
+const VERTICAL_ROTATE = /[ー〜～…‥－―—\-~()（）「」『』【】〈〉《》［］]/;
+const SMALL_KANA = /[ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ]/;
+
+/**
+ * One character of vertical text centred at (tx, ty), drawn by `draw` into
+ * the contexts `g` (rotated a quarter turn where vertical writing turns it).
+ */
+function verticalGlyph(
+  draw: (ch: string, x: number, y: number) => void,
+  g: OffscreenCanvasRenderingContext2D[],
+  ch: string,
+  tx: number,
+  ty: number,
+  size: number,
+) {
+  if (VERTICAL_ROTATE.test(ch)) {
+    for (const c of g) {
+      c.save();
+      c.translate(tx, ty);
+      c.rotate(Math.PI / 2);
+    }
+    draw(ch, 0, 0);
+    for (const c of g) c.restore();
+  } else if (SMALL_KANA.test(ch)) {
+    draw(ch, tx + size * 0.12, ty - size * 0.12);
   } else {
-    g.fillStyle = '#0b0b10';
+    draw(ch, tx, ty);
   }
-  g.fillRect(x, y, w, h);
-  // Border.
-  g.strokeStyle = lightBox ? 'rgba(255,255,255,0.85)' : css(col);
-  g.lineWidth = Math.max(4, Math.min(w, h) * 0.05);
-  g.strokeRect(
-    x + g.lineWidth,
-    y + g.lineWidth,
-    w - g.lineWidth * 2,
-    h - g.lineWidth * 2,
-  );
-  const textCol = lightBox
-    ? rng.chance(0.5)
-      ? '#ffffff'
-      : '#101010'
-    : css(col);
-  g.fillStyle = textCol;
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  if (!lightBox) {
-    g.shadowColor = css(col);
-    g.shadowBlur = 18;
-  }
-  return {x, y, w, h, textCol};
 }
 
 // Billboard poster k (0..7) in the cell (x, y, w, h): four layouts (product
@@ -219,39 +267,46 @@ function paintBillboard(
   g.restore();
 }
 
-export function paintSignAtlas(seed = 1): OffscreenCanvas {
+export function paintSignAtlas(): OffscreenCanvas {
   const canvas = new OffscreenCanvas(ATLAS_W, ATLAS_H);
-  const g = canvas.getContext('2d')!;
+  const g = canvas.getContext('2d', {willReadFrequently: true})!;
   g.fillStyle = '#000';
   g.fillRect(0, 0, ATLAS_W, ATLAS_H);
-  const rng = new Rng(seed);
+  const layer = () => {
+    const c = new OffscreenCanvas(ATLAS_W, ATLAS_H);
+    const cg = c.getContext('2d', {willReadFrequently: true})!;
+    cg.fillStyle = '#000';
+    cg.fillRect(0, 0, ATLAS_W, ATLAS_H);
+    return cg;
+  };
+  const L: MaskLayers = {text: layer(), edge: layer()};
   // Vertical shop signs: characters stacked top to bottom.
   for (let id = 0; id < 32; id++) {
-    const {x, y, w, h} = paintSign(g, id, rng);
-    const word = verticalWord(id);
-    const chars = [...word].slice(0, 6);
-    const size = Math.min(w * 0.72, (h * 0.86) / chars.length);
-    g.font = `bold ${size}px ${FONT}`;
+    const {x, y, w, h} = maskCell(L, id);
+    const chars = [...verticalWord(id)].slice(0, 6);
+    const size = Math.min(w * 0.66, (h * 0.84) / chars.length);
     chars.forEach((ch, i) => {
-      g.fillText(
+      verticalGlyph(
+        (c, tx, ty) => letter(L, id, c, tx, ty, size),
+        [L.text, L.edge],
         ch,
         x + w / 2,
         y +
-          h * 0.07 +
+          h * 0.08 +
           size * (i + 0.5) * 1.02 +
-          (h * 0.86 - size * chars.length) / 2,
+          (h * 0.84 - size * chars.length) / 2,
+        size,
       );
     });
-    g.restore();
+    endCell(L);
   }
   // Horizontal shop signs.
   for (let id = 32; id < 44; id++) {
-    const {x, y, w, h} = paintSign(g, id, rng);
+    const {x, y, w, h} = maskCell(L, id);
     const word = HORIZONTAL_WORDS[id - 32];
-    const size = Math.min(h * 0.6, (w * 0.85) / Math.max(2, [...word].length));
-    g.font = `bold ${size}px ${FONT}`;
-    g.fillText(word, x + w / 2, y + h / 2);
-    g.restore();
+    const size = Math.min(h * 0.56, (w * 0.82) / Math.max(2, [...word].length));
+    letter(L, id, word, x + w / 2, y + h / 2, size);
+    endCell(L);
   }
   // Station name boards: white with a green line stripe (JR-style).
   for (let k = 0; k < 4; k++) {
@@ -275,10 +330,7 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
   // street): a bold colour field, one big shape, the brand name in heavy
   // outlined type and a tagline bar.
   for (let k = 0; k < 8; k++) {
-    const id = 48 + k;
-    const [x, y, w, h] = signRect(id);
-    // (The old painter's draws, so the cube signs below keep their styles.)
-    for (let s = 0; s < 18; s++) rng.next();
+    const [x, y, w, h] = signRect(48 + k);
     paintBillboard(g, k, x, y, w, h);
   }
   // Square cube signs (projecting light boxes): one or two big glyphs, in a
@@ -303,36 +355,68 @@ export function paintSignAtlas(seed = 1): OffscreenCanvas {
   ];
   for (let k = 0; k < 16; k++) {
     const id = 72 + k;
-    const {x, y, w, h, textCol} = paintSign(g, id, rng);
+    const {x, y, w, h} = maskCell(L, id);
     const text = SQUARE_TEXT[k];
     const n = [...text].length;
-    if (k % 3 === 0) {
-      // Disc logo.
-      g.shadowBlur = 0;
-      g.beginPath();
-      g.arc(x + w / 2, y + h / 2, w * 0.36, 0, Math.PI * 2);
-      g.fillStyle = textCol;
-      g.fill();
-      g.fillStyle =
-        textCol === '#ffffff' || textCol === '#101010'
-          ? css(signColor(id), 0.6)
-          : '#0b0b10';
-    }
     const size =
-      n === 1 ? h * 0.62 : n === 2 ? h * 0.4 : (w * 0.8) / (n * 0.62);
-    g.font = `bold ${size}px ${FONT}`;
-    if (n === 2 && /[^ -~]/.test(text)) {
+      n === 1 ? h * 0.58 : n === 2 ? h * 0.38 : (w * 0.76) / (n * 0.62);
+    if (k % 3 === 0) {
+      // Disc logo in the frame colour, its glyph knocked out of it so the
+      // background shows through.
+      const e = L.edge;
+      e.beginPath();
+      e.arc(x + w / 2, y + h / 2, w * 0.36, 0, Math.PI * 2);
+      e.fill();
+      e.globalCompositeOperation = 'destination-out';
+      e.font = `bold ${size}px ${FONT}`;
+      e.fillText(text, x + w / 2, y + h / 2 + size * 0.04);
+      e.globalCompositeOperation = 'source-over';
+    } else if (n === 2 && /[^ -~]/.test(text)) {
       // Two kanji stacked, as on a corner light box.
       [...text].forEach((ch, i) =>
-        g.fillText(ch, x + w / 2, y + h * (0.3 + i * 0.4)),
+        letter(L, id + 1, ch, x + w / 2, y + h * (0.3 + i * 0.4), size),
       );
     } else {
-      g.fillText(text, x + w / 2, y + h / 2 + size * 0.04);
+      letter(L, id + 1, text, x + w / 2, y + h / 2 + size * 0.04, size);
     }
-    g.restore();
+    endCell(L);
+  }
+  // Bevel height: the lettering (and disc logos) blurred a little.
+  const height = layer();
+  height.filter = 'blur(3px)';
+  height.drawImage(L.text.canvas, 0, 0);
+  height.globalCompositeOperation = 'lighten';
+  for (let k = 0; k < 16; k += 3) {
+    const [x, y, w, h] = signRect(72 + k);
+    height.drawImage(L.edge.canvas, x, y, w, h, x, y, w, h);
+  }
+  height.filter = 'none';
+  // Pack the masks into the shop sign rows.
+  for (const [y0, y1] of MASK_ROWS) {
+    const img = g.getImageData(0, y0, ATLAS_W, y1 - y0);
+    const t = L.text.getImageData(0, y0, ATLAS_W, y1 - y0).data;
+    const e = L.edge.getImageData(0, y0, ATLAS_W, y1 - y0).data;
+    const hh = height.getImageData(0, y0, ATLAS_W, y1 - y0).data;
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = t[i];
+      d[i + 1] = e[i];
+      d[i + 2] = hh[i];
+    }
+    g.putImageData(img, 0, y0);
   }
   return canvas;
 }
+
+/**
+ * Atlas rows (at mip 0) holding shop sign masks: vertical and horizontal
+ * signs, and the square signs. They are linear data, so the upload encodes
+ * them to sRGB for the -srgb texture to decode back.
+ */
+const MASK_ROWS: [number, number][] = [
+  [0, 1408],
+  [2048, 2560],
+];
 
 // Tenant lettering: the cut-vinyl names office and zakkyo tenants stick on
 // their upper-floor windows, one big character per pane (カ|ラ|オ|ケ across
@@ -443,6 +527,13 @@ export function paintVinylMask(seed = 7): OffscreenCanvas {
   return canvas;
 }
 
+/** Linear byte to sRGB-encoded byte. */
+const TO_SRGB = Uint8Array.from({length: 256}, (_, i) => {
+  const v = i / 255;
+  const e = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+  return Math.round(e * 255);
+});
+
 export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
   const canvas = paintSignAtlas();
   const mask = paintVinylMask();
@@ -481,6 +572,13 @@ export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
     const m = msrc.getContext('2d')!.getImageData(0, 0, w, h).data;
     const d = img.data;
     for (let i = 3; i < d.length; i += 4) d[i] = m[i - 3];
+    for (const [y0, y1] of MASK_ROWS) {
+      for (let i = (y0 >> l) * w * 4; i < (y1 >> l) * w * 4; i += 4) {
+        d[i] = TO_SRGB[d[i]];
+        d[i + 1] = TO_SRGB[d[i + 1]];
+        d[i + 2] = TO_SRGB[d[i + 2]];
+      }
+    }
     device.queue.copyExternalImageToTexture(
       {source: img},
       {texture: tex, mipLevel: l},
