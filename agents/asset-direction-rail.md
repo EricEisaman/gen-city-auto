@@ -585,3 +585,70 @@ but these are the hooks:
   0x92, 0.28 x 0.24 m, facing along) under the canopy fascia every 24 m.
 - **Lab:** new `platform` view for station sites (on the +1 platform at eye height looking toward
   the stair head: canopy soffit, departure board, clock, benches, vending).
+
+### Round 5 geometry additions (for the shader engineer)
+
+- **Wires (city.wgsl):** the round-4 code still gave overhead-line wires a 50 % *hashed* coverage
+  floor whenever they were thinner than the min width, i.e. at every range past ~10 m: that was the
+  mid-range "barbed wire" (120-300 m in `mid` / `far`). Overhead-line wires (`CM.wire` params != 0)
+  now go down the lamp path: a SOLID min-width line (`MIN_LINE_PX` 0.7, ~1 px across the diamond),
+  `VOut.cov` = -true coverage, out to `LINE_FADE` = 700 m, then a 30 % dither. Lamp tubes are also
+  0.7 px now (was 0.85; their light is still scaled by the true coverage). No material change needed;
+  if the wires read too dark/heavy against sky, a coverage-driven lift is possible in `fs` (ask me).
+- **`RC_FASCIA | RC_RECESS` (`RC_RECESS = 0x40`, gen-base.ts):** the top 0.36 m of the fascia (y 1.06
+  .. 0.70) is now set back 8 cm (5.12 lateral) under the coping lip, then a 45-degree weathering fillet
+  (plain `RC_FASCIA`, normal out+up) steps back out to the 5.2 face at y 0.62. All three faces keep the
+  fascia's uv.y (metres down from 1.06), so formwork rows, scupper streaks and stains run straight
+  across. The lip soffit now spans 5.43 .. 5.12. **Shader ask:** darken the `RC_RECESS` face (~0.6x,
+  grime / damp, still formwork) so the band under the coping reads as a dark line at mid/far range in
+  flat or back light too (it is only in the lip's shadow when the sun is on that side). Role is still
+  `param & 0xf == RC_FASCIA`, so nothing breaks if ignored.
+- **Expansion-joint cover plates:** `CM.paint 0x304` (PAINT_STEEL seed 4, dark rust-brown, chipped)
+  boxes 0.4 m wide x 1.96 m (y -0.92 .. 1.04, lateral 5.10..5.25) over the fascia at every 4th bent
+  (`i % 4 == 2`, halfway between gantries), both sides, off stations: a dark tick every 48 m.
+- **Underside:** cable tray along the +1 side (`galv` metal: bottom 'h' 2.8..3.38 at y -1.25 against
+  the edge beam / girder inner face, a 15 cm 'v' lip at 2.8); grey conduits (`CM.paint 0x90`, r 4 cm)
+  up the inner face of ~1 in 3 non-flank columns (on the +1 side with a junction box at 1.6 m and a
+  bend into the tray); **bearing plinths** at every main column head taller than 3 m (column stops
+  0.3 m lower; an `RC_BEAM` block 8 cm proud all round, 0.3 m, closed soffit). Under-deck lights: the soffit fluorescent light is
+  radius 9 at half colour (was 11, full); the bent LEDs are now `LightKind.station` radius 11 at 0.8
+  (were street kind, radius 18 - the junction-luminaire path washed the whole underside white).
+- **Station canopy roof:** `CM.paint SKYLIGHT` (**0xd2**, new; pale-grey fallback) 0.8 m x bay
+  skylight strip boxes down the middle of the roof (lateral 7.0, 4 cm proud); ridge ventilators
+  (`CM.paint 0x90`, 0.44 x 0.36 x 0.6 m with a cap) every 2nd bay near the high edge; an eaves
+  gutter tube (`CM.paint 0x90`, r 7.5 cm) along the low track-side edge. **Shader ask:** SKYLIGHT
+  as milky polycarbonate (pale, glossy, faint 0.1 m ribs along u, a soft glow at night).
+- **Concourse upper storey (night band):** a 1 m clerestory ribbon on both long faces (quad,
+  `RC_STATION | RC_GLAZED`, uv.x metres along, **uv.y 1.2 .. 2.2** so it is all glass between kick
+  plate and transom) centred in the upper band (lateral 9.87, behind the fins), a `CM.ledLine 0`
+  cornice line over it, and when the band is > 3 m a row of back-lit 4:1 ad boxes (`CM.sign 32..43`
+  on a `CM.frame` box, uv 0..1, 3 x 0.76 m, 0.33 m proud) above it, clear of the name board. The
+  glazed hall emissive is room-level and faint on this thin ribbon at night: a brighter emissive for
+  glazed faces whose uv.y starts at 1.2 (or any brighter term) would help it.
+- **Platform:** perpendicular mid-platform name board raised to 2.6 m clear (on two rods); the
+  track-facing boards 13 cm higher (bottom ~2.16 m); two double-faced hanging clocks per platform
+  (lateral 8.3, 2.45 m: `CM.lamp 1` 10-gon face uv 0..1 around the centre, `CM.paint 0x91` rim
+  tube and hands at 10:08); green (`CM.paint 0x0c`) 0.45 m car-position floor squares every 6 m at
+  1.25..1.7 m from the edge (4 mm proud); slatted benches (4 seat + 3 back slats, steel end frames);
+  vending machines' display window recessed 6 cm (a proud lower body 0..0.7 m and header 1.5..1.8 m,
+  same `CM.vending` param, uv.y from their own bottoms so no drink rows on them). The shader's
+  white edge line (x 0.04..0.16 on the coping) is there but low-contrast against the pale coping
+  (0.8 vs 0.5) - a brighter / wider line would make the judge see it.
+- **Lab:** the `platform` view now stands at -8 m (was +4) looking at +40 m, so the hanging board is
+  whole, ~14 m ahead, with a clock beside it.
+- **Round 5 follow-ups (after shader round 5):**
+  - `DEPARTURE` is now **0x10000** (bit 16; ad screens carry at most a 16-bit seed), and the
+    `screenMat` selector is `(param >> 16u) == 1u`, so no ad can render as a departure board.
+  - **`RC_CLERESTORY` = 0x80** on the concourse clerestory ribbon (`RC_STATION | RC_GLAZED |
+    RC_CLERESTORY`). Its emissive is the delimited "Clerestory band" block in the glazed branch of
+    `railConcrete` (city-materials.wgsl): a warm band between the mullions, x0.15 by day, x1.4 at
+    night. The shader engineer can retune it.
+  - Name boards are 0.64 m tall (0.72 m for the concourse one) and 4.8 m wide (2 x the 2.4 m unit)
+    or 2.4 m (the perpendicular board) / 7.2 m (concourse) / 4.8 m (stair tower), so the 0.6 m atlas
+    cell fits inside the frame and the 2.4 m unit repeats with no clipped remainder. The
+    perpendicular board is still 2.6 m clear.
+  - **`VENDING_FRONT` = 0x300** (`CM.vending`, `| body 0..2`; 0x300 % 3 == 0, so `param % 3` still
+    picks the body colour): the platform machines' display front is its own quad 3 mm proud of the
+    box's +x face with the same box UVs (u 0..0.9, v 0..1.8). **Shader ask:** draw the window and
+    header only where `(param & 0x300) == 0x300` (or on the street machine's mesh); the box's other
+    faces then stay plain body.

@@ -820,6 +820,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
         let pa = dot(qq, ra) / 1.5;
         let pc = dot(qq, vec2f(-ra.y, ra.x)) / select(0.9, select(0.6, 1.0, fa > 0.0), L.kind < 0.0);
         e2 = pa * pa + pc * pc;
+      } else if (L.radius < 19.0) {
+        // Kind exactly 0 with a short reach: the rail viaduct's under-deck
+        // LED (gen-base, radius 18). A tight pool (0.75 drop) so the
+        // ground under the deck reads as a run of pools, not one floodlit
+        // floor.
+        e2 = dot(q, q) / (0.75 * 0.75);
       } else {
         // Junction luminaires: a wide round pool (1.7 pole heights) so the
         // four corners' overlap carries the middle of the box: the
@@ -839,7 +845,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       let spill = select(0.02, 0.15, cls == CLASS_FOLIAGE);
       // Junction luminaires stay the strongest: the box is the best-lit
       // place on the road. Road luminaires 30 % below the old peak.
-      lc *= temp * mix(spill, 1.0, pool) * select(60.0 / 60.0, 120.0 / 60.0, L.kind == 0.0);
+      lc *= temp * mix(spill, 1.0, pool) * select(60.0 / 60.0, select(120.0, 50.0, L.radius < 19.0) / 60.0, L.kind == 0.0);
     } else if (L.kind > 2.5 && L.kind < 3.5) {
       // Fittings (soffit fluorescents, bracket and bulkhead lamps) hang under
       // a slab or hood and cast no shadow here: nothing much above the
@@ -847,6 +853,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       // through the viaduct deck and lit the soundwall and parapet inner
       // faces evenly all night.
       lc *= smoothstep(0.8, 0.1, world.y - L.pos.y);
+      // High fittings (under-deck soffit tubes, trough lamps: more than
+      // 3.5 m over the floor they light) throw a pool, not a flood: on
+      // the ground the light falls off with the angle from straight down
+      // (a batwing-free diffuser's cos^n), so the ground under the viaduct
+      // is a sequence of pools with darker ground between bents.
+      let drop = L.pos.y - world.y;
+      if (drop > 3.5 && n.y > 0.6) {
+        let cone = pow(clamp(l.y, 0.0, 1.0), 6.0);
+        lc *= mix(1.0, mix(0.08, 3.0, cone), smoothstep(3.5, 5.0, drop));
+      }
     }
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     // Point lights cast no shadows: the vehicle contact term stands in under cars.

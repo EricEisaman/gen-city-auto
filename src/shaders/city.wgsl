@@ -43,16 +43,18 @@ struct VOut {
 //
 // Hashed coverage only resolves where TAA keeps its history: the variance
 // clip throws the history away in every frame whose 3x3 neighbourhood has
-// no covered sample, so a sparse dither (a far wire at 10-40 % coverage)
-// came out as beads and stair-steps. Overhead line wires (wire params 1-2)
-// and lamp tubes are therefore drawn as SOLID lines at least MIN_LINE_PX
-// wide (~1.2 px across the diamond section, so every pixel column along the
-// line holds a sample each frame and TAA's jitter anti-aliases it into a
-// smooth line); the wires fade back to hashed coverage only far out
-// (LINE_FADE metres), the lamps scale their light by the true coverage.
+// no covered sample, so a sparse dither came out as beads and stair-steps.
+// Overhead line wires (wire params 1-2) and lamp tubes are therefore drawn
+// as SOLID lines at least MIN_LINE_PX wide (~1 px across the diamond
+// section: every pixel column along the line holds a sample each frame and
+// TAA's jitter anti-aliases it into a soft continuous line). Round 4 still
+// gave the wires a 50 % hashed coverage floor between the close range and
+// LINE_FADE, which is exactly the mid range (120-300 m): that was the
+// "barbed wire" beading. Wires now stay solid out to LINE_FADE and only
+// then drop to a 30 % dither; lamps scale their light by the true coverage.
 const MIN_TUBE_PX = 0.7;
-const MIN_LINE_PX = 0.85;
-const LINE_FADE = vec2f(260.0, 520.0);
+const MIN_LINE_PX = 0.7;
+const LINE_FADE = 700.0;
 const TUBE_MATS = (1u << 6u) | (1u << 11u) | (1u << 15u) | (1u << 16u) | (1u << 20u);
 
 fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
@@ -92,12 +94,11 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
       p += o.normal * (rMin - r);
       o.pos = frame.viewProj * vec4f(p, 1.0);
       o.cov = r / rMin;
-      if (id == 11u) {
+      if (id == 11u || (isLine && o.pos.w < LINE_FADE)) {
+        // Solid min-width line (no dither); -cov carries the true coverage.
         o.cov = -o.cov;
       } else if (isLine) {
-        // Solid out to LINE_FADE.x, then back to the hashed coverage.
-        let f = smoothstep(LINE_FADE.x, LINE_FADE.y, o.pos.w);
-        o.cov = max(o.cov, mix(0.5, 0.3, f));
+        o.cov = max(o.cov, 0.3);
       }
     }
   }
