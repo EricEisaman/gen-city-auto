@@ -925,7 +925,7 @@ function roofHouse(
     const t = t0 + dt / r.len;
     m.beam(r.at(t, 0.2, y0), r.at(t, 0.2, top + 0.9), 0.02, 0.02, steel);
   }
-  for (let y = y0 + 0.3; y < top + 0.8; y += 0.3)
+  for (let y = y0 + 0.35; y < top + 0.8; y += 0.35)
     flatQuad(m, r.at(t0, 0.2, y), r.along, 0.22, 0.012, r.n, steel);
 }
 
@@ -1232,7 +1232,7 @@ function fireStair(
   ) => {
     const o0 = inner ? 0.04 : lane,
       o1 = inner ? lane : STAIR_D - 0.02;
-    const n = Math.max(3, Math.round((y1 - y0) / 0.28));
+    const n = Math.max(3, Math.round((y1 - y0) / 0.36));
     const run = (s1 - s0) / n;
     const rise = (y1 - y0) / n;
     for (let k = 0; k < n; k++) {
@@ -1823,8 +1823,8 @@ export function building(
   // walls are mostly hidden: service detail thins out with density.
   const svc = b.density < 0.3 ? 1 : b.density < 0.55 ? 0.5 : 0.25;
   const stairP =
-    (b.kind === 'pencil' ? 1 : b.kind === 'midrise' ? 0.85 : 0.5) * svc;
-  if (cr.chance(stairP) && bodyN >= 2) {
+    (b.kind === 'pencil' ? 0.8 : b.kind === 'midrise' ? 0.65 : 0.35) * svc;
+  if (cr.chance(stairP) && bodyN >= 2 && bodyN <= 7) {
     let best = -1;
     edges.forEach((e, i) => {
       if (e.role < ROLE.party || e.len < STAIR_L + 0.8) return;
@@ -2723,8 +2723,9 @@ export function building(
   // downpipes from rain heads with an offset, meters, AC condensers on
   // brackets with refrigerant and condensate lines, sills and heads on the
   // rear's punched windows, the back door, and the steel fire stair. Party
-  // walls stay blank (no openings, no AC): tie-rod plates, a vent, a
-  // downpipe and sometimes the scar of a demolished neighbour.
+  // walls stay blank (no openings, no AC): tie-rod plates, a vent and a
+  // downpipe (the shader's partyWall() paints the demolished neighbour's
+  // ghost roofline).
   if (lod === 0) {
     const steelGrey = packMat(CM.paint, 0x90);
     const acMat = packMat(CM.paint, 0xe0);
@@ -2894,73 +2895,20 @@ export function building(
             dark,
           );
         }
-        // The scar of a demolished low neighbour: the cleaner patch of wall
-        // it covered, its gable profile in old tar flashing.
-        if (bodyN >= 3 && e.len >= 6 && cr.chance(0.45 * svc)) {
-          const fn = roles.indexOf(ROLE.front);
-          const nf = fn >= 0 ? edges[fn].n : e.n;
-          // The end of this wall toward the street.
-          const fromA = e.along[0] * nf[0] + e.along[2] * nf[2] < 0;
-          const depth = Math.min(e.len - 0.4, cr.range(7, 12));
-          const sa = fromA ? 0 : e.len - depth;
-          const sb = sa + depth;
-          const eaves = base + cr.range(5.5, 7.5);
-          const ridge = eaves + cr.range(1.2, 2.2);
-          const patch = packMat(CM.concrete);
-          const P = (s: number, y: number) => edgeAt(e, s, 0.012, y);
-          m.quad(
-            [P(sa, ground), P(sb, ground), P(sb, eaves), P(sa, eaves)],
-            e.n,
-            [
-              [sa, ground],
-              [sb, ground],
-              [sb, eaves],
-              [sa, eaves],
-            ],
-            patch,
-          );
-          const sm = (sa + sb) / 2;
-          const ids = [P(sa, eaves), P(sb, eaves), P(sm, ridge)].map(q =>
-            m.vertex(q, e.n, q[0], q[1], patch),
-          );
-          m.triFacing(ids[0], ids[1], ids[2], e.n);
-          const T = (s: number, y: number) => edgeAt(e, s, 0.02, y);
-          for (const [s0, y0, s1, y1] of [
-            [sa, eaves, sm, ridge],
-            [sm, ridge, sb, eaves],
-          ])
-            m.quad(
-              [
-                T(s0, y0 - 0.06),
-                T(s1, y1 - 0.06),
-                T(s1, y1 + 0.06),
-                T(s0, y0 + 0.06),
-              ],
-              e.n,
-              [
-                [0, 0],
-                [1, 0],
-                [1, 1],
-                [0, 1],
-              ],
-              dark,
-            );
-        }
         return;
       }
-      // Rear: sills and heads on the punched windows (facadeRole: rear
+      // Rear: precast sills under the punched windows (facadeRole: rear
       // windows are 0.45 x 0.45 of bay and floor), skipping the stair
       // column of glass block, the back door bay and floors below grade.
       const bw = bay / e.k;
       const hw = 0.225 * bw;
       const col0 = Math.round(e.u0 / bay);
       const trimMat = packMat(CM.concrete);
-      for (let f = 0; f <= bodyN && svc === 1; f++) {
+      for (let f = 0; f <= bodyN && svc === 1 && b.kind !== 'apartment'; f++) {
         const y0 = f === 0 ? base : base + GROUND_H + (f - 1) * H;
         if (y0 < solidTo[i]) continue;
         const fh = f === 0 ? GROUND_H : H;
         const sill = y0 + 0.55 * fh * 0.55;
-        const head = sill + 0.45 * fh;
         for (let j = 0; j < e.count; j++) {
           if (f >= 1 && (col0 + j + 1000 + (aux >>> 4)) % 11 === 0) continue;
           const s = e.f0 + (j + 0.5) * bw;
@@ -2992,18 +2940,6 @@ export function building(
             uv,
             trimMat,
           );
-          // Head with a drip: front.
-          m.quad(
-            [
-              Q(-w, 0.04, head),
-              Q(w, 0.04, head),
-              Q(w, 0.04, head + 0.08),
-              Q(-w, 0.04, head + 0.08),
-            ],
-            e.n,
-            uv,
-            trimMat,
-          );
         }
       }
       // AC condensers under rear windows on brackets: about every other
@@ -3011,7 +2947,7 @@ export function building(
       // condensate drain hanging below; one or two on a pad at grade.
       let units = 0;
       for (let f = 1; f <= bodyN; f++)
-        for (let j = 0; j < e.count && units < 4 * svc; j++) {
+        for (let j = 0; j < e.count && units < 3 * svc; j++) {
           const y0 = base + GROUND_H + (f - 1) * H;
           if (y0 < solidTo[i] || !cr.chance(0.4)) continue;
           const s = e.f0 + (j + 0.5) * bw;
@@ -3339,7 +3275,7 @@ export function building(
     // Steel guard rail on the parapet coping (most roofs without a fence):
     // posts, a mid rail and a top rail that break the skyline.
     const kr = new Rng(hash2(b.seed, 0x7a11));
-    const guard = !fence && kr.chance(b.density < 0.3 ? 0.7 : 0.25);
+    const guard = !fence && kr.chance(b.density < 0.3 ? 0.55 : 0.2);
     const guardRing = guard && lod === 0 ? inset(roof, 0.1) : null;
     if (guardRing) {
       const y = roofY + CROWN_H + 0.06;
