@@ -23,6 +23,7 @@ import {
   createSignAtlasTexture,
   vinylWgsl,
 } from './sign-atlas.ts';
+import {signWaysWgsl} from '../city/signs.ts';
 import {createDetailTexture} from './detail-tex.ts';
 import type {ClusterData} from '../city/cmesh.ts';
 
@@ -375,6 +376,7 @@ export class Renderer {
       commonWgsl,
       surfaceWgsl,
       vinylWgsl(),
+      signWaysWgsl(),
       cityMaterialsWgsl,
       cityWgsl,
     );

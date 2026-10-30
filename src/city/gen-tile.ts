@@ -41,7 +41,10 @@ import {
   TENANT_NOBORI,
   TENANT_SIGNS,
   TENANT_SQUARES,
+  SIGN_WAY_SHIFT,
+  isShopSign,
   signColor,
+  signGlow,
 } from './signs.ts';
 import type {Heightfield} from './terrain.ts';
 
@@ -188,6 +191,20 @@ function parapet(m: CMesh, poly: Vec2[], y: number, h: number, mat: number) {
  * get only the two sign faces (and lit cube sides, and with `shellUnder`
  * the underside), so far and shell views keep their colour.
  */
+/**
+ * Colourway offset (SIGN_WAYS) for the shop signs of the building being
+ * generated: set from its seed at the top of building(), so each building
+ * paints the shared sign words in its own mix of colour schemes.
+ */
+let signVariant = 0;
+
+/** Sign material param for atlas id `id` (plus flags) on the current building. */
+function shopSignParam(id: number) {
+  return isShopSign(id & 0xff) && !(id & SIGN_STRIPES)
+    ? id | (signVariant << SIGN_WAY_SHIFT)
+    : id;
+}
+
 function signPanel(
   m: CMesh,
   c: Vec3,
@@ -207,7 +224,7 @@ function signPanel(
     c[1] + t * halfH,
     c[2] + along[2] * s * halfLen + n[2] * k * thick,
   ];
-  const mat = packMat(CM.sign, id);
+  const mat = packMat(CM.sign, shopSignParam(id));
   // Front (+n) and back (-n) faces carry the sign, mirrored so text reads correctly.
   m.quad(
     [P(-1, -1, 1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1)],
@@ -270,7 +287,7 @@ function signPanel(
       frame,
     );
   }
-  const side = sideId >= 0 ? packMat(CM.sign, sideId) : frame;
+  const side = sideId >= 0 ? packMat(CM.sign, shopSignParam(sideId)) : frame;
   const sideUv: Vec2[] =
     sideId >= 0
       ? [
@@ -1003,16 +1020,37 @@ function roofField(
     const q = at(s[0], s[1]);
     m.box([q[0], y + 1.1, q[1]], [1.5, 1.1, 3], packMat(CM.paint, 0xe1), yaw);
     if (lod === 0) {
-      const e = at(s[0] + 3, s[1]);
-      const f = at(s[0] + 3 + Math.min(10, box.hu - s[0] - 4), s[1]);
-      if (pointInPolygon(f, roof) && !(hole && pointInPolygon(f, hole)))
-        m.beam(
-          [e[0], y + 1.4, e[1]],
-          [f[0], y + 1.4, f[1]],
-          0.45,
-          0.35,
-          packMat(CM.metal),
+      // Supply duct off the handler's end: a closed run on two stands that
+      // turns down into a curbed roof penetration (it used to stop open-ended
+      // in mid air).
+      const len = Math.min(10, box.hu - s[0] - 4);
+      const f = at(s[0] + 3 + len, s[1]);
+      if (
+        len > 2 &&
+        pointInPolygon(f, roof) &&
+        !(hole && pointInPolygon(f, hole))
+      ) {
+        const dm = packMat(CM.metal);
+        const mid = at(s[0] + 3 + len / 2 - 0.2, s[1]);
+        m.box([mid[0], y + 1.4, mid[1]], [0.45, 0.35, len / 2 - 0.2], dm, yaw);
+        // Elbow down into the curb.
+        const end = at(s[0] + 3 + len - 0.45, s[1]);
+        m.box([end[0], y + 0.95, end[1]], [0.5, 0.8, 0.5], dm, yaw);
+        m.box(
+          [end[0], y + 0.15, end[1]],
+          [0.75, 0.15, 0.75],
+          packMat(CM.concrete),
+          yaw,
         );
+        for (const t of [0.3, 0.7]) {
+          const p = at(s[0] + 3 + len * t, s[1]);
+          for (const sd of [-1, 1]) {
+            const q = at(s[0] + 3 + len * t, s[1] + sd * 0.4);
+            m.beam([q[0], y, q[1]], [q[0], y + 1.05, q[1]], 0.03, 0.03, dm);
+          }
+          m.box([p[0], y + 1.03, p[1]], [0.5, 0.025, 0.04], dm, yaw);
+        }
+      }
     }
   }
   if (area > 3000) {
@@ -1388,7 +1426,7 @@ function vendingMachine(m: CMesh, p: Vec3, n: Vec3, col: number) {
 /** A-frame stand sign (printed, unlit) on the pavement at `p` facing `n`. */
 function aFrameSign(m: CMesh, p: Vec3, n: Vec3, id: number) {
   const r: Vec3 = [n[2], 0, -n[0]];
-  const mat = packMat(CM.sign, id | SIGN_FABRIC);
+  const mat = packMat(CM.sign, shopSignParam(id | SIGN_FABRIC));
   const h = 0.8,
     w = 0.3,
     lean = 0.17;
@@ -1759,7 +1797,7 @@ function nobori(m: CMesh, p: Vec3, n: Vec3, id: number) {
   m.cylinder(p, 0.17, 0.12, 4, packMat(CM.paint, 0x91));
   m.tube([P(0, 0.1, 0), P(0, 2.45, 0)], 0.018, pole);
   m.tube([P(0, 2.4, 0), P(0.48, 2.4, 0)], 0.012, pole);
-  const mat = packMat(CM.sign, id | SIGN_FABRIC);
+  const mat = packMat(CM.sign, shopSignParam(id | SIGN_FABRIC));
   const q = [
     P(0.03, 0.55, 0),
     P(0.48, 0.55, 0),
@@ -2370,7 +2408,7 @@ function tenantKit(
       0.015,
       packMat(CM.metal),
     );
-    const mat = packMat(CM.sign, t.id | SIGN_FABRIC);
+    const mat = packMat(CM.sign, shopSignParam(t.id | SIGN_FABRIC));
     const pw = nw / 3;
     for (let k = 0; k < 3; k++) {
       const a = sc - nw / 2 + k * pw + 0.01,
@@ -2482,6 +2520,7 @@ export function building(
   flush: number[] = [],
 ) {
   const rng = new Rng(b.seed);
+  signVariant = b.seed >>> 28;
   const fp = b.footprint;
   // Whether edge i is hidden up to height y by a neighbour (edgeCover).
   const hid = (i: number, y: number) => (cover[i] ?? -Infinity) >= y;
@@ -3132,7 +3171,7 @@ export function building(
           [0, 0],
           [1, 0],
         ],
-        packMat(CM.sign, id | (lit ? 0 : SIGN_FABRIC)),
+        packMat(CM.sign, shopSignParam(id | (lit ? 0 : SIGN_FABRIC))),
       );
       if (lod === 0) {
         // Frame (a box-section rim), stand-off brackets and a row of
@@ -4014,7 +4053,12 @@ export function building(
         );
       }
       if (lit && style !== 'banner')
-        lights.add(wallAt(t, 1.95, lightY), 8, signColor(id), LightKind.sign);
+        lights.add(
+          wallAt(t, 1.95, lightY),
+          8,
+          signGlow(id, signVariant),
+          LightKind.sign,
+        );
     }
     // Zakkyo stack: on fronts without a blade stack, a projecting tenant
     // sign per upper floor in one column on a steel spine, at the street
@@ -4045,7 +4089,7 @@ export function building(
         // Each sign lights the wall around it in its own colour: a small,
         // dim light just in front of it (tight falloff, so the brick still
         // reads under the tint). Same at every LOD, so shells match.
-        const c = signColor(id);
+        const c = signGlow(id, signVariant);
         lights.add(
           wallAt(t, 1.0, yc),
           3.5,
@@ -4218,7 +4262,7 @@ export function building(
       lights.add(
         wallAt((main.s0 + main.s1) / 2 / len, 1.8, y - 0.8),
         7,
-        signColor(id),
+        signGlow(main.id, signVariant),
         LightKind.sign,
       );
       if (lod === 0) {
