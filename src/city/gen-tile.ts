@@ -968,17 +968,19 @@ export function tree(m: CMesh, p: Vec3, h: number, lod: number, rng: Rng) {
     packMat(CM.bark),
     false,
   );
-  const blobs = lod === 0 ? 3 : 1;
+  const blobs = lod === 0 ? 4 : 1;
   const aux = rng.nextU32();
   for (let k = 0; k < blobs; k++) {
     const r = h * (lod === 0 ? rng.range(0.22, 0.32) : 0.33);
     const c: Vec3 = [
       p[0] + rng.range(-0.25, 0.25) * h * 0.3,
-      p[1] + trunkH + r * (0.6 + k * 0.5),
+      p[1] + trunkH + r * (0.6 + k * 0.38),
       p[2] + rng.range(-0.25, 0.25) * h * 0.3,
     ];
-    blob(m, c, r * 0.62, 0, aux, rng);
-    leafCards(m, c, r, lod === 0 ? 9 : 4, aux, rng);
+    blob(m, c, r * (lod === 0 ? 0.48 : 0.62), 0, aux, rng);
+    // Many smaller cards toward the crown surface give a broken, leafy
+    // silhouette instead of a few big clumps.
+    leafCards(m, c, r, lod === 0 ? 16 : 4, aux, rng, lod === 0 ? 0.62 : 1);
   }
 }
 
@@ -990,6 +992,7 @@ function leafCards(
   count: number,
   aux: number,
   rng: Rng,
+  scale = 1,
 ) {
   const mat = packMat(CM.leaves);
   for (let k = 0; k < count; k++) {
@@ -998,7 +1001,7 @@ function leafCards(
     const th = rng.range(0, Math.PI * 2);
     const s = Math.sqrt(1 - u * u);
     const off: Vec3 = [s * Math.cos(th), u * 0.8, s * Math.sin(th)];
-    const d = rng.range(0.25, 0.7) * r;
+    const d = rng.range(0.25, 0.7) * r * (scale < 1 ? 1.3 : 1);
     const q: Vec3 = [c[0] + off[0] * d, c[1] + off[1] * d, c[2] + off[2] * d];
     const yaw = rng.range(0, Math.PI);
     const tilt = rng.range(-0.6, 0.6);
@@ -1008,7 +1011,7 @@ function leafCards(
       Math.cos(tilt),
       Math.cos(yaw) * Math.sin(tilt),
     ];
-    const sz = r * rng.range(0.75, 1.05);
+    const sz = r * rng.range(0.75, 1.05) * scale;
     const corners: [number, number][] = [
       [-1, -1],
       [1, -1],

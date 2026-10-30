@@ -850,7 +850,9 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       let h = hashuf(aux);
       s.albedo = mix(vec3f(0.08, 0.16, 0.04), vec3f(0.16, 0.24, 0.06), h) * (0.7 + 0.5 * valueNoise(world.xz * 2.0 + world.y));
       s.rough = 0.85;
-      s.ao = clamp(0.55 + 0.45 * n.y, 0.0, 1.0);
+      // The inner crown core sits in the shade of the leaf cards around it.
+      s.ao = clamp(0.3 + 0.3 * n.y, 0.0, 1.0);
+      s.albedo *= 0.6;
       s.cls = CLASS_FOLIAGE;
     }
     case M_LEAVES: {
