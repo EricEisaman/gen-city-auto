@@ -18,7 +18,11 @@ import terrainWgsl from '../shaders/terrain.wgsl';
 import {computeSky, type SkyState} from '../world/sky.ts';
 import {ClusterPool, type PoolHandle} from './cluster-pool.ts';
 import {F, FrameData} from './frame.ts';
-import {createLeafTexture, createSignAtlasTexture} from './sign-atlas.ts';
+import {
+  createLeafTexture,
+  createSignAtlasTexture,
+  vinylWgsl,
+} from './sign-atlas.ts';
 import {createDetailTexture} from './detail-tex.ts';
 import type {ClusterData} from '../city/cmesh.ts';
 
@@ -358,6 +362,7 @@ export class Renderer {
       'shader/city',
       commonWgsl,
       surfaceWgsl,
+      vinylWgsl(),
       cityMaterialsWgsl,
       cityWgsl,
     );

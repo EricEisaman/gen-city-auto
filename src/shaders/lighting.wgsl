@@ -459,12 +459,17 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool) -> 
   return vec4f(0.0);
 }
 
+// Transmittance of the last applyFog() call (how much of the surface's own
+// radiance got through): emitters use it to punch through the haze.
+var<private> fogTrans: f32 = 1.0;
+
 fn applyFog(c: vec3f, world: vec3f, uv: vec2f, dist: f32, rd: vec3f) -> vec3f {
   let dKm = dist * 0.001;
   let slice = sqrt(clamp(dKm / 24.0, 0.0, 1.0)) * 32.0;
   let w = clamp((slice - 0.5) / 32.0, 0.0, 1.0);
   let ap = textureSampleLevel(apVolume, linearSampler, vec3f(uv, w), 0.0);
   var col = c * ap.a + ap.rgb;
+  fogTrans = ap.a;
   // City haze: a low aerosol layer (450 m scale height) that the thin
   // physical atmosphere underestimates. It fades distant blocks toward the
   // horizon colour, which already carries the sun-angle tint (warm toward a
@@ -485,6 +490,7 @@ fn applyFog(c: vec3f, world: vec3f, uv: vec2f, dist: f32, rd: vec3f) -> vec3f {
     let lit = luminance(frame.sunColor.rgb) * max(frame.sunDir.y, 0.1) / PI + luminance(frame.skyAmbient.rgb) + luminance(frame.cityGlow.rgb) * 2.0;
     hz *= min(1.0, lit * 0.9 / max(luminance(hz), 1e-5));
     col = mix(col, hz, 1.0 - exp(-od));
+    fogTrans *= exp(-od);
   }
   // Weather fog: height-based mist that thickens with rain.
   let fogD = frame.weather.w;
@@ -498,6 +504,7 @@ fn applyFog(c: vec3f, world: vec3f, uv: vec2f, dist: f32, rd: vec3f) -> vec3f {
     let ambL = luminance(frame.skyAmbient.rgb * 0.9 + frame.cityGlow.rgb);
     let fogCol = vec3f(ambL) * vec3f(0.86, 0.92, 1.0) + frame.cityGlow.rgb * 0.4 + frame.sunColor.rgb * 0.08 * pow(max(dot(rd, frame.sunDir.xyz), 0.0), 8.0);
     col = mix(col, fogCol, clamp(amount, 0.0, 1.0));
+    fogTrans *= 1.0 - clamp(amount, 0.0, 1.0);
   }
   return col;
 }
@@ -693,6 +700,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (dbg == 8u) { color = vec3f(ao); }
   color += em.rgb;
   color = applyFog(color, world, uv, dist, rd);
+  // Signs and lit windows carry through haze and rain mist: light scattered
+  // forward around a bright source still reaches the eye as its glow, so an
+  // emitter keeps transmittance^0.45 instead of fading with the walls.
+  // (Real lights only: daylit rooms behind glass fade like the walls.)
+  color += em.rgb * max(pow(fogTrans, 0.45) - fogTrans, 0.0) * smoothstep(0.15, 0.8, luminance(em.rgb));
   // Distant geometry and the sea dissolve into the horizon colour, fully by
   // the far edge of the outskirts so the world never ends in a hard line.
   let beyond = max(abs(world.x), abs(world.z)) - frame.world.x * 0.5;
