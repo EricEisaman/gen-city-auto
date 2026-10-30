@@ -960,7 +960,10 @@ fn facadeRain(s: ptr<function, Surf>, uv: vec2f, n: vec3f, T: vec3f, washAmt: f3
   if (wet <= 0.001) { return; }
   let foot = max(length(dWorldX), length(dWorldY));
   (*s).albedo *= mix(1.0, 0.6, wet * porous);
-  (*s).rough = mix((*s).rough, 0.32, wet * 0.6);
+  // A soaked wall is a mirror at grazing angles: every wall material drops
+  // to satin gloss, so the street-level view up a facade shows the grey sky
+  // and the neon sliding over it, not just a darker wall.
+  (*s).rough = mix((*s).rough, min((*s).rough, 0.2), wet * 0.9);
   let rv = rivulets(uv, clamp(0.25 + underSill * 0.6 + washAmt * 0.5, 0.0, 0.9), foot);
   // Flow streaks: broad (0.2-0.8 m) sheets of run-off that stay glossy
   // and dark, hanging below every sill and ledge and wandering down the
@@ -968,10 +971,18 @@ fn facadeRain(s: ptr<function, Surf>, uv: vec2f, n: vec3f, T: vec3f, washAmt: f3
   let fcol = valueNoise(vec2f(uv.x * 1.7, uv.y * 0.07 + 3.0));
   let flow = smoothstep(0.5, 0.8, fcol) * (0.55 + 0.45 * valueNoise(vec2f(uv.x * 0.6, uv.y * 0.25)));
   let sheet = clamp(max(flow, underSill * 0.9 + washAmt * 0.5), 0.0, 1.0);
-  (*s).rough = mix((*s).rough, 0.1, sheet * wet * 0.8);
-  (*s).albedo *= 1.0 - 0.25 * sheet * wet * porous;
+  (*s).rough = mix((*s).rough, 0.05, sheet * wet * 0.9);
+  (*s).albedo *= 1.0 - 0.3 * sheet * wet;
+  // The sheet's surface is rippled into vertical runs (5-25 cm), each tilted
+  // its own way: the glossy film catches the sky in bright and dark ribbons
+  // that read as running water from across the street.
+  {
+    let rx = uv.x * 9.0 + 1.5 * valueNoise(vec2f(uv.x * 3.0, uv.y * 0.6));
+    let rk = (1.0 - smoothstep(0.08, 0.3, foot)) * wet * clamp(sheet + 0.35, 0.0, 1.0);
+    (*s).normal = normalize((*s).normal + T * (valueNoise(vec2f(rx, uv.y * 0.15)) - 0.5) * 0.5 * rk);
+  }
   let film = clamp(rv.x + washAmt * 0.6, 0.0, 1.0) * wet;
-  (*s).rough = mix((*s).rough, 0.07, film);
+  (*s).rough = mix((*s).rough, 0.04, film);
   (*s).albedo *= 1.0 - 0.4 * film;
   (*s).normal = normalize((*s).normal + T * rv.y * 0.5 * wet);
   // Pooled water at grade: the wall wicks it up 20-50 cm.
@@ -1540,8 +1551,10 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         let drop = (1.0 - smoothstep(0.15, 0.3, dr)) * step(0.45, dh.x) * frame.weather.y * (1.0 - smoothstep(0.004, 0.01, foot));
         s.normal = normalize(s.normal + (T * df.x + vec3f(0.0, df.y, 0.0)) * 2.5 * drop);
       }
-      let rv = rivulets(vec2f(lxg + f32(cellSeed & 15u) * 0.37, lyg), 0.45 + 0.3 * smoothstep(0.6, 0.0, wy1 - lyg), foot);
-      s.normal = normalize(s.normal + T * rv.y * 0.8 * wet);
+      // (Drawn at 1.8x scale: water on glass beads into fat trails that
+      // must read from the street, not hairlines.)
+      let rv = rivulets(vec2f(lxg + f32(cellSeed & 15u) * 0.37, lyg) / 1.8, 0.6 + 0.3 * smoothstep(0.6, 0.0, wy1 - lyg), foot / 1.8);
+      s.normal = normalize(s.normal + T * rv.y * 1.2 * wet);
       glassRough = mix(glassRough, 0.12, rv.x * wet * 0.5);
       rivulet = rv.x * wet;
     }
@@ -1577,6 +1590,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     s.metal = 0.8 * barCov;
     // Water trails on the glass refract the room: it breaks up behind them.
     s.emissive = inside * (1.0 - fres) * see * (1.0 - 0.2 * wet) * (1.0 - 0.45 * rivulet) * (1.0 - barCov);
+    // Each trail is a lens gathering the bright sky above: pale streaks
+    // down the dark glass.
+    s.emissive += (frame.skyAmbient.rgb * 0.35 + frame.cityGlow.rgb * 2.0) * rivulet * (1.0 - barCov);
     s.ao = mix(0.55, 1.0, smoothstep(0.0, 0.15, min(fx, fy)));
     s.cls = select(CLASS_GLASS, CLASS_DEFAULT, barCov > 0.5);
     if (!baseShop && fz.zone == FZ_BODY && fz.role <= 1u && (kind == 0u || kind == 2u || kind == 3u)) {
