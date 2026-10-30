@@ -6920,9 +6920,9 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s = insulatorMat(n, uv);
       } else if (param == 0xd1u) {
         s = frpTank(world, n, uv);
-      } else if (param == 0xd0u && abs(n.y) < 0.5) {
-        // Pale painted sheet steel (station canopy fascias, plant boxes, AC
-        // units, bins): 1.8 m panels with a lit / shadowed cover-strip
+      } else if ((param == 0xd0u || param == 0xd7u) && abs(n.y) < 0.5) {
+        // Pale painted sheet steel (station canopy fascias: CANOPY_FASCIA
+        // 0xd7; plant boxes, AC units, bins: 0xd0): 1.8 m panels with a lit / shadowed cover-strip
         // seam, each panel its own tone and sheen, faint rain streaks down
         // the face (world space) and a dark drip line along the uv.y = 0
         // edge (the canopy fascia's top lip; a box's foot).
