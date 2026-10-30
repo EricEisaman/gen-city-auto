@@ -275,6 +275,37 @@ fn groundRadiance() -> vec3f {
   return frame.groundAmbient.rgb * 1.1 + frame.cityGlow.rgb;
 }
 
+// What a window pane reflects when the skyline march misses: the sky with a
+// deck of fair-weather cumulus (so each pane, tilted its own way, shows its
+// own bright cloud or blue gap), the haze band at the horizon, and below it
+// the sunlit street and the buildings across it, a lit mid value. With only
+// the clear-sky LUT and the dark ground term, upper floors read as opaque
+// navy and windows seen from above as black slots.
+fn glassEnv(r: vec3f) -> vec3f {
+  let y = max(r.y, 0.02);
+  var c = skyRadiance(normalize(vec3f(r.x, y, r.z)));
+  let night = frame.time.w;
+  let day = 1.0 - night;
+  if (r.y > 0.0) {
+    let p = r.xz / (r.y + 0.12) * 1.3 + frame.wind.xy * frame.time.x * 0.003;
+    let n = fbm2(p + valueNoise(p * 1.7 + 4.0) * 0.6);
+    let cover = mix(0.28, 0.7, clamp(frame.weather.x, 0.0, 1.0));
+    let cl = smoothstep(1.0 - cover - 0.1, 1.0 - cover + 0.15, n) * smoothstep(0.0, 0.12, r.y);
+    let fwd = 1.0 + 1.5 * pow(max(dot(r, frame.sunDir.xyz), 0.0), 4.0);
+    let lit = frame.sunColor.rgb * max(frame.sunDir.y, 0.05) * 0.5 * fwd + frame.skyAmbient.rgb * 0.9 + frame.cityGlow.rgb * 1.5 * night;
+    c = mix(c, lit * (0.85 + 0.3 * n), cl * 0.85 * day + cl * 0.3 * night);
+    // Under overcast the deck is one grey, mottled by its darker bases.
+    let oc = clamp(frame.weather.x * 1.3 - 0.3, 0.0, 1.0);
+    c = mix(c, (frame.skyAmbient.rgb * 0.85 + frame.cityGlow.rgb) * (0.7 + 0.45 * n), oc);
+  }
+  // Across the street: pavement and facades, lit by sun and sky.
+  let street = vec3f(0.45, 0.43, 0.4) * (frame.sunColor.rgb * max(frame.sunDir.y, 0.0) * 1.35 / PI + frame.skyAmbient.rgb) + frame.cityGlow.rgb * 1.5;
+  let hz = horizonColor(vec3f(r.x, 0.0, r.z));
+  c = mix(hz, c, smoothstep(0.0, 0.12, r.y));
+  c = mix(street, c, smoothstep(-0.25, 0.0, r.y));
+  return c;
+}
+
 fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
   var c = skyRadiance(normalize(vec3f(d.x, max(d.y, 0.012), d.z)));
   let night = frame.time.w;
@@ -577,7 +608,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   var albedo = a.rgb;
   let v = -rd;
   var f0 = mix(vec3f(0.04), albedo, metal);
-  if (cls == CLASS_GLASS) { f0 = vec3f(0.06) + albedo * 0.5; }
+  // Double glazing: four faces, ~12 % at normal incidence.
+  if (cls == CLASS_GLASS) { f0 = vec3f(0.12) + albedo * 0.6; }
   if (cls == CLASS_WATER) { f0 = vec3f(0.02); }
   let dist = length(world - frame.camPos.xyz);
   var ao = a.a * bilateralAo(pxf, vd);
@@ -605,6 +637,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     color += brdf(n, v, frame.moonDir.xyz, albedo, f0, rough, metal) * moonCol * shadow(world, n, vd) * sunVis;
   }
   // Point lights.
+  // (Not on the signs themselves: anything already emitting is skipped.)
+  let wetWall = frame.weather.z * (1.0 - smoothstep(0.3, 0.6, abs(n.y))) * select(0.0, 1.0, cls == CLASS_DEFAULT)
+    * (1.0 - smoothstep(0.02, 0.1, luminance(em.rgb)));
   let count = min(atomicLoad(&tileCount), MAX_TILE_LIGHTS);
   for (var k = 0u; k < count; k++) {
     let L = lightBuf.lights[tileLights[k]];
@@ -628,6 +663,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     // Point lights cast no shadows: the vehicle contact term stands in under cars.
     color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
+    if (L.kind > 0.5 && L.kind < 1.5 && wetWall > 0.0) {
+      // Neon on a soaked wall: the water film spreads each sign's colour
+      // over the wall around it (a soft, view-independent sheen; the GGX
+      // lobe alone is a pin-prick at this roughness).
+      color += lc * atten * 60.0 * 0.04 * wetWall * smoothstep(4.5, 2.2, d) * smoothstep(1.5, 2.0, d);
+    }
     if (cls == CLASS_FOLIAGE) {
       // Two-sided leaves: street and sign light scatters through the crown
       // (a soft non-directional fill) and transmits through back-lit cards,
@@ -663,13 +704,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // Open water reflects the sky down to the horizon.
   let reflLo = select(0.15, 0.01, cls == CLASS_WATER);
   env = mix(groundRadiance(), env, smoothstep(-0.08, reflLo, refl.y));
+  if (cls == CLASS_GLASS) { env = glassEnv(refl); }
   if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE) {
     let cr = cityReflection(world + n * 0.3, refl);
     // The skyline hit is a sharp mirror image: only near-specular surfaces
     // (glass, water, wet film) may show it. On glazed tile and paint it drew
     // a hard warm stripe (a lone sunlit tower) at golden hour and per-tile
-    // lit-window speckle at night.
-    env = mix(env, cr.rgb, cr.a * (1.0 - smoothstep(0.1, 0.3, rough)));
+    // lit-window speckle at night. A pane looking down sees the street,
+    // which the height map can't tell from a wall: glassEnv's lit street,
+    // not a dark "facade" at the window's own foot.
+    let crK = select(1.0, smoothstep(-0.2, -0.04, refl.y), cls == CLASS_GLASS);
+    env = mix(env, cr.rgb, cr.a * crK * (1.0 - smoothstep(0.1, 0.3, rough)));
   }
   env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
   // Screen-space reflections only nearby: far away the depth tolerance grows
@@ -683,7 +728,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   }
   // Glass deep in a window recess sees less sky.
   // A water film on wet glass makes it more of a mirror.
-  if (cls == CLASS_GLASS) { env *= mix(0.5, 1.0, a.a) * (1.0 + 0.5 * frame.weather.z); }
+  if (cls == CLASS_GLASS) { env *= mix(0.5, 1.0, a.a) * (1.0 + 0.5 * frame.weather.z) * 1.3; }
   var specOcc = ao * ao;
   color += min(env * Fa * specOcc * (1.0 - contactOcc), vec3f(6.0));
   if (cls == CLASS_VEHICLE && metal < 0.95) {
