@@ -3584,6 +3584,9 @@ fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
     s.emissive = s.albedo * 0.08 * nightLight();
     return s;
   }
+  // Station name boards: gen-base packs ids 56..71 for them (the atlas only
+  // wraps those onto billboards), so they are drawn here as JR boards.
+  if (id >= 56u && id < 72u && (param & 0x300u) == 0u) { return railNameBoard(n, uv, id); }
   var rect: vec4f;
   if (id < 32u) {
     rect = vec4f(f32(id % 16u) * 128.0, f32(id / 16u) * 512.0, 128.0, 512.0);
@@ -3634,6 +3637,67 @@ fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
     return s;
   }
   s.emissive = c * c * 1.2 * mix(0.25, 4.5, gloomLight());
+  return s;
+}
+
+// JR-style station name board (box UV in metres, uv.y up from the board's
+// bottom edge, so the layout is anchored there whatever the board's size):
+// a white light box, a band in the line colour (by id) across the lower
+// part, a small romaji line, and the name as runs of three bold kanji-like
+// glyphs. Lit from inside at night.
+fn railNameBoard(n: vec3f, uv: vec2f, id: u32) -> Surf {
+  var s = defaultSurf(n);
+  let fp = max(length(dWorldX), length(dWorldY));
+  let fu = uvFoot();
+  let lines = array<vec3f, 8>(
+    vec3f(0.32, 0.61, 0.03), // Yamanote yellow-green
+    vec3f(0.88, 0.1, 0.02),  // Chuo orange
+    vec3f(1.0, 0.66, 0.0),   // Sobu yellow
+    vec3f(0.0, 0.44, 0.78),  // Keihin-Tohoku sky blue
+    vec3f(0.0, 0.41, 0.32),  // Saikyo green
+    vec3f(0.0, 0.13, 0.52),  // Yokosuka blue
+    vec3f(0.0, 0.44, 0.12),  // Joban emerald
+    vec3f(0.62, 0.0, 0.04)); // private-line red
+  let y = uv.y;
+  var c = vec3f(0.86, 0.86, 0.84);
+  // Line band and a thin dark rule over it.
+  c = mix(c, lines[id & 7u], bandF(y, 0.08, 0.2, fu.y));
+  c = mix(c, vec3f(0.1), bandF(y, 0.2, 0.215, fu.y) * 0.8);
+  let fine = 1.0 - smoothstep(0.012, 0.03, fp);
+  // Romaji: small grey letter blocks.
+  let rx = fract(uv.x / 0.07);
+  let rom = bandF(y, 0.245, 0.295, fu.y) * step(0.25, rx) * step(rx, 0.85)
+    * step(0.25, hash21(vec2f(floor(uv.x / 0.07), f32(id))));
+  c = mix(c, vec3f(0.3), rom * mix(0.35, 1.0, fine));
+  // Kanji: groups of three 0.36 m glyphs, then a gap.
+  let cell = floor(uv.x / 0.36);
+  let p = vec2f((fract(uv.x / 0.36) - 0.5) * 0.36, y - 0.5);
+  var g = 0.0;
+  let inG = abs(p.y) < 0.16 && (u32(i32(cell) + 4096) & 3u) != 3u;
+  if (inG) {
+    let h = hashu(u32(i32(cell) + 4096) * 0x9e37u + id);
+    let w = 0.017;
+    for (var k = 0u; k < 4u; k++) {
+      let yk = -0.12 + f32(k) * 0.08;
+      if (((h >> k) & 1u) == 1u || k == 0u) {
+        let x0 = select(-0.13, -0.06, ((h >> (k + 4u)) & 1u) == 1u);
+        g = max(g, step(abs(p.y - yk), w) * step(x0, p.x) * step(p.x, 0.13));
+      }
+    }
+    for (var k = 0u; k < 3u; k++) {
+      if (((h >> (k + 8u)) & 1u) == 1u || k == 1u) {
+        let xk = -0.09 + f32(k) * 0.09;
+        let y1 = select(0.13, 0.04, ((h >> (k + 12u)) & 1u) == 1u);
+        g = max(g, step(abs(p.x - xk), w) * step(-0.14, p.y) * step(p.y, y1));
+      }
+    }
+    // A dot or a sweep for some.
+    g = max(g, step(length(p - vec2f(0.1, 0.12)), 0.025) * f32((h >> 16u) & 1u));
+  }
+  c = mix(c, vec3f(0.04), mix(select(0.0, 0.3, inG), g, fine));
+  s.albedo = c * 0.85;
+  s.rough = 0.3;
+  s.emissive = c * c * mix(0.25, 3.5, gloomLight());
   return s;
 }
 
@@ -4409,6 +4473,27 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       if (n.y > 0.5) {
         a = vec3f(0.3, 0.3, 0.29) * tex;
         flat = 0.3;
+      } else if (vert && glazed) {
+        // Glazed concourse under the deck (box UV: uv.y = metres above the
+        // box bottom, 0.3 m below the ground): a full-height curtain wall,
+        // mullions every 1.5 m, a transom at 2.4 m, a dark kick plate, and
+        // the lit hall behind it (stairs up to the platforms, signs).
+        let h = uy - 0.3;
+        let mull = max(jointCov(ux / 1.5, fu.x / 1.5, 0.07 / 1.5), bandF(h, 2.36, 2.44, fu.y));
+        let kick = 1.0 - smoothstep(0.25 - fu.y, 0.25, h);
+        var tu: vec3f;
+        var tv: vec3f;
+        uvDirs(&tu, &tv);
+        let V = normalize(world - frame.camPos.xyz);
+        let hall = stationHall(vec2f(ux, h - 1.1), 2.8, n, tu, V, seed, fp);
+        let frameC = vec3f(0.32, 0.33, 0.34);
+        a = mix(mix(vec3f(0.03, 0.04, 0.045), frameC, mull), vec3f(0.08), kick);
+        s.rough = mix(mix(0.05, 0.4, mull), 0.5, kick);
+        s.metal = mull * 0.6;
+        s.normal = n;
+        // Lit by day too (a station hall is never dark), brighter at night.
+        s.emissive = hall * (1.0 - mull) * (1.0 - kick) * mix(0.45, 1.8, nightLight());
+        porous = 0.0;
       } else if (vert) {
         // Box UV: uv.y = metres above the tower base. Pale precast panels
         // (1.2 x 3 m), a dark granite plinth, a glazing band per landing.
