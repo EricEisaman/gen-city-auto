@@ -83,6 +83,9 @@ export class LaneFollower {
   braking = false;
   indicator = 0;
   length: number;
+  /** Front and rear axle positions along the body (vehicle-space z). */
+  axleFront: number;
+  axleRear: number;
   /** Prefer big roads (player autopilot sightseeing). */
   preferBig = false;
   leaderGap = Infinity;
@@ -101,8 +104,22 @@ export class LaneFollower {
     this.ref = ref;
     this.s = s;
     this.length = length;
+    this.axleFront = length * 0.32;
+    this.axleRear = -length * 0.32;
     this.cruise = cruiseFactor;
     this.rng = new Rng(seed);
+  }
+
+  /** Take the axle positions from a design's wheels. */
+  setAxles(wheels: {position: Vec3}[]) {
+    if (!wheels.length) return;
+    const zs = wheels.map(w => w.position[2]);
+    const f = Math.max(...zs);
+    const r = Math.min(...zs);
+    if (f - r > 0.5) {
+      this.axleFront = f;
+      this.axleRear = r;
+    }
   }
 
   laneKey() {
@@ -252,15 +269,19 @@ export class LaneFollower {
     this.place(net, dt);
   }
 
-  /** Position at path distance `ahead` from the current point (may run into the turn). */
+  /**
+   * Position at path distance `ahead` from the current point. Past either end
+   * of the current lane or turn it continues straight along the end tangent,
+   * so points ahead/behind (axles, heading) move smoothly.
+   */
   private pointAt(net: RoadNet, ahead: number): Vec3 {
     if (this.turn) {
       const tr = this.turn;
-      const t = Math.max(0, Math.min(tr.len, tr.t + ahead));
+      const t = tr.t + ahead;
       let i = 1;
       while (i < tr.cum.length - 1 && tr.cum[i] < t) i++;
       const seg = tr.cum[i] - tr.cum[i - 1] || 1;
-      const f = Math.min(1, Math.max(0, (t - tr.cum[i - 1]) / seg));
+      const f = (t - tr.cum[i - 1]) / seg;
       const p = tr.pts[i - 1];
       const q = tr.pts[i];
       return [
@@ -270,23 +291,26 @@ export class LaneFollower {
       ];
     }
     const len = net.length(this.ref.chain);
-    const s = Math.max(0, Math.min(len, this.s + ahead));
-    return net.lanePos(this.ref.chain, this.ref.dir, this.ref.lane, s).p;
+    const want = this.s + ahead;
+    const s = Math.max(0, Math.min(len, want));
+    const q = net.lanePos(this.ref.chain, this.ref.dir, this.ref.lane, s);
+    const over = want - s;
+    if (over === 0) return q.p;
+    return [q.p[0] + q.d[0] * over, q.p[1], q.p[2] + q.d[1] * over];
   }
 
   place(net: RoadNet, dt = Infinity) {
     this.pos = this.pointAt(net, 0);
-    // Sit on the rendered surface (junctions are flat, lanes follow the grade).
-    this.pos[1] =
-      net.surfaceHeight(this.pos[0], this.pos[2], this.pos[1]) + 0.01;
-    // Heading from a short look-ahead/look-behind: smooth through vertices
-    // and around junction curves.
-    const a = this.pointAt(net, -1.2);
-    const b = this.pointAt(net, 1.2);
-    const dx = b[0] - a[0];
-    const dz = b[2] - a[2];
-    const l = Math.hypot(dx, dz);
-    if (l > 1e-3) {
+    // Both axles' points on the path (they stay on the lane through turns).
+    const zf = this.axleFront;
+    const zr = this.axleRear;
+    const qf = this.pointAt(net, zf);
+    const qr = this.pointAt(net, zr);
+    // Heading from rear to front axle: smooth through vertices and around
+    // junction curves.
+    const dx = qf[0] - qr[0];
+    const dz = qf[2] - qr[2];
+    if (Math.hypot(dx, dz) > 1e-3) {
       // Rate-limit heading changes so tight junction curves never pop.
       const want = Math.atan2(dx, dz);
       const cur = Math.atan2(this.dir[0], this.dir[1]);
@@ -296,8 +320,38 @@ export class LaneFollower {
       const maxStep = 5 * dt;
       const yaw = cur + Math.max(-maxStep, Math.min(maxStep, delta));
       this.dir = [Math.sin(yaw), Math.cos(yaw)];
-      this.slope = (b[1] - a[1]) / l;
     }
+    // Sit on the rendered surface at both axles: pitch is the line between
+    // the front and rear contact heights and the body origin lies on it, so
+    // cars ease over grade changes, junction plates and bridge ends instead
+    // of snapping to the grade under their center.
+    // Between the junction setbacks the lane height is the road mesh's own
+    // grade; near and in junctions (flat plates) ask the surface, falling
+    // back to the path when that lands on another road (a bridge over this
+    // one, an overlapping chain) or off the asphalt.
+    const [s0, s1] = net.geom.setbacks[this.ref.chain];
+    const sLo = this.ref.dir === 1 ? s0 : s1;
+    const sHi = this.sEnd(net);
+    const contact = (q: Vec3, k: number) => {
+      const s = this.s + k;
+      if (!this.turn && s > sLo && s < sHi) return q[1] - 0.01;
+      const h = net.surfaceHeight(q[0], q[2], q[1]);
+      return Math.abs(h - q[1]) < 0.5 ? h : q[1];
+    };
+    const hf = contact(qf, zf);
+    const hr = contact(qr, zr);
+    const want = (hf - hr) / (zf - zr);
+    if (dt === Infinity) this.slope = want;
+    else {
+      // Suspension-like easing with a rate cap (steep junction plates and
+      // bridge ends meet the road grade with a kink or a small step).
+      const step = (want - this.slope) * (1 - Math.exp(-dt * 12));
+      const cap = 1.5 * dt;
+      this.slope += Math.max(-cap, Math.min(cap, step));
+    }
+    // Origin on the axle line, using the eased pitch through their midpoint.
+    const zm = (zf + zr) / 2;
+    this.pos[1] = (hf + hr) / 2 - this.slope * zm + 0.01;
   }
 }
 
@@ -369,6 +423,7 @@ export class Traffic {
       pool.cruise * r.range(0.85, 1.1),
       r.nextU32(),
     );
+    f.setAxles(info.wheels);
     f.place(this.net);
     if (Math.hypot(f.pos[0] - focus[0], f.pos[2] - focus[2]) < minDist) return;
     // Don't spawn on top of another car.

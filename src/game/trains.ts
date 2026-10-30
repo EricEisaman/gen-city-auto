@@ -31,13 +31,17 @@ export class Trains {
   trains: Train[] = [];
   private vr: VehicleRenderer;
   carLen = 20;
+  /** Distance from a car's center to each bogie pivot (6.9 m on the 20 m design). */
+  bogie = 6.9;
 
   constructor(elevated: Elevated[], vr: VehicleRenderer) {
     this.vr = vr;
     const variants = vr.variantsOf('train');
     const rng = new Rng(77);
-    if (variants.length)
+    if (variants.length) {
       this.carLen = vr.variants[variants[0]].info.size[2] + 0.6;
+      this.bogie = Math.min(6.9, this.carLen * 0.35);
+    }
     const bands: Vec3[] = [
       [0.55, 0.8, 0.12],
       [0.9, 0.45, 0.05],
@@ -84,7 +88,8 @@ export class Trains {
     }
   }
 
-  private at(line: Line, s: number): {p: Vec3; d: Vec2; slope: number} {
+  /** Track centerline point at arc length `s`. */
+  private at(line: Line, s: number): Vec3 {
     const {e, arc, total} = line;
     if (e.loop) s = ((s % total) + total) % total;
     else s = Math.max(0, Math.min(total, s));
@@ -98,13 +103,8 @@ export class Trains {
     const t = (s - arc[lo]) / (arc[hi] - arc[lo] || 1);
     const a = e.pts[lo];
     const b = e.pts[hi];
-    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
     const h = e.heights[lo] + (e.heights[hi] - e.heights[lo]) * t;
-    return {
-      p: [a[0] + (b[0] - a[0]) * t, h, a[1] + (b[1] - a[1]) * t],
-      d: [(b[0] - a[0]) / l, (b[1] - a[1]) / l],
-      slope: (e.heights[hi] - e.heights[lo]) / l,
-    };
+    return [a[0] + (b[0] - a[0]) * t, h, a[1] + (b[1] - a[1]) * t];
   }
 
   update(dt: number) {
@@ -143,23 +143,26 @@ export class Trains {
         tr.s += tr.dir * Math.max(tr.speed, 0.3) * dt;
       }
       tr.cars.forEach((c, k) => {
+        // The body rests on its two bogies: sample the track under each and
+        // take heading, pitch and height from the line between them, so the
+        // car eases through grade changes and curves instead of snapping to
+        // the slope of whichever track segment its center is on.
         const s = tr.s - tr.dir * (k * this.carLen + this.carLen / 2);
-        const q = this.at(line, s);
-        // Smooth heading from the track a few meters either side.
-        const qa = this.at(line, s - 3);
-        const qb = this.at(line, s + 3);
-        const tl = Math.hypot(qb.p[0] - qa.p[0], qb.p[2] - qa.p[2]) || 1;
-        const td: Vec2 = [(qb.p[0] - qa.p[0]) / tl, (qb.p[2] - qa.p[2]) / tl];
-        const d: Vec2 = tr.dir === 1 ? td : [-td[0], -td[1]];
+        const qf = this.at(line, s + tr.dir * this.bogie);
+        const qr = this.at(line, s - tr.dir * this.bogie);
+        const dx = qf[0] - qr[0];
+        const dz = qf[2] - qr[2];
+        const l = Math.hypot(dx, dz) || 1;
+        const d: Vec2 = [dx / l, dz / l];
         // Run on the left-hand track.
         const left: Vec2 = [d[1], -d[0]];
         const p: Vec3 = [
-          q.p[0] + left[0] * 2.1,
-          q.p[1] + 0.37, // RAIL_TOP (gen-base.ts): railhead top
-          q.p[2] + left[1] * 2.1,
+          (qf[0] + qr[0]) / 2 + left[0] * 2.1,
+          (qf[1] + qr[1]) / 2 + 0.37, // RAIL_TOP (gen-base.ts)
+          (qf[2] + qr[2]) / 2 + left[1] * 2.1,
         ];
         c.prev.set(c.model);
-        modelMatrix(c.model, p, d, q.slope * tr.dir);
+        modelMatrix(c.model, p, d, (qf[1] - qr[1]) / l);
       });
     }
   }

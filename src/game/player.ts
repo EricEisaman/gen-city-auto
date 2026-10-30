@@ -113,6 +113,7 @@ export class Player {
       1.05,
       this.rng.nextU32(),
     );
+    if (this.info) f.setAxles(this.info.wheels);
     f.preferBig = true;
     f.speed = this.speed;
     this.follower = f;
