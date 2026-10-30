@@ -777,8 +777,21 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       let dir = normalize(vec3f(sin(a), -0.12, cos(a)));
       lc *= smoothstep(0.9, 0.97, dot(-l, dir));
     } else if (L.kind < 0.5) {
-      // Street lights point down.
-      lc *= mix(0.03, 1.0, smoothstep(0.45, 0.85, l.y)) * (140.0 / 60.0);
+      // Street lights point down. Road luminaires (kind > 0.01 carries the
+      // road axis: 0.05 + 0.4 * angle / pi) throw wide along the road: the
+      // along-road part of the light vector is squashed before the cone
+      // test, so pools stretch ~2.2:1 and join their neighbours.
+      var lq = l;
+      var c0 = 0.45;
+      var c1 = 0.85;
+      if (L.kind > 0.01) {
+        let axis = (L.kind - 0.05) / 0.4 * PI;
+        let ra = vec3f(cos(axis), 0.0, sin(axis));
+        lq = normalize(l - ra * dot(l, ra) * 0.55);
+        c0 = 0.25;
+        c1 = 0.8;
+      }
+      lc *= mix(0.03, 1.0, smoothstep(c0, c1, lq.y)) * (140.0 / 60.0);
     }
     let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
     // Point lights cast no shadows: the vehicle contact term stands in under cars.

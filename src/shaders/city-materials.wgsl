@@ -104,6 +104,8 @@ const M_LED = 22u;
 const M_ASPHALT = 24u;
 const M_LEAVES = 25u;
 const M_CARPARK = 26u;
+const M_ROADSIGN = 27u;
+const M_HEDGE = 28u;
 
 fn nightLight() -> f32 {
   return smoothstep(0.15, 0.7, frame.time.w);
@@ -2506,132 +2508,945 @@ fn curtainWall(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   return s;
 }
 
-fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, lanes: u32) -> Surf {
+// --- Roads, junction plates, sidewalks, curbs (agents/asset-direction-road.md)
+// Road strip uv: x = signed lateral metres (traffic toward the strip's end
+// drives on x < 0), y = metres along. aux = lanes | chainSeed << 8.
+
+// Per-chain hash: seed, an integer index and a salt.
+fn rdH(seed: u32, k: i32, salt: u32) -> f32 {
+  return hashuf(seed ^ hashu(bitcast<u32>(k) * 0x9e3779b9u + salt * 0x85ebca6bu + 0x632be5abu));
+}
+
+// Coverage of a filled shape from its signed distance (negative inside) and
+// its thinnest dimension w: antialiased, coverage-conserving once the shape
+// is thinner than a pixel.
+fn rdCov(sd: f32, w: f32, foot: f32) -> f32 {
+  return paintLine(max(sd + w * 0.5, 0.0), w, foot);
+}
+
+fn rdBox(p: vec2f, b: vec2f) -> f32 {
+  let q = abs(p) - b;
+  return length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0);
+}
+
+fn rdSeg(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+  let pa = p - a;
+  let ba = b - a;
+  let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+// Isosceles triangle, apex at the origin, base (half width q.x) at y = q.y.
+fn rdTri(pIn: vec2f, q: vec2f) -> f32 {
+  let p = vec2f(abs(pIn.x), pIn.y);
+  let a = p - q * clamp(dot(p, q) / dot(q, q), 0.0, 1.0);
+  let b = p - q * vec2f(clamp(p.x / q.x, 0.0, 1.0), 1.0);
+  let s = -sign(q.y);
+  let d = min(vec2f(dot(a, a), s * (p.x * q.y - p.y * q.x)), vec2f(dot(b, b), s * (p.y - q.y)));
+  return -sqrt(d.x) * sign(d.y);
+}
+
+fn rdRhombus(pIn: vec2f, b: vec2f) -> f32 {
+  let p = abs(pIn);
+  let nd = (b.x - 2.0 * p.x) * b.x - (b.y - 2.0 * p.y) * b.y;
+  let h = clamp(nd / dot(b, b), -1.0, 1.0);
+  let d = length(p - 0.5 * b * vec2f(1.0 - h, 1.0 + h));
+  return d * sign(p.x * b.y + p.y * b.x - b.x * b.y);
+}
+
+// Dashed line along t: dashes `on` long every `period`, starting at t = 0.
+// Returns the distance (along t) to the nearest dash centre.
+fn rdDash(t: f32, period: f32, on: f32) -> f32 {
+  let u = fract((t - on * 0.5) / period) * period;
+  return min(u, period - u);
+}
+
+// World tangents of the uv axes (dP/du, dP/dv), from the captured
+// derivatives; horizontal and normalized (only used close to the camera).
+fn rdUvFrame(T: ptr<function, vec3f>, B: ptr<function, vec3f>) {
+  let det = dUvX.x * dUvY.y - dUvX.y * dUvY.x;
+  let sd = select(det, 1e-8, abs(det) < 1e-10);
+  let t = (dWorldX * dUvY.y - dWorldY * dUvX.y) / sd;
+  let b = (dWorldY * dUvX.x - dWorldX * dUvY.x) / sd;
+  *T = normalize(vec3f(t.x, 0.0, t.z) + vec3f(1e-6, 0.0, 0.0));
+  *B = normalize(vec3f(b.x, 0.0, b.z) + vec3f(0.0, 0.0, 1e-6));
+}
+
+// Asphalt by age (0 = fresh binder-rich, near black and satin; 1 = aged,
+// grey and open-textured): (base albedo, roughness, aggregate influence).
+fn asphaltParams(age: f32) -> vec3f {
+  return vec3f(mix(0.06, 0.175, smoothstep(0.15, 0.85, age)), mix(0.72, 0.92, age), mix(0.35, 1.0, age));
+}
+
+// Asphalt with the given params (blended across patch edges). Aggregate
+// detail at two non-harmonic scales; per-chip albedo fades to the layer's
+// mean once a chip is under a pixel (the scales beat into bands otherwise).
+fn asphaltSurf(world: vec3f, n: vec3f, p: vec3f, foot: f32, dd: ptr<function, vec4f>) -> Surf {
   var s = defaultSurf(n);
-  // Aggregate texture at two scales (the second rotated) so it never tiles
-  // visibly; large-scale tone drift stays subtle.
-  let d1 = detailXZ(world, 1.1, DETAIL_ASPHALT);
-  let rot = mat2x2f(0.8, -0.6, 0.6, 0.8);
-  let d2 = detailAt(rot * world.xz, rot * dWorldX.xz, rot * dWorldY.xz, 2.9, DETAIL_ASPHALT);
-  let dd = mix(d1, d2, 0.4);
-  let drift = valueNoise(world.xz * 0.05) * 0.6 + valueNoise(world.xz * 0.4) * 0.4;
-  s.albedo = vec3f(0.14, 0.137, 0.133) * (0.88 + 0.24 * drift) * (dd.b * 2.0) * mix(0.55, 1.0, dd.a);
-  s.rough = 0.86 + (1.0 - dd.a) * 0.1 - (dd.b - 0.5) * 0.15;
+  let d1 = detailXZ(world, 1.3, DETAIL_ASPHALT);
+  let rot = mat2x2f(0.6, -0.8, 0.8, 0.6);
+  let d2 = detailAt(rot * world.xz, rot * dWorldX.xz, rot * dWorldY.xz, 3.7, DETAIL_ASPHALT);
+  let d = mix(d1, d2, 0.4);
+  *dd = d;
+  let mean = textureSampleLevel(detailTex, detailSampler, vec2f(0.5), DETAIL_ASPHALT, 9.0);
+  let fade = smoothstep(0.004, 0.02, foot);
+  let bb = mix(d.b, mean.b, fade);
+  let aa = mix(d.a, mean.a, fade);
+  let mref = mean.b * 2.0 * mix(0.55, 1.0, mean.a);
+  let m = bb * 2.0 * mix(0.55, 1.0, aa);
+  let drift = valueNoise(world.xz * 0.05);
+  s.albedo = vec3f(1.02, 1.0, 0.975) * p.x * max(1.0 + p.z * (m - mref), 0.2) * (0.95 + 0.1 * drift);
+  s.rough = p.y + ((1.0 - aa) * 0.06 - (bb - mean.b) * 0.15) * p.z;
   s.cls = CLASS_GROUND;
-  let foot = max(length(dWorldX), length(dWorldY));
-  // Utility-cut patches: newer, darker asphalt with a crisp seam.
-  let pc = floor(world.xz / 9.0);
-  let ph = hash21(pc);
-  let pf = fract(world.xz / 9.0);
-  let pLo = vec2f(0.15);
-  let pHi = vec2f(0.15 + ph * 0.7);
-  if (ph > 0.8 && all(pf > pLo) && all(pf < pHi)) {
-    let e = min(min(pf.x - pLo.x, pHi.x - pf.x), min(pf.y - pLo.y, pHi.y - pf.y)) * 9.0;
-    // The dark seam fades out once it is thinner than a pixel.
-    let seam = (1.0 - step(0.05, e)) * clamp(0.05 / max(foot, 1e-4), 0.0, 1.0);
-    s.albedo *= mix(0.78, 0.45, seam);
-    s.rough -= 0.06;
+  s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), d, mix(0.5, 1.0, p.z));
+  // Sealed cracks: thin glossy tar lines, wandering (domain-warped), in
+  // aged surfaces only. Width conserved below a pixel.
+  if (p.z > 0.6) {
+    let cw = vec2f(valueNoise(world.xz * 2.3), valueNoise(world.xz * 2.3 + 17.0)) - 0.5;
+    let crack = abs(valueNoise(world.xz * 0.45 + 3.0 + cw * 0.35) - 0.5);
+    let crackW = 0.006;
+    let fw = max(crackW, foot * 0.45);
+    let tar = (1.0 - smoothstep(fw * 0.5, fw * 1.5, crack)) * (crackW / fw)
+      * smoothstep(0.55, 0.7, valueNoise(world.xz * 0.09)) * smoothstep(0.6, 0.85, p.z);
+    s.albedo = mix(s.albedo, vec3f(0.045), tar * 0.6);
+    s.rough = mix(s.rough, 0.4, tar);
   }
-  // Sealed cracks: thin glossy tar lines.
-  // The line keeps its width in noise units; once a pixel covers more than
-  // that, it widens to the pixel but fades so coverage is conserved (never
-  // a thick black web in the distance).
-  // Domain-warped so the line wanders jaggedly like a real crack.
-  let cw = vec2f(valueNoise(world.xz * 2.3), valueNoise(world.xz * 2.3 + 17.0)) - 0.5;
-  let crack = abs(valueNoise(world.xz * 0.45 + 3.0 + cw * 0.35) - 0.5);
-  let crackW = 0.006;
-  let fw = max(crackW, foot * 0.45);
-  let tar = (1.0 - smoothstep(fw * 0.5, fw * 1.5, crack)) * (crackW / fw)
-    * smoothstep(0.55, 0.7, valueNoise(world.xz * 0.09));
-  s.albedo = mix(s.albedo, vec3f(0.045), tar * 0.6);
-  s.rough = mix(s.rough, 0.4, tar);
-  let oil = smoothstep(0.78, 0.92, valueNoise(world.xz * 0.6)) * valueNoise(world.xz * 3.0);
-  s.albedo *= 1.0 - oil * 0.3;
-  s.rough -= oil * 0.25;
+  return s;
+}
+
+// Steel gully grating: bars across (along the road's `t`), slots between.
+// Returns (albedo, metal-ness weight); filtered to the mean beyond ~1 cm px.
+fn rdGrate(t: f32, foot: f32) -> f32 {
+  let slot = 1.0 - paintLine(rdDash(t, 0.03, 0.02), 0.02, foot);
+  return slot;
+}
+
+fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
+  let foot = max(length(dWorldX), length(dWorldY));
   let kind = param & 3u;
   let crossStart = (param & 4u) != 0u;
   let crossEnd = (param & 8u) != 0u;
   let len = f32(param >> 4u);
   let widths = array<f32, 4>(7.0, 10.0, 16.0, 24.0);
+  let laneDef = array<u32, 4>(1u, 2u, 4u, 6u);
   let w = widths[kind];
+  let hw = w * 0.5;
+  var lanes = aux & 0xffu;
+  if (lanes == 0u) { lanes = laneDef[kind]; }
+  var seed = aux >> 8u;
+  // Until the chain seed is in the vertex: a stand-in from param (kind,
+  // signal ends and length are constant along a chain).
+  if (seed == 0u) { seed = hashu(param * 0x2c1b3c6du + 0x5eedu) | 1u; }
   let x = uv.x;
   let ax = abs(x);
   let along = uv.y;
-  var mark = 0.0;
-  var yellow = false;
-  // Edge lines.
-  if (kind >= 1u && ax > w * 0.5 - 0.45 && ax < w * 0.5 - 0.3) { mark = 1.0; }
-  // Center line.
-  if (kind == 1u && ax < 0.075 && fract(along / 10.0) < 0.5) { mark = 1.0; }
-  if (kind >= 2u && ax > 0.08 && ax < 0.23) { mark = 1.0; yellow = true; }
-  // Lane dividers.
-  if (kind >= 2u) {
-    let perDir = f32(lanes) * 0.5;
-    let laneW = (w * 0.5 - 0.5) / perDir;
-    for (var k = 1.0; k < perDir; k += 1.0) {
-      if (abs(ax - laneW * k) < 0.075 && fract(along / 12.0) < 0.42) { mark = 1.0; }
-    }
-  }
-  // Crosswalks and stop lines near junctions.
   let fromEnd = len - along;
-  if ((crossStart && along < 4.5 && along > 0.6) || (crossEnd && fromEnd < 4.5 && fromEnd > 0.6)) {
-    if (fract(x / 0.9) < 0.5 && ax < w * 0.5 - 0.2) { mark = 1.0; yellow = false; }
+  let side = select(0, 1, x < 0.0);
+  // Approach coordinate: each half carries traffic toward one end.
+  let a = select(along, fromEnd, x < 0.0);
+  let sig = select(crossStart, crossEnd, x < 0.0);
+  let dist = distance(world, frame.camPos.xyz);
+  let night = nightLight();
+
+  // ---- S1: resurfacing sections ---------------------------------------
+  let tt = along + 37.0 * rdH(seed, 0, 1);
+  let k0 = i32(floor(tt / 70.0));
+  let bm = f32(k0 - 1) * 70.0 + 25.0 * (rdH(seed, k0 - 1, 2) - 0.5);
+  let b0 = f32(k0) * 70.0 + 25.0 * (rdH(seed, k0, 2) - 0.5);
+  let b1 = f32(k0 + 1) * 70.0 + 25.0 * (rdH(seed, k0 + 1, 2) - 0.5);
+  let b2 = f32(k0 + 2) * 70.0 + 25.0 * (rdH(seed, k0 + 2, 2) - 0.5);
+  var sk = k0;
+  var dT = min(tt - b0, b1 - tt);
+  var seamK = k0;
+  if (tt < b0) { sk = k0 - 1; dT = min(b0 - tt, tt - bm); }
+  else if (tt >= b1) { sk = k0 + 1; dT = min(tt - b1, b2 - tt); }
+  // Which boundary is nearest (for its sealant overband hash).
+  seamK = select(sk + 1, sk, abs(tt - select(select(b0, b1, tt >= b1), bm, tt < b0)) < dT + 1e-3);
+  // Neighbouring sections alternate between a mid-aged and an old grey
+  // contract, so every seam is a visible step (>= 25 sRGB in sun).
+  let odd = ((sk + i32(seed & 1u)) & 1) == 1;
+  var age = select(0.75 + 0.25 * rdH(seed, sk, 3), 0.35 + 0.1 * rdH(seed, sk, 3), odd);
+  var dL = 1e3;
+  if (rdH(seed, sk, 4) < 0.35) {
+    // One direction resurfaced on its own: a seam down the centre line.
+    if (x < 0.0) { age = select(0.35 + 0.1 * rdH(seed, sk, 5), 0.75 + 0.25 * rdH(seed, sk, 5), odd); }
+    dL = ax;
   }
-  if ((crossStart && along > 5.2 && along < 5.6 && x > 0.0) || (crossEnd && fromEnd > 5.2 && fromEnd < 5.6 && x < 0.0)) { mark = 1.0; yellow = false; }
-  // Lane arrows approximated by a short bar before the stop line.
-  if (mark > 0.0) {
-    // Thermoplastic paint: bright, worn through where tyres run and where
-    // the aggregate pokes through.
-    let wear = smoothstep(0.25, 0.75, valueNoise(world.xz * 3.0)) * 0.5 + (1.0 - dd.a) * 0.6;
-    let c = select(vec3f(0.78, 0.78, 0.76), vec3f(0.7, 0.48, 0.08), yellow);
-    s.albedo = mix(c, s.albedo, clamp(wear * 0.55, 0.0, 0.8));
-    s.rough = 0.62;
+  // Signalized mouths take the junction's (fresh) age.
+  let mouthS = crossStart && along < 25.0;
+  let mouthE = crossEnd && fromEnd < 25.0;
+  if (mouthS || mouthE) {
+    age = 0.02 + 0.1 * rdH(seed, select(0, 1, mouthE), 21);
+    dT = select(abs(along - 25.0), abs(fromEnd - 25.0), mouthE);
+    dL = 1e3;
+  } else {
+    if (crossStart) { dT = min(dT, abs(along - 25.0)); }
+    if (crossEnd) { dT = min(dT, abs(fromEnd - 25.0)); }
   }
-  // Manhole covers along the lane centers.
-  if (kind >= 1u) {
-    let laneW2 = 3.3;
-    let lc = (fract(ax / laneW2) - 0.5) * laneW2;
-    let mh = vec2f(lc, fract(along / 37.0) * 37.0 - 18.5);
-    if (length(mh) < 0.32) {
-      s.albedo = vec3f(0.09, 0.09, 0.09) * (0.8 + 0.4 * step(0.5, fract((mh.x + mh.y) * 9.0)));
-      s.metal = 0.7;
-      s.rough = 0.45;
+  let ageHost = age;
+  // Trench patch: one longitudinal trench on 55 % of chains plus service
+  // cuts out to the gutter every 7-12 m.
+  var trSd = 1e3;
+  var trAc = 0.0;
+  var tr0 = 0.0;
+  var tr1 = -1.0;
+  let trSide = select(-1.0, 1.0, rdH(seed, 0, 31) < 0.5);
+  let trX = trSide * (hw - 1.1);
+  if (rdH(seed, 0, 30) < 0.55 && len > 30.0) {
+    tr0 = 8.0 + rdH(seed, 0, 32) * max(len - 50.0, 0.0);
+    tr1 = min(tr0 + 25.0 + 65.0 * rdH(seed, 0, 33), len - 8.0);
+    let mid = (tr0 + tr1) * 0.5;
+    trSd = rdBox(vec2f(x - trX, along - mid), vec2f(0.4, (tr1 - tr0) * 0.5));
+    let ci = floor(along / 9.5);
+    let cc = ci * 9.5 + 4.75 + (rdH(seed, i32(ci), 34) - 0.5) * 4.0;
+    if (rdH(seed, i32(ci), 35) < 0.7 && cc > tr0 && cc < tr1) {
+      let cx0 = trX;
+      let cx1 = trSide * (hw - 0.4);
+      trSd = min(trSd, rdBox(vec2f(x - (cx0 + cx1) * 0.5, along - cc), vec2f(abs(cx1 - cx0) * 0.5, 0.3)));
+    }
+    trAc = rdCov(trSd, 0.6, foot);
+  }
+  let agePatch = select(ageHost + 0.45, ageHost - 0.45, ageHost > 0.5);
+  age = mix(ageHost, agePatch, trAc);
+  let ap = mix(asphaltParams(ageHost), asphaltParams(agePatch), trAc);
+  var dd: vec4f;
+  var s = asphaltSurf(world, n, ap, foot, &dd);
+
+  // Sealed saw-cut seams (2.5 cm) plus a tar overband on half of them.
+  {
+    let band = select(0.0, 0.4, rdH(seed, seamK, 6) < 0.5);
+    var seam = max(paintLine(dT, 0.025, foot), band * paintLine(dT, 0.15, foot));
+    seam = max(seam, max(paintLine(dL, 0.025, foot), select(0.0, 0.4, rdH(seed, sk, 7) < 0.5) * paintLine(dL, 0.15, foot)));
+    if (tr1 > tr0) {
+      let ts = abs(trSd);
+      seam = max(seam, max(paintLine(ts, 0.025, foot), select(0.0, 0.4, rdH(seed, 0, 36) < 0.5) * paintLine(ts, 0.15, foot)));
+    }
+    s.albedo = mix(s.albedo, vec3f(0.04), seam);
+    s.rough = mix(s.rough, 0.35, seam);
+  }
+
+  // ---- Lanes ------------------------------------------------------------
+  let perDir = max(1.0, floor(f32(lanes) * 0.5));
+  let laneW = (hw - 0.5) / perDir;
+  let li = clamp(floor(ax / laneW), 0.0, perDir - 1.0);
+  let lc = (li + 0.5) * laneW;
+  // Lateral offset from the lane centre, + toward the curb (Tokyo: left).
+  let o = ax - lc;
+  var track = exp(-pow((abs(o) - 0.85) * 2.8, 2.0));
+  track = mix(track, 0.22, smoothstep(0.08, 0.35, foot));
+  // Edge line / gutter geometry.
+  let green = kind <= 1u && rdH(seed, 0, 40) < 0.5;
+  let ec = select(hw - 0.525, hw - 1.175, green);
+  let gIn = select(hw - 0.45, hw - 0.4, kind >= 2u);
+  let inner = select(0.0, 0.25, kind >= 1u);
+  let inCross = (crossStart && along < 5.0) || (crossEnd && fromEnd < 5.0);
+
+  // ---- S4: traffic wear -------------------------------------------------
+  {
+    let old = ageHost > 0.5;
+    s.albedo *= 1.0 - select(0.05, 0.15, old) * track;
+    s.rough -= select(0.04, 0.15, old) * track;
+    // Oil / rubber band behind the stop line, down the lane centre.
+    if (sig && kind >= 1u && a > 6.0 && a < 31.0) {
+      let g = exp(-pow(o / 0.38, 2.0)) * smoothstep(6.0, 7.0, a) * (1.0 - smoothstep(26.0, 31.0, a));
+      s.albedo *= mix(1.0, mix(0.68, 1.0, clamp((a - 6.5) / 23.5, 0.0, 1.0)), g);
+      s.rough -= 0.12 * g;
+    }
+    // Dust and debris in the metre next to the gutter.
+    let dz = smoothstep(hw - 1.3, hw - 1.1, ax) * (1.0 - smoothstep(gIn - 0.02, gIn, ax));
+    s.albedo *= 1.0 + 0.12 * dz;
+    s.rough += 0.04 * dz;
+    if (dist < 20.0) {
+      let spk = step(0.98, hash21(floor(world.xz * 40.0))) * dz * smoothstep(0.012, 0.004, foot);
+      s.albedo *= 1.0 - 0.6 * spk;
     }
   }
-  // Tyre tracks: slightly polished, darker wheel paths.
-  if (kind >= 1u) {
-    let laneCenter = fract(ax / 3.3) - 0.5;
-    let track = exp(-pow((abs(laneCenter) - 0.27) * 9.0, 2.0));
-    s.rough -= 0.1 * track;
-    s.albedo *= 1.0 - 0.18 * track;
+
+  // ---- S3: coloured surfacing ---------------------------------------------
+  var surfCol = vec3f(0.0);
+  var surfCov = 0.0;
+  var surfRough = 0.9;
+  // Anti-skid red on 35 % of signalized kind >= 2 approaches.
+  if (sig && kind >= 2u && rdH(seed, 0, 41) < 0.22 && side == select(0, 1, rdH(seed, 0, 45) < 0.5)) {
+    let a1 = 22.0 + 12.0 * rdH(seed, side, 42);
+    let c = rdCov(rdBox(vec2f(ax - (inner + ec - 0.075) * 0.5, a - (7.0 + a1) * 0.5), vec2f((ec - 0.075 - inner) * 0.5, (a1 - 7.0) * 0.5)), 1.0, foot);
+    if (c > 0.0) {
+      surfCol = mix(vec3f(0.3, 0.11, 0.08), s.albedo, 0.15 + 0.35 * track);
+      surfCov = c;
+      surfRough = 0.93;
+    }
   }
-  s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), dd, 1.0);
-  applyWetness(&s, world, 1.0, 0.6);
+  // Blue bike lane band on 25 % of kind 3 chains.
+  let bikeBand = kind == 3u && rdH(seed, 0, 43) < 0.25;
+  if (bikeBand && !inCross) {
+    let c = rdCov(abs(ax - (hw - 1.1)) - 0.5, 1.0, foot) * smoothstep(6.0, 7.0, select(a, 1e3, !sig));
+    if (c > surfCov) { surfCol = vec3f(0.08, 0.25, 0.6); surfCov = c; surfRough = 0.8; }
+  }
+  // Green school-route belt outside the edge line (kinds 0-1).
+  if (green && !inCross) {
+    let c = rdCov(abs(ax - (ec + 0.075 + gIn) * 0.5) - (gIn - ec - 0.075) * 0.5, gIn - ec - 0.075, foot);
+    if (c > surfCov) { surfCol = mix(vec3f(0.12, 0.38, 0.18), s.albedo, 0.25 * track); surfCov = c; surfRough = 0.75; }
+  }
+  if (surfCov > 0.0) {
+    s.albedo = mix(s.albedo, surfCol, surfCov);
+    s.rough = mix(s.rough, surfRough, surfCov);
+    if (surfRough > 0.92) {
+      s.normal = normalize(mix(s.normal, detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), dd, 1.6), surfCov));
+    }
+  }
+
+  // ---- S3: markings, as coverage terms --------------------------------
+  // Edge wobble: the line wanders a centimetre.
+  let axw = ax + (valueNoise(vec2f(along * 1.3, f32(side) * 7.0)) - 0.5) * 0.02 * smoothstep(0.03, 0.01, foot);
+  var covW = 0.0;
+  var covY = 0.0;
+  var bev = 0.0;          // raised-edge coverage of the dominant line
+  var bevDir = vec2f(0.0); // its outward direction in (x, along)
+  let sx = sign(x + 1e-6);
+  // Edge line.
+  if (!inCross) {
+    let c = paintLine(abs(axw - ec), 0.15, foot);
+    covW = c;
+    bevDir = vec2f(sx * sign(axw - ec), 0.0);
+  }
+  // Centre line: dashed white on kind 1, double yellow on kinds 2-3
+  // (solid white on kind 1 within 30 m of a signal).
+  if (kind == 1u && !inCross) {
+    let dash = select(paintLine(rdDash(along, 10.0, 5.0), 5.0, foot), 1.0, sig && a < 30.0);
+    let c = paintLine(ax, 0.15, foot) * dash;
+    if (c > covW) { covW = c; bevDir = vec2f(sx, 0.0); }
+  }
+  if (kind >= 2u && !inCross) {
+    let c = paintLine(abs(axw - 0.155), 0.15, foot);
+    covY = c;
+    if (c > covW) { bevDir = vec2f(sx * sign(axw - 0.155), 0.0); }
+  }
+  // Lane lines: dashed, solid in the last 30 m before a signal.
+  if (kind >= 2u && perDir > 1.0 && !inCross) {
+    let kk = clamp(round(ax / laneW), 1.0, perDir - 1.0);
+    let period = select(12.0, 15.0, kind == 3u);
+    let on = select(5.0, 6.0, kind == 3u);
+    let dash = select(paintLine(rdDash(along, period, on), on, foot), 1.0, sig && a > 6.3 && a < 30.0);
+    let c = paintLine(abs(axw - kk * laneW), 0.15, foot) * dash;
+    if (c > covW) { covW = c; bevDir = vec2f(sx * sign(axw - kk * laneW), 0.0); }
+    // Ghost of an old lane line in 30 % of sections.
+    if (rdH(seed, sk, 8) < 0.3 && !(mouthS || mouthE)) {
+      let off = (0.6 + 0.3 * rdH(seed, sk, 9)) * select(-1.0, 1.0, rdH(seed, sk, 10) < 0.5);
+      let g = paintLine(abs(ax - kk * laneW - off), 0.15, foot) * paintLine(rdDash(along + 3.0, period, on), on, foot);
+      s.albedo *= 1.0 - 0.15 * g;
+      s.rough -= 0.05 * g;
+    }
+  }
+  // Crosswalk bars (0.45 / 0.45) and stop line.
+  {
+    let cw = (crossStart && along < 5.0) || (crossEnd && fromEnd < 5.0);
+    if (cw) {
+      let ac = select(along, fromEnd, crossEnd && fromEnd < 5.0);
+      let bar = paintLine(abs(fract(x / 0.9 - 0.25 + 0.5) - 0.5) * 0.9, 0.45, foot);
+      let c = bar * rdCov(abs(ac - 2.55) - 1.95, 3.9, foot) * rdCov(ax - (gIn - 0.1), 1.0, foot);
+      if (c > covW) {
+        covW = c;
+        bevDir = vec2f(sign(fract(x / 0.9 - 0.25 + 0.5) - 0.5), 0.0);
+      }
+    }
+    if (sig && a < 7.0) {
+      let c = paintLine(abs(a - 6.225), 0.45, foot) * rdCov(abs(ax - (inner + ec) * 0.5) - (ec - inner) * 0.5, 1.0, foot);
+      if (c > covW) {
+        covW = max(covW, c);
+        bevDir = vec2f(0.0, sign(a - 6.225) * select(-1.0, 1.0, x < 0.0));
+      }
+    }
+  }
+  // Arrows (14 / 32 m) and diamonds (36 / 56 m) in the approach lanes.
+  if (sig && kind >= 1u && a > 9.0 && a < 60.0) {
+    // Arrow local frame: u lateral (+ toward the curb), v back from the tip.
+    let ac = select(32.0, 14.0, a < 23.0);
+    let p = vec2f(o, a - (ac - 2.5));
+    if ((kind >= 2u || kind == 1u) && a < 40.0) {
+      var sd = rdTri(p, vec2f(0.45, 1.5));
+      sd = min(sd, rdBox(p - vec2f(0.0, 3.25), vec2f(0.075, 1.75)));
+      // Turn branches: leftmost lane straight+left, rightmost straight+right.
+      var turn = 0.0;
+      if (kind >= 2u && li >= perDir - 1.0) { turn = 1.0; }
+      if (kind >= 2u && li <= 0.0) { turn = select(-1.0, 0.0, perDir <= 1.0); }
+      if (turn != 0.0) {
+        let q0 = vec2f(0.0, 3.6);
+        let q1 = vec2f(turn * 0.55, 2.55);
+        sd = min(sd, rdSeg(p, q0, q1) - 0.075);
+        let dir = normalize(q1 - q0);
+        let apex = q1 + dir * 0.85;
+        let r = p - apex;
+        let lp = vec2f(dot(r, vec2f(-dir.y, dir.x)), dot(r, -dir));
+        sd = min(sd, rdTri(lp, vec2f(0.32, 0.85)));
+      }
+      if (!(kind == 1u && ac > 20.0)) {
+        covW = max(covW, rdCov(sd, 0.15, foot));
+      }
+    }
+    if (a > 33.0) {
+      let dc = select(56.0, 36.0, a < 46.0);
+      let sd = rdRhombus(vec2f(o, a - dc), vec2f(0.75, 1.5));
+      covW = max(covW, paintLine(abs(sd + 0.1), 0.2, foot));
+    }
+  }
+  // Blue bike marks: arrow + white glyph every 10 m in the curb lane.
+  let bc = floor(a / 10.0) * 10.0 + 5.0;
+  if (kind >= 2u && !inCross && !(sig && bc < 14.0)) {
+    let p = vec2f(ax - (hw - 1.1), a - bc);
+    let arrow = min(rdTri(p - vec2f(0.0, -0.8), vec2f(0.375, 0.7)), rdBox(p - vec2f(0.0, 0.35), vec2f(0.17, 0.45)));
+    let bcov = rdCov(arrow, 0.34, foot);
+    if (bcov > 0.0) {
+      s.albedo = mix(s.albedo, mix(vec3f(0.08, 0.25, 0.6), s.albedo, 0.3 * track), bcov);
+      s.rough = mix(s.rough, 0.6, bcov);
+    }
+    let g = p - vec2f(0.0, 2.6);
+    var gd = min(abs(length(g - vec2f(0.0, -0.42)) - 0.25), abs(length(g - vec2f(0.0, 0.42)) - 0.25));
+    gd = min(gd, rdSeg(g, vec2f(0.0, -0.42), vec2f(0.0, 0.42)));
+    covW = max(covW, paintLine(gd, 0.05, foot));
+    if (bikeBand) {
+      covW = max(covW, paintLine(abs(ax - (hw - 1.675)), 0.15, foot) * paintLine(rdDash(along, 3.0, 2.0), 2.0, foot));
+    }
+  }
+  // Fire-hydrant frame every ~110 m near the gutter.
+  {
+    let hc = floor(along / 110.0);
+    let hp = hc * 110.0 + 15.0 + 80.0 * rdH(seed, i32(hc) * 2 + side, 44);
+    let p = vec2f(ax - (ec - 0.75), along - hp);
+    covY = max(covY, paintLine(abs(rdBox(p, vec2f(0.25))), 0.1, foot));
+  }
+
+  // Paint response: dirty off-white / yellow thermoplastic, worn in the
+  // wheel paths and in aged sections; aggregate pokes through.
+  var cov = max(covW, covY);
+  var paintCov = 0.0;
+  if (cov > 0.001) {
+    let yellow = covY > covW;
+    var wear = mix(1.0, 0.45, track) * select(1.0, 0.75, ageHost > 0.6);
+    let poke = mix(smoothstep(0.35, 0.95, dd.a), 0.8, smoothstep(0.01, 0.04, foot));
+    wear *= mix(0.55, 1.0, poke);
+    paintCov = cov * wear;
+    let col = select(vec3f(0.8, 0.8, 0.78), vec3f(0.75, 0.52, 0.06), yellow);
+    s.albedo = mix(s.albedo, col, paintCov);
+    s.rough = mix(s.rough, mix(0.65, 0.5, wear), paintCov);
+    s.metal = 0.0;
+    // Raised 2-3 mm edge: the normal leans outward across the AA band.
+    if (dist < 15.0 && cov < 0.999) {
+      var T: vec3f;
+      var B: vec3f;
+      rdUvFrame(&T, &B);
+      let tilt = 0.35 * 4.0 * cov * (1.0 - cov) * smoothstep(15.0, 10.0, dist);
+      s.normal = normalize(s.normal + (T * bevDir.x + B * bevDir.y) * tilt);
+    }
+    // Glass beads: a few glossy 3 mm cells, close up.
+    let bead = step(0.98, hash21(floor(world.xz / 0.003))) * smoothstep(0.006, 0.002, foot);
+    s.rough = mix(s.rough, 0.15, bead * paintCov);
+    // Retroreflection: at night, headlights near the eye light the beads
+    // back toward a viewer at driving height.
+    let drv = 1.0 - smoothstep(2.5, 5.0, frame.camPos.y - world.y);
+    s.emissive += col * paintCov * night * drv * smoothstep(70.0, 10.0, dist) * 0.08;
+  }
+
+  // ---- S2: gutter, side ditch, catch basins ---------------------------
+  var gutterC = 0.0;
+  var basin = 0.0;
+  {
+    let gc = smoothstep(gIn - foot * 0.5, gIn + foot * 0.5, ax);
+    if (gc > 0.0) {
+      let c = detailUV(uv, 1.5, DETAIL_CONCRETE);
+      var g = defaultSurf(n);
+      g.cls = CLASS_GROUND;
+      g.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), c, 0.6);
+      if (kind >= 2u) {
+        // Concrete L-gutter, 2 m units, grimy toward the curb.
+        g.albedo = vec3f(0.34, 0.335, 0.32) * (c.b * 2.0) * mix(0.7, 1.0, c.a);
+        g.rough = 0.85;
+        g.albedo *= mix(1.0, 0.7, paintLine(rdDash(along, 2.0, 0.0), 0.01, foot));
+        g.albedo *= mix(1.0, 0.72, smoothstep(hw - 0.15, hw, ax));
+        let grit = step(0.97, hash21(floor(uv * 50.0))) * smoothstep(0.03, 0.01, foot);
+        g.albedo *= 1.0 - 0.5 * grit;
+        // Catch basin: 0.4 x 0.75 m grate every 15-20 m per side.
+        let bci = floor(along / 17.5);
+        let bp = bci * 17.5 + 2.0 + 13.5 * rdH(seed, i32(bci) * 2 + side, 50);
+        let bsd = rdBox(vec2f(ax - (hw - 0.25), along - bp), vec2f(0.2, 0.375));
+        basin = rdCov(bsd, 0.4, foot);
+        if (basin > 0.0) {
+          let slot = mix(rdGrate(along, foot), 0.33, smoothstep(0.006, 0.02, foot));
+          let frameRim = paintLine(abs(bsd + 0.025), 0.05, foot);
+          let gA = mix(vec3f(0.16, 0.15, 0.14), vec3f(0.03), slot);
+          g.albedo = mix(g.albedo, mix(gA, vec3f(0.2, 0.19, 0.17), frameRim), basin);
+          g.metal = mix(g.metal, 0.6 * (1.0 - slot), basin);
+          g.rough = mix(g.rough, 0.5, basin);
+        }
+      } else {
+        // Side ditch: precast covers 0.5 m long; every 4th a steel grating.
+        let ci = floor(along / 0.5);
+        g.albedo = vec3f(0.38, 0.37, 0.35) * (c.b * 2.0) * mix(0.7, 1.0, c.a) * (0.94 + 0.12 * hash11(ci + f32(seed & 0xffu)));
+        g.rough = 0.85;
+        g.albedo *= mix(1.0, 0.45, paintLine(rdDash(along, 0.5, 0.0), 0.012, foot));
+        if (u32(ci + 4096.0) % 4u == 0u) {
+          let slot = mix(rdGrate(ax * 1.0 + along * 0.0 + fract(along / 0.5) * 0.5, foot), 0.33, smoothstep(0.006, 0.02, foot));
+          let inside = rdCov(abs(ax - (gIn + hw) * 0.5) - (hw - gIn) * 0.5 + 0.04, 0.3, foot);
+          g.albedo = mix(g.albedo, mix(vec3f(0.16, 0.15, 0.14), vec3f(0.03), slot), inside);
+          g.metal = 0.6 * (1.0 - slot) * inside;
+          g.rough = mix(g.rough, 0.5, inside);
+        }
+      }
+      // Gutter takes the asphalt's place (paint stops at it).
+      s.albedo = mix(s.albedo, g.albedo, gc);
+      s.rough = mix(s.rough, g.rough, gc);
+      s.metal = mix(s.metal, g.metal, gc);
+      s.normal = normalize(mix(s.normal, g.normal, gc));
+      s.emissive *= 1.0 - gc;
+      paintCov *= 1.0 - gc;
+      gutterC = gc;
+    }
+    // Dark wet halo around catch basins (on asphalt and concrete alike).
+    if (kind >= 2u) {
+      let bci = floor(along / 17.5);
+      let bp = bci * 17.5 + 2.0 + 13.5 * rdH(seed, i32(bci) * 2 + side, 50);
+      let hd = rdBox(vec2f(ax - (hw - 0.25), along - bp), vec2f(0.2, 0.375));
+      let halo = (1.0 - smoothstep(0.0, 0.4, hd)) * (1.0 - basin);
+      s.albedo *= 1.0 - 0.2 * halo;
+      basin = max(basin, 1.0 - smoothstep(0.3, 0.6, hd));
+    }
+  }
+
+  // ---- S4: ironwork --------------------------------------------------------
+  // Manholes: 0.6 m cast iron, polished, lighter than fresh asphalt; one
+  // per lane per 25-60 m, in a wheel path or beside a lane line.
+  if (kind >= 1u && !inCross) {
+    let cell = floor(along / 25.0);
+    let hk = i32(cell) * 16 + i32(li) * 2 + side;
+    if (rdH(seed, hk, 60) < 0.55) {
+      let mp = cell * 25.0 + 2.0 + 21.0 * rdH(seed, hk, 61);
+      let pick = rdH(seed, hk, 62);
+      let lat = select(select(0.85, -0.85, pick < 0.66), laneW * 0.5 - 0.4, pick < 0.33);
+      let p = vec2f(o - clamp(lat, -laneW * 0.5 + 0.4, laneW * 0.5 - 0.4), along - mp);
+      let r = length(p);
+      if (r < 0.5) {
+        // Cracked darker asphalt collar, 3 cm dark frame gap, then the lid.
+        let collar = 1.0 - smoothstep(0.42, 0.5, r);
+        s.albedo *= 1.0 - 0.18 * collar;
+        let lid = rdCov(r - 0.3, 0.6, foot);
+        let gap = paintLine(abs(r - 0.315), 0.03, foot);
+        let det = 1.0 - smoothstep(0.004, 0.015, foot);
+        // Raised pattern: concentric rings + a grid or radial ribs.
+        let ring = paintLine(abs(fract(r / 0.06) - 0.5) * 0.06, 0.015, foot);
+        let ang = atan2(p.y, p.x);
+        var rib: f32;
+        if (rdH(seed, hk, 63) < 0.5) {
+          rib = max(paintLine(abs(fract(p.x / 0.05) - 0.5) * 0.05, 0.012, foot), paintLine(abs(fract(p.y / 0.05) - 0.5) * 0.05, 0.012, foot));
+        } else {
+          rib = paintLine(abs(fract(ang / 0.2618) - 0.5) * 0.2618 * r, 0.012, foot);
+        }
+        let raised = max(ring * step(0.2, r), rib * step(r, 0.2));
+        let rust = smoothstep(0.55, 0.8, valueNoise(p * 9.0 + f32(hk))) * 0.6;
+        var iron = mix(vec3f(0.24, 0.21, 0.18), vec3f(0.3, 0.18, 0.1), rust);
+        iron *= mix(0.92, mix(0.7, 1.12, raised), det);
+        s.albedo = mix(s.albedo, iron, lid);
+        s.metal = mix(s.metal, 0.55, lid);
+        s.rough = mix(s.rough, mix(0.38, 0.6, rust) - 0.08 * raised * det, lid);
+        s.albedo = mix(s.albedo, vec3f(0.03), gap * 0.8);
+        if (dist < 12.0) {
+          var T: vec3f;
+          var B: vec3f;
+          rdUvFrame(&T, &B);
+          let rp = normalize(p + 1e-5);
+          let tl = (raised - 0.5) * 0.25 * det * lid;
+          s.normal = normalize(s.normal + (T * rp.x * sx + B * rp.y) * tl * 0.5);
+        }
+        paintCov *= 1.0 - lid;
+        s.emissive *= 1.0 - lid;
+      }
+    }
+  }
+  // Square valve covers near the gutter (~30 m) and NTT covers on trenches.
+  {
+    let vc = floor(along / 30.0);
+    let vp = vc * 30.0 + 4.0 + 22.0 * rdH(seed, i32(vc) * 2 + side, 64);
+    var vsd = rdBox(vec2f(ax - (ec - 0.45), along - vp), vec2f(0.125));
+    if (tr1 > tr0 && rdH(seed, 0, 65) < 0.2) {
+      vsd = min(vsd, rdBox(vec2f(x - trX, along - (tr0 + tr1) * 0.5), vec2f(0.3, 0.45)));
+    }
+    let vcov = rdCov(vsd, 0.25, foot);
+    if (vcov > 0.0 && !inCross) {
+      let chk = paintLine(abs(fract((uv.x + uv.y) / 0.04) - 0.5) * 0.04, 0.01, foot);
+      let iron = vec3f(0.23, 0.21, 0.19) * mix(0.95, mix(0.8, 1.1, chk), 1.0 - smoothstep(0.004, 0.015, foot));
+      s.albedo = mix(s.albedo, iron, vcov);
+      s.metal = mix(s.metal, 0.5, vcov);
+      s.rough = mix(s.rough, 0.42, vcov);
+      s.albedo = mix(s.albedo, vec3f(0.03), paintLine(abs(vsd), 0.02, foot) * 0.7);
+    }
+  }
+
+  // ---- S5: rain --------------------------------------------------------------
+  // Water lives in the gutter, the ruts of old sections, trench dips and
+  // around the gullies; the crown sheds it; paint stands proud of it.
+  var wm = 0.3;
+  wm = mix(wm, 0.1, 1.0 - smoothstep(0.8, 1.2, ax));
+  wm = max(wm, 0.8 * track * smoothstep(0.45, 0.55, ageHost));
+  wm = max(wm, 0.7 * max(trAc, paintLine(abs(trSd), 0.3, foot)));
+  wm = max(wm, smoothstep(hw - 0.75, hw - 0.6, ax));
+  wm = max(wm, basin);
+  var flat = wm * (1.0 - paintCov);
+  // Drainage asphalt: kind 3 and half of kind 2: no standing water.
+  let drains = kind == 3u || (kind == 2u && rdH(seed, 0, 70) < 0.5);
+  if (drains) { flat *= mix(0.08, 1.0, gutterC); }
+  applyWetness(&s, world, flat, 0.6);
+  if (frame.weather.z > 0.001) {
+    if (drains) {
+      let open = 1.0 - gutterC;
+      s.rough = mix(s.rough, max(s.rough, 0.24), open * (1.0 - paintCov));
+      s.albedo *= mix(1.0, 0.8, open * frame.weather.z);
+    }
+    // Wet markings stay legible.
+    let lum = max(max(s.albedo.r, s.albedo.g), s.albedo.b);
+    s.albedo = mix(s.albedo, s.albedo * max(1.0, 0.6 / max(lum, 0.01)), paintCov);
+    s.rough = mix(s.rough, max(s.rough, 0.15), paintCov);
+  }
   return s;
 }
 
-fn sidewalkMat(world: vec3f, n: vec3f) -> Surf {
+// Junction plate (CM.asphaltPlain): uv = world xz, param = age hash |
+// 0x100 signalized. Freshest asphalt on the road, polished by turning
+// traffic, with tyre-scuff arcs.
+fn junctionMat(world: vec3f, n: vec3f, param: u32) -> Surf {
+  let foot = max(length(dWorldX), length(dWorldY));
+  let age = 0.02 + 0.1 * hashuf((param & 0xffu) * 0x45d9f3bu + 7u);
+  var dd: vec4f;
+  var s = asphaltSurf(world, n, asphaltParams(age), foot, &dd);
+  s.rough -= 0.08;
+  // Scuff arcs (turning tyres), centred on hashed points of a 40 m grid.
+  let base = floor(world.xz / 40.0);
+  var scuff = 0.0;
+  for (var j = 0; j < 2; j++) {
+    for (var i = 0; i < 2; i++) {
+      let cell = base + vec2f(f32(i), f32(j)) - select(vec2f(0.0), vec2f(1.0), fract(world.xz / 40.0) < vec2f(0.5));
+      let hc = hash22(cell * 1.7 + 3.1);
+      let c = (cell + hc) * 40.0;
+      let R = 8.0 + 6.0 * hash21(cell + 9.0);
+      let q = world.xz - c;
+      let ang = atan2(q.y, q.x);
+      let a0 = hash21(cell + 4.0) * 6.2832;
+      let arc = smoothstep(0.0, 0.3, cos(ang - a0) - 0.3);
+      scuff = max(scuff, paintLine(abs(length(q) - R), 0.25, foot) * arc);
+    }
+  }
+  s.albedo *= 1.0 - 0.15 * scuff;
+  applyWetness(&s, world, 0.25, 0.6);
+  return s;
+}
+
+// Sidewalks: param 0 = interior plaza (uv = world xz); param 1 = the curb
+// band (uv.x metres along the curb, uv.y metres in from the curb face top;
+// aux: 0-1 road kind, 2 crossing apron, 3 planting strip, 4 tree pit,
+// 8-15 band width in 2 cm units).
+fn paversSurf(world: vec3f, n: vec3f) -> Surf {
   var s = defaultSurf(n);
   let d = detailXZ(world, 1.2, DETAIL_PAVERS);
-  // Each stretch of sidewalk gets one of a few paver colours.
+  // Each stretch of sidewalk gets one of a few restrained paver colours:
+  // mostly neutral grey, some pink-beige, a few darker brick walks.
   let zone = hash21(floor(world.xz / 60.0));
-  let base = select(select(vec3f(0.42, 0.41, 0.39), vec3f(0.46, 0.4, 0.34), zone < 0.55), vec3f(0.36, 0.3, 0.28), zone < 0.2);
-  s.albedo = base * (d.b * 2.0) * mix(0.45, 1.0, d.a) * (0.9 + 0.2 * valueNoise(world.xz * 0.3));
+  let grey = vec3f(0.42, 0.413, 0.4) * (0.955 + 0.09 * hash21(floor(world.xz / 60.0) + 5.0));
+  let base = select(select(grey, vec3f(0.46, 0.41, 0.36), zone < 0.3), vec3f(0.38, 0.33, 0.3), zone < 0.1);
+  s.albedo = base * (d.b * 2.0) * mix(0.55, 1.0, d.a) * (0.95 + 0.1 * valueNoise(world.xz * 0.3));
   // Foot-traffic grime.
-  s.albedo *= 1.0 - 0.15 * smoothstep(0.5, 0.8, valueNoise(world.xz * 0.15 + 9.0));
+  s.albedo *= 1.0 - 0.12 * smoothstep(0.5, 0.8, valueNoise(world.xz * 0.15 + 9.0));
   s.rough = 0.8 + (1.0 - d.a) * 0.15;
   s.cls = CLASS_GROUND;
   s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), d, 1.0);
-  applyWetness(&s, world, n.y, 0.7);
   return s;
 }
 
-// Coverage of a painted line of width w at distance d from its centre, for a
+fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
+  var s = paversSurf(world, n);
+  if (param != 1u) {
+    // Pavement darkens evenly in rain and pools only in low spots.
+    applyWetness(&s, world, 0.15, 0.7);
+    return s;
+  }
+  let foot = max(length(dWorldX), length(dWorldY));
+  let kind = aux & 3u;
+  let apron = (aux & 4u) != 0u;
+  let plant = (aux & 8u) != 0u;
+  let bw = select(f32((aux >> 8u) & 0xffu) * 0.02, 2.5, ((aux >> 8u) & 0xffu) == 0u);
+  let dist = distance(world, frame.camPos.xyz);
+  let y = uv.y;
+  var T: vec3f;
+  var B: vec3f;
+  rdUvFrame(&T, &B);
+  // Tactile guide line (kinds >= 1), clear of the planting strip.
+  var tc = clamp(0.5 * bw, 0.8, 1.6);
+  if (plant) { tc = max(tc, 1.6); }
+  tc = min(tc, bw - 0.25);
+  // 300 mm concrete slabs between the curb top and the tactile line.
+  if (y < tc - 0.15 && y >= 0.18) {
+    let c = detailUV(uv, 1.8, DETAIL_CONCRETE);
+    s.albedo = vec3f(0.43, 0.425, 0.41) * (c.b * 2.0) * mix(0.7, 1.0, c.a) * (0.96 + 0.08 * hash21(floor(uv / 0.3)));
+    let jx = paintLine(rdDash(uv.x, 0.3, 0.0), 0.006, foot);
+    let jy = paintLine(rdDash(y - 0.18, 0.3, 0.0), 0.006, foot);
+    s.albedo *= 1.0 - 0.35 * max(jx, jy);
+    s.rough = 0.82;
+    s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), c, 0.6);
+  }
+  let night = nightLight();
+  _ = night;
+  if (kind >= 1u) {
+    let tcov = rdCov(abs(y - tc) - 0.15, 0.3, foot);
+    if (tcov > 0.0) {
+      // Four raised linear bars per 300 mm tile, running along the walk.
+      let bar = abs(fract((y - tc + 0.15) / 0.075) - 0.5) * 0.075;
+      let det = 1.0 - smoothstep(0.004, 0.012, foot);
+      let joint = paintLine(rdDash(uv.x, 0.3, 0.0), 0.006, foot);
+      let yel = vec3f(0.78, 0.6, 0.08) * (1.0 - 0.3 * joint) * (0.95 + 0.1 * valueNoise(uv * 3.0));
+      s.albedo = mix(s.albedo, yel, tcov);
+      s.rough = mix(s.rough, 0.6, tcov);
+      let slope = sign(fract((y - tc + 0.15) / 0.075) - 0.5) * smoothstep(0.012, 0.022, bar) * 0.5;
+      s.normal = normalize(mix(s.normal, normalize(n + B * slope * det), tcov));
+    }
+  }
+  // Crossing apron: warning dot blocks, 0.6 m deep behind the curb top.
+  if (apron) {
+    let acov = rdCov(abs(y - 0.48) - 0.3, 0.6, foot);
+    if (acov > 0.0) {
+      let q = (fract(vec2f(uv.x, y - 0.18) / 0.06) - 0.5) * 0.06;
+      let dot = 1.0 - smoothstep(0.011, 0.014, length(q));
+      let det = 1.0 - smoothstep(0.004, 0.012, foot);
+      let joint = max(paintLine(rdDash(uv.x, 0.3, 0.0), 0.006, foot), paintLine(rdDash(y - 0.18, 0.3, 0.0), 0.006, foot));
+      s.albedo = mix(s.albedo, vec3f(0.78, 0.6, 0.08) * (1.0 - 0.3 * joint) * mix(1.0, 1.08, dot * det), acov);
+      s.rough = mix(s.rough, 0.6, acov);
+      let qn = normalize(q + 1e-5) * dot * det * 0.4;
+      s.normal = normalize(s.normal + (T * qn.x + B * qn.y) * acov);
+    }
+  }
+  // Planting strip: soil and mulch up close, the hedge-top green at range
+  // (the LOD1 view of the hedge), between pale edging kerbs.
+  if (plant && !apron) {
+    let pcov = rdCov(abs(y - 0.75) - 0.5, 1.0, foot);
+    if (pcov > 0.0) {
+      let soil = vec3f(0.12, 0.09, 0.07) * (0.8 + 0.4 * valueNoise(uv * 6.0));
+      let hedge = vec3f(0.08, 0.15, 0.05) * (0.85 + 0.3 * valueNoise(uv * 0.8));
+      var pc = mix(soil, hedge, smoothstep(40.0, 70.0, dist));
+      let edging = max(paintLine(abs(y - 0.3), 0.1, foot), paintLine(abs(y - 1.2), 0.1, foot));
+      pc = mix(pc, vec3f(0.44, 0.43, 0.41), edging);
+      s.albedo = mix(s.albedo, pc, pcov);
+      s.rough = mix(s.rough, mix(0.95, 0.85, edging), pcov);
+      s.normal = normalize(mix(s.normal, n, pcov * (1.0 - edging)));
+      if (edging < 0.5) { s.cls = select(s.cls, CLASS_FOLIAGE, pcov > 0.5 && dist > 70.0); }
+    }
+  }
+  // Curb top: precast blocks, pale, chamfered toward the road, 1 m joints,
+  // black tyre scuffs on the outer edge.
+  let ctop = 1.0 - smoothstep(0.18 - foot * 0.5, 0.18 + foot * 0.5, y);
+  if (ctop > 0.0) {
+    let c = detailUV(uv, 1.5, DETAIL_CONCRETE);
+    var col = vec3f(0.46, 0.455, 0.44) * (c.b * 2.0) * mix(0.7, 1.0, c.a);
+    let blk = floor(uv.x);
+    col *= 0.95 + 0.1 * hash11(blk * 1.31 + 0.5);
+    col *= 1.0 - 0.4 * paintLine(rdDash(uv.x, 1.0, 0.0), 0.005, foot);
+    if (hash11(blk * 7.13 + 2.0) < 0.15) {
+      let st = fract(uv.x);
+      let l0 = 0.1 + 0.4 * hash11(blk * 3.7);
+      let sl = 0.3 + 0.5 * hash11(blk * 5.3);
+      let scuffM = rdCov(abs(st - l0 - sl * 0.5) - sl * 0.5, 0.3, foot) * (1.0 - smoothstep(0.03, 0.05, y));
+      col *= 1.0 - 0.4 * scuffM;
+    }
+    s.albedo = mix(s.albedo, col, ctop);
+    s.rough = mix(s.rough, 0.7, ctop);
+    var cn = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), c, 0.6);
+    // Chamfer: the outer 2.5 cm leans 45 degrees toward the road (-B).
+    let ch = 1.0 - smoothstep(0.02, 0.03, y);
+    cn = normalize(mix(cn, normalize(n - B), ch * (1.0 - smoothstep(0.01, 0.03, foot))));
+    s.normal = normalize(mix(s.normal, cn, ctop));
+  }
+  applyWetness(&s, world, 0.15 + 0.6 * (1.0 - smoothstep(0.0, 0.5, y)), 0.7);
+  return s;
+}
+
+// Coverage of a paint line of width w at distance d from its centre, for a
 // pixel footprint `foot`: antialiased up close, fading (coverage conserved)
 // once the line is thinner than a pixel.
 fn paintLine(d: f32, w: f32, foot: f32) -> f32 {
   let fw = max(w, foot);
   return (1.0 - smoothstep(fw * 0.5 - foot * 0.5, fw * 0.5 + foot * 0.5, d)) * (w / fw);
+}
+
+// Curb face (CM.curb): uv.x metres along the face, uv.y metres up from its
+// foot. Same precast block as the curb top; joints every metre; road grime
+// along the bottom.
+fn curbMat(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
+  var s = defaultSurf(n);
+  let foot = max(length(dWorldX), length(dWorldY));
+  var t: vec3f;
+  var b: vec3f;
+  let d = detailTri(world, n, 1.5, DETAIL_CONCRETE, &t, &b);
+  s.albedo = vec3f(0.46, 0.455, 0.44) * (0.93 + 0.07 * valueNoise(world.xz * 2.0)) * (d.b * 2.0) * mix(0.7, 1.0, d.a);
+  s.albedo *= 0.95 + 0.1 * hash11(floor(uv.x) * 1.31 + 0.5);
+  s.albedo *= 1.0 - 0.4 * paintLine(rdDash(uv.x, 1.0, 0.0), 0.005, foot);
+  s.albedo *= mix(0.7, 1.0, smoothstep(0.07, 0.13, uv.y));
+  s.normal = detailNormal(n, t, b, d, 0.8);
+  s.rough = 0.75;
+  applyWetness(&s, world, max(n.y, 0.0), 0.5);
+  return s;
+}
+
+// Planting-strip hedge (param 0, box uv in metres) and cast-iron tree grate
+// (param 1, uv 0..1 over 1.2 m).
+fn hedgeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
+  var s = defaultSurf(n);
+  if (param == 1u) {
+    let p = (uv - 0.5) * 1.2;
+    let r = length(p);
+    let ang = atan2(p.y, p.x);
+    let foot = max(length(dWorldX), length(dWorldY));
+    // Radial slots in three rings around a 0.3 m trunk hole.
+    let ringI = floor((r - 0.17) / 0.14);
+    let inRing = fract((r - 0.17) / 0.14);
+    let nSlots = 12.0 + ringI * 8.0;
+    let sa = abs(fract(ang / 6.2832 * nSlots) - 0.5) * 6.2832 / nSlots * r;
+    var slot = paintLine(sa, 0.025, foot) * step(0.15, inRing) * step(inRing, 0.85) * step(0.17, r) * step(ringI, 2.0);
+    slot = mix(slot, 0.2, smoothstep(0.01, 0.03, foot));
+    s.albedo = mix(vec3f(0.2, 0.18, 0.16), vec3f(0.03), slot);
+    if (r < 0.15) { s.albedo = vec3f(0.12, 0.09, 0.07); }
+    s.metal = 0.5 * (1.0 - slot);
+    s.rough = 0.55;
+    applyWetness(&s, world, 0.1, 0.0);
+    return s;
+  }
+  let h = uv.y;
+  let n1 = valueNoise(uv * 25.0 + world.y * 3.0);
+  let n2 = valueNoise(uv * 4.0 + 11.0);
+  let g = mix(0.0, 1.0, n1 * 0.6 + n2 * 0.4);
+  s.albedo = mix(vec3f(0.06, 0.12, 0.04), vec3f(0.11, 0.2, 0.06), g);
+  // New growth on top is brighter.
+  if (n.y > 0.7) { s.albedo *= 1.25; }
+  // Bulge: lean the normal outward near the top edges.
+  let top = smoothstep(0.58, 0.7, h);
+  s.normal = normalize(n + vec3f(0.0, top * 0.6 * (1.0 - n.y), 0.0));
+  s.ao = select(mix(0.45, 1.0, clamp(h / 0.7, 0.0, 1.0)), 1.0, n.y > 0.7);
+  s.rough = 0.8;
+  s.cls = CLASS_FOLIAGE;
+  return s;
+}
+
+// Japanese 7-segment-ish digit (0..9) in a 0.5 x 0.8 box centred on p.
+fn rdDigit(p: vec2f, dgt: u32, th: f32) -> f32 {
+  // Segments a(top) b(top-right) c(bottom-right) d(bottom) e(bottom-left) f(top-left) g(mid).
+  let masks = array<u32, 10>(0x3fu, 0x06u, 0x5bu, 0x4fu, 0x66u, 0x6du, 0x7du, 0x07u, 0x7fu, 0x6fu);
+  let m = masks[dgt % 10u];
+  let W = 0.22;
+  let H = 0.36;
+  var d = 1e3;
+  if ((m & 1u) != 0u) { d = min(d, rdSeg(p, vec2f(-W, H), vec2f(W, H))); }
+  if ((m & 2u) != 0u) { d = min(d, rdSeg(p, vec2f(W, H), vec2f(W, 0.0))); }
+  if ((m & 4u) != 0u) { d = min(d, rdSeg(p, vec2f(W, 0.0), vec2f(W, -H))); }
+  if ((m & 8u) != 0u) { d = min(d, rdSeg(p, vec2f(-W, -H), vec2f(W, -H))); }
+  if ((m & 16u) != 0u) { d = min(d, rdSeg(p, vec2f(-W, 0.0), vec2f(-W, -H))); }
+  if ((m & 32u) != 0u) { d = min(d, rdSeg(p, vec2f(-W, H), vec2f(-W, 0.0))); }
+  if ((m & 64u) != 0u) { d = min(d, rdSeg(p, vec2f(-W, 0.0), vec2f(W, 0.0))); }
+  return d - th;
+}
+
+// Road signs (CM.roadSign): uv 0..1 over the face. Kinds 0-5 regulatory
+// discs/squares, 16-23 overhead guide signs, 24-31 intersection-name
+// plates; 0x100 = back face.
+fn roadSignMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
+  var s = defaultSurf(n);
+  s.rough = 0.45;
+  if ((param & 0x100u) != 0u) {
+    s.albedo = vec3f(0.45);
+    s.metal = 0.6;
+    applyWetness(&s, world, 0.0, 0.0);
+    return s;
+  }
+  let k = param & 0xffu;
+  let foot = max(length(dUvX), length(dUvY));
+  let white = vec3f(0.8, 0.8, 0.78);
+  let blue = vec3f(0.03, 0.15, 0.48);
+  let red = vec3f(0.62, 0.06, 0.05);
+  let p = (uv - 0.5) * vec2f(1.0, -1.0);
+  let r = length(p);
+  let aa = max(foot, 0.004);
+  var col = vec3f(0.45);
+  if (k <= 5u && k != 4u) {
+    // Discs.
+    let disc = 1.0 - smoothstep(0.5 - aa, 0.5, r);
+    if (k <= 1u) {
+      col = mix(white, red, smoothstep(0.38 - aa, 0.38, r));
+      let d0 = rdDigit((p - vec2f(-0.13, 0.0)) * vec2f(1.6, 1.25) , select(5u, 4u, k == 0u), 0.035);
+      let d1 = rdDigit((p - vec2f(0.13, 0.0)) * vec2f(1.6, 1.25), 0u, 0.035);
+      col = mix(col, blue, 1.0 - smoothstep(-aa, aa, min(d0, d1)));
+    } else if (k == 2u) {
+      col = mix(blue, red, smoothstep(0.38 - aa, 0.38, r));
+      let sl = rdSeg(p, vec2f(-0.28, 0.28), vec2f(0.28, -0.28)) - 0.05;
+      col = mix(col, red, 1.0 - smoothstep(-aa, aa, sl));
+    } else if (k == 3u) {
+      col = blue;
+      var ad = rdSeg(p, vec2f(0.05, -0.3), vec2f(0.05, 0.12)) - 0.05;
+      ad = min(ad, rdTri(p - vec2f(0.05, 0.32), vec2f(0.13, 0.22)));
+      ad = min(ad, rdSeg(p, vec2f(0.05, -0.05), vec2f(-0.15, 0.05)) - 0.05);
+      ad = min(ad, rdTri(vec2f(p.y - 0.05, -(p.x + 0.17)) * vec2f(1.0, 1.0) , vec2f(0.12, 0.18)));
+      col = mix(col, white, 1.0 - smoothstep(-aa, aa, ad));
+    } else {
+      col = red;
+      let bar = rdBox(p, vec2f(0.3, 0.07));
+      col = mix(col, white, 1.0 - smoothstep(-aa, aa, bar));
+    }
+    col = mix(vec3f(0.45), col, disc);
+  } else if (k == 4u) {
+    // Pedestrian crossing: blue square, white triangle with a walker.
+    col = blue;
+    let tri = rdTri(vec2f(p.x, -(p.y - 0.32)), vec2f(0.36, 0.6));
+    col = mix(col, white, 1.0 - smoothstep(-aa, aa, tri));
+    var man = length(p - vec2f(0.0, 0.08)) - 0.045;
+    man = min(man, rdSeg(p, vec2f(0.0, 0.02), vec2f(0.0, -0.12)) - 0.025);
+    man = min(man, rdSeg(p, vec2f(0.0, -0.12), vec2f(-0.07, -0.24)) - 0.022);
+    man = min(man, rdSeg(p, vec2f(0.0, -0.12), vec2f(0.07, -0.24)) - 0.022);
+    col = mix(col, blue, 1.0 - smoothstep(-aa, aa, man));
+    col = mix(col, white, paintLine(abs(rdBox(p, vec2f(0.46))), 0.03, aa));
+  } else if (k >= 16u && k < 24u) {
+    // Overhead guide sign: blue, white border, arrow diagram, text blocks.
+    let v = k - 16u;
+    col = blue;
+    let q = p * vec2f(2.0, 1.0);
+    col = mix(col, white, paintLine(abs(rdBox(q, vec2f(0.97, 0.47))), 0.025, aa));
+    var ad = rdSeg(q, vec2f(0.0, -0.4), vec2f(0.0, 0.25)) - 0.04;
+    ad = min(ad, rdTri(q - vec2f(0.0, 0.4), vec2f(0.09, 0.15)));
+    ad = min(ad, rdSeg(q, vec2f(-0.35, -0.05), vec2f(0.35, -0.05)) - 0.03);
+    ad = min(ad, rdTri(vec2f(q.y + 0.05, -(q.x + 0.47)), vec2f(0.08, 0.12)));
+    ad = min(ad, rdTri(vec2f(-(q.y + 0.05), q.x - 0.47), vec2f(0.08, 0.12)));
+    // Text blocks: three destinations (left, right, ahead) + route shields.
+    let rows = array<vec4f, 3>(vec4f(-0.7, -0.15, 0.22, 0.07), vec4f(0.7, -0.15, 0.22, 0.07), vec4f(0.0, 0.48 - 0.3, 0.0, 0.0));
+    for (var i = 0u; i < 2u; i++) {
+      let rr = rows[i];
+      let cq = q - rr.xy;
+      let chars = abs(fract(cq.x / 0.11 + 0.5) - 0.5) * 0.11;
+      let tb = max(rdBox(cq, rr.zw), 0.035 - chars);
+      ad = min(ad, tb);
+      let sub = rdBox(cq - vec2f(0.0, -0.13), vec2f(rr.z * 0.8, 0.03));
+      ad = min(ad, sub);
+    }
+    let top = q - vec2f(0.0, 0.33 + 0.02 * f32(v % 2u));
+    ad = min(ad, max(rdBox(top - vec2f(0.4, 0.0), vec2f(0.18, 0.06)), 0.035 - abs(fract(top.x / 0.11) - 0.5) * 0.11));
+    col = mix(col, white, 1.0 - smoothstep(-aa, aa, ad));
+    // Route shield.
+    let sh = length(q - vec2f(-0.45, 0.33)) - 0.08;
+    col = mix(col, white, 1.0 - smoothstep(-aa, aa, sh));
+  } else if (k >= 24u && k < 32u) {
+    // Intersection-name plate: blue with a white name line.
+    col = blue;
+    let q = p * vec2f(3.6, 1.0);
+    let chars = abs(fract(q.x / 0.5 + 0.5 + f32(k) * 0.1) - 0.5) * 0.5;
+    let tb = max(rdBox(q - vec2f(0.0, 0.06), vec2f(1.2, 0.2)), 0.1 - chars);
+    let sub = rdBox(q - vec2f(0.0, -0.3), vec2f(0.9, 0.06));
+    col = mix(col, white, 1.0 - smoothstep(-aa, aa, min(tb, sub)));
+  }
+  s.albedo = col;
+  s.metal = 0.0;
+  // Retroreflective sheeting: a faint glow at night.
+  s.emissive = col * nightLight() * 0.15;
+  applyWetness(&s, world, 0.0, 0.0);
+  return s;
 }
 
 // Flat roofs, in the roof's own frame (uv from cap(): metres along the
@@ -3004,20 +3819,11 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
   let night = nightLight();
   switch (id) {
     case M_ROAD: { s = roadMat(world, n, uv, param, aux); }
-    case M_ASPHALT: { s = roadMat(world, n, vec2f(100.0, 0.0), 0u, 0u); }
-    case M_SIDEWALK: { s = sidewalkMat(world, n); }
-    case M_CURB: {
-      var t: vec3f;
-      var b: vec3f;
-      let d = detailTri(world, n, 1.5, DETAIL_CONCRETE, &t, &b);
-      s.albedo = vec3f(0.55, 0.54, 0.52) * (0.85 + 0.15 * valueNoise(world.xz * 2.0)) * (d.b * 2.0) * mix(0.6, 1.0, d.a);
-      // Granite-like curb blocks every metre.
-      let blk = fract((world.x + world.z) * 1.0);
-      if (min(blk, 1.0 - blk) < 0.01) { s.albedo *= 0.6; }
-      s.normal = detailNormal(n, t, b, d, 0.8);
-      s.rough = 0.8;
-      applyWetness(&s, world, max(n.y, 0.0), 0.5);
-    }
+    case M_ASPHALT: { s = junctionMat(world, n, param); }
+    case M_SIDEWALK: { s = sidewalkMat(world, n, uv, param, aux); }
+    case M_CURB: { s = curbMat(world, n, uv); }
+    case M_ROADSIGN: { s = roadSignMat(world, n, uv, param); }
+    case M_HEDGE: { s = hedgeMat(world, n, uv, param); }
     case M_FACADE: {
       s = facadeMat(world, n, uv, param, aux);
       // Rain soaks the wall: porous render and granite darken more than
@@ -3177,7 +3983,15 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       let cols = array<vec3f, 3>(vec3f(0.1, 1.0, 0.75), vec3f(1.0, 0.75, 0.05), vec3f(1.0, 0.08, 0.04));
       s.albedo = vec3f(0.05);
       s.rough = 0.2;
-      if (state == lamp) { s.emissive = cols[lamp] * mix(6.0, 14.0, night); } else { s.emissive = cols[lamp] * 0.03; }
+      if (lamp == 3u) {
+        // Pedestrian head (same group/phase as the vehicle head it serves):
+        // upper red man, lower green man, which flashes during amber.
+        let upper = (param & 0x800u) != 0u;
+        let blink = step(0.5, fract(frame.time.x * 2.0));
+        let on = select(select(0.0, blink, state == 1u) + select(0.0, 1.0, state == 0u), select(0.0, 1.0, state != 0u), upper);
+        let c = select(vec3f(0.1, 1.0, 0.6), vec3f(1.0, 0.12, 0.06), upper);
+        s.emissive = c * mix(0.03, mix(5.0, 12.0, night), on);
+      } else if (state == lamp) { s.emissive = cols[lamp] * mix(6.0, 14.0, night); } else { s.emissive = cols[lamp] * 0.03; }
     }
     case M_FRAME: { s.albedo = vec3f(0.08); s.metal = 0.6; s.rough = 0.4; }
     case M_PAINT: {

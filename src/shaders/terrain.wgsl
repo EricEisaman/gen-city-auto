@@ -81,7 +81,11 @@ struct VOut {
   } else if (land == 2u) {
     s.albedo = grass;
   } else if (land == 3u) {
-    s.albedo = vec3f(0.07) * (0.8 + 0.4 * valueNoise(xz * 2.0));
+    // Under-road fill (seen where a junction plate leaves a gap): the tone
+    // of fresh junction asphalt, without blotches, so it doesn't read as
+    // a dark, saw-edged stain.
+    s.albedo = vec3f(0.072, 0.07, 0.068) * (0.95 + 0.1 * valueNoise(xz * 0.7));
+    s.rough = 0.8;
     s.cls = CLASS_GROUND;
   }
   // Beaches and river banks: concrete embankment in the city, sand elsewhere.
@@ -95,7 +99,9 @@ struct VOut {
   if (land == 2u || land == 0u) {
     s.albedo *= 1.0 - frame.weather.z * 0.35;
   } else {
-    applyWetness(&s, i.world, n.y, 0.5);
+    // Lots and road fill darken evenly; pools only form at low spots,
+    // not as world-noise blobs across every lot.
+    applyWetness(&s, i.world, select(0.15, 0.25, land == 3u) * n.y, 0.5);
   }
   return writeG(s, i.world, i.pos);
 }
