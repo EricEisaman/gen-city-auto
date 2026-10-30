@@ -3521,13 +3521,14 @@ export function building(
     const {s, out} = entrance;
     // Toward the window field.
     const side = s < e.len / 2 ? 1 : -1;
+    // The canopy light (at every LOD: shells keep the lit entrance).
+    lights.add(
+      edgeAt(e, s, out + 1.4, base + 3.2),
+      8,
+      [1.0, 0.85, 0.65],
+      LightKind.sign,
+    );
     if (lod === 0) {
-      lights.add(
-        edgeAt(e, s, out + 1.4, base + 3.2),
-        8,
-        [1.0, 0.85, 0.65],
-        LightKind.sign,
-      );
       const hw = Math.min(2, s - 0.2, e.len - s - 0.2);
       m.box(
         edgeAt(e, s, out + 0.75, base + 3.6),
@@ -3799,6 +3800,16 @@ export function building(
         // A different tenant on every floor.
         const id = SIGN.vertical.first + ((id0 + f * 7) % SIGN.vertical.count);
         signPanel(m, wallAt(t, out, yc), n, hl, hh, 0.09, id, -1, lod);
+        // Each sign lights the wall around it in its own colour: a small,
+        // dim light just in front of it (tight falloff, so the brick still
+        // reads under the tint). Same at every LOD, so shells match.
+        const c = signColor(id);
+        lights.add(
+          wallAt(t, 1.0, yc),
+          3.5,
+          [c[0] * 0.45, c[1] * 0.45, c[2] * 0.45],
+          LightKind.sign,
+        );
         if (lod === 0)
           m.beam(
             wallAt(t, 0, yc + hh - 0.1),
@@ -3810,13 +3821,6 @@ export function building(
       }
       if (lod === 0)
         m.beam(wallAt(t, 0.28, y0), wallAt(t, 0.28, yTop), 0.04, 0.04, metal);
-      // (At every LOD: shells get the same neon wash at night.)
-      lights.add(
-        wallAt(t, 1.8, (y0 + yTop) / 2),
-        10,
-        signColor(SIGN.vertical.first + zr.int(0, SIGN.vertical.count)),
-        LightKind.sign,
-      );
     }
     // Signs on the side walls near the street corner.
     if (b.density > 0.3 && floors > 2) {
@@ -3936,14 +3940,13 @@ export function building(
           false,
         );
       }
-      // The lit fascia washes the pavement at night.
-      if (lod === 0)
-        lights.add(
-          wallAt((main.s0 + main.s1) / 2 / len, 1.8, y - 0.8),
-          7,
-          signColor(id),
-          LightKind.sign,
-        );
+      // The lit fascia washes the pavement at night (at every LOD).
+      lights.add(
+        wallAt((main.s0 + main.s1) / 2 / len, 1.8, y - 0.8),
+        7,
+        signColor(id),
+        LightKind.sign,
+      );
       if (lod === 0) {
         // Roll-shutter housing over the opening with its guide rails, an
         // A-frame stand sign and a plant or two by the door, then each
@@ -4014,19 +4017,20 @@ export function building(
         const kr = new Rng(hash2(b.seed, 0x7e4a));
         for (const t of tenants) tenantKit(m, fe, t, gy, hy - 0.13, kr, pv);
       }
+      // A konbini always has the flat canopy, and the brightest light on
+      // the block: a cold white pool on the pavement in front (at every
+      // LOD, so the pool stays when the building drops to its shell).
+      const konbini = tenants.find(t => t.type === SHOP_TYPE.konbini);
+      if (konbini)
+        lights.add(
+          wallAt((konbini.s0 + konbini.s1) / 2 / len, 1.6, base + 2.3),
+          10,
+          [3.0, 3.5, 3.9],
+          LightKind.station,
+        );
       if (lod === 0) {
         const ay = base + GROUND_H * 0.62;
-        // A konbini always has the flat canopy, and the brightest light on
-        // the block: a cold white pool on the pavement in front.
-        const konbini = tenants.find(t => t.type === SHOP_TYPE.konbini);
         const aStyle = konbini ? (sr.next(), 0.7) : sr.next();
-        if (konbini)
-          lights.add(
-            wallAt((konbini.s0 + konbini.s1) / 2 / len, 1.6, base + 2.3),
-            10,
-            [3.0, 3.5, 3.9],
-            LightKind.station,
-          );
         if (aStyle < 0.55) {
           // Sloped fabric awning: striped canvas with a printed valance.
           const t0 = ftAt(sr.range(0.06, 0.2)),

@@ -19,8 +19,6 @@ var<private> dWorldX: vec3f;
 var<private> dWorldY: vec3f;
 var<private> dUvX: vec2f;
 var<private> dUvY: vec2f;
-// True while shading a LOD1 (shell) cluster: city.wgsl sets it.
-var<private> shellLod: bool;
 
 fn detailAt(p: vec2f, dx: vec2f, dy: vec2f, tile: f32, layer: i32) -> vec4f {
   return textureSampleGrad(detailTex, detailSampler, p / tile, layer, dx / tile, dy / tile);
@@ -1610,26 +1608,7 @@ fn boutiqueInterior(p: vec2f, w: f32, d: vec2f, seed: u32, foot: f32) -> vec3f {
   return c * warm * L * mix(1.0, 0.7, clamp(t / 5.0, 0.0, 1.0)) + e;
 }
 
-// Facade, plus (on LOD1 shells at night) the glow sign neon throws on the
-// street faces. LOD0 tiles carry the sign lights and the lighting pass
-// paints that wash; shells have no sign lights, so without this a midrise
-// lost its coloured wash when it switched to its shell. Approximated as a
-// patchy wash in one neon colour over the street-face body of most zakkyo
-// and office midrises (kinds 2 and 3, which carry the sign stacks).
 fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
-  var s = facadeMatBase(world, n, uv, param, aux);
-  let night = nightLight();
-  if (!shellLod || night < 0.01) { return s; }
-  let kind = (param >> 16u) & 7u;
-  let fz = facadeZone(param);
-  if (fz.role > 1u || fz.zone != FZ_BODY || (kind != 2u && kind != 3u) || hashuf(aux ^ 0x9e1u) > 0.7) { return s; }
-  let neon = array<vec3f, 4>(vec3f(0.1, 0.8, 1.0), vec3f(1.0, 0.15, 0.6), vec3f(0.2, 1.0, 0.3), vec3f(1.0, 0.45, 0.08))[hashu(aux ^ 0x9e0u) % 4u];
-  let washK = 0.15 + 0.85 * smoothstep(0.35, 0.8, valueNoise(uv / vec2f(5.0, 6.0) + f32(aux & 63u)));
-  s.emissive += neon * (s.albedo + vec3f(0.03)) * washK * night * 0.5;
-  return s;
-}
-
-fn facadeMatBase(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
   let style = param & 0x1fffu;
   let kind = (param >> 16u) & 7u;
