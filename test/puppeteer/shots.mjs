@@ -16,7 +16,7 @@ const SHOTS = [
   {name: '05-dusk', hour: 18.35, weather: 'sunny', shot: 'train'},
   {name: '06-night-1', hour: 22, weather: 'sunny', shot: 'chase'},
   {name: '07-night-2', hour: 23, weather: 'sunny', shot: 'side'},
-  {name: '08-night-rain', hour: 21.5, weather: 'rain', shot: 'bumper'},
+  {name: '08-night-rain', hour: 21.5, weather: 'rain', shot: 'flyby'},
   {name: '09-day-rain', hour: 12, weather: 'rain', shot: 'chase'},
   {name: '10-storm', hour: 16, weather: 'storm', shot: 'orbit'},
   {name: '11-first-person', hour: 15, weather: 'sunny', camera: 'first'},
