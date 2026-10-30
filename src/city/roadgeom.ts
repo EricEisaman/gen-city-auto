@@ -48,6 +48,12 @@ export interface JunctionGeom {
    * the strip edge where the fillet starts beyond the arm mouth.
    */
   slivers: {pts: Vec2[]; h: number[]}[];
+  /**
+   * This junction's kerb returns (the fillets it rounded), each arc from
+   * arm k's kerb to arm k + 1's, with the block it belongs to (street-edge
+   * fixtures: corner bollards).
+   */
+  corners: {pts: Vec2[]; block: number}[];
 }
 
 /** A rounded kerb return replacing a sharp block curb corner. */
@@ -266,6 +272,7 @@ export function computeRoadGeom(L: CityLayout): RoadGeom {
       low: false,
       cover: [],
       slivers: [],
+      corners: [],
     };
   });
   const fillets = new Map<number, Map<number, CurbFillet>>();
@@ -370,6 +377,7 @@ export function computeRoadGeom(L: CityLayout): RoadGeom {
           pts: [mBr, ...tail.reverse()],
           h: tail.map(() => hB).concat(hB),
         });
+      jg.corners.push({pts: arcPts, block: bi});
       let fm = fillets.get(bi);
       if (!fm) fillets.set(bi, (fm = new Map()));
       // Stored in the curb's own order.

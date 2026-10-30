@@ -507,15 +507,14 @@ function plateAt(tris: Vec3[][], x: number, z: number): number | null {
 /**
  * Markings inside a signalized junction box (Tokyo practice), as paint
  * ribbons 12 mm over the plate (`BOX_PAINT`, 15 cm wide):
- * - right-turn guides (右折導流線): from each avenue approach's inner lane to
+ * Right-turn guides (右折導流線): from each avenue approach's inner lane to
  *   the inner departure lane of the arm on its right: a circular arc as
  *   large as the box allows, tangent to both lanes, ONE dashed line per
  *   movement (the lane's outer edge, 2 m on / 1.5 m off by arc length,
  *   each dash bent along the curve; round 4's two edges per turn with
  *   2.5 m straight dashes read as confetti from above);
- * - one lane line carried across the box (2 m on / 4 m off) per arterial
- *   approach, to the opposite arterial arm most in line with it.
- * At most six dashed lines per box.
+ * At most six dashed lines per box (no lane lines carried across: round
+ * 6).
  * Arm frame: `dir` out of the junction, `l` its left; the approach lanes
  * are on +l (the road shader's x > 0 at a chain start, x < 0 at its end).
  * A merged cluster (`members`, lead first) is marked as one box.
@@ -592,22 +591,6 @@ function junctionMarkings(
       prevR = vr;
     });
   };
-  /** Curve samples every ~0.25 m with their cumulative length. */
-  const sample = (f: (t: number) => Vec2, len: number) => {
-    const k = Math.max(4, Math.ceil(len / 0.25));
-    const pts: Vec2[] = [];
-    const s: number[] = [];
-    for (let i = 0; i <= k; i++) {
-      const p = f(i / k);
-      s.push(
-        i
-          ? s[i - 1] + Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1])
-          : 0,
-      );
-      pts.push(p);
-    }
-    return {pts, s};
-  };
   /** The part of a sampled curve between lengths a and b (2.5 m pieces max). */
   const piece = (c: {pts: Vec2[]; s: number[]}, a: number, b: number) => {
     const at = (x: number): Vec2 => {
@@ -637,37 +620,6 @@ function junctionMarkings(
     for (let a = from; a + 0.3 < end; a += on + off)
       piece(c, a, Math.min(a + on, end));
   };
-  /** Cubic from p (heading t0) to q (heading t1), bent through the corner. */
-  const turn = (p: Vec2, t0: Vec2, q: Vec2, t1: Vec2, f: number) => {
-    const den = t0[0] * t1[1] - t0[1] * t1[0];
-    let c0: Vec2;
-    let c1: Vec2;
-    const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
-    const x =
-      Math.abs(den) > 0.2
-        ? ((q[0] - p[0]) * t1[1] - (q[1] - p[1]) * t1[0]) / den
-        : -1;
-    if (x > 0 && x < d * 1.5) {
-      const X: Vec2 = [p[0] + t0[0] * x, p[1] + t0[1] * x];
-      c0 = [lerp(p[0], X[0], f), lerp(p[1], X[1], f)];
-      c1 = [lerp(q[0], X[0], f), lerp(q[1], X[1], f)];
-    } else {
-      c0 = [p[0] + (t0[0] * d) / 3, p[1] + (t0[1] * d) / 3];
-      c1 = [q[0] - (t1[0] * d) / 3, q[1] - (t1[1] * d) / 3];
-    }
-    const B = (t: number): Vec2 => {
-      const u = 1 - t;
-      const a = u * u * u;
-      const b = 3 * u * u * t;
-      const c = 3 * u * t * t;
-      const e = t * t * t;
-      return [
-        a * p[0] + b * c0[0] + c * c1[0] + e * q[0],
-        a * p[1] + b * c0[1] + c * c1[1] + e * q[1],
-      ];
-    };
-    return {B, len: d * 1.3};
-  };
   type ArmF = (typeof F)[number];
   const rightTurn = (A: ArmF, B: ArmF) => {
     const t0: Vec2 = [-A.dir[0], -A.dir[1]];
@@ -691,21 +643,8 @@ function junctionMarkings(
     // Weight cos(half the turn) makes the conic a circular arc.
     const w = Math.sqrt(Math.max(0.05, (1 + dot(t0, t1)) / 2));
     const path: Vec2[] = [];
-    const seg = (p: Vec2, q: Vec2) => {
-      const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
-      if (len < 0.2) return;
-      const k = Math.max(1, Math.ceil(len));
-      for (let i = path.length ? 1 : 0; i <= k; i++)
-        path.push([lerp(p[0], q[0], i / k), lerp(p[1], q[1], i / k)]);
-    };
-    // Only a short straight run in / out (<= 2 m): where the box is much
-    // longer one way the straight part would read as a stray line.
-    const run = (from: Vec2, to: Vec2): Vec2 => {
-      const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
-      const k = len > 2 ? 2 / len : 1;
-      return [lerp(from[0], to[0], k), lerp(from[1], to[1], k)];
-    };
-    seg(run(a0, P), a0);
+    // The arc alone: no straight run in or out (round 5's runs of up to
+    // 2 m put straight dashes at the arc ends that read as strays).
     const ka = Math.max(8, Math.ceil((T * 1.6) / 0.5));
     for (let i = path.length ? 1 : 0; i <= ka; i++) {
       const t = i / ka;
@@ -719,7 +658,6 @@ function junctionMarkings(
         (b0 * a0[1] + b1 * X[1] + b2 * a1[1]) / s,
       ]);
     }
-    seg(path[path.length - 1], run(a1, Q));
     // ONE guide per movement: the lane's outer edge (the larger radius,
     // toward the corner X of the two lane lines), dashed 2 m on / 1.5 m
     // off by arc length, the dashes following the curve. (Round 4 dashed
@@ -750,8 +688,9 @@ function junctionMarkings(
     dashed({pts, s}, 2, 1.5, lead, total - 0.2);
     return true;
   };
-  // At most MAX_ARCS dashed lines per box: the right turns first, then
-  // the lane lines carried across.
+  // At most MAX_ARCS dashed lines per box. (Round 5 also carried one lane
+  // line across the box per arterial approach: its 2-3 straight dashes
+  // read as strays beside the arc ends.)
   const MAX_ARCS = 6;
   let arcs = 0;
   for (const A of F) {
@@ -765,33 +704,6 @@ function junctionMarkings(
         B = b;
       }
     if (B && B.kind >= 1 && dist2(A.o, B.o) < 45 && rightTurn(A, B)) arcs++;
-  }
-  // One lane line carried across the box per arterial approach (the line
-  // between the kerbside and middle lanes, 2 m on / 4 m off) to the
-  // opposite arterial arm most in line with it (within 3 m: two parallel
-  // chains are two roads). Avenues get none: their through lanes are
-  // read from the stop lines (round 4 carried every lane line of every
-  // approach, which added to the clutter).
-  for (const A of F) {
-    if (A.kind < 3 || arcs >= MAX_ARCS) continue;
-    const t0: Vec2 = [-A.dir[0], -A.dir[1]];
-    let C = null;
-    let off = 3;
-    for (const c of F) {
-      if (c === A || c.kind < 3 || dot(c.dir, t0) < 0.94) continue;
-      const o = Math.abs(dot([c.o[0] - A.o[0], c.o[1] - A.o[1]], A.l));
-      if (o < off) {
-        off = o;
-        C = c;
-      }
-    }
-    if (C) {
-      const k = Math.min(A.per, C.per) - 1;
-      if (k < 1) continue;
-      const c = turn(A.at(k * A.lw), t0, C.at(-k * C.lw), C.dir, 0.5);
-      dashed({...sample(c.B, c.len)}, 2, 4);
-      arcs++;
-    }
   }
 }
 

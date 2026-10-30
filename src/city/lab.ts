@@ -14,7 +14,7 @@ import {
   type Vec2,
 } from '../math/vec.ts';
 import type {Vec3} from '../math/vec.ts';
-import {sidewalkY} from './gen-base.ts';
+import {sidewalkY, signalSpots} from './gen-base.ts';
 import {
   closestOnPolyline,
   elevatedHalfWidth,
@@ -914,6 +914,25 @@ export function labInfo(
     const k = P(sb + 7, sg * (W / 2 + 0.2));
     const ce = P(sb + 15, sg * (W / 2 - 1.6));
     views.curb = look(v3(ce.p, ce.h + 1.0), v3(k.p, k.h + 0.1), 1.05);
+    // A signal pole's foot from a pedestrian 4 m away on its sidewalk
+    // (flange, bolts, handhole, ID plate, push button; the cabinet and
+    // corner bollards nearby): the widest arm's pole, else the first.
+    const ji = site.junction;
+    let pole: [Vec3, Vec2] | null = null;
+    signalSpots(L, geom, hf, ji, (p, armDir, _r, k) => {
+      if (!pole || jg.arms[k] === arm) pole = [p, armDir];
+    });
+    if (pole) {
+      const [pp, ad] = pole as [Vec3, Vec2];
+      // Behind the pole (away from the road) and toward the junction.
+      const tj: Vec2 = [j.p[0] - pp[0], j.p[1] - pp[2]];
+      const tl = Math.hypot(tj[0], tj[1]) || 1;
+      const e: Vec2 = [
+        pp[0] - ad[0] * 2.6 + (tj[0] / tl) * 3,
+        pp[2] - ad[1] * 2.6 + (tj[1] / tl) * 3,
+      ];
+      views.pole = look(v3(e, pp[1] + 1.6), [pp[0], pp[1] + 1.0, pp[2]], 0.9);
+    }
     orbit = {center: J, radius: 70, height: j.h + 25, fov: 1.0};
   } else {
     const e = L.elevated[site.line];

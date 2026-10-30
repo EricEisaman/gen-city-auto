@@ -319,6 +319,73 @@ vehicle red on the crossing road.
 - **LOD1 signal heads**: a dark `CM.paint 0x91` slab (0.76 x 0.34 half size, front and back quads)
   under each mast-arm end.
 
+**Round 6 geometry (for the shader engineer).** Each new param falls back to an existing look, so
+nothing renders wrong before the shader branch lands.
+- **Signal backplate border: `CM.paint 0xe8` (`SIGNAL_BORDER` in `gen-tile.ts`).** A box 1.6 x 0.76 m
+  sits 1 cm behind the 1.52 x 0.68 m black backplate (0x91). From the front it shows as a 4 cm rim.
+  It has no back face, so the black plate still shows from behind.
+  - Box uv: metres per face.
+  - Fallback: the 0xd0-0xef service paint (albedo 0.62, rough 0.7).
+  - Intended: retroreflective white (albedo ~0.8, rough ~0.4, a faint glint toward the camera at
+    night), with grime along the bottom edge.
+- **Pole ID plate: `CM.paint 0xe9` (`POLE_ID`).** A 9 x 22 x 2 cm plate at 1.65 m on the walk side of
+  every signal column and avenue (9 m) lamp column, above the handhole.
+  - Box uv: metres per face. The front face points away from the road.
+  - Fallback: 0.62 service paint.
+  - Intended: a white aluminium plate with a dark number line and a green or blue band at the top.
+- **Pole foot (`poleFoot`, signal and avenue lamp columns).** Round 3's foot (a 29 cm plate 2.5 cm
+  thick, 4 cm flat nut squares) did not read at eye distance. It is now:
+  - a concrete collar 0.64 m across, 8 cm proud (`CM.concrete`);
+  - a 0.41 m flange plate, 3.5 cm thick, in matt black `CM.paint 0x91`;
+  - four 5 cm bolt boxes in pale `CM.paint 0xd8`;
+  - the base cover in the column material, as before.
+  - Column uv is unchanged (y in metres up from SINK). The shader's bottom 0.6 m grime and rust bloom
+    still land on the base cover.
+- **Arm-joint collars.**
+  - Signal poles: a 0.34 m sleeve, 0.38 m tall, at the mast arm (5.6-5.98 m). A capped 0.32 m sleeve
+    at the luminaire arm (9.32-9.77 m) also closes the open column top.
+  - Avenue lamps: a capped sleeve 0.25 m across over the column top.
+  - Material: the pole's plain material (signal grey `0x90`, lamp bare `CM.metal`). Cylinder uv.
+- **Controller cabinet: `CM.paint 0xab` (`CABINET`).** One per signalized junction, on the ground
+  behind one signal pole (0.85 m further from the road, 0.9 m further from the box), facing the road.
+  - Body: 0.6 x 0.4 x 1.2 m on a 10 cm concrete plinth, with a rain hood overhanging 3 cm.
+  - The pole-mounted box of earlier rounds is gone.
+  - Box uv: metres per face. The front face points at the road.
+  - Fallback: paintColor's hashed colour for 0xab, a grey-green 0.44 / 0.53 / 0.47.
+  - Intended: a door seam and hinge line 4 cm in, a louvre band near the top of the sides, a few
+    stickers and scraped flyer glue on the front, streaks from the hood, splash at the foot.
+  - LOD1: an 8-vertex box, on junctions with an avenue or arterial arm, as the LOD1 signals.
+- **Corner bollards.** 3-5 stainless posts per kerb return (0.12 m across, 0.85 m tall), 0.4 m in
+  from the kerb, spread over the middle 70 % of the arc.
+  - Material: `packMat(CM.metal, 0x10)` (the lamp-column pole path: streaks, foot dirt from
+    uv.y - SINK).
+  - They replace round 5's square 0xd8 posts, which stood at the arm-mouth corners, in the crossing
+    landings.
+  - `JunctionGeom.corners` (roadgeom.ts) now lists each junction's kerb-return arcs.
+- **Push buttons.** The yellow 0x92 boxes are now 20 x 30 x 12 cm (were 16 x 24), from 1.1 m to
+  1.4 m on both crossing poles.
+- **Gutter grates: not added as geometry.** The road shader already draws a catch-basin grate
+  (0.4 x 0.75 m, every 17.5 m per side, `rdGrate`) in the gutter band. Grate geometry would double
+  it.
+  - Suggested shader change: 12 m spacing (`bci = floor(along / 12.0)`).
+  - Read the 1 cm inset with a 2 cm dark inner rim and a bevelled-down normal at the frame.
+  - Add fwidth-AA'd bearing bars every 3 cm.
+- **Hedges.** The hull uv is already isotropic metres: x = metres along the planter's road face,
+  y = metres up from the soil. The end caps use world metres. Nothing is stretched in the geometry,
+  so the shader's world-space planar projection can drop them.
+  - The two planter-rim sprays per side (cards leaning 0.4 m out over the kerb) are gone. Their thin
+    alpha shadows were the planter-wall striation.
+  - Instead, three near-upright sprays per side stand 5-9 cm proud of each outer face, yawed 12-35
+    degrees off it, so the face is no longer a smooth slab.
+  - Same `CM.leaves` cards: 8 more vertices per 2.6 m segment than round 5.
+  - No no-shadow flag exists (`vsShadow` alpha-tests `CM.leaves` only).
+- **Turn guides.** Only the dashed arcs are drawn: no straight run in or out, and no lane line
+  carried across the box. Those were the 2-3 straight dashes beside the arc ends.
+- **LOD1 shadows.**
+  - Utility poles now exist at LOD1: a 3-sided `CM.concrete` prism, 0.19 m circumradius, 10 m tall,
+    6 vertices. Shell-golden had lost their long low-sun shadows.
+  - LOD1 street lights drop the lamp head's top quad: 16 vertices instead of 20.
+
 Until B lands each piece, the new ids render as default grey and `aux` high bits are ignored, so A's
 work can merge first. B can test against today's geometry: the band and new ids just appear later.
 
