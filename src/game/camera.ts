@@ -31,6 +31,9 @@ interface ShotState {
   side: number;
   fov: number;
   focus: 'player' | 'train';
+  /** Seconds actually on screen (t can be forced by tests). */
+  shown?: number;
+  framing?: Framing;
 }
 
 const SHOTS = [
@@ -73,6 +76,28 @@ const ASPECT = 16 / 9;
 /** Elevated deck slab, girders below and parapet above, relative to the line height. */
 const DECK_BOTTOM = 3.1;
 const DECK_TOP = 1.2;
+
+/** A traffic vehicle, bus or train car as an oriented box (origin at its base). */
+export interface VehicleBox {
+  x: number;
+  y: number;
+  z: number;
+  /** Unit forward (x, z). */
+  fx: number;
+  fz: number;
+  /** Half length, half width, height. */
+  hl: number;
+  hw: number;
+  h: number;
+}
+
+/** Where a shot looked from and in which direction, to avoid repeats. */
+interface Framing {
+  eye: Vec3;
+  yaw: number;
+  /** Under an overpass or viaduct. */
+  covered: boolean;
+}
 
 interface DeckSeg {
   ax: number;
@@ -122,6 +147,11 @@ export class CameraSystem {
   private deckGrid = new Map<number, number[]>();
   /** Most recent shots first, so the director can avoid repeating itself. */
   private recent: string[] = [];
+  /** Framings of the most recent cuts, newest first. */
+  private framings: Framing[] = [];
+  /** Moving vehicles near the player (traffic, buses, trains); set by the game. */
+  vehicles: () => VehicleBox[] = () => [];
+  private vehGrid = new Map<number, VehicleBox[]>();
   /** Nearby dynamic obstacles (pedestrians) the camera must not sit in or look through. */
   obstacles: () => [number, number, number, number][] = () => [];
 
@@ -184,6 +214,145 @@ export class CameraSystem {
     return false;
   }
 
+  /** Rebuild the vehicle lookup (once per directed frame). */
+  private refreshVehicles(pl: Player) {
+    this.vehGrid.clear();
+    for (const b of this.vehicles()) {
+      // Never the player's own vehicle.
+      if (Math.hypot(b.x - pl.pos[0], b.z - pl.pos[2]) < 1) continue;
+      const rad = Math.hypot(b.hl, b.hw);
+      const x0 = Math.floor((b.x - rad) / 16);
+      const x1 = Math.floor((b.x + rad) / 16);
+      const z0 = Math.floor((b.z - rad) / 16);
+      const z1 = Math.floor((b.z + rad) / 16);
+      for (let z = z0; z <= z1; z++)
+        for (let x = x0; x <= x1; x++) {
+          const k = (x + 8192) * 16384 + (z + 8192);
+          let l = this.vehGrid.get(k);
+          if (!l) this.vehGrid.set(k, (l = []));
+          l.push(b);
+        }
+    }
+  }
+
+  /** The vehicle box containing p (grown by margin), if any. */
+  private vehicleAt(p: Vec3, margin = 0): VehicleBox | null {
+    const k =
+      (Math.floor(p[0] / 16) + 8192) * 16384 + (Math.floor(p[2] / 16) + 8192);
+    for (const b of this.vehGrid.get(k) ?? []) {
+      if (p[1] < b.y - margin || p[1] > b.y + b.h + margin) continue;
+      const dx = p[0] - b.x;
+      const dz = p[2] - b.z;
+      if (Math.abs(dx * b.fx + dz * b.fz) > b.hl + margin) continue;
+      if (Math.abs(dz * b.fx - dx * b.fz) > b.hw + margin) continue;
+      return b;
+    }
+    return null;
+  }
+
+  /** True under an elevated deck (overpass, viaduct). */
+  private covered(p: Vec3) {
+    for (let y = 3; y <= 24; y += 3)
+      if (this.inDeck([p[0], p[1] + y, p[2]], 0)) return true;
+    return false;
+  }
+
+  /** True if this framing is much like one of the last two cuts. */
+  private repeatsFraming(eye: Vec3, look: Vec3) {
+    const yaw = Math.atan2(look[0] - eye[0], look[2] - eye[2]);
+    const cov = this.covered(eye);
+    for (const f of this.framings) {
+      const d = Math.hypot(eye[0] - f.eye[0], eye[2] - f.eye[2]);
+      let dy = Math.abs(yaw - f.yaw) % (Math.PI * 2);
+      if (dy > Math.PI) dy = Math.PI * 2 - dy;
+      if (d < 30 && dy < 0.6) return true;
+      // Two cuts in a row under the same overpass read as one shot.
+      if (cov && f.covered && d < 80) return true;
+    }
+    return false;
+  }
+
+  /** Approximate eye and look point a shot will start with. */
+  private shotFraming(s: ShotState, pl: Player): [Vec3, Vec3] {
+    const p = pl.pos;
+    const f = pl.forward;
+    const r: Vec3 = [-f[1], 0, f[0]];
+    const at = (fw: number, rt: number, up: number): Vec3 => [
+      p[0] + f[0] * fw + r[0] * rt,
+      p[1] + up,
+      p[2] + f[1] * fw + r[2] * rt,
+    ];
+    switch (s.name) {
+      case 'chase':
+        return [at(-6.5, 0, 2), at(2, 0, 1)];
+      case 'bumper':
+      case 'wheel':
+      case 'interior':
+        return [at(2, 0, 0.8), at(20, 0, 1.5)];
+      case 'side':
+        return [at(1.5, s.side * 5, 1.1), at(0.5, 0, 0.9)];
+      case 'orbit':
+        return [this.orbitEye(p, s.a, pl.kind === 'heli'), at(0, 0, 1)];
+      default:
+        return [
+          s.eye,
+          s.focus === 'train'
+            ? (this.trainTarget() ?? at(0, 0, 1))
+            : at(0, 0, 1),
+        ];
+    }
+  }
+
+  /** Last-resort guard: something within ~3 m at the centre of the frame. */
+  private centreHit(eye: Vec3, target: Vec3, fov: number) {
+    const {f, r, u} = viewBasis(eye, target);
+    const tv = Math.tan(fov / 2) * 0.35;
+    const th = tv * ASPECT;
+    // People and poles (vehicles are tested as boxes).
+    const near = this.obstacles().filter(
+      o => o[3] < 1 && Math.hypot(o[0] - eye[0], o[2] - eye[2]) < 3 + o[3],
+    );
+    // The centre and four points around it.
+    for (const [x, y] of [
+      [0, 0],
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ]) {
+      const d: Vec3 = [
+        f[0] + r[0] * x * th + u[0] * y * tv,
+        f[1] + u[1] * y * tv,
+        f[2] + r[2] * x * th + u[2] * y * tv,
+      ];
+      const dl = Math.hypot(d[0], d[1], d[2]);
+      for (let t = 0.4; t <= 3; t += 0.4) {
+        const p: Vec3 = [
+          eye[0] + (d[0] / dl) * t,
+          eye[1] + (d[1] / dl) * t,
+          eye[2] + (d[2] / dl) * t,
+        ];
+        const push = this.net.collideBuildings(p, 0.01);
+        if (push[0] || push[1] || this.inDeck(p, 0) || this.vehicleAt(p))
+          return true;
+        if (
+          x === 0 &&
+          y === 0 &&
+          p[1] < this.renderedGround(p[0], p[2], p[1]) + 0.05
+        )
+          return true;
+        for (const o of near)
+          if (
+            Math.hypot(p[0] - o[0], p[2] - o[2]) < o[3] &&
+            p[1] > o[1] &&
+            p[1] < o[1] + 2
+          )
+            return true;
+      }
+    }
+    return false;
+  }
+
   /** Height of what is actually drawn at (x, z): terrain, road or junction
    * surface, or the water plane. */
   private renderedGround(x: number, z: number, hint?: number) {
@@ -198,7 +367,17 @@ export class CameraSystem {
   private crowded(eye: Vec3, target: Vec3, fov: number) {
     // A few metres at a normal lens; much further for long lenses, where
     // anything in the foreground is blown up and hides the subject.
-    const reach = fov < 0.5 ? clamp(7.2 / fov, 8, 30) : 4;
+    // At a normal lens, up to most of the way to the subject (a corner 6 m
+    // away with the car at 8 m swamps the frame).
+    const toSubject = Math.hypot(
+      target[0] - eye[0],
+      target[1] - eye[1],
+      target[2] - eye[2],
+    );
+    const reach =
+      fov < 0.5
+        ? clamp(Math.max(7.2 / fov, toSubject * 0.6), 8, 90)
+        : clamp(toSubject * 0.7, 4, 8);
     const {f, r, u} = viewBasis(eye, target);
     const tv = Math.tan(fov / 2);
     const th = tv * ASPECT;
@@ -215,14 +394,14 @@ export class CameraSystem {
           f[2] + r[2] * x * th + u[2] * y * tv,
         ];
         const dl = Math.hypot(d[0], d[1], d[2]);
-        for (let t = 0.5; t <= reach; t += reach > 8 ? 1 : 0.5) {
+        for (let t = 0.5; t <= reach; t += reach > 8 ? reach / 40 : 0.5) {
           const p: Vec3 = [
             eye[0] + (d[0] / dl) * t,
             eye[1] + (d[1] / dl) * t,
             eye[2] + (d[2] / dl) * t,
           ];
           const push = this.net.collideBuildings(p, 0.01);
-          if (push[0] || push[1] || this.inDeck(p, 0)) {
+          if (push[0] || push[1] || this.inDeck(p, 0) || this.vehicleAt(p)) {
             hits++;
             break;
           }
@@ -314,6 +493,8 @@ export class CameraSystem {
   }
 
   private blocked(a: Vec3, b: Vec3) {
+    // The subject's own box (a train car being filmed) doesn't hide it.
+    const endBox = this.vehicleAt(b, 0.3);
     // At least every ~2.5 m so long lenses don't step over a deck or a wall.
     const n = Math.max(
       12,
@@ -331,11 +512,18 @@ export class CameraSystem {
       const push = this.net.collideBuildings(p, 0.01);
       if (push[0] || push[1]) return true;
       if (this.inDeck(p, 0)) return true;
+      const v = this.vehicleAt(p);
+      if (v && v !== endBox) return true;
     }
     return false;
   }
 
   private newShot(pl: Player): ShotState {
+    const old = this.shot;
+    if (old?.framing && (old.shown ?? 0) > 0.5) {
+      this.framings.unshift(old.framing);
+      this.framings.length = Math.min(this.framings.length, 2);
+    }
     const s = this.pickShot(pl);
     this.recent.unshift(s.name);
     this.recent.length = Math.min(this.recent.length, 3);
@@ -409,6 +597,8 @@ export class CameraSystem {
               12,
             );
             if (pr[0] !== 0 || pr[1] !== 0) continue;
+            // Nor near a viaduct: at this focal length it becomes a wall.
+            if (this.inDeck(s.eye, 25)) continue;
           }
           break;
         }
@@ -501,6 +691,14 @@ export class CameraSystem {
             : ([p[0], p[1] + 1, p[2]] as Vec3);
         if (!this.frameOk(s.eye, target, s.fov, pl, s.focus)) continue;
       }
+      // Same spot, same direction, or the same overpass as a recent cut.
+      const [fe, fl] = this.shotFraming(s, pl);
+      if (attempt < 10 && this.repeatsFraming(fe, fl)) continue;
+      s.framing = {
+        eye: fe,
+        yaw: Math.atan2(fl[0] - fe[0], fl[2] - fe[2]),
+        covered: this.covered(fe),
+      };
       return s;
     }
     return {
@@ -619,7 +817,8 @@ export class CameraSystem {
           e[2] + Math.cos(this.yawOff) * 10,
         ]);
         // Natural lens: the road and city fill the windscreen, not the dash.
-        return {eye, target: look, fov: 1.0, near: 0.03, interior: true};
+        // Slightly long lens: less headliner and dash, more street.
+        return {eye, target: look, fov: 0.88, near: 0.03, interior: true};
       }
       case 'hood': {
         const sz = info?.size ?? [1.8, 1.4, 4.5];
@@ -645,6 +844,7 @@ export class CameraSystem {
     const push = this.net.collideBuildings(e, 1.2);
     if (push[0] !== 0 || push[1] !== 0) return true;
     if (this.inDeck(e, 1.5)) return true;
+    if (this.vehicleAt(e, 0.8)) return true;
     for (const o of this.obstacles()) {
       // Radius-aware: buses and trucks are long, poles thin.
       if (
@@ -679,6 +879,7 @@ export class CameraSystem {
   private blockedFor = 0;
 
   private directed(dt: number, pl: Player): CamOut {
+    this.refreshVehicles(pl);
     let out = this.directedRaw(dt, pl);
     // Never below the local ground or sidewalk, even for locked shots.
     if (!out.interior) {
@@ -720,13 +921,14 @@ export class CameraSystem {
         out = this.directedRaw(0, pl);
       }
     }
-    // Cut away from shots whose camera ends up inside or against geometry.
+    // Cut away from shots whose camera ends up inside or against geometry,
+    // or that have anything (a wall, a bus, a train) right in front of the lens.
     for (
       let tries = 0;
       tries < 4 &&
       this.shot &&
       this.shot.name !== 'interior' &&
-      this.badEye(out.eye);
+      (this.badEye(out.eye) || this.centreHit(out.eye, out.target, out.fov));
       tries++
     ) {
       this.shot = this.newShot(pl);
@@ -739,6 +941,7 @@ export class CameraSystem {
     if (!this.shot || this.shot.t > this.shot.dur) this.shot = this.newShot(pl);
     const s = this.shot;
     s.t += dt;
+    s.shown = (s.shown ?? 0) + dt;
     pl.hidden = false;
     const p = pl.pos;
     const f = pl.forward;

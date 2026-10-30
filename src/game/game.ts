@@ -18,6 +18,7 @@ import {
   CAMERA_MODES,
   FreeCamera,
   type CameraMode,
+  type VehicleBox,
 } from './camera.ts';
 import {Input} from './input.ts';
 import {Pedestrians} from './pedestrians.ts';
@@ -213,6 +214,33 @@ export class Game {
       return out;
     };
     this.camera.setElevated(city.summary.layout.elevated);
+    this.camera.vehicles = () => {
+      // Traffic (cars, buses, trucks) and train cars as oriented boxes.
+      const out: VehicleBox[] = [];
+      const e = this.player.pos;
+      const add = (m: Float32Array | number[], size: Vec3) => {
+        if (Math.abs(m[12] - e[0]) > 260 || Math.abs(m[14] - e[2]) > 260)
+          return;
+        const fl = Math.hypot(m[8], m[10]) || 1;
+        out.push({
+          x: m[12],
+          y: m[13],
+          z: m[14],
+          fx: m[8] / fl,
+          fz: m[10] / fl,
+          hl: size[2] / 2,
+          hw: size[0] / 2,
+          h: size[1],
+        });
+      };
+      const vs = this.vehicles.variants;
+      for (const c of this.traffic?.cars ?? [])
+        add(c.model, vs[c.variant]?.info.size ?? [1.8, 1.5, 4.5]);
+      for (const tr of this.trains?.trains ?? [])
+        for (const c of tr.cars)
+          add(c.model, vs[tr.variant]?.info.size ?? [3, 4, 20]);
+      return out;
+    };
     this.camera.trainCars = () => {
       // Car positions of the train nearest the player.
       const t = this.trains!;
