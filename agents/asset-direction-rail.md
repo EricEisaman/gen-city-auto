@@ -460,3 +460,34 @@ falloff using n.
 - Don't add props on the deck that need per-metre geometry (fences with balusters, sleeper clips,
   dropper clamps). Paint them.
 - Don't use `CM.facade` for anything on the viaduct.
+
+---
+
+## 7. Round 2 geometry additions (for the shader engineer)
+
+New params and faces (gen-base.ts railViaduct); none needs a shader change to look sane,
+but these are the hooks:
+- `packMat(CM.concrete, RC_STATION | RC_GLAZED)` (= 0x28): **glazed concourse curtain wall**
+  under the station deck (box, metre UVs per face: uv.y = metres above the box bottom, which is
+  0.3 m below ground). Wants: mullions every 1.5 m, transoms at 2.4 m, dark glass with sky
+  reflection, warm emissive interior at night, bottom 0.3 m granite. Today it falls back to the
+  RC_STATION panel look. The solid band above it is plain `RC_STATION`.
+- `packMat(CM.screen, DEPARTURE | si)` (`DEPARTURE = 0x100`): station departure boards, uv 0..1
+  over each face. Wants amber/white timetable rows on black; today renders as an ad screen.
+- `packMat(CM.lamp, 1)` is now also used for: the light-box strip on the station canopy fascia
+  (vertical face toward the track + a down-facing strip), the LED strip under the coping lip
+  (`y 1.10`, down-facing, ~30 % of 120 m stretches per side), the fluorescent fitting under the
+  centre soffit of every bay (down-facing quad), the walkway lamp heads (short tubes) and the
+  under-canopy fluorescent line. M_LAMP lights only n.y < -0.5 faces strongly; a vertical
+  light-box face only gets the x4 night term - consider a brighter side term for lamp param 1
+  on vertical faces if the fascia strip reads too dim.
+- Signal heads: both lamps are now `CM.lamp` 3/4/5 (G over Y, Y over Y or R over R).
+- `RC_PLATFORM_FACE` also on the stair-well walls (down to the slab soffit); `RC_PLATFORM` on the
+  stair treads/risers (uv: risers 0..0.265 m tall, treads 0..0.32 deep, 2.2 m wide).
+- `RC_TROUGH` also on the outer cable trough hung on the s = -1 fascia (y -0.06..0.30,
+  lateral 5.2..5.5) and on the gully boxes at downpipe feet.
+- `RC_PARAPET` also on the soundwall coping cap (4.99..5.21, y 2.74..2.87).
+- `RC_COLUMN` columns are now chamfered prisms (u around the perimeter, 2(hw-0.07) per face,
+  so the shader's "face whose uv.x span is 1.0" test for the ID plate sees 0.86/1.06); roadside
+  columns have an 8 cm plinth to 0.3 m.
+- Lab: `LabInfo.train` parks one train at the site; trains in the lab are drawn but never move.
