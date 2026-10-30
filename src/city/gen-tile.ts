@@ -7069,8 +7069,7 @@ function poleFoot(
   const FT = 0.115;
   const rows: [number, number, number, number, number][] = [
     [0.32, -0.06, 1, 0, conc],
-    [0.32, 0.055, 1, 0.15, conc],
-    [0.295, 0.08, 0.3, 0.95, conc],
+    [0.32, 0.08, 0.6, 0.8, conc],
     [FR, 0.08, 0, 1, conc],
     [FR, 0.08, 1, 0, flange],
     [FR, FT, 0.8, 0.6, flange],
@@ -7120,10 +7119,17 @@ function poleFoot(
   for (let k = 0; k < 4; k++) {
     const a = Math.PI / 4 + (k * Math.PI) / 2;
     m.box(
-      [p[0] + Math.cos(a) * 0.155, p[1] + FT + 0.025, p[2] + Math.sin(a) * 0.155],
+      [
+        p[0] + Math.cos(a) * 0.155,
+        p[1] + FT + 0.025,
+        p[2] + Math.sin(a) * 0.155,
+      ],
       [0.025, 0.025, 0.025],
       bolt,
       a,
+      0,
+      true,
+      true,
     );
   }
   const yaw = Math.atan2(back[0], back[1]);
@@ -7165,8 +7171,8 @@ function streetLight(
   ];
   if (lod > 0) {
     // Distant tiles: the pole and arm as one bent tube (widened to a
-    // minimum on-screen width) and the lamp head as its lit underside and
-    // its top, 20 vertices instead of 42.
+    // minimum on-screen width) and the lamp head as its lit underside, 16
+    // vertices instead of 42.
     m.tube(
       [[p[0], p[1] - SINK, p[2]], top, head],
       0.13,
@@ -7179,10 +7185,9 @@ function streetLight(
       head[2] + r[2] * x + dir[1] * z,
     ];
     const lamp = packMat(CM.lamp, sodium ? 0 : 1);
-    for (const [y, nn] of [
-      [-0.2, [0, -1, 0]],
-      [-0.04, UP],
-    ] as const)
+    // The lit underside only (round 5 also drew the top: 4 vertices a
+    // lamp, 0.2M over a city, for a speck seen only from above).
+    for (const [y, nn] of [[-0.2, [0, -1, 0]]] as const)
       m.quad(
         [
           H(-0.3, -0.18, y),
@@ -7529,7 +7534,7 @@ function signal(
     0.12,
     column,
     grey,
-    12,
+    8,
     [-armDir[0], -armDir[1]],
     [2.45, 3.15],
     true,
@@ -7543,12 +7548,12 @@ function signal(
   m.beam(top, end, 0.06, 0.06, grey);
   // Arm-joint collars: the mast arm's clamp sleeve, and the luminaire
   // arm's at the column top (capping it).
-  m.cylinder([p[0], p[1] + 5.6, p[2]], 0.17, 0.38, 10, grey, false);
+  m.cylinder([p[0], p[1] + 5.6, p[2]], 0.17, 0.38, 8, grey, false);
   m.cylinder(
     [p[0], p[1] + SIGNAL_LUM.h - 0.18, p[2]],
     0.16,
     0.45,
-    10,
+    8,
     grey,
     true,
   );
@@ -8197,6 +8202,36 @@ function hedgeRun(
       card(at(q, 0.05, 0.05), across, lean, nu, 0.3, 0.24);
     }
     card(at(P(i, W / 2, HEDGE_H), 0.04, 0.08), across, lean, nu, 0.34, 0.24);
+  }
+}
+
+/**
+ * Bare LOD1 pole: a vertical three-sided prism of circumradius r from SINK
+ * under p to h over it, open both ends, smooth radial normals, uv as a
+ * cylinder (x metres around, y metres up from the sunk foot). 6 vertices.
+ */
+function prism3(m: CMesh, p: Vec3, r: number, h: number, mat: number) {
+  const ids = [0, 1, 2].flatMap(k => {
+    const a = (k / 3) * Math.PI * 2;
+    const n: Vec3 = [Math.cos(a), 0, Math.sin(a)];
+    const u = k * r * 1.73;
+    return [
+      m.vertex([p[0] + n[0] * r, p[1] - SINK, p[2] + n[2] * r], n, u, 0, mat),
+      m.vertex(
+        [p[0] + n[0] * r, p[1] + h, p[2] + n[2] * r],
+        n,
+        u,
+        h + SINK,
+        mat,
+      ),
+    ];
+  });
+  for (let k = 0; k < 3; k++) {
+    const k1 = (k + 1) % 3;
+    const a = ((k + 0.5) / 3) * Math.PI * 2;
+    const n: Vec3 = [Math.cos(a), 0, Math.sin(a)];
+    m.triFacing(ids[k * 2], ids[k1 * 2], ids[k1 * 2 + 1], n);
+    m.triFacing(ids[k * 2], ids[k1 * 2 + 1], ids[k * 2 + 1], n);
   }
 }
 
@@ -8953,8 +8988,8 @@ const GRATE = 1;
 /**
  * Street-edge fixtures of signalized junction ji (round 6): the ground
  * controller cabinet (one per junction, 0.6 x 0.4 x 1.2 m on a 10 cm
- * plinth, behind one signal pole, facing the road; LOD1: the body box
- * only) and, LOD0, 3-5 bollards along each kerb return (the corner radius
+ * plinth, behind one signal pole, facing the road; LOD1: an 8-vertex
+ * box) and, LOD0, 3-5 bollards along each kerb return (the corner radius
  * the tile's walkers wait at), 0.4 m in from the kerb, clear of `poles`.
  * `spots`: the junction's signal poles (signalSpots: pole, arm direction
  * over the road, arm index).
@@ -8999,7 +9034,41 @@ function junctionFixtures(
     const yaw = Math.atan2(armDir[0], armDir[1]);
     const paint = packMat(CM.paint, CABINET);
     if (lod !== 0) {
-      m.box([x, y + 0.65, z], [0.3, 0.65, 0.2], paint, yaw);
+      // Eight shared corners (smooth normals: it is a few pixels).
+      const ids = [0, 1].map(top =>
+        [
+          [-1, -1],
+          [1, -1],
+          [1, 1],
+          [-1, 1],
+        ].map(([u, v]) => {
+          const q = P(u * 0.3, v * 0.2);
+          const nx = a.dir[0] * u + armDir[0] * v;
+          const nz = a.dir[1] * u + armDir[1] * v;
+          return m.vertex(
+            [q[0], y + top * 1.3, q[1]],
+            top ? [nx * 0.5, 0.75, nz * 0.5] : [nx * 0.7, 0, nz * 0.7],
+            u,
+            top,
+            paint,
+          );
+        }),
+      );
+      for (let e = 0; e < 4; e++) {
+        const e1 = (e + 1) & 3;
+        const q = P(0, 0);
+        const c0 = m.pos(ids[0][e]);
+        const c1 = m.pos(ids[0][e1]);
+        const out: Vec3 = [
+          (c0[0] + c1[0]) / 2 - q[0],
+          0,
+          (c0[2] + c1[2]) / 2 - q[1],
+        ];
+        m.triFacing(ids[0][e], ids[0][e1], ids[1][e1], out);
+        m.triFacing(ids[0][e], ids[1][e1], ids[1][e], out);
+      }
+      m.triFacing(ids[1][0], ids[1][1], ids[1][2], UP);
+      m.triFacing(ids[1][0], ids[1][2], ids[1][3], UP);
       break;
     }
     m.box([x, y + 0.04, z], [0.34, 0.06, 0.24], packMat(CM.concrete), yaw);
@@ -9013,13 +9082,12 @@ function junctionFixtures(
   // Corner bollards: stainless posts, the column's pole uv (metres up from
   // SINK under the paving: the shader's foot dirt).
   const post = packMat(CM.metal, LAMP_METAL);
-  jg.corners.forEach(({pts, block}, ci) => {
+  jg.corners.forEach(({pts}, ci) => {
     const s = [0];
     for (let i = 1; i < pts.length; i++)
       s.push(s[i - 1] + dist2(pts[i - 1], pts[i]));
     const len = s[s.length - 1];
     if (len < 2.5) return;
-    const curb = L.blocks[block].curb;
     const hb = hash2(ji * 8 + ci, 0xb011);
     const count = Math.min(3 + (hb % 3), 1 + Math.floor((len * 0.7) / 1.3));
     for (let b = 0; b < count; b++) {
@@ -9033,7 +9101,9 @@ function junctionFixtures(
       const dl = dist2(a, c) || 1;
       let nx = -(c[1] - a[1]) / dl;
       let nz = (c[0] - a[0]) / dl;
-      if (!pointInPolygon([q[0] + nx * 0.8, q[1] + nz * 0.8], curb)) {
+      // Inward: away from the junction (the block's sharp curb polygon
+      // holds both sides of a kerb return).
+      if (nx * (q[0] - j.p[0]) + nz * (q[1] - j.p[1]) < 0) {
         nx = -nx;
         nz = -nz;
       }
@@ -9082,7 +9152,11 @@ function gutterGrates(
   const HW = 0.15;
   for (const side of [-1, 1]) {
     let k = 0;
-    for (let s = s0 + 5 + (hash2(ci, side + 0x67) % 7); s < total - s1 - 5; s += 12) {
+    for (
+      let s = s0 + 5 + (hash2(ci, side + 0x67) % 7);
+      s < total - s1 - 5;
+      s += 12
+    ) {
       const h = hash2(ci * 2 + (side > 0 ? 1 : 0), k++ ^ 0x6a7e);
       const ss = s + ((h & 0xff) / 255 - 0.5) * 3;
       const q = chainAt(c, arc, ss);
@@ -9208,6 +9282,10 @@ export function buildTile(
         if (here && lod === 0 && clearOfDecks(ctx, p, p, 10.2)) {
           utilityPole(m, p);
           serviceDrops(m, p, fronts);
+        } else if (here && clearOfDecks(ctx, p, p, 10.2)) {
+          // LOD1: the bare pole as a three-sided prism (6 vertices), so
+          // distant streets keep the long pole shadows of low sun.
+          prism3(m, p, 0.19, 10, packMat(CM.concrete));
         }
         if (prev && lod === 0 && here && clearOfDecks(ctx, prev, p, 9.3)) {
           for (const dy of [9.05, 8.5, 8.0])
@@ -9619,7 +9697,8 @@ export function buildTile(
       }
     }
     // Guardrails along arterial curbs, hedges in the planting strip behind
-    // them, bus stops, bollards at corners.
+    // them, bus stops. (Corner bollards: junctionFixtures, round 6; round
+    // 5's stood at the arm mouths, in the crossing landings.)
     for (const ci of ctx.tileChains[tile] ?? []) {
       const c = L.chains[ci];
       if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
@@ -9722,25 +9801,6 @@ export function buildTile(
             [0.9, 0.95, 1.0],
             LightKind.vending,
           );
-        }
-      }
-    }
-    // Bollards at signalized corners, only where they land on the corner
-    // sidewalk (not out in the carriageway).
-    for (const ji of ctx.tileJunctions[tile] ?? []) {
-      const j = L.junctions[ji];
-      if (!j.signal) continue;
-      const jg = ctx.geom.junctions[ji];
-      for (const q of jg.outline) {
-        const d: Vec2 = [q[0] - j.p[0], q[1] - j.p[1]];
-        const dl = Math.hypot(d[0], d[1]) || 1;
-        for (let k = -2; k <= 2; k++) {
-          const t: Vec2 = [-d[1] / dl, d[0] / dl];
-          const x = q[0] + (d[0] / dl) * 0.7 + t[0] * k * 0.9;
-          const z = q[1] + (d[1] / dl) * 0.7 + t[1] * k * 0.9;
-          if (!land.ok(x, z, -1)) continue;
-          const bp: Vec3 = [x, sidewalkY(hf, x, z, j.h) - SINK, z];
-          m.cylinder(bp, 0.07, 0.8 + SINK, 4, packMat(CM.paint, 0xd8), true);
         }
       }
     }
