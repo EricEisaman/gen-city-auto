@@ -2097,10 +2097,19 @@ export const RAIL_GIRDER = 0x500;
 export const INSULATOR = 0xf9;
 /**
  * CM.screen param on station departure boards (| station index & 0xff);
- * uv 0..1 over the board face. Until the shader draws timetable rows it
- * renders as an ad screen.
+ * uv 0..1 over the board face. Bit 16: ad screens carry at most a 16-bit
+ * seed, so no ad can select the board (city-materials.wgsl screenMat
+ * tests `param >> 16 == 1`).
  */
-export const DEPARTURE = 0x100;
+export const DEPARTURE = 0x10000;
+/**
+ * RC_STATION | RC_GLAZED flag on the concourse clerestory ribbon: the
+ * shader adds a warm lit band at night (city-materials.wgsl, "clerestory
+ * band" block).
+ */
+export const RC_CLERESTORY = 0x80;
+/** CM.vending flag (| body 0..2) on the display front quad; 0x300 % 3 == 0. */
+export const VENDING_FRONT = 0x300;
 /**
  * CM.paint param on the station canopy's roof skylight strips (box, metre
  * UVs). In the 0xd0..0xef pale-grey fixture range, so until the shader
@@ -3772,11 +3781,11 @@ function railViaduct(
         const yaw = Math.atan2(fr[k].d[0], fr[k].d[1]);
         const b = mid(k, 0.5, o(4.6), CY - 0.62);
         const top = mid(k, 0.5, o(4.6), CY + 0.12)[1];
-        m.box(b, [0.05, 0.42, 2.5], name, yaw);
+        m.box(b, [0.05, 0.32, 2.4], name, yaw);
         for (const f of [-1.6, 1.6])
           m.tube(
             [
-              [b[0] + fr[k].d[0] * f, b[1] + 0.42, b[2] + fr[k].d[1] * f],
+              [b[0] + fr[k].d[0] * f, b[1] + 0.32, b[2] + fr[k].d[1] * f],
               [b[0] + fr[k].d[0] * f, top, b[2] + fr[k].d[1] * f],
             ],
             0.015,
@@ -3786,15 +3795,15 @@ function railViaduct(
       {
         const yaw = Math.atan2(fr[si].d[0], fr[si].d[1]);
         const b = P(si, o(9.86), CY + 0.1);
-        m.box(b, [0.05, 0.5, 2.8], name, yaw);
+        m.box(b, [0.05, 0.32, 2.4], name, yaw);
         // Perpendicular hanging sign mid-platform, 2.6 m clear of the
         // platform (it was 2.47, and filled the top of the platform view),
         // on two rods to the roof.
-        const h = mid(si, 0.5, o(6.8), CY - 0.32);
-        m.box(h, [1.2, 0.28, 0.05], name, yaw);
+        const h = mid(si, 0.5, o(6.8), CY - 0.28);
+        m.box(h, [1.2, 0.32, 0.05], name, yaw);
         const hl = fr[si].l;
         for (const x of [-0.9, 0.9]) {
-          const rp: Vec3 = [h[0] + hl[0] * x, h[1] + 0.28, h[2] + hl[1] * x];
+          const rp: Vec3 = [h[0] + hl[0] * x, h[1] + 0.32, h[2] + hl[1] * x];
           m.tube([rp, [rp[0], hs[si] + CY + 0.3, rp[2]]], 0.015, metal);
         }
         // Double-faced platform clocks hung over the bench line (round,
@@ -3990,6 +3999,32 @@ function railViaduct(
             const vy = yaw + (side < 0 ? Math.PI : 0);
             // Front (the box's +x face) toward the platform.
             m.box(c, [0.38, 0.9, 0.45], vm, vy);
+            // The display front as its own quad 3 mm proud with the
+            // VENDING_FRONT flag (same box UV as the +x face), so the
+            // shader can keep the drink window off the other faces.
+            {
+              const R: Vec3 = [Math.cos(vy), 0, -Math.sin(vy)];
+              const Fw: Vec3 = [Math.sin(vy), 0, Math.cos(vy)];
+              const V = (z: number, y: number): Vec3 => [
+                c[0] + R[0] * 0.383 + Fw[0] * z,
+                c[1] + y,
+                c[2] + R[2] * 0.383 + Fw[2] * z,
+              ];
+              m.quad(
+                [V(0.45, -0.9), V(-0.45, -0.9), V(-0.45, 0.9), V(0.45, 0.9)],
+                R,
+                [
+                  [0, 0],
+                  [0.9, 0],
+                  [0.9, 1.8],
+                  [0, 1.8],
+                ],
+                packMat(
+                  CM.vending,
+                  VENDING_FRONT | ((k + v + (side > 0 ? 1 : 0)) % 3),
+                ),
+              );
+            }
             // The lit display window (uv.y 0.7 .. 1.5 on the front, where
             // the shader draws the drink rows) recessed 6 cm: the lower
             // body (coin slot, buttons, flap) and the header panel stand
@@ -4153,7 +4188,7 @@ function railViaduct(
                 [a1 - a0, 2.2],
                 [0, 2.2],
               ],
-              conc(RC_STATION | RC_GLAZED),
+              conc(RC_STATION | RC_GLAZED | RC_CLERESTORY),
               seed(ck),
             );
             // A lit LED cornice line over the ribbon (CM.ledLine 0: every
@@ -4253,7 +4288,7 @@ function railViaduct(
             yaw,
           );
           if (ub > 1.4)
-            m.box(f(9.9, hg + ub / 2), [0.05, 0.55, 3.6], name, yaw);
+            m.box(f(9.9, hg + ub / 2), [0.05, 0.36, 3.6], name, yaw);
           // Fins on the upper band every 1.6 m, clear of the name board.
           if (ub > 0.8)
             for (let a = -half + 0.8; a <= half - 0.8; a += 1.6) {
@@ -4397,7 +4432,7 @@ function railViaduct(
         const b = fx(2.56);
         m.box(
           [b[0], hs[k] - 1.0, b[2]],
-          [1.8, 0.4, 0.06],
+          [2.4, 0.36, 0.06],
           packMat(CM.sign, 64 + (si % 8)),
           yaw + Math.PI / 2,
         );

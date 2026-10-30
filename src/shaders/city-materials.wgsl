@@ -4701,7 +4701,7 @@ fn departureBoard(n: vec3f, uv: vec2f, si: u32) -> Surf {
 
 fn screenMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   // (Ad screens carry a 16-bit seed: 1 in 256 of them lands in this range.)
-  if ((param & 0xff00u) == 0x100u) { return departureBoard(n, uv, param & 0xffu); }
+  if ((param >> 16u) == 1u) { return departureBoard(n, uv, param & 0xffu); }
   var s = defaultSurf(n);
   let t = frame.time.x * 0.2 + f32(param & 0xffu) * 0.37;
   let scene = floor(t);
@@ -5865,6 +5865,15 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         // Capped at room level: ~2.5x the lit facade, not a light box.
         s.emissive = min(hall, vec3f(1.2)) * film * msh * mix(0.45, 1.0, step(0.18, hp2)) * (1.0 - mull) * (1.0 - kick) * mix(0.26, 0.13, nightLight());
         porous = 0.0;
+        // --- Clerestory band (rail geometry round 5, RC_CLERESTORY 0x80 on
+        // the concourse upper-storey ribbon, uv.y 1.2 .. 2.2): a warm lit
+        // band between the mullions, dim by day, bright at night, so the
+        // station box's upper storey reads as lit from the street. ---
+        if ((param & 0x80u) != 0u) {
+          let band = vec3f(1.0, 0.86, 0.64) * (0.8 + 0.2 * hp);
+          s.emissive = max(s.emissive, band * (1.0 - mull) * mix(0.15, 1.4, nightLight()));
+        }
+        // --- end clerestory band ---
       } else if (vert) {
         // Box UV: uv.y = metres above the tower base. Pale precast panels
         // (1.2 x 3 m), a dark granite plinth, a glazing band per landing.

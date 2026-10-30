@@ -636,3 +636,19 @@ but these are the hooks:
   (0.8 vs 0.5) - a brighter / wider line would make the judge see it.
 - **Lab:** the `platform` view now stands at -8 m (was +4) looking at +40 m, so the hanging board is
   whole, ~14 m ahead, with a clock beside it.
+- **Round 5 follow-ups (after shader round 5):**
+  - `DEPARTURE` is now **0x10000** (bit 16; ad screens carry at most a 16-bit seed), and the
+    `screenMat` selector is `(param >> 16u) == 1u`, so no ad can render as a departure board.
+  - **`RC_CLERESTORY` = 0x80** on the concourse clerestory ribbon (`RC_STATION | RC_GLAZED |
+    RC_CLERESTORY`). Its emissive is the delimited "Clerestory band" block in the glazed branch of
+    `railConcrete` (city-materials.wgsl): a warm band between the mullions, x0.15 by day, x1.4 at
+    night. The shader engineer can retune it.
+  - Name boards are 0.64 m tall (0.72 m for the concourse one) and 4.8 m wide (2 x the 2.4 m unit)
+    or 2.4 m (the perpendicular board) / 7.2 m (concourse) / 4.8 m (stair tower), so the 0.6 m atlas
+    cell fits inside the frame and the 2.4 m unit repeats with no clipped remainder. The
+    perpendicular board is still 2.6 m clear.
+  - **`VENDING_FRONT` = 0x300** (`CM.vending`, `| body 0..2`; 0x300 % 3 == 0, so `param % 3` still
+    picks the body colour): the platform machines' display front is its own quad 3 mm proud of the
+    box's +x face with the same box UVs (u 0..0.9, v 0..1.8). **Shader ask:** draw the window and
+    header only where `(param & 0x300) == 0x300` (or on the street machine's mesh); the box's other
+    faces then stay plain body.
