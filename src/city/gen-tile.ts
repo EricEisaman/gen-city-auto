@@ -572,10 +572,16 @@ function edgeQuad(
  * jambs and head of [s0, s1] x [y0, y1], its outer edge on the wall plane
  * (`out`) and its inner edge FRAME_D proud (one shared 8-vertex ring, so
  * no side faces are needed), and a sloped precast sill under it.
- * The shader draws the recess inside the opening; this supplies the
- * silhouette, the shadow-map and AO response at grazing angles. 12
+ * The shader's opening() draws the recess inside the opening, from the wall
+ * plane back to the glass REVEAL_GLASSBLOCK deep; the frame's inner edge
+ * sits exactly on the opening outline, so the two compose into one reveal
+ * (FRAME_D proud + REVEAL_GLASSBLOCK recessed) and the shader's jamb and
+ * head sun shadows start where the frame's own shadows end. This supplies
+ * the silhouette, the shadow-map and AO response at grazing angles. 12
  * vertices (the 2-quad sill and hood it replaces had 8).
  */
+/** Mirrors REVEAL_GLASSBLOCK in city-materials.wgsl (glass depth, m). */
+export const REVEAL_GLASSBLOCK = 0.15;
 const FRAME_D = 0.05;
 const FRAME_W = 0.07;
 function openingFrame(
