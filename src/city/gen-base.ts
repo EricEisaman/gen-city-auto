@@ -1677,6 +1677,15 @@ export const RC_ROADSIDE = 0x10;
 export const RC_GLAZED = 0x20;
 /** RC_COLUMN flag: a 1.2 m column (hw 0.6, 1.2 m of u per face, not 1.0). */
 export const RC_WIDE = 0x40;
+/**
+ * RC_SOUNDWALL panel mix, 2 bits at RC_PANELS_SHIFT ((param >> 7) & 3), per
+ * 120 m stretch: 0 = all ribbed grey precast; 1 = ribbed with about one
+ * panel in four clear polycarbonate; 2 = ribbed with about one in six a
+ * replaced panel in a fresher / other tone; 3 = all three. The shader picks
+ * each ~2 m panel's type by hash of its index (floor(uv.x / 2)) and the
+ * aux seed, plus a +-8 % tint and grime at the foot.
+ */
+export const RC_PANELS_SHIFT = 7;
 /** CM.metal params: railhead tube, rail web/foot, galvanised OLE steel. */
 export const RAIL_STEEL = 0x4000;
 export const RAIL_WEB = 0x4001;
@@ -1692,6 +1701,26 @@ export const INSULATOR = 0xf9;
 export const DEPARTURE = 0x100;
 /** Railhead top above the deck top (trains.ts sits cars on it). */
 export const RAIL_TOP = 0.37;
+
+/** common.wgsl hashu / hashuf, so geometry can sit where a shader hash puts a stain. */
+function wgslHashu(x: number) {
+  let v = x >>> 0;
+  v = (v ^ 61 ^ (v >>> 16)) >>> 0;
+  v = Math.imul(v, 9) >>> 0;
+  v = (v ^ (v >>> 4)) >>> 0;
+  v = Math.imul(v, 0x27d4eb2d) >>> 0;
+  return (v ^ (v >>> 15)) >>> 0;
+}
+const wgslHashuf = (x: number) => (wgslHashu(x) & 0xffffff) / 16777216;
+/**
+ * Bent-unit u (12 * segment + 0..12) of the scupper streak that
+ * city-materials.wgsl deckStains() draws on the RC_FASCIA face of segment i
+ * with seed `sd` (aux >> 16): x0 = 12b + 6 + (hashuf(h ^ 0x22) - 0.5) * 1.8.
+ */
+export function scupperU(sd: number, i: number) {
+  const h = wgslHashu((Math.imul(sd, 0x9e3779b1) ^ (i + 65536)) >>> 0);
+  return 12 * i + 6 + (wgslHashuf((h ^ 0x22) >>> 0) - 0.5) * 1.8;
+}
 
 /** Integer hash of (line, k) to [0, 1): rail variety, not the layout RNG. */
 const railHash = (a: number, b: number) => hash2(a * 7919 + 13, b) / 4294967296;
@@ -1755,7 +1784,13 @@ function railViaduct(
     if (station[i]) return 0;
     const b = Math.floor(i / 10);
     if (railHash(ei, b) >= 0.55) return 0;
-    return RC_SOUNDWALL | (railHash(ei + 101, b) < 0.5 ? RC_GLAZED : 0);
+    // Panel mix of the stretch (RC_PANELS field, see its doc).
+    const mix = Math.min(3, Math.floor(railHash(ei + 202, b) * 4));
+    return (
+      RC_SOUNDWALL |
+      (railHash(ei + 101, b) < 0.5 ? RC_GLAZED : 0) |
+      (mix << RC_PANELS_SHIFT)
+    );
   };
 
   // Cross-section edges: (lateral, dy) a -> b, an outward normal given as
@@ -1784,21 +1819,29 @@ function railViaduct(
     const g = girder[i];
     const bed = packMat(CM.rail);
     // Centre cable trough between the tracks: precast lids (RC_TROUGH 'h':
-    // uv.x along, so the shader's 1 m lid joints run across it) 22 cm up.
+    // uv.x along, so the shader's 1 m lid joints run across it) 22 cm up,
+    // sat 2 cm down between 5 cm rims (RC_PARAPET 'h', paler precast) so
+    // it reads as a channel with lids, not a paved strip.
     E([-0.32, 0.22], [0.32, 0.22], 0, 1, conc(RC_TROUGH), 'h');
+    E([-0.32, 0.24], [-0.27, 0.24], 0, 1, conc(RC_PARAPET), 'h');
+    E([0.27, 0.24], [0.32, 0.24], 0, 1, conc(RC_PARAPET), 'h');
     E([-3.4, -0.4], [3.4, -0.4], 0, -1, conc(RC_BEAM), 'h');
     for (const s of [-1, 1]) {
       const L = (o: number, y: number): Vec2 => [s * o, y];
-      E(L(0.32, 0.22), L(0.32, 0), s, 0, conc(RC_TROUGH), 'v');
+      E(L(0.32, 0.24), L(0.32, 0), s, 0, conc(RC_TROUGH), 'v');
       E(L(0.32, 0), L(0.6, 0), 0, 1, bed, 'bed');
       // Ballast: crown, shoulders. Off the platforms the outer shoulder
-      // drops 25 cm at about 1:1.6 into a concrete cess along the trough.
-      E(L(0.9, 0.15), L(3.6, 0.15), 0, 1, bed, 'bed');
+      // starts 20 cm past the sleeper ends and drops 32 cm at about 1:2.3
+      // into a concrete cess along the trough: 0.75 m of sloped stone,
+      // wide enough to read from the along view.
       E(L(0.6, 0), L(0.9, 0.15), -s * 0.447, 0.894, bed, 'bed');
-      if (st) E(L(3.6, 0.15), L(4.0, 0), s * 0.351, 0.936, bed, 'bed');
-      else {
-        E(L(3.6, 0.15), L(4.0, -0.1), s * 0.53, 0.848, bed, 'bed');
-        E(L(4.0, -0.1), L(4.3, -0.1), 0, 1, conc(RC_PARAPET), 'h');
+      if (st) {
+        E(L(0.9, 0.15), L(3.6, 0.15), 0, 1, bed, 'bed');
+        E(L(3.6, 0.15), L(4.0, 0), s * 0.351, 0.936, bed, 'bed');
+      } else {
+        E(L(0.9, 0.15), L(3.3, 0.15), 0, 1, bed, 'bed');
+        E(L(3.3, 0.15), L(4.05, -0.17), s * 0.392, 0.92, bed, 'bed');
+        E(L(4.05, -0.17), L(4.3, -0.17), 0, 1, conc(RC_PARAPET), 'h');
       }
       // Rail webs (the heads are continuous tubes).
       for (const r of [-0.53, 0.53]) {
@@ -1844,6 +1887,12 @@ function railViaduct(
         E(L(9.55, 2.65), L(9.7, 2.65), 0, 1, fence, 'h');
         E(L(9.7, 2.65), L(9.7, 1.45), s, 0, fence, 'v');
         E(L(9.7, 1.45), L(9.7, -1.2), s, 0, conc(RC_FASCIA), 'v');
+        // Line-colour band along the platform's outer fascia (2 cm proud,
+        // 0.45 m), the station's colour read from the street and at range.
+        const lc = packMat(CM.paint, 0x0c);
+        E(L(9.72, 0.95), L(9.72, 0.5), s, 0, lc, 'v');
+        E(L(9.7, 0.95), L(9.72, 0.95), 0, 1, lc, 'h');
+        E(L(9.7, 0.5), L(9.72, 0.5), 0, -1, lc, 'h');
         E(L(9.7, -1.2), L(5.2, -1.2), 0, -1, conc(RC_BEAM), 'h');
         E(L(5.2, -0.9), L(5.2, -1.2), -s, 0, conc(RC_BEAM), 'v');
         // Longitudinal ribs under the platform slab (one between the edge
@@ -1855,12 +1904,22 @@ function railViaduct(
           E(L(o + 0.2, -1.2), L(o + 0.2, -1.65), s, 0, rb, 'v');
         }
       } else {
-        // Cable trough, parapet with a coping drip lip, fascia.
+        // Two precast cable troughs side by side (signal 4.3..4.6, power
+        // 4.6..4.9, 6 cm higher), the track-side one with a 5 cm rim
+        // (RC_PARAPET 'h') standing 2.5 cm proud of its lids (RC_TROUGH
+        // 'h', running under the rim), the step between them, and a 5 cm
+        // dark gap to the parapet: a raised channel with lids rather than
+        // one flat walkway slab.
         const tr = conc(RC_TROUGH);
-        E(L(4.3, 0.3), L(4.3, -0.1), -s, 0, tr, 'v');
-        E(L(4.3, 0.3), L(4.95, 0.3), 0, 1, tr, 'h');
         const pa = conc(RC_PARAPET);
-        E(L(4.95, 1.25), L(4.95, 0.3), -s, 0, pa, 'v');
+        E(L(4.3, 0.32), L(4.3, -0.17), -s, 0, tr, 'v');
+        E(L(4.3, 0.32), L(4.35, 0.32), 0, 1, pa, 'h');
+        E(L(4.3, 0.295), L(4.6, 0.295), 0, 1, tr, 'h');
+        E(L(4.6, 0.355), L(4.6, 0.295), -s, 0, tr, 'v');
+        E(L(4.6, 0.355), L(4.9, 0.355), 0, 1, tr, 'h');
+        E(L(4.9, 0.355), L(4.9, 0.2), s, 0, tr, 'v');
+        E(L(4.9, 0.2), L(4.95, 0.2), 0, 1, pa, 'h');
+        E(L(4.95, 1.25), L(4.95, 0.2), -s, 0, pa, 'v');
         const wall = wallOf(i);
         if (wall) {
           const sw = conc(wall);
@@ -1873,17 +1932,16 @@ function railViaduct(
           E(L(5.16, 2.75), L(5.16, 1.25), s, 0, sw, 'v');
           E(L(5.16, 1.25), L(5.43, 1.25), 0, 1, pa, 'h');
         } else E(L(4.95, 1.25), L(5.43, 1.25), 0, 1, pa, 'h');
-        E(L(5.43, 1.25), L(5.43, 1.13), s, 0, pa, 'v');
-        E(L(5.43, 1.13), L(5.2, 1.13), 0, -1, pa, 'h');
-        E(L(5.2, 1.13), L(5.2, -0.9), s, 0, conc(RC_FASCIA), 'v');
+        // Coping drip lip 19 cm deep (was 12): its soffit and the shadow
+        // it throws on the fascia are the hard dark line under the pale
+        // coping that carries the deck edge at range.
+        E(L(5.43, 1.25), L(5.43, 1.06), s, 0, pa, 'v');
+        E(L(5.43, 1.06), L(5.2, 1.06), 0, -1, pa, 'h');
+        E(L(5.2, 1.06), L(5.2, -0.9), s, 0, conc(RC_FASCIA), 'v');
         // LED strip under the coping lip (lamp faces down: lit at night).
         if (glowOf(i, s))
-          E(L(5.23, 1.1), L(5.4, 1.1), 0, -1, packMat(CM.lamp, 1), 'h');
-        // Coping light line on every span: a 10 cm LED strip set 5 mm
-        // proud of the lip's outer face, the continuous lit edge that keeps
-        // the deck line readable at night from any range (lamp side faces
-        // glow at x4; 10 cm is ~0.5 px at the far view, enough with TAA).
-        E(L(5.435, 1.24), L(5.435, 1.14), s, 0, packMat(CM.lamp, 1), 'v');
+          E(L(5.23, 1.03), L(5.4, 1.03), 0, -1, packMat(CM.lamp, 1), 'h');
+        // (The coping light line is a lamp tube, see copingLine below.)
         if (s < 0) {
           // Signal/power cable trough hung on the outer fascia.
           const tq = conc(RC_TROUGH);
@@ -1901,10 +1959,10 @@ function railViaduct(
         E(L(3.4, -0.4), L(3.4, -2.3), -s, 0, beam, 'v');
       } else {
         // Two steel plate girders per side (webs seen from both faces).
-        // The first segment of a run has 0x80 set: its outer web carries
-        // the clearance board.
+        // Every span's outer web has 0x80 set: the shader paints the
+        // clearance board there (and on the proud plate added below).
         const gm = packMat(CM.paint, RAIL_GIRDER | (g & 0x7f));
-        const board = packMat(CM.paint, RAIL_GIRDER | g);
+        const board = packMat(CM.paint, RAIL_GIRDER | 0x80 | (g & 0x7f));
         E(L(5.2, -0.9), L(3.4, -0.9), 0, -1, beam, 'h');
         E(L(4.4, -0.9), L(4.4, -2.6), s, 0, board, 'v');
         E(L(4.4, -0.9), L(4.4, -2.6), -s, 0, gm, 'v');
@@ -2004,55 +2062,97 @@ function railViaduct(
       );
   }
 
-  // Soundwall stretch ends: the panels stop on a steel end post and a
-  // closed end face (the open panel edge read as a placement gap), with a
-  // sloped half panel stepping down to the parapet.
+  // Soundwall stretch ends: the panels stop on a steel H end post standing
+  // proud of the coping, with a closed end face, then a 6 m raking taper
+  // (both faces, its own sloped coping cap) down to the parapet: the wall
+  // steps down instead of stopping dead. Next to a
+  // platform (no room) only the end post and face.
   for (let i = e.loop ? 0 : 1; i < segs; i++) {
-    const w0 = wallOf(W(i - 1) % segs) !== 0;
-    const w1 = wallOf(i) !== 0;
-    if (w0 === w1) continue;
+    const prev = W(i - 1) % segs;
+    const w0 = wallOf(prev);
+    const w1 = wallOf(i);
+    if ((w0 !== 0) === (w1 !== 0)) continue;
     const d = fr[i].d;
     const f = w1 ? -1 : 1;
+    const wall = w1 || w0;
+    const taper = !station[w1 ? prev : i];
+    const TL = 6;
     const nf: Vec3 = [d[0] * f, 0, d[1] * f];
     const yaw = Math.atan2(d[0], d[1]);
+    const u0 = 12 * i;
     for (const s of [-1, 1]) {
       const lt = (o: number, y: number, a = 0): Vec3 => {
         const p = P(i, s * o, y);
         return [p[0] + d[0] * f * a, p[1], p[2] + d[1] * f * a];
       };
-      m.quad(
-        [lt(4.99, 2.87), lt(5.21, 2.87), lt(5.21, 1.25), lt(4.99, 1.25)],
-        nf,
-        [
-          [0, 0],
-          [0.22, 0],
-          [0.22, 1.62],
-          [0, 1.62],
-        ],
-        conc(RC_PARAPET),
-        seed(i),
-      );
-      // Raking half panel: 2 m long, from the full height down to the
-      // parapet, both faces.
-      for (const o of [5.04, 5.16])
+      const nl = (k: number): Vec3 => [
+        fr[i].l[0] * s * k,
+        0,
+        fr[i].l[1] * s * k,
+      ];
+      if (taper) {
+        // Panels: top from 2.75 down to 1.35 over TL (uv.y from the top
+        // of the full-height panel, as on the run).
+        for (const o of [5.04, 5.16])
+          m.quad(
+            [lt(o, 2.75), lt(o, 1.25), lt(o, 1.25, TL), lt(o, 1.35, TL)],
+            nl(o > 5.1 ? 1 : -1),
+            [
+              [u0, 0],
+              [u0, 1.5],
+              [u0 + f * TL, 1.5],
+              [u0 + f * TL, 1.4],
+            ],
+            conc(wall),
+            seed(i),
+          );
+        // Raking coping cap: top and both sides.
         m.quad(
-          [lt(o, 2.75), lt(o, 1.25), lt(o, 1.25, 2.0), lt(o, 1.4, 2.0)],
           [
-            fr[i].l[0] * s * (o > 5.1 ? 1 : -1),
-            0,
-            fr[i].l[1] * s * (o > 5.1 ? 1 : -1),
+            lt(4.99, 2.87),
+            lt(5.21, 2.87),
+            lt(5.21, 1.47, TL),
+            lt(4.99, 1.47, TL),
           ],
+          UP,
           [
-            [0, 0],
-            [0, 1.5],
-            [-2 * f, 1.5],
-            [-2 * f, 1.35],
+            [u0, 4.99],
+            [u0, 5.21],
+            [u0 + f * TL, 5.21],
+            [u0 + f * TL, 4.99],
           ],
-          conc(RC_SOUNDWALL),
+          conc(RC_PARAPET),
           seed(i),
         );
-      const pp = lt(5.1, 2.0, 0.08);
-      m.box(pp, [0.1, 0.9, 0.08], galv, yaw);
+        for (const o of [4.99, 5.21])
+          m.quad(
+            [lt(o, 2.87), lt(o, 2.74), lt(o, 1.34, TL), lt(o, 1.47, TL)],
+            nl(o > 5.1 ? 1 : -1),
+            [
+              [u0, 0],
+              [u0, 0.13],
+              [u0 + f * TL, 0.13],
+              [u0 + f * TL, 0],
+            ],
+            conc(RC_PARAPET),
+            seed(i),
+          );
+      } else {
+        m.quad(
+          [lt(4.99, 2.87), lt(5.21, 2.87), lt(5.21, 1.25), lt(4.99, 1.25)],
+          nf,
+          [
+            [0, 0],
+            [0.22, 0],
+            [0.22, 1.62],
+            [0, 1.62],
+          ],
+          conc(RC_PARAPET),
+          seed(i),
+        );
+      }
+      // H end post: 0.2 m flanges, 0.25 m deep, 25 cm above the cap.
+      m.box(lt(5.1, 2.18, -0.06), [0.13, 0.94, 0.1], galv, yaw);
     }
   }
 
@@ -2481,6 +2581,86 @@ function railViaduct(
   for (let i = 0; i < segs; i++) {
     if (girder[i] < 0) continue;
     const gm = packMat(CM.paint, RAIL_GIRDER | (girder[i] & 0x7f));
+    // Clearance board on every span, both outer webs: a 2.4 x 0.5 m plate
+    // 3 cm proud (in front of the hazard band) with dark edges, mapped to
+    // the shader's board (0x80: u 12i + 6 +- 1.2, uv.y 0.9..1.4 from the
+    // web top), so the yellow / black board stands off the web.
+    {
+      const bm = packMat(CM.paint, RAIL_GIRDER | 0x80 | (girder[i] & 0x7f));
+      const ta = 4.8 / 12;
+      const tb = 7.2 / 12;
+      for (const s of [-1, 1]) {
+        const nl: Vec3 = [fr[i].l[0] * s, 0, fr[i].l[1] * s];
+        const B = (t: number, o: number, y: number): Vec3 => {
+          const p = P(i, s * o, y);
+          const q = P(i + 1, s * o, y);
+          return [
+            lerp(p[0], q[0], t),
+            y + lerp(hs[i], hs[W(i + 1)], t),
+            lerp(p[2], q[2], t),
+          ];
+        };
+        m.quad(
+          [
+            B(ta, 4.43, -1.8),
+            B(tb, 4.43, -1.8),
+            B(tb, 4.43, -2.3),
+            B(ta, 4.43, -2.3),
+          ],
+          nl,
+          [
+            [12 * i + 4.8, 0.9],
+            [12 * i + 7.2, 0.9],
+            [12 * i + 7.2, 1.4],
+            [12 * i + 4.8, 1.4],
+          ],
+          bm,
+        );
+        const fm = packMat(CM.frame);
+        const d: Vec3 = [fr[i].d[0], 0, fr[i].d[1]];
+        for (const [p0, p1, p2, p3, nn] of [
+          [
+            B(ta, 4.43, -1.8),
+            B(tb, 4.43, -1.8),
+            B(tb, 4.4, -1.8),
+            B(ta, 4.4, -1.8),
+            UP,
+          ],
+          [
+            B(ta, 4.43, -2.3),
+            B(tb, 4.43, -2.3),
+            B(tb, 4.4, -2.3),
+            B(ta, 4.4, -2.3),
+            [0, -1, 0],
+          ],
+          [
+            B(ta, 4.43, -1.8),
+            B(ta, 4.43, -2.3),
+            B(ta, 4.4, -2.3),
+            B(ta, 4.4, -1.8),
+            [-d[0], 0, -d[2]],
+          ],
+          [
+            B(tb, 4.43, -1.8),
+            B(tb, 4.43, -2.3),
+            B(tb, 4.4, -2.3),
+            B(tb, 4.4, -1.8),
+            d,
+          ],
+        ] as [Vec3, Vec3, Vec3, Vec3, Vec3][])
+          m.quad(
+            [p0, p1, p2, p3],
+            nn,
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 1],
+            ],
+            fm,
+          );
+      }
+    }
     for (const o of [-4.4, -3.4, 3.4, 4.4])
       m.beam(P(i, o, -2.63), P(i + 1, o, -2.63), 0.25, 0.03, gm, 0, [0, 1, 0]);
     // Height-clearance marking: a yellow/black hazard band along the bottom
@@ -2542,15 +2722,40 @@ function railViaduct(
   for (const c of [-2.1, 2.1]) {
     line(k => P(k, c + stag(k), CW), 0.007, packMat(CM.wire, 1));
     line(k => P(k, c + stag(k), MW - 0.5 * sag(k)), 0.008, packMat(CM.wire, 2));
-    // Droppers at every bent between gantries (every 12 m), 14 mm thick so
-    // the minimum-width widening keeps them a solid hairline at range.
-    for (let k = 0; k < segs; k++) {
-      if (isGantry(k)) continue;
-      m.tube(
-        [P(k, c + stag(k), CW), P(k, c + stag(k), MW - 0.5 * sag(k))],
-        0.007,
-        packMat(CM.wire, 2),
-      );
+    // Droppers every 6 m (two a bay, none at the gantries), on the
+    // straight lines between the wires' points; wire tubes stay a solid
+    // ~1.2 px line at range (city.wgsl), so they read as a comb.
+    const lp = (a: Vec3, b: Vec3, t: number): Vec3 => [
+      lerp(a[0], b[0], t),
+      lerp(a[1], b[1], t),
+      lerp(a[2], b[2], t),
+    ];
+    for (let k = 0; k < segs; k++)
+      for (const t of [0, 0.5]) {
+        if (t === 0 && isGantry(k)) continue;
+        const c0 = P(k, c + stag(k), CW);
+        const c1 = P(k + 1, c + stag(k + 1), CW);
+        const m0 = P(k, c + stag(k), MW - 0.5 * sag(k));
+        const m1 = P(k + 1, c + stag(k + 1), MW - 0.5 * sag(k + 1));
+        m.tube([lp(c0, c1, t), lp(m0, m1, t)], 0.007, packMat(CM.wire, 2));
+      }
+  }
+  // Coping light line on every non-station span, both sides: a 9 cm LED
+  // tube on the coping lip's outer face (CM.lamp 7: x14, distance-boosted,
+  // every face), the continuous lit edge that keeps the deck line readable
+  // at night from any range. A lamp tube, so city.wgsl draws it as a solid
+  // line at least ~1.2 px wide (a flat 10 cm strip was ~0.5 px at the far
+  // view and beaded into dashes).
+  for (const s of [-1, 1]) {
+    let run: Vec3[] = [];
+    for (let k = 0; k <= segs; k++) {
+      const on = k < segs && !station[k];
+      const was = k > 0 && !station[W(k - 1) % segs];
+      if (on || was) run.push(P(k, s * 5.455, 1.155));
+      if (!on) {
+        if (run.length > 1) m.tube(run, 0.045, packMat(CM.lamp, 7));
+        run = [];
+      }
     }
   }
   for (const s of [-1, 1]) {
@@ -2636,7 +2841,11 @@ function railViaduct(
     // hung 12 cm down: its lower faces glow at x44, so it reads as a lit
     // bar from the street at a distance, not only from right below); a
     // light in every 2nd bay with headroom.
-    m.tube([mid(i, t0, 0, -0.55), mid(i, t1, 0, -0.55)], 0.07, lamp);
+    m.tube(
+      [mid(i, t0, 0, -0.55), mid(i, t1, 0, -0.55)],
+      0.07,
+      packMat(CM.lamp, 6),
+    );
     const c = mid(i, 0.5, 0, -0.6);
     if (i % 2 === 1 && c[1] - hf.sample(c[0], c[2]) > 5)
       lights.add(c, 11, cool, LightKind.station);
@@ -2721,6 +2930,21 @@ function railViaduct(
           true,
         );
     }
+  }
+
+  // Scuppers: a short dark drain spout through the fascia, just under the
+  // coping lip, at exactly the u where the shader's scupper streak
+  // (deckStains) starts on that span, both sides, so every black-green
+  // streak hangs from a pipe.
+  for (let i = 0; i < segs; i++) {
+    if (station[i]) continue;
+    const t = (scupperU(seed(i) >>> 16, i) - 12 * i) / 12;
+    for (const s of [-1, 1])
+      m.tube(
+        [mid(i, t, s * 5.12, 0.97), mid(i, t, s * 5.68, 0.84)],
+        0.075,
+        pipe,
+      );
   }
 
   // Stations: a low canopy on T-frames over each raised side platform
@@ -2870,6 +3094,36 @@ function railViaduct(
           const lp = P(i, o(6.3), CY - 0.2);
           lights.add(lp, 14, LED, LightKind.station);
         }
+        // Purlins across the soffit every ~2.5 m (between the T-frames),
+        // each carrying a 1.2 m tube fitting (CM.lamp 8, dim linear) over
+        // the walking band, so the canopy underside has a rhythm of lit
+        // bars instead of one flat grey sheet.
+        const np = Math.max(2, Math.round(len / 2.5));
+        for (let q = 1; q < np; q++) {
+          const t = q / np;
+          m.tube(
+            [mid(i, t, o(4.1), CY + 0.08), mid(i, t, o(9.7), CY + 0.38)],
+            0.06,
+            metal,
+          );
+          m.tube(
+            [mid(i, t, o(5.4), CY + 0.08), mid(i, t, o(6.6), CY + 0.14)],
+            0.04,
+            packMat(CM.lamp, 8),
+          );
+        }
+        // Car position markers every 24 m, hung just under the canopy
+        // fascia and facing along the platform: small yellow plates
+        // (door-position numbers on the real thing).
+        if ((i - si) % 2 === 0)
+          m.box(
+            mid(i, 0.25, o(4.2), CY - 0.64),
+            [0.14, 0.12, 0.02],
+            packMat(CM.paint, 0x92),
+            yaw,
+            0,
+            false,
+          );
       }
       // Hanging name boards facing the track, and a big one on the back
       // fascia facing the street.

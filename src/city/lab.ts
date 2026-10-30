@@ -961,6 +961,16 @@ export function labInfo(
         S.p[1] + sl[1] * 32 + S.d[1] * 30,
       ];
       views.station = look(v3(sp, g(sp) + 1.7), v3(S.p, S.h - 1), 1.05);
+      if (site.station >= 0) {
+        // On the +1 platform at eye height, looking down it toward the
+        // stair head: canopy soffit, departure board, clock, benches.
+        const at = (ds: number, lat: number, dy: number): Vec3 => {
+          const q = along(e, arc, arc[si] + ds);
+          const ql: Vec2 = [-q.d[1], q.d[0]];
+          return [q.p[0] + ql[0] * lat, q.h + 1.45 + dy, q.p[1] + ql[1] * lat];
+        };
+        views.platform = look(at(4, 7.6, 1.6), at(50, 6.0, 1.5), 1.05);
+      }
     }
     // The orbit stays 20 m above the highest ground on its circle (the
     // site can sit below a hill, which put the eye in the ground).
