@@ -502,6 +502,45 @@ function blocks(L: CityLayout, m: CMesh) {
       return v;
     };
     for (const t of fine) m.triFacing(vid(t[0]), vid(t[1]), vid(t[2]), UP);
+    // Lawns and car parks laid over the paving (a few cm proud of it), as
+    // terrain-following grids; uv is the fill frame (stall pattern space).
+    for (const f of b.fill ?? []) {
+      const fmat = packMat(f.kind === 'parking' ? CM.carPark : CM.grass);
+      const V: Vec2 = [-f.u[1], f.u[0]];
+      const P = (u: number, v: number): Vec2 => [
+        f.o[0] + f.u[0] * u + V[0] * v,
+        f.o[1] + f.u[1] * u + V[1] * v,
+      ];
+      for (const r of f.rects) {
+        const nu = Math.max(1, Math.ceil((r[2] - r[0]) / 7.5));
+        const nv = Math.max(1, Math.ceil((r[3] - r[1]) / 7.5));
+        const ids: number[] = [];
+        for (let j = 0; j <= nv; j++) {
+          for (let i = 0; i <= nu; i++) {
+            const u = lerp(r[0], r[2], i / nu);
+            const v = lerp(r[1], r[3], j / nv);
+            const q = P(u, v);
+            ids.push(
+              m.vertex(
+                [q[0], hf.sample(q[0], q[1]) + lift + 0.05, q[1]],
+                UP,
+                u,
+                v,
+                fmat,
+              ),
+            );
+          }
+        }
+        for (let j = 0; j < nv; j++) {
+          for (let i = 0; i < nu; i++) {
+            const a = ids[j * (nu + 1) + i];
+            const c = ids[(j + 1) * (nu + 1) + i + 1];
+            m.triFacing(a, ids[j * (nu + 1) + i + 1], c, UP);
+            m.triFacing(a, c, ids[(j + 1) * (nu + 1) + i], UP);
+          }
+        }
+      }
+    }
     // Curb faces around the edge (subdivided to follow the road).
     const cm = packMat(CM.curb);
     for (let i = 0; i < poly.length; i++) {

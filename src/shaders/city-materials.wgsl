@@ -80,6 +80,7 @@ const M_VENDING = 21u;
 const M_LED = 22u;
 const M_ASPHALT = 24u;
 const M_LEAVES = 25u;
+const M_CARPARK = 26u;
 
 fn nightLight() -> f32 {
   return smoothstep(0.15, 0.7, frame.time.w);
@@ -736,6 +737,105 @@ fn sidewalkMat(world: vec3f, n: vec3f) -> Surf {
   return s;
 }
 
+// Coverage of a painted line of width w at distance d from its centre, for a
+// pixel footprint `foot`: antialiased up close, fading (coverage conserved)
+// once the line is thinner than a pixel.
+fn paintLine(d: f32, w: f32, foot: f32) -> f32 {
+  let fw = max(w, foot);
+  return (1.0 - smoothstep(fw * 0.5 - foot * 0.5, fw * 0.5 + foot * 0.5, d)) * (w / fw);
+}
+
+// Flat roofs, in the roof's own frame (uv from cap(): metres along the
+// footprint axes). Membrane sheets 1 x 10 m with lap seams, pressed-concrete
+// panels with sealed joints, or ballast; plus drains every ~18 m ringed by
+// dirt stains. This gives a 100 m roof a readable scale from the air.
+fn roofMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
+  var s = defaultSurf(n);
+  let h = hashu(param * 31u + 5u);
+  let g = hashuf(h) < 0.12;
+  let membrane = hashuf(h ^ 3u) < 0.4;
+  let panels = !membrane && hashuf(h ^ 77u) < 0.5;
+  let foot = max(max(length(dUvX), length(dUvY)), 1e-4);
+  // Fine pattern fades to its mean once a pixel covers more than ~1 m.
+  let fine = 1.0 - smoothstep(0.6, 1.6, foot);
+  let gravel = 0.85 + 0.15 * hash21(floor(world.xz * 20.0));
+  let stain = 1.0 - 0.3 * smoothstep(0.55, 0.8, fbm2(world.xz * 0.15));
+  var base = select(mix(vec3f(0.30, 0.29, 0.27), vec3f(0.22, 0.25, 0.27), hashuf(h ^ 21u)), vec3f(0.16, 0.25, 0.1), g);
+  var pattern = gravel * (0.85 + 0.3 * valueNoise(uv * 0.25));
+  if (membrane) {
+    // Light grey sheet, the green urethane coat common on Tokyo roofs, or a
+    // darker aged membrane.
+    let k = hashuf(h ^ 41u);
+    base = select(select(vec3f(0.34, 0.35, 0.34), vec3f(0.2, 0.27, 0.22), k < 0.45), vec3f(0.24, 0.24, 0.25), k > 0.8);
+    let col = floor(uv.x);
+    let sheet = vec2f(col, floor(uv.y / 10.0 + hash21(vec2f(col, 3.1))));
+    let lap = abs(fract(uv.x + 0.5) - 0.5);
+    let end = abs(fract(uv.y / 10.0 + hash21(vec2f(col, 3.1)) + 0.5) - 0.5) * 10.0;
+    pattern = mix(1.0, 0.92 + 0.16 * hash21(sheet), fine);
+    pattern *= 1.0 - 0.25 * max(paintLine(lap, 0.02, foot), paintLine(end, 0.02, foot));
+  } else if (panels && !g) {
+    // Pressed concrete in 3 m panels with dark sealant joints.
+    let cell = floor(uv / 3.0);
+    let j = abs(fract(uv / 3.0 + 0.5) - 0.5) * 3.0;
+    pattern = mix(1.0, 0.93 + 0.14 * hash21(cell + 17.0), fine) * (0.95 + 0.1 * valueNoise(uv * 0.7));
+    pattern *= 1.0 - 0.45 * max(paintLine(j.x, 0.03, foot), paintLine(j.y, 0.03, foot));
+    base = mix(base, vec3f(0.36, 0.35, 0.33), 0.5);
+  }
+  // Repair patches: newer, darker rectangles of membrane or screed on a
+  // 12 m grid, the biggest scale cue on a plain roof.
+  let pc = floor(uv / 12.0);
+  let ph = hash22(pc + f32(h & 1023u));
+  let pf = fract(uv / 12.0);
+  let pLo = 0.1 + ph * 0.3;
+  let pHi = pLo + 0.25 + hash22(pc + 7.0) * 0.3;
+  if (hash21(pc + 3.3 + f32(h & 255u)) < 0.3 && all(pf > pLo) && all(pf < pHi)) {
+    let e = min(min(pf.x - pLo.x, pHi.x - pf.x), min(pf.y - pLo.y, pHi.y - pf.y)) * 12.0;
+    pattern *= mix(0.76, 0.62, paintLine(e, 0.08, foot) * 0.5) * (0.95 + 0.1 * hash21(pc));
+  }
+  let rd = detailXZ(world, 2.0, select(DETAIL_BALLAST, DETAIL_CONCRETE, membrane || panels));
+  s.albedo = base * pattern * stain * (rd.b * 2.0) * mix(0.6, 1.0, rd.a);
+  s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), rd, 0.6);
+  s.albedo *= mix(0.75, 1.1, hashuf(h ^ 9u));
+  // Drains on a jittered 18 m grid, with an irregular ring of dirt where
+  // water ponds and dries.
+  let dc = floor(uv / 18.0);
+  let dp = (dc + 0.3 + 0.4 * hash22(dc + f32(h & 255u))) * 18.0;
+  let dr = length(uv - dp);
+  let ringR = 4.2 * (0.7 + 0.6 * valueNoise(uv * 0.45 + f32(h & 63u)));
+  let dirt = 1.0 - smoothstep(0.3, ringR, dr);
+  s.albedo *= 1.0 - 0.4 * dirt - 0.1 * frame.weather.z * dirt;
+  s.albedo *= 1.0 + 0.08 * paintLine(abs(dr - ringR * 0.8), 0.25, foot);
+  if (dr < 0.2) {
+    s.albedo = vec3f(0.05);
+    s.metal = 0.6;
+  }
+  s.rough = 0.9;
+  applyWetness(&s, world, 0.0, 0.4);
+  return s;
+}
+
+// Surface car park: asphalt with 2.5 x 5 m stalls in back-to-back rows along
+// uv.x (16 m period: row, 6 m aisle, row), oil drips mid-stall.
+fn carParkMat(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
+  var s = roadMat(world, n, vec2f(100.0, 0.0), 0u, 0u);
+  let foot = max(max(length(dUvX), length(dUvY)), 1e-4);
+  let pv = uv.y - floor(uv.y / 16.0) * 16.0;
+  let inRow = pv < 5.0 || pv > 11.0;
+  let du = abs(fract(uv.x / 2.5 + 0.5) - 0.5) * 2.5;
+  var mark = paintLine(min(pv, 16.0 - pv), 0.1, foot);
+  if (inRow) {
+    mark = max(mark, paintLine(du, 0.1, foot));
+    let rowC = select(13.5, 2.5, pv < 5.0);
+    let d = vec2f((fract(uv.x / 2.5) - 0.5) * 2.5, (pv - rowC) * 0.7);
+    let oil = (1.0 - smoothstep(0.15, 0.85, length(d))) * hash21(floor(vec2f(uv.x / 2.5, uv.y / 8.0)));
+    s.albedo *= 1.0 - 0.35 * oil;
+  }
+  let wear = smoothstep(0.3, 0.8, valueNoise(world.xz * 2.5)) * 0.5;
+  s.albedo = mix(s.albedo, vec3f(0.5), mark * (1.0 - wear));
+  s.rough = mix(s.rough, 0.6, mark);
+  return s;
+}
+
 fn signMat(n: vec3f, uv: vec2f, param: u32) -> Surf {
   var s = defaultSurf(n);
   let id = param & 0xffu;
@@ -828,22 +928,8 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     }
     case M_FACADE: { s = facadeMat(world, n, uv, param, aux); }
     case M_GLASS: { s = curtainWall(world, n, uv, param, aux); }
-    case M_ROOF: {
-      let h = hashu(param * 31u + 5u);
-      let g = hashuf(h) < 0.12;
-      let gravel = 0.85 + 0.15 * hash21(floor(world.xz * 20.0));
-      let seams = 1.0 - 0.15 * step(0.96, fract(world.x * 0.5)) - 0.15 * step(0.96, fract(world.z * 0.5));
-      let stain = 1.0 - 0.3 * smoothstep(0.55, 0.8, fbm2(world.xz * 0.15));
-      let membrane = hashuf(h ^ 3u) < 0.4;
-      var base = select(mix(vec3f(0.30, 0.29, 0.27), vec3f(0.22, 0.25, 0.27), hashuf(h ^ 21u)), vec3f(0.16, 0.25, 0.1), g);
-      if (membrane) { base = vec3f(0.34, 0.35, 0.34); }
-      let rd = detailXZ(world, 2.0, select(DETAIL_BALLAST, DETAIL_CONCRETE, membrane));
-      s.albedo = base * select(gravel, seams, membrane) * stain * (rd.b * 2.0) * mix(0.6, 1.0, rd.a);
-      s.normal = detailNormal(n, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), rd, 0.6);
-      s.albedo *= mix(0.75, 1.1, hashuf(h ^ 9u));
-      s.rough = 0.9;
-      applyWetness(&s, world, 0.0, 0.4);
-    }
+    case M_ROOF: { s = roofMat(world, n, uv, param); }
+    case M_CARPARK: { s = carParkMat(world, n, uv); }
     case M_METAL: { s.albedo = vec3f(0.42, 0.43, 0.45); s.metal = 0.8; s.rough = 0.45; }
     case M_SIGN: { s = signMat(n, uv, param); }
     case M_FOLIAGE: {

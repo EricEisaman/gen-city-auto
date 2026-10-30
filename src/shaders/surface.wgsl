@@ -55,10 +55,16 @@ fn applyWetness(s: ptr<function, Surf>, world: vec3f, flatness: f32, porous: f32
   let wet = frame.weather.z;
   if (wet <= 0.001) { return; }
   let puddleNoise = fbm2(world.xz * 0.12) * 0.7 + valueNoise(world.xz * 0.9) * 0.3;
-  let puddle = smoothstep(0.58 - wet * 0.3, 0.7 - wet * 0.3, puddleNoise) * flatness * wet;
+  let edge = 0.58 - wet * 0.3;
+  let puddle = smoothstep(edge, 0.7 - wet * 0.3, puddleNoise) * flatness * wet;
+  // Damp margin: soaked, darker, semi-gloss ground grading into each puddle,
+  // so its border isn't a hard cut-out.
+  let margin = smoothstep(edge - 0.15, edge, puddleNoise) * flatness * wet;
   let damp = wet * mix(0.6, 1.0, porous);
   (*s).albedo *= mix(1.0, 0.45, damp * porous);
   (*s).rough = mix((*s).rough, 0.25, damp * 0.7);
+  (*s).rough = mix((*s).rough, 0.12, margin);
+  (*s).albedo *= 1.0 - 0.2 * margin;
   (*s).rough = mix((*s).rough, 0.03, puddle);
   (*s).albedo = mix((*s).albedo, (*s).albedo * 0.35, puddle);
   // Rain ripples in puddles.

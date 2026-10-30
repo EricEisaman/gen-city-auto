@@ -36,6 +36,7 @@ export const CM = {
   water: 23,
   asphaltPlain: 24,
   leaves: 25,
+  carPark: 26,
 } as const;
 
 export const VERTEX_BYTES = 32;
