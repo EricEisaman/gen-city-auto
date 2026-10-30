@@ -4,7 +4,7 @@ import {PRESETS} from '../../src/city/config.ts';
 import {generateLayout, splitLots, type Lot} from '../../src/city/layout.ts';
 import {extractFaces, insetPolygon, planarize} from '../../src/city/graph.ts';
 import {Rng} from '../../src/math/random.ts';
-import {polygonArea} from '../../src/math/vec.ts';
+import {pointSegment, polygonArea} from '../../src/math/vec.ts';
 import {clusterize, CMesh, CLUSTER_WORDS} from '../../src/city/cmesh.ts';
 
 void test('rng is deterministic', () => {
@@ -95,6 +95,35 @@ void test('city layout is deterministic and populated', () => {
   let max = -Infinity;
   for (const v of h) max = Math.max(max, v);
   assert.ok(max > 20, `max height ${max}`);
+  // No building wall crosses an elevated rail deck (edges, not just corners).
+  for (const e of a.elevated) {
+    if (e.kind !== 'rail') continue;
+    for (const bd of a.buildings) {
+      const fp = bd.footprint;
+      for (let j = 0; j < fp.length; j++) {
+        const p = fp[j];
+        const q = fp[(j + 1) % fp.length];
+        for (let i = 0; i + 1 < e.pts.length; i++) {
+          const r = e.pts[i];
+          if (Math.abs(r[0] - p[0]) > 120 || Math.abs(r[1] - p[1]) > 120)
+            continue;
+          // Sample the wall every metre against the deck half-width.
+          const n = Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]));
+          for (let k = 0; k <= n; k++) {
+            const t = k / Math.max(1, n);
+            const x: [number, number] = [
+              p[0] + (q[0] - p[0]) * t,
+              p[1] + (q[1] - p[1]) * t,
+            ];
+            assert.ok(
+              pointSegment(x, r, e.pts[i + 1])[0] > 5.2,
+              `building ${bd.id} wall crosses the rail deck`,
+            );
+          }
+        }
+      }
+    }
+  }
 });
 
 void test('lot subdivision gives narrow street-front plots', () => {

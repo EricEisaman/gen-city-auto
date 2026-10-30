@@ -1002,7 +1002,7 @@ export function generateLayout(
   // Buildings standing on each block, for the open-ground pass.
   const onBlock: number[][] = blocks.map(() => []);
   for (const {lot, block} of lots) {
-    const fp = cleanPolygon(lot.poly, 1.2);
+    let fp = cleanPolygon(lot.poly, 1.2);
     if (fp.length < 3) continue;
     const area = polygonArea(fp);
     if (area < 40) continue;
@@ -1069,6 +1069,13 @@ export function generateLayout(
     floors = clamp(floors, 1, 75);
     const floorH =
       kind === 'house' ? 2.9 : kind === 'glass' || kind === 'tower' ? 3.9 : 3.3;
+    // Trim any edge that cuts through a viaduct (the checks above only look
+    // at corners); the design above is unchanged, only the plan shrinks.
+    const cut = clipToRail(fp, [cx, cz], elevated, 7);
+    if (cut !== fp) {
+      const clean = cleanPolygon(cut, 1.2);
+      if (clean.length >= 3 && polygonArea(clean) > 25) fp = clean;
+    }
     // Cleaning may drop vertices, so match edges back to the lot's.
     const frontage = inheritFrontage(fp, lot.poly, lot.frontage);
     let front = -1;
@@ -1815,4 +1822,71 @@ function expressways(
   }
   void rng;
   return out;
+}
+
+/** Keep the part of `poly` on the side of line (o, n) where dot(q - o, n) >= 0. */
+function clipHalfPlane(poly: Vec2[], o: Vec2, n: Vec2): Vec2[] {
+  const out: Vec2[] = [];
+  const s = (q: Vec2) => (q[0] - o[0]) * n[0] + (q[1] - o[1]) * n[1];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const sa = s(a);
+    const sb = s(b);
+    if (sa >= 0) out.push(a);
+    if (sa >= 0 !== sb >= 0) {
+      const t = sa / (sa - sb);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return out;
+}
+
+/** Shortest distance between segments ab and cd (0 if they cross). */
+function segmentGap(a: Vec2, b: Vec2, c: Vec2, d: Vec2) {
+  const cr = (p: Vec2, q: Vec2, r: Vec2) =>
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  if (cr(a, b, c) * cr(a, b, d) < 0 && cr(c, d, a) * cr(c, d, b) < 0) return 0;
+  return Math.min(
+    pointSegment(a, c, d)[0],
+    pointSegment(b, c, d)[0],
+    pointSegment(c, a, b)[0],
+    pointSegment(d, a, b)[0],
+  );
+}
+
+/**
+ * Trim a building footprint off an elevated rail line's clearance band. Lots
+ * are rejected by their corners and centre only, so a long plot can still
+ * have an edge that crosses the viaduct between two far-off corners; this cuts
+ * it back along the deck, on the side its centre `c` lies, `pad` metres clear.
+ * Pure geometry (no random draws), applied after the building is designed.
+ */
+function clipToRail(
+  fp: Vec2[],
+  c: Vec2,
+  elevated: Elevated[],
+  pad: number,
+): Vec2[] {
+  let poly = fp;
+  for (const e of elevated) {
+    if (e.kind !== 'rail') continue;
+    for (let i = 0; i + 1 < e.pts.length; i++) {
+      const a = e.pts[i];
+      const b = e.pts[i + 1];
+      if (Math.abs(a[0] - c[0]) > 150 || Math.abs(a[1] - c[1]) > 150) continue;
+      let near = false;
+      for (let j = 0; j < poly.length && !near; j++)
+        near = segmentGap(poly[j], poly[(j + 1) % poly.length], a, b) < pad;
+      if (!near) continue;
+      const d = sub2(b, a);
+      const l = Math.hypot(d[0], d[1]);
+      if (l < 1e-6) continue;
+      let n: Vec2 = [-d[1] / l, d[0] / l];
+      if (dot2(sub2(c, a), n) < 0) n = [-n[0], -n[1]];
+      poly = clipHalfPlane(poly, [a[0] + n[0] * pad, a[1] + n[1] * pad], n);
+      if (poly.length < 3) return poly;
+    }
+  }
+  return poly;
 }
