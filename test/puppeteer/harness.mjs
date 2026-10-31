@@ -20,9 +20,9 @@ export async function withServer(fn) {
  * Open `url`, wait for window.__ready, then call `fn(page, logs)`.
  * Returns {logs, errors, result}.
  */
-export async function withPage(url, fn, {width = 1280, height = 720, timeout = 90000, attempts = 4} = {}) {
+export async function withPage(url, fn, {width = 1280, height = 720, timeout = 90000, attempts = 4, args = []} = {}) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const browser = await puppeteer.launch({headless: true, protocolTimeout: 180000});
+    const browser = await puppeteer.launch({headless: true, protocolTimeout: 180000, args});
     try {
       const page = await browser.newPage();
       await page.setViewport({width, height});

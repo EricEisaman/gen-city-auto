@@ -1,6 +1,6 @@
 // CPU mirror of the WGSL `Frame` uniform struct (see shaders/common.wgsl).
 
-export const FRAME_FLOATS = 208;
+export const FRAME_FLOATS = 212;
 
 export const F = {
   viewProj: 0,
@@ -25,6 +25,7 @@ export const F = {
   groundAmbient: 196,
   cityGlow: 200,
   misc: 204,
+  off: 208,
 } as const;
 
 export class FrameData {

@@ -8,6 +8,7 @@ import type {DrawHook} from './renderer.ts';
 const CARS_PER_SEG = 4;
 
 export class LightSprites implements DrawHook {
+  readonly name = 'sprites';
   private device: GPUDevice;
   private cars: GPURenderPipeline;
   private lampsPipe: GPURenderPipeline;

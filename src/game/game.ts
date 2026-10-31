@@ -12,6 +12,8 @@ import type {LabSpec} from '../city/lab.ts';
 import type {CityLayout} from '../city/layout.ts';
 import {GBUFFER_FORMATS, Renderer} from '../render/renderer.ts';
 import {VehicleRenderer} from '../render/vehicles.ts';
+import {CpuProfiler} from '../render/profiler.ts';
+import {OFF_BITS} from '../render/ablation.ts';
 import {UI} from '../ui/ui.ts';
 import {City} from '../world/city.ts';
 import {
@@ -49,6 +51,13 @@ export interface GameOptions {
   lab?: LabSpec;
   /** Asset lab camera preset (see LabInfo.views). */
   view?: string;
+  /**
+   * GPU and CPU timing into window.__stats: 'pass' = every pass segment
+   * timed separately (?prof=1), 'frame' = whole passes only (?prof=frame).
+   */
+  prof?: 'pass' | 'frame';
+  /** Ablation bits (?off=..., see render/ablation.ts). */
+  off?: number;
 }
 
 export class Game {
@@ -95,10 +104,19 @@ export class Game {
     touchMove: [0, 0],
   } as unknown as Input;
   /** Last camera output (for tests). */
-  lastCam: {eye: Vec3; target: Vec3; fov: number} | null = null;
+  lastCam: {eye: Vec3; target: Vec3; fov: number; near: number} | null = null;
   /** Asset lab: current camera preset, and the orbit preset's angle. */
   labView = '';
   private orbitAngle = 0.3;
+  /** CPU timing per subsystem (?prof=1). */
+  cpuProf: CpuProfiler | null = null;
+  /**
+   * Profiling: hold the simulation and camera still (the same image every
+   * frame) while rendering continues.
+   */
+  freeze = false;
+  /** Per-frame CPU ms of frame() while profiling (for medians). */
+  cpuFrames: number[] = [];
 
   constructor(gpu: Gpu, opts: GameOptions) {
     this.gpu = gpu;
@@ -113,6 +131,12 @@ export class Game {
 
   async init() {
     this.renderer = await Renderer.create(this.gpu);
+    this.renderer.offBits = this.opts.off ?? 0;
+    if (this.opts.prof) {
+      this.renderer.enableProfiler(this.opts.prof === 'pass');
+      this.cpuProf = new CpuProfiler();
+      this.renderer.cpuProf = this.cpuProf;
+    }
     this.vehicles = new VehicleRenderer(
       this.renderer,
       this.renderer.frameBuffer,
@@ -629,6 +653,9 @@ export class Game {
 
   frame(dt: number) {
     if (this.loading || !this.city || !this.traffic) return;
+    const prof = this.cpuProf;
+    const t0 = prof ? performance.now() : 0;
+    prof?.start();
     resizeToCss(this.gpu.canvas);
     this.handleKeys();
     this.time += dt;
@@ -636,13 +663,15 @@ export class Game {
     this.weather.update(dt);
     // The asset lab shows its asset alone: no player, traffic, trains,
     // helicopters or pedestrians.
-    const lab = !!this.opts.lab;
+    const frozen = this.freeze && !!this.lastCam;
+    const lab = !!this.opts.lab || frozen;
     if (!lab)
       this.player.update(
         dt,
         this.freeMode ? this.noInput : this.input,
         this.time,
       );
+    prof?.mark('player');
     // Trains and helicopters move before the camera: the director films a
     // train, and aiming at last frame's position leaves the car one frame's
     // travel ahead of the aim point, so every uneven frame time made it jump
@@ -651,10 +680,14 @@ export class Game {
       this.trains!.update(dt);
       this.helis!.update(dt);
     }
+    prof?.mark('trains+helis');
     this.updateOrbit(dt);
-    const cam = this.freeMode
-      ? this.freeCam.update(dt, this.input)
-      : this.camera.update(dt, this.player, this.input);
+    const cam = frozen
+      ? this.lastCam!
+      : this.freeMode
+        ? this.freeCam.update(dt, this.input)
+        : this.camera.update(dt, this.player, this.input);
+    prof?.mark('camera');
     const focus = this.player.pos;
     if (!lab) {
       this.traffic.update(
@@ -665,9 +698,12 @@ export class Game {
           ? [this.player.follower]
           : [],
       );
+      prof?.mark('traffic');
       this.peds!.update(dt, cam.eye);
+      prof?.mark('peds');
     }
     this.city.updateStreaming(cam.eye);
+    prof?.mark('streaming');
     const night = this.renderer.sky.night;
     const lightsOn = night > 0.3 || this.weather.state.rain > 0.3 ? 1 : 0;
     // Headlights of the player and nearby traffic become dynamic lights.
@@ -687,7 +723,7 @@ export class Game {
       );
       n++;
     };
-    if (!lab)
+    if (!lab || frozen)
       addHeadlights(this.player.model, this.player.info?.size[2] ?? 4.5);
     const near = this.traffic.cars
       .map(c => ({
@@ -704,16 +740,20 @@ export class Game {
       1,
       this.carLights.subarray(0, n * 8),
     );
+    prof?.mark('lights');
     // Vehicles.
     this.vehicles.begin(cam.eye);
-    if (!lab) {
+    const offBits = this.renderer.offBits;
+    if (!this.opts.lab) {
       this.player.draw(lightsOn);
-      this.traffic.draw(lightsOn);
+      if (!(offBits & OFF_BITS.traffic)) this.traffic.draw(lightsOn);
       this.trains!.draw(lightsOn);
       this.helis!.draw(this.time, lightsOn);
-      this.peds!.draw();
+      if (!(offBits & OFF_BITS.peds)) this.peds!.draw();
     } else this.trains!.draw(lightsOn);
+    prof?.mark('vehicle add');
     this.vehicles.finish();
+    prof?.mark('vehicle upload');
     this.lastCam = cam;
     this.rain.intensity = this.weather.state.rain;
     this.renderer.render({
@@ -731,6 +771,7 @@ export class Game {
       // Lens rain drops read as floating rings; leave them off.
       lensDrops: false,
     });
+    prof?.mark('render submit');
     this.input.endFrame();
     this.fpsAvg = this.fpsAvg * 0.95 + (1 / Math.max(dt, 1e-3)) * 0.05;
     this.frames++;
@@ -740,11 +781,19 @@ export class Game {
       ...this.city.stats,
       fps: Math.round(this.fpsAvg),
       cars: this.traffic.cars.length,
-      shot: lab
+      shot: this.opts.lab
         ? `lab ${this.labView}`
         : (this.camera.shot?.name ?? this.camera.mode),
       eye: cam.eye.map(v => Math.round(v)),
     };
+    if (prof) {
+      prof.mark('ui+stats');
+      const ms = performance.now() - t0;
+      prof.endFrame(ms);
+      if (this.cpuFrames.length < 4096) this.cpuFrames.push(ms);
+      window.__stats.cpu = prof.averages;
+      window.__stats.gpu = this.renderer.prof?.averages ?? {};
+    }
     if (this.frames === 20) window.__ready = true;
   }
 

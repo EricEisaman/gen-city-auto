@@ -4,6 +4,7 @@ import type {CameraMode} from './game/camera.ts';
 import {Game} from './game/game.ts';
 import type {WeatherKind} from './game/weather.ts';
 import {initGpu, reportError, resizeToCss} from './gpu/device.ts';
+import {parseOff} from './render/ablation.ts';
 
 const params = new URLSearchParams(location.search);
 const num = (k: string, d: number) =>
@@ -54,6 +55,13 @@ async function main() {
     freecam: params.get('freecam')?.split(',').map(Number),
     lab,
     view: params.get('view') ?? undefined,
+    prof:
+      params.get('prof') === '1'
+        ? 'pass'
+        : params.get('prof') === 'frame'
+          ? 'frame'
+          : undefined,
+    off: parseOff(params.get('off')),
   });
   await game.init();
   (window as unknown as {__game: Game}).__game = game;

@@ -115,6 +115,7 @@ const mul = (...ms: Mat4[]) =>
   ms.reduce((acc, m) => mat4.multiply(mat4.create(), acc, m));
 
 export class VehicleRenderer implements DrawHook {
+  readonly name = 'vehicles';
   variants: VariantGpu[] = [];
   ready = false;
   errors: string[] = [];

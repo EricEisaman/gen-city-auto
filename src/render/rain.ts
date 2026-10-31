@@ -6,6 +6,7 @@ import rainWgsl from '../shaders/rain.wgsl';
 import type {DrawHook} from './renderer.ts';
 
 export class RainRenderer implements DrawHook {
+  readonly name = 'rain';
   intensity = 0;
   private pipeline: GPURenderPipeline;
   private bindGroup: GPUBindGroup;

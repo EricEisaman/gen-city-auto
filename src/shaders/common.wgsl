@@ -23,6 +23,7 @@ struct Frame {
   groundAmbient: vec4f, // irradiance from below (bounce + city glow)
   cityGlow: vec4f,      // rgb night light pollution
   misc: vec4f,          // x = debug view, y = quality, z = sun disk size, w = moon phase
+  off: vec4u,           // x = ablation bits (?off=..., see render/ablation.ts); 0 normally
 };
 
 const PI = 3.14159265359;

@@ -18,6 +18,8 @@ import terrainWgsl from '../shaders/terrain.wgsl';
 import {computeSky, type SkyState} from '../world/sky.ts';
 import {ClusterPool, type PoolHandle} from './cluster-pool.ts';
 import {F, FrameData} from './frame.ts';
+import {CpuProfiler, GpuProfiler} from './profiler.ts';
+import {OFF_BITS, type OffName} from './ablation.ts';
 import {
   createLeafTexture,
   createSignAtlasTexture,
@@ -60,6 +62,8 @@ export interface ViewParams {
 
 /** Hook for other systems (vehicles, rain) to add draws into renderer passes. */
 export interface DrawHook {
+  /** Pass label suffix for the GPU profiler. */
+  readonly name?: string;
   gbuffer?(pass: GPURenderPassEncoder): void;
   shadow?(pass: GPURenderPassEncoder, cascade: number): void;
   forward?(pass: GPURenderPassEncoder): void;
@@ -164,6 +168,15 @@ export class Renderer {
   private useOcclusion = false;
   private lastViewDir: Vec3 = [0, 0, -1];
   private cascadeMats: Mat4[] = [];
+  /** GPU pass timer (only with ?prof=1; see enableProfiler). */
+  prof: GpuProfiler | null = null;
+  /** CPU marks inside render() when profiling. */
+  cpuProf: CpuProfiler | null = null;
+  private cpass: GPUComputePassEncoder | null = null;
+  /** Profiler mode: every segment its own timed pass (else whole passes). */
+  private splitPasses = false;
+  /** Ablation bits (?off=..., see ablation.ts); 0 normally. */
+  offBits = 0;
 
   private constructor(gpu: Gpu) {
     this.gpu = gpu;
@@ -541,6 +554,91 @@ export class Renderer {
     return {buffer: b};
   }
 
+  /** Turn on per-pass GPU timing (needs the timestamp-query feature). */
+  enableProfiler(split = true) {
+    if (!this.gpu.features.timestamp || this.prof) return;
+    this.prof = new GpuProfiler(this.device);
+    this.splitPasses = split;
+  }
+
+  private off(name: OffName) {
+    return (this.offBits & OFF_BITS[name]) !== 0;
+  }
+
+  /** Hooks minus the ones switched off by ablation flags. */
+  private activeHooks() {
+    if (!this.offBits) return this.hooks;
+    return this.hooks.filter(
+      hk => !(hk.name && hk.name in OFF_BITS && this.off(hk.name as OffName)),
+    );
+  }
+
+  /**
+   * A compute segment. Without the profiler consecutive segments share one
+   * compute pass until endCompute(); with it each segment is its own timed pass.
+   */
+  private compute(enc: GPUCommandEncoder, label: string) {
+    if (this.cpass && !this.splitPasses) return this.cpass;
+    this.cpass?.end();
+    this.cpass = enc.beginComputePass({
+      label: `pass/${label}`,
+      timestampWrites: this.prof?.writes(label),
+    });
+    return this.cpass;
+  }
+
+  private endCompute() {
+    this.cpass?.end();
+    this.cpass = null;
+  }
+
+  /**
+   * A render pass whose draws can be split into separately timed segments
+   * when profiling: seg() ends the pass and continues in a new one that loads
+   * the attachments. Without the profiler seg() returns the same pass.
+   */
+  private renderPass(
+    enc: GPUCommandEncoder,
+    desc: GPURenderPassDescriptor,
+    label: string,
+  ) {
+    const prof = this.prof;
+    const split = this.splitPasses;
+    let pass = enc.beginRenderPass({
+      ...desc,
+      label: `pass/${label}`,
+      timestampWrites: prof?.writes(label),
+    });
+    const cont: GPURenderPassDescriptor = {
+      colorAttachments: [...desc.colorAttachments].map(a =>
+        a ? {...a, loadOp: 'load' as const} : a,
+      ),
+      depthStencilAttachment: desc.depthStencilAttachment
+        ? desc.depthStencilAttachment.depthReadOnly
+          ? desc.depthStencilAttachment
+          : {...desc.depthStencilAttachment, depthLoadOp: 'load' as const}
+        : undefined,
+    };
+    return {
+      get pass() {
+        return pass;
+      },
+      seg(l: string): GPURenderPassEncoder {
+        if (!prof || !split) return pass;
+        pass.end();
+        pass = enc.beginRenderPass({
+          ...cont,
+          label: `pass/${l}`,
+          timestampWrites: prof.writes(l),
+        });
+        return pass;
+      },
+      end() {
+        pass.end();
+      },
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // City data
 
@@ -601,7 +699,7 @@ export class Renderer {
 
   /** lights: packed x,y,z,radius,r,g,b,kind (already selected & scaled). */
   setLights(lights: Float32Array, count: number) {
-    const n = Math.min(count, MAX_LIGHTS);
+    const n = this.off('lights') ? 0 : Math.min(count, MAX_LIGHTS);
     const head = new Uint32Array([n, 0, 0, 0]);
     this.device.queue.writeBuffer(this.lightBuffer, 0, head);
     if (n > 0)
@@ -986,6 +1084,7 @@ export class Renderer {
       v.interior ? 2 : v.lensDrops ? 1 : 0,
       sky.moonPhase,
     ]);
+    new Uint32Array(fd.f.buffer)[F.off] = this.offBits;
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);
     d.queue.writeBuffer(
       this.atmoBuffer,
@@ -1025,12 +1124,15 @@ export class Renderer {
     }
     this.updateTerrainPatches(v.eye);
 
+    this.cpuProf?.mark('render setup');
     const enc = d.createCommandEncoder({label: 'frame'});
-    for (const hk of this.hooks) hk.prepare?.(enc);
+    this.prof?.beginFrame();
+    const hooks = this.activeHooks();
+    for (const hk of hooks) hk.prepare?.(enc);
 
     // --- Compute: sky LUTs, cloud noise, culling.
     {
-      const pass = enc.beginComputePass({label: 'pass/sky + cull'});
+      let pass = this.compute(enc, 'sky luts');
       const atmoG0 = (p: string) =>
         this.bg(
           p,
@@ -1138,34 +1240,38 @@ export class Renderer {
       pass.dispatchWorkgroups(4, 4);
 
       // Clouds (quarter resolution, temporal).
+      pass = this.compute(enc, 'clouds');
       const cIn = t.clouds[this.frameIndex % 2];
       const cOut = t.clouds[(this.frameIndex + 1) % 2];
-      pass.setPipeline(this.p.clouds as GPUComputePipeline);
-      pass.setBindGroup(
-        0,
-        this.bg(
-          'clouds',
+      if (!this.off('clouds')) {
+        pass.setPipeline(this.p.clouds as GPUComputePipeline);
+        pass.setBindGroup(
           0,
-          [this.ubuf(this.frameBuffer), this.linearRepeat],
-          'bg/clouds/frame',
-        ),
-      );
-      pass.setBindGroup(
-        1,
-        this.bg(
-          'clouds',
+          this.bg(
+            'clouds',
+            0,
+            [this.ubuf(this.frameBuffer), this.linearRepeat],
+            'bg/clouds/frame',
+          ),
+        );
+        pass.setBindGroup(
           1,
-          [this.cloudNoise.createView(), cIn.createView(), cOut.createView()],
-          'bg/clouds',
-        ),
-      );
-      pass.dispatchWorkgroups(
-        Math.ceil(cOut.width / 8),
-        Math.ceil(cOut.height / 8),
-      );
+          this.bg(
+            'clouds',
+            1,
+            [this.cloudNoise.createView(), cIn.createView(), cOut.createView()],
+            'bg/clouds',
+          ),
+        );
+        pass.dispatchWorkgroups(
+          Math.ceil(cOut.width / 8),
+          Math.ceil(cOut.height / 8),
+        );
+      }
 
       // Cluster culling for the main view and each shadow cascade.
       const hizView = t.hiz.createView({label: 'hiz/all mips'});
+      pass = this.compute(enc, 'cull');
       pass.setPipeline(this.p.cull as GPUComputePipeline);
       const groups = Math.ceil(Math.max(1, this.pool.clusterHighWater) / 64);
       for (let vi = 0; vi < VIEWS; vi++) {
@@ -1187,7 +1293,7 @@ export class Renderer {
         );
         pass.dispatchWorkgroups(Math.min(groups, 65535));
       }
-      pass.end();
+      this.endCompute();
       this.cullCount = groups;
     }
 
@@ -1205,22 +1311,30 @@ export class Renderer {
         `bg/city shadow/view${vi}`,
       );
     for (let c = 0; c < CASCADES; c++) {
-      const pass = enc.beginRenderPass({
-        label: `pass/shadow cascade ${c}`,
-        colorAttachments: [],
-        depthStencilAttachment: {
-          view: this.shadowMap.createView({
-            dimension: '2d',
-            baseArrayLayer: c,
-            arrayLayerCount: 1,
-            label: `shadow/cascade${c} view`,
-          }),
-          depthClearValue: 1,
-          depthLoadOp: 'clear',
-          depthStoreOp: 'store',
+      const rp = this.renderPass(
+        enc,
+        {
+          colorAttachments: [],
+          depthStencilAttachment: {
+            view: this.shadowMap.createView({
+              dimension: '2d',
+              baseArrayLayer: c,
+              arrayLayerCount: 1,
+              label: `shadow/cascade${c} view`,
+            }),
+            depthClearValue: 1,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+          },
         },
-      });
-      if (sky.sunUp > 0 || sky.moonLight > 0) {
+        `shadow c${c} city`,
+      );
+      const skipCascade =
+        this.off('shadows') ||
+        (c === 3 && this.off('c3')) ||
+        (c === 2 && this.off('c2'));
+      if ((sky.sunUp > 0 || sky.moonLight > 0) && !skipCascade) {
+        const pass = rp.pass;
         pass.setPipeline(this.p.cityShadow as GPURenderPipeline);
         pass.setBindGroup(
           0,
@@ -1242,28 +1356,33 @@ export class Renderer {
           ),
         );
         pass.drawIndirect(this.argsBuffers[1 + c], 0);
-        for (const hk of this.hooks) hk.shadow?.(pass, c);
+        for (const hk of hooks)
+          if (hk.shadow) hk.shadow(rp.seg(`shadow c${c} ${hk.name}`), c);
       }
-      pass.end();
+      rp.end();
     }
 
     // --- G-buffer.
     {
-      const pass = enc.beginRenderPass({
-        label: 'pass/gbuffer',
-        colorAttachments: t.gbuf.map((tx, i) => ({
-          view: tx.createView(),
-          loadOp: 'clear',
-          storeOp: 'store',
-          clearValue: i === 1 ? [0, 0, 1, 0] : [0, 0, 0, 0],
-        })),
-        depthStencilAttachment: {
-          view: t.depth.createView({label: 'gbuffer/depth view'}),
-          depthClearValue: 0,
-          depthLoadOp: 'clear',
-          depthStoreOp: 'store',
+      const rp = this.renderPass(
+        enc,
+        {
+          colorAttachments: t.gbuf.map((tx, i) => ({
+            view: tx.createView(),
+            loadOp: 'clear',
+            storeOp: 'store',
+            clearValue: i === 1 ? [0, 0, 1, 0] : [0, 0, 0, 0],
+          })),
+          depthStencilAttachment: {
+            view: t.depth.createView({label: 'gbuffer/depth view'}),
+            depthClearValue: 0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+          },
         },
-      });
+        'gbuffer city',
+      );
+      let pass = rp.pass;
       const frameG0 = (p: string) =>
         this.bg(p, 0, [this.ubuf(this.frameBuffer)], `bg/${p}/frame`);
       pass.setPipeline(this.p.city as GPURenderPipeline);
@@ -1297,8 +1416,9 @@ export class Renderer {
           'bg/city/textures',
         ),
       );
-      pass.drawIndirect(this.argsBuffers[0], 0);
+      if (!this.off('city')) pass.drawIndirect(this.argsBuffers[0], 0);
       if (this.heightTex && this.landTex) {
+        pass = rp.seg('gbuffer terrain');
         pass.setPipeline(this.p.terrain as GPURenderPipeline);
         pass.setBindGroup(0, frameG0('terrain'));
         pass.setBindGroup(
@@ -1315,22 +1435,25 @@ export class Renderer {
           ),
         );
         pass.setIndexBuffer(this.terrainIndex, 'uint32');
-        pass.drawIndexed(this.terrainIndexCount, this.patchCount);
+        if (!this.off('terrain'))
+          pass.drawIndexed(this.terrainIndexCount, this.patchCount);
+        pass = rp.seg('gbuffer water');
         pass.setPipeline(this.p.water as GPURenderPipeline);
         pass.setBindGroup(0, frameG0('water'));
         pass.setBindGroup(
           1,
           this.bg('water', 1, [this.heightTex.createView()], 'bg/water'),
         );
-        pass.draw(64 * 64 * 6);
+        if (!this.off('water')) pass.draw(64 * 64 * 6);
       }
-      for (const hk of this.hooks) hk.gbuffer?.(pass);
-      pass.end();
+      for (const hk of hooks)
+        if (hk.gbuffer) hk.gbuffer(rp.seg(`gbuffer ${hk.name}`));
+      rp.end();
     }
 
     // --- Hi-Z pyramid for next frame's occlusion culling.
     {
-      const pass = enc.beginComputePass({label: 'pass/hiz'});
+      let pass = this.compute(enc, 'hiz');
       const pg0 = (p: string) =>
         this.bg(
           p,
@@ -1378,25 +1501,28 @@ export class Renderer {
           Math.ceil(Math.max(1, t.hiz.height >> m) / 8),
         );
       }
-      pass.setPipeline(this.p.ao as GPUComputePipeline);
-      pass.setBindGroup(
-        0,
-        this.bg('ao', 0, [this.ubuf(this.frameBuffer)], 'bg/ssao/frame'),
-      );
-      pass.setBindGroup(
-        1,
-        this.bg(
-          'ao',
+      pass = this.compute(enc, 'gtao');
+      if (!this.off('gtao')) {
+        pass.setPipeline(this.p.ao as GPUComputePipeline);
+        pass.setBindGroup(
+          0,
+          this.bg('ao', 0, [this.ubuf(this.frameBuffer)], 'bg/ssao/frame'),
+        );
+        pass.setBindGroup(
           1,
-          [t.depth.createView(), t.gbuf[1].createView(), t.ao.createView()],
-          'bg/ssao',
-        ),
-      );
-      pass.dispatchWorkgroups(
-        Math.ceil(t.ao.width / 8),
-        Math.ceil(t.ao.height / 8),
-      );
-      pass.end();
+          this.bg(
+            'ao',
+            1,
+            [t.depth.createView(), t.gbuf[1].createView(), t.ao.createView()],
+            'bg/ssao',
+          ),
+        );
+        pass.dispatchWorkgroups(
+          Math.ceil(t.ao.width / 8),
+          Math.ceil(t.ao.height / 8),
+        );
+      }
+      this.endCompute();
       this.useOcclusion = true;
     }
 
@@ -1404,7 +1530,7 @@ export class Renderer {
     const histPrev = t.history[this.frameIndex % 2];
     const histNext = t.history[(this.frameIndex + 1) % 2];
     {
-      const pass = enc.beginComputePass({label: 'pass/lighting'});
+      const pass = this.compute(enc, 'lighting');
       pass.setPipeline(this.p.lighting as GPUComputePipeline);
       pass.setBindGroup(
         0,
@@ -1443,28 +1569,40 @@ export class Renderer {
         ),
       );
       pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16));
-      pass.end();
+      this.endCompute();
     }
 
     // --- Forward (vehicle glass, rain) onto the lit HDR image.
-    if (this.hooks.some(hk => hk.forward)) {
-      const pass = enc.beginRenderPass({
-        label: 'pass/forward',
-        colorAttachments: [
-          {view: t.lit.createView(), loadOp: 'load', storeOp: 'store'},
-        ],
-        depthStencilAttachment: {
-          view: t.depth.createView(),
-          depthReadOnly: true,
+    const fwdHooks = hooks.filter(hk => hk.forward);
+    if (fwdHooks.length) {
+      const rp = this.renderPass(
+        enc,
+        {
+          colorAttachments: [
+            {view: t.lit.createView(), loadOp: 'load', storeOp: 'store'},
+          ],
+          depthStencilAttachment: {
+            view: t.depth.createView(),
+            depthReadOnly: true,
+          },
         },
-      });
-      for (const hk of this.hooks) hk.forward?.(pass);
-      pass.end();
+        `fwd ${fwdHooks[0].name}`,
+      );
+      fwdHooks.forEach((hk, i) =>
+        hk.forward!(i ? rp.seg(`fwd ${hk.name}`) : rp.pass),
+      );
+      rp.end();
     }
 
     // --- TAA, bloom, exposure.
+    let post = t.lit;
     {
-      const pass = enc.beginComputePass({label: 'pass/post'});
+      const taa = !this.off('taa');
+      const mdof = taa && !this.off('mdof');
+      // What bloom reads (the resolved frame) and what tonemap reads.
+      const resolved = taa ? histNext : t.lit;
+      post = mdof ? t.lit : resolved;
+      let pass = this.compute(enc, 'taa');
       const pg0 = (p: string) =>
         this.bg(
           p,
@@ -1472,98 +1610,110 @@ export class Renderer {
           [this.ubuf(this.frameBuffer), this.linear],
           `bg/${p}/frame`,
         );
-      pass.setPipeline(this.p.taa as GPUComputePipeline);
-      pass.setBindGroup(0, pg0('taa'));
-      pass.setBindGroup(
-        1,
-        this.bg(
-          'taa',
-          1,
-          [
-            t.lit.createView(),
-            histPrev.createView(),
-            t.gbuf[3].createView(),
-            t.depth.createView(),
-            histNext.createView(),
-          ],
-          'bg/taa',
-        ),
-      );
-      pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
-      // Motion blur + DOF into the (now free) lit texture; history stays clean.
-      pass.setPipeline(this.p.godRays as GPUComputePipeline);
-      pass.setBindGroup(0, pg0('godRays'));
-      pass.setBindGroup(
-        1,
-        this.bg(
-          'godRays',
-          1,
-          [t.depth.createView(), t.rays.createView()],
-          'bg/god rays',
-        ),
-      );
-      pass.dispatchWorkgroups(
-        Math.ceil(t.rays.width / 8),
-        Math.ceil(t.rays.height / 8),
-      );
-      pass.setPipeline(this.p.motionDof as GPUComputePipeline);
-      pass.setBindGroup(0, pg0('motionDof'));
-      pass.setBindGroup(
-        1,
-        this.bg(
-          'motionDof',
-          1,
-          [
-            histNext.createView(),
-            t.gbuf[3].createView(),
-            t.depth.createView(),
-            t.lit.createView(),
-          ],
-          'bg/motion blur + dof',
-        ),
-      );
-      pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
-      pass.setPipeline(this.p.bloomDown as GPUComputePipeline);
-      pass.setBindGroup(0, pg0('bloomDown'));
-      for (let i = 0; i < t.bloomDown.length; i++) {
-        const src = i === 0 ? histNext : t.bloomDown[i - 1];
+      if (taa) {
+        pass.setPipeline(this.p.taa as GPUComputePipeline);
+        pass.setBindGroup(0, pg0('taa'));
         pass.setBindGroup(
           1,
           this.bg(
-            'bloomDown',
-            1,
-            [src.createView(), t.bloomDown[i].createView()],
-            `bg/bloom down ${i}`,
-          ),
-        );
-        pass.dispatchWorkgroups(
-          Math.ceil(t.bloomDown[i].width / 8),
-          Math.ceil(t.bloomDown[i].height / 8),
-        );
-      }
-      pass.setPipeline(this.p.bloomUp as GPUComputePipeline);
-      pass.setBindGroup(0, pg0('bloomUp'));
-      for (let i = t.bloomUp.length - 2; i >= 0; i--) {
-        const src =
-          i === t.bloomUp.length - 2 ? t.bloomDown[i + 1] : t.bloomUp[i + 1];
-        pass.setBindGroup(
-          1,
-          this.bg(
-            'bloomUp',
+            'taa',
             1,
             [
-              src.createView(),
-              t.bloomUp[i].createView(),
-              t.bloomDown[i].createView(),
+              t.lit.createView(),
+              histPrev.createView(),
+              t.gbuf[3].createView(),
+              t.depth.createView(),
+              histNext.createView(),
             ],
-            `bg/bloom up ${i}`,
+            'bg/taa',
+          ),
+        );
+        pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
+      }
+      pass = this.compute(enc, 'god rays');
+      if (!this.off('godrays')) {
+        pass.setPipeline(this.p.godRays as GPUComputePipeline);
+        pass.setBindGroup(0, pg0('godRays'));
+        pass.setBindGroup(
+          1,
+          this.bg(
+            'godRays',
+            1,
+            [t.depth.createView(), t.rays.createView()],
+            'bg/god rays',
           ),
         );
         pass.dispatchWorkgroups(
-          Math.ceil(t.bloomUp[i].width / 8),
-          Math.ceil(t.bloomUp[i].height / 8),
+          Math.ceil(t.rays.width / 8),
+          Math.ceil(t.rays.height / 8),
         );
       }
+      // Motion blur + DOF into the (now free) lit texture; history stays clean.
+      pass = this.compute(enc, 'motion blur + dof');
+      if (mdof) {
+        pass.setPipeline(this.p.motionDof as GPUComputePipeline);
+        pass.setBindGroup(0, pg0('motionDof'));
+        pass.setBindGroup(
+          1,
+          this.bg(
+            'motionDof',
+            1,
+            [
+              histNext.createView(),
+              t.gbuf[3].createView(),
+              t.depth.createView(),
+              t.lit.createView(),
+            ],
+            'bg/motion blur + dof',
+          ),
+        );
+        pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
+      }
+      pass = this.compute(enc, 'bloom');
+      if (!this.off('bloom')) {
+        pass.setPipeline(this.p.bloomDown as GPUComputePipeline);
+        pass.setBindGroup(0, pg0('bloomDown'));
+        for (let i = 0; i < t.bloomDown.length; i++) {
+          const src = i === 0 ? resolved : t.bloomDown[i - 1];
+          pass.setBindGroup(
+            1,
+            this.bg(
+              'bloomDown',
+              1,
+              [src.createView(), t.bloomDown[i].createView()],
+              `bg/bloom down ${i}`,
+            ),
+          );
+          pass.dispatchWorkgroups(
+            Math.ceil(t.bloomDown[i].width / 8),
+            Math.ceil(t.bloomDown[i].height / 8),
+          );
+        }
+        pass.setPipeline(this.p.bloomUp as GPUComputePipeline);
+        pass.setBindGroup(0, pg0('bloomUp'));
+        for (let i = t.bloomUp.length - 2; i >= 0; i--) {
+          const src =
+            i === t.bloomUp.length - 2 ? t.bloomDown[i + 1] : t.bloomUp[i + 1];
+          pass.setBindGroup(
+            1,
+            this.bg(
+              'bloomUp',
+              1,
+              [
+                src.createView(),
+                t.bloomUp[i].createView(),
+                t.bloomDown[i].createView(),
+              ],
+              `bg/bloom up ${i}`,
+            ),
+          );
+          pass.dispatchWorkgroups(
+            Math.ceil(t.bloomUp[i].width / 8),
+            Math.ceil(t.bloomUp[i].height / 8),
+          );
+        }
+      }
+      pass = this.compute(enc, 'exposure');
       pass.setPipeline(this.p.exposure as GPUComputePipeline);
       pass.setBindGroup(0, pg0('exposure'));
       pass.setBindGroup(
@@ -1576,24 +1726,28 @@ export class Renderer {
         ),
       );
       pass.dispatchWorkgroups(1);
-      pass.end();
+      this.endCompute();
     }
 
     // --- Tonemap to the swapchain.
     {
-      const pass = enc.beginRenderPass({
-        label: 'pass/tonemap',
-        colorAttachments: [
-          {
-            view: this.gpu.context
-              .getCurrentTexture()
-              .createView({label: 'swapchain view'}),
-            loadOp: 'clear',
-            storeOp: 'store',
-            clearValue: [0, 0, 0, 1],
-          },
-        ],
-      });
+      const rp = this.renderPass(
+        enc,
+        {
+          colorAttachments: [
+            {
+              view: this.gpu.context
+                .getCurrentTexture()
+                .createView({label: 'swapchain view'}),
+              loadOp: 'clear',
+              storeOp: 'store',
+              clearValue: [0, 0, 0, 1],
+            },
+          ],
+        },
+        'tonemap',
+      );
+      const pass = rp.pass;
       pass.setPipeline(this.p.tonemap as GPURenderPipeline);
       pass.setBindGroup(
         0,
@@ -1610,7 +1764,7 @@ export class Renderer {
           'tonemap',
           1,
           [
-            t.lit.createView(),
+            post.createView(),
             t.bloomUp[0].createView(),
             this.ubuf(this.exposureBuffer),
             t.rays.createView(),
@@ -1619,10 +1773,13 @@ export class Renderer {
         ),
       );
       pass.draw(3);
-      pass.end();
+      rp.end();
     }
 
+    this.prof?.endFrame(enc);
+    this.cpuProf?.mark('render encode');
     d.queue.submit([enc.finish()]);
+    this.prof?.afterSubmit();
     this.prevViewProj = viewProj;
     this.frameIndex++;
     const ps = this.pool.stats;

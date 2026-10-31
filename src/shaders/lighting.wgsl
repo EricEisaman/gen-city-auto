@@ -29,6 +29,15 @@ struct ContactBuf { count: u32, pad0: u32, pad1: u32, pad2: u32, items: array<Co
 @group(1) @binding(15) var<storage, read> contacts: ContactBuf;
 @group(1) @binding(16) var skyline: texture_2d<f32>;
 
+// Ablation bits (frame.off.x; render/ablation.ts). Zero in normal runs.
+const OFF_SSR = 1u;
+const OFF_CITYREFL = 2u;
+const OFF_SKYVIS = 4u;
+const OFF_CONTACT = 8u;
+const OFF_SHADOWS = 32u;
+const OFF_GTAO = 64u;
+const OFF_LIT = 524288u;
+
 // Fraction of the sky visible from a point, from a horizon search over the
 // building/terrain height map (8 azimuths x 8 doubling steps, 0.5 m .. 64 m).
 // Walls only count the half-space they face. Height-map texels are several
@@ -37,6 +46,7 @@ struct ContactBuf { count: u32, pad0: u32, pad1: u32, pad2: u32, items: array<Co
 // must see that wall. On a wall, samples still inside its own plane (within
 // a texel of it) are skipped, or the wall would occlude itself sideways.
 fn skyVisibility(world: vec3f, n: vec3f, pxf: vec2f) -> f32 {
+  if ((frame.off.x & OFF_SKYVIS) != 0u) { return 1.0; }
   let N = f32(textureDimensions(skyline).x);
   let size = frame.world.x;
   let cell = size / N;
@@ -85,6 +95,7 @@ fn skyVisibility(world: vec3f, n: vec3f, pxf: vec2f) -> f32 {
 // mailboxes, vending machines) that the shadow cascades blur away.
 // Returns the fraction of light blocked.
 fn contactShadow(world: vec3f, n: vec3f, dist: f32, pxf: vec2f) -> f32 {
+  if ((frame.off.x & OFF_CONTACT) != 0u) { return 0.0; }
   let len = min(0.6 * max(dist / 30.0, 1.0), 2.0);
   let stepLen = len / 12.0;
   let start = world + n * (0.015 + dist * 0.0004);
@@ -133,6 +144,7 @@ fn skylineAt(p: vec3f, N: f32, size: f32) -> f32 {
 // facade per pixel per metre of eye distance: the eye's pixel angle over
 // the cosine at the reflector (a grazing reflector squeezes the image).
 fn cityReflection(world: vec3f, r: vec3f, spread: vec2f) -> vec4f {
+  if ((frame.off.x & OFF_CITYREFL) != 0u) { return vec4f(0.0); }
   let N = f32(textureDimensions(skyline).x);
   let size = frame.world.x;
   var t = 1.5;
@@ -219,6 +231,7 @@ fn skyIrradiance(n: vec3f) -> vec3f {
 }
 
 fn contactOcclusion(world: vec3f) -> f32 {
+  if ((frame.off.x & OFF_CONTACT) != 0u) { return 0.0; }
   var occ = 0.0;
   for (var i = 0u; i < contacts.count; i++) {
     let C = contacts.items[i];
@@ -451,6 +464,7 @@ fn skyPixel(d: vec3f, uv: vec2f) -> vec3f {
 // sky, a pole in front of a wall) the plane distance is large, so the AO
 // doesn't bleed into a soft halo.
 fn bilateralAo(pxf: vec2f, vd: f32, world: vec3f, n: vec3f) -> f32 {
+  if ((frame.off.x & OFF_GTAO) != 0u) { return 1.0; }
   let half = vec2i(textureDimensions(aoTex)) - 1;
   let hp = (pxf - 1.0) * 0.5;
   let c = vec2i(floor(hp));
@@ -520,6 +534,7 @@ fn wetStreak(nF: vec3f, v: vec3f, l: vec3f, fwdV: vec3f) -> f32 {
 }
 
 fn shadow(world: vec3f, n: vec3f, vdepth: f32) -> f32 {
+  if ((frame.off.x & OFF_SHADOWS) != 0u) { return 1.0; }
   var cascade = 0u;
   for (var k = 0u; k < 3u; k++) {
     if (vdepth > frame.cascadeSplits[k]) { cascade = k + 1u; }
@@ -551,6 +566,7 @@ fn cloudShadow(world: vec3f) -> f32 {
 }
 
 fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool, thinReject: bool) -> vec4f {
+  if ((frame.off.x & OFF_SSR) != 0u) { return vec4f(0.0); }
   var r = reflect(-v, n);
   // Roughness jitter (resolved by TAA). Wet streets stretch reflections into
   // vertical streaks toward the camera.
@@ -750,6 +766,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let a = textureLoad(gAlbedo, px, 0);
   let nr = textureLoad(gNormal, px, 0);
   let em = textureLoad(gEmissive, px, 0);
+  // Ablation: unlit albedo + emissive (the whole shading cost removed).
+  if ((frame.off.x & OFF_LIT) != 0u) {
+    textureStore(outColor, px, vec4f(a.rgb * frame.sunColor.rgb * 0.5 + em.rgb, 1.0));
+    return;
+  }
   let n = decodeNormal(nr.xy);
   let rough = nr.z;
   let metal = nr.w;

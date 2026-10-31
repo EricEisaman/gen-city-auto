@@ -188,7 +188,20 @@ export class UI {
         `${fps.toFixed(0)} fps\n` +
         Object.entries(s)
           .map(([k, v]) => `${k}: ${v}`)
-          .join('\n');
+          .join('\n') +
+        profText('gpu ms', g.renderer.prof?.averages) +
+        profText('cpu ms', g.cpuProf?.averages);
     }
   }
+}
+
+function profText(title: string, avg: Record<string, number> | undefined) {
+  if (!avg || !Object.keys(avg).length) return '';
+  return (
+    `\n-- ${title}\n` +
+    Object.entries(avg)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k}: ${v.toFixed(2)}`)
+      .join('\n')
+  );
 }
