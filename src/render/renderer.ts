@@ -180,6 +180,8 @@ export class Renderer {
   private splitPasses = false;
   /** Ablation bits (?off=..., see ablation.ts); 0 normally. */
   offBits = 0;
+  /** Ablation: city material ids (bit per id) drawn as a flat colour. */
+  offMats = 0;
 
   private constructor(gpu: Gpu) {
     this.gpu = gpu;
@@ -1133,7 +1135,7 @@ export class Renderer {
       v.interior ? 2 : v.lensDrops ? 1 : 0,
       sky.moonPhase,
     ]);
-    new Uint32Array(fd.f.buffer)[F.off] = this.offBits;
+    new Uint32Array(fd.f.buffer).set([this.offBits, this.offMats], F.off);
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);
     d.queue.writeBuffer(
       this.atmoBuffer,

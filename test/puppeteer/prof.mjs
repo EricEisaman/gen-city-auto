@@ -1,6 +1,6 @@
 // Frame-time profiler over a set of fixed scenarios.
 //
-//   node test/puppeteer/prof.mjs [WxH ...] [--only=substr] [--q=extra&query]
+//   node test/puppeteer/prof.mjs [WxH ...] [--only=substr] [--q=extra&query] [--json=out.json]
 //        [--ablate=ssr,gtao,ssr+cityrefl,...] [--frames=240] [--passes]
 //
 // Default: for each scenario, the median over --frames frames of the
@@ -12,6 +12,12 @@
 // --ablate: also measures each listed feature switched off (render/ablation.ts
 // names; '+' combines several) against the baseline; the delta is that
 // feature's cost. The baseline is re-measured at the end to show drift.
+// 'matN' draws city material id N (city-materials.wgsl M_*) as a flat colour,
+// e.g. --ablate=mat3,mat5,mat3+mat5 (facade, glass).
+//
+// Sizes: WxH canvas sizes in CSS pixels (= render resolution; the renderer
+// ignores devicePixelRatio), e.g. 640x360 960x540 1280x720 for a resolution
+// sweep (fill-bound vs vertex/CPU-bound).
 //
 // --passes: per-pass GPU timestamps (?prof=1, every segment its own pass).
 // On Apple (tile-based) GPUs passes overlap and timestamps exist only at
@@ -30,11 +36,15 @@ const extra = opt('q') ?? '';
 const frames = Number(opt('frames') ?? 240);
 const passes = argv.includes('--passes');
 const ablate = (opt('ablate') ?? '').split(',').filter(Boolean);
+// 'mat3' = city material id 3 drawn flat (cityMaterial early-out).
+const isMat = n => /^mat\d+$/.test(n);
 const bitsOf = s =>
   s.split('+').reduce((b, n) => {
+    if (isMat(n)) return b;
     if (!(n in OFF_BITS)) throw new Error(`unknown ablation flag ${n}`);
     return b | OFF_BITS[n];
   }, 0);
+const matsOf = s => s.split('+').filter(isMat).reduce((b, n) => (b | (1 << Number(n.slice(3)))) >>> 0, 0);
 for (const a of ablate) bitsOf(a);
 
 // Free-camera scenarios are fixed views; chase ones follow the autopiloted
@@ -61,6 +71,7 @@ async function setup(page, s) {
     const g = window.__game;
     g.freeze = false;
     g.renderer.offBits = 0;
+    g.renderer.offMats = 0;
     g.hour = s.hour;
     g.weather.set(s.weather, true);
     const heli = g.player.kind === 'heli';
@@ -155,11 +166,20 @@ await withServer(async base => {
           await sleep(500);
           const res = {live, base: await measure(page, frames), off: {}};
           for (const a of ablate) {
-            await page.evaluate(b => (window.__game.renderer.offBits = b), bitsOf(a));
+            await page.evaluate(
+              ([b, m]) => {
+                window.__game.renderer.offBits = b;
+                window.__game.renderer.offMats = m;
+              },
+              [bitsOf(a), matsOf(a)],
+            );
             await sleep(400);
             res.off[a] = await measure(page, frames);
           }
-          await page.evaluate(() => (window.__game.renderer.offBits = 0));
+          await page.evaluate(() => {
+            window.__game.renderer.offBits = 0;
+            window.__game.renderer.offMats = 0;
+          });
           if (ablate.length) {
             await sleep(400);
             res.base2 = await measure(page, frames);

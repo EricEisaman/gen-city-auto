@@ -153,3 +153,22 @@ void test('lot subdivision gives narrow street-front plots', () => {
   // No gaps: the lots tile the block.
   assert.ok(Math.abs(area - 60 * 40) < 1, `area ${area}`);
 });
+
+void test('nearestFirst matches a stable sort of all candidates', async () => {
+  const {nearestFirst} = await import('../../src/world/nearest.ts');
+  const rng = new Rng(7);
+  for (const [count, n] of [
+    [10, 20],
+    [500, 100],
+    [3000, 1024],
+    [2000, 1],
+  ]) {
+    // Coarse values so there are many ties.
+    const d = new Float64Array(count);
+    for (let i = 0; i < count; i++) d[i] = Math.floor(rng.next() * 50);
+    const want = [...Array(count).keys()]
+      .sort((a, b) => d[a] - d[b])
+      .slice(0, n);
+    assert.deepEqual(nearestFirst(d, count, n), want);
+  }
+});

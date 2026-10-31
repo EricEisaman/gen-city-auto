@@ -7597,7 +7597,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
   let n = normalize(nIn);
   var s = defaultSurf(n);
   // Ablation (?off=matcheap): a flat per-material colour, no procedural layers.
-  if ((frame.off.x & 32768u) != 0u) {
+  if ((frame.off.x & 32768u) != 0u || (id < 32u && ((frame.off.y >> id) & 1u) != 0u)) {
     s.albedo = vec3f(0.3) + 0.4 * vec3f(hash11(f32(id)), hash11(f32(id) + 7.0), hash11(f32(id) + 13.0));
     return s;
   }

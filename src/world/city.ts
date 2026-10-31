@@ -9,6 +9,7 @@ import {LIGHT_FLOATS, LightKind} from '../city/gen-base.ts';
 import {TILE_SIZE} from '../city/gen-tile.ts';
 import {Heightfield} from '../city/terrain.ts';
 import type {Vec3} from '../math/vec.ts';
+import {nearestFirst} from './nearest.ts';
 import type {PoolHandle} from '../render/cluster-pool.ts';
 import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
@@ -45,6 +46,9 @@ export class City {
   private nextId = 1;
   private tileLods = new Uint32Array(0);
   private lightScratch = new Float32Array(1024 * 8);
+  private candD = new Float64Array(8192);
+  private candSrc = new Uint32Array(8192);
+  private candI = new Uint32Array(8192);
   lod0Radius = 520;
   /** Show every tile at LOD1 (asset lab: judge the distant shell up close). */
   forceLod1 = false;
@@ -369,26 +373,38 @@ export class City {
       return;
     }
     const near = this.nearTiles(eye, 650);
-    const cand: {d: number; src: Float32Array; i: number}[] = [];
-    const consider = (src: Float32Array, i: number) => {
+    // Candidates in typed arrays (no object per light): distance beyond the
+    // light's radius, source array and light index.
+    let nc = 0;
+    const srcs: Float32Array[] = [];
+    const consider = (src: Float32Array, si: number, i: number) => {
       const dx = src[i * 8] - eye[0];
       const dy = src[i * 8 + 1] - eye[1];
       const dz = src[i * 8 + 2] - eye[2];
-      const d = Math.hypot(dx, dy, dz) - src[i * 8 + 3];
-      if (d < 600) cand.push({d, src, i});
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - src[i * 8 + 3];
+      if (d >= 600) return;
+      if (nc === this.candD.length) this.growCandidates();
+      this.candD[nc] = d;
+      this.candSrc[nc] = si;
+      this.candI[nc] = i;
+      nc++;
     };
     for (const t of near) {
-      for (const i of this.baseLightTiles[t]) consider(this.baseLights, i);
+      const bi = srcs.push(this.baseLights) - 1;
+      for (const i of this.baseLightTiles[t]) consider(this.baseLights, bi, i);
       const s = this.tiles[t];
       const tl = this.tileLods[t] === 0 ? s.lights0 : s.lights1;
-      for (let i = 0; i < tl.length / 8; i++) consider(tl, i);
+      const ti = srcs.push(tl) - 1;
+      for (let i = 0; i < tl.length / 8; i++) consider(tl, ti, i);
     }
-    cand.sort((a, b) => a.d - b.d);
     const out = this.lightScratch;
     out.set(extra.subarray(0, ne * 8));
-    const n = Math.min(cand.length, 1024 - ne);
+    const n = Math.min(nc, 1024 - ne);
+    const order = nearestFirst(this.candD, nc, n);
     for (let k = 0; k < n; k++) {
-      const {src, i} = cand[k];
+      const c = order[k];
+      const src = srcs[this.candSrc[c]];
+      const i = this.candI[c];
       const kind = src[i * 8 + 7];
       const scale =
         (kind < 0.5 // street lights carry their road axis in the fraction
@@ -409,6 +425,17 @@ export class City {
       out[o + 7] = kind;
     }
     this.renderer.setLights(out, n + ne);
+  }
+
+  private growCandidates() {
+    const grow = <T extends Float64Array | Uint32Array>(a: T): T => {
+      const b = new (a.constructor as new (n: number) => T)(a.length * 2);
+      b.set(a);
+      return b;
+    };
+    this.candD = grow(this.candD);
+    this.candSrc = grow(this.candSrc);
+    this.candI = grow(this.candI);
   }
 
   dispose() {
