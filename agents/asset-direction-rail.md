@@ -714,3 +714,80 @@ but these are the hooks:
 - **Lab:** rail sites hide the park / lawn blocks the `side` preset's sight line crosses in the 30 m
   in front of the eye (their trees go with them): a park crown filled `rail-station0-side-*`. The
   station0 site stands in a big park, so its views (ctx and not) now show bare ground around it.
+
+### Round 7 geometry additions (for the shader engineer)
+
+- **Heavy portal / signal-bridge beam is now a rolled I girder** (was one `GALV` box 10.1 x 0.8 x
+  0.34 m): top and bottom flanges `GALV` boxes 0.4 m wide x 4 cm (y 7.90..7.94, 8.66..8.70), a 2 cm
+  web (`GALV` box, y 7.94..8.66, recessed 19 cm behind the flange edges) and 9 web stiffeners each
+  side (16 mm plates, two faces each, every ~1.24 m, `GALV` quads, uv 0..0.18 x 0..0.72 m). No
+  `GALV` face on a portal beam is now taller than 0.72 m, so a drip / streak gate on face height
+  (> ~1 m) keeps them off the beam; the flange edges are 4 cm (box UVs, metres).
+- **`MAST_PAINT` = `CM.paint 0x307`** (`PAINT_STEEL | 7`: dark green paint, chipped; seed 5 grey read as concrete) on every OHLE
+  mast (light box masts, heavy H masts and cap plates): darker than the concrete. Beams, cantilever
+  arms, droppers and hardware stay `GALV`. Also used on the soundwall access doors. Retune it in `paintedSteel` (seed & 3 == 3) if it reads too rusty.
+- **Coping light line removed.** Instead: one 1.2 m `CM.lamp 7` fitting (0.5 m ones were sub-pixel at the far view) (a lamp tube, r 4.5 cm, at
+  lateral 5.455, y 1.155) in **every span per side** (~12 m; at every 2nd span the far-night deck line vanished), at
+  a hashed spot 20-80 % into the span; ~10 % of them are dead (the same tube in `CM.paint 0x90`).
+  **Shader ask:** for lamp 7 (only the coping fittings use it), 3-5x dimmer than today's `14 *
+  min(boost, 2.5)` and a per-fitting warm / cool mix, e.g. `hash21(floor(world.xz / 2.0))` < 0.35 →
+  warm (1.0, 0.8, 0.55), else the cool LED (each fitting is 1.2 m long, so a 2 m cell is ~one
+  fitting). The lamp-1 down-facing LED strip under the lip on ~30 % of 120 m stretches is unchanged.
+- **Accent spans are now joint-bounded blocks of four** (bents 4b+2 .. 4b+6, between the cover
+  plates at `i % 4 == 2`; ~30 % of blocks, kind hashed per block, none touching a station), so every
+  accent edge sits on a plate and the shader's hard breaks only happen at joints.
+- **I-girder stiffener quads:** uv.y = metres up from the stiffener foot (0 at y 7.94, 0.72 at
+  8.66), like the box faces, so the face-height drip gate sees 0.72 m.
+- **Fascia grime seam (judge "Broken"):** the per-span seed (aux >> 16) changes at every bent, i.e.
+  at **u = 12 i exactly** (every multiple of 12 in bent units) on every `RC_FASCIA` / `RC_RECESS` /
+  fillet face and the coping lip outer face. Only `i % 4 == 2` (u = 48k + 24) carries an expansion-
+  joint cover plate. **Shader ask:** either blend the span-seeded grime / stain terms across
+  `|u - 12 round(u / 12)| < ~0.6 m` (lerp toward the neighbour span's seed, i.e. aux >> 16 +- 1 is
+  not available, so fade the span-specific terms to a shared world-space field near the seam), or
+  draw a 2-3 cm dark sealant joint line at `fract(u / 12) == 0` (prefiltered) so the change sits on
+  a joint, as it does on a real simply-supported viaduct.
+- **Galvanised cable tray on the +1 outer fascia** (non-station spans, `edgesOf`, so it runs
+  continuously): soffit `GALV` 'h' lateral 5.25..5.6 at y -0.05 (n down), outer face 'v' at 5.6
+  from y 0.35 down to -0.05 (uv.y metres down from 0.35), a 4 cm return lip on top (5.56..5.6,
+  y 0.35 / 0.31), and the dark cable bundle `CM.paint 0x301` 'h' at y 0.22. A galv bracket quad
+  under it every 4th bay (`i % 4 == 2`). Its soffit throws the shadow line on the fascia below it.
+  (The -1 side keeps the concrete `RC_TROUGH` trough at the same height.)
+- **Span plates** are 1.8 x 0.7 m (was 1.2 x 0.5; y -0.15..-0.85 at lateral 5.215, 28 % into
+  the span, one span in five, both sides) and alternate per run of five between the white board
+  (`CM.sign 56..63`) and a JR-blue plate (`CM.roadSign 24..31`, uv 0..1).
+- **Cabinet clusters** (`CM.paint 0xd0` location cases, 1.2 m along x 0.6 m x 1.4 m tall, a
+  rain-hood box on each, a shorter 1.0 m third case on ~35 %): one span in four (hashed position in
+  each run of four, hashed side) on every non-station stretch. Off soundwalls: on an `RC_PARAPET`
+  plinth on the walkway troughs (lateral 4.34..4.94, base y 0.56, top ~2.0: 0.75 m over the coping).
+  On soundwall stretches: outside the wall on a bracketed `GALV` grated platform (lateral
+  5.44..6.28, y 1.19..1.25, 3.5 m along) with two raking `GALV` struts from the fascia (y -0.6) and
+  a handrail (lateral 6.25, y 2.3): a box on the deck edge seen from the street.
+- **Ladders** now on one bent in six (alternating sides, 12 columns apart on a side; piers under
+  26 m only: most of the river line is 30-90 m up, where a caged ladder is absurd) and **on
+  soundwall stretches too**. Each has a railed `GALV` grated rest platform (lateral 4.42..6.55,
+  1.6 m along, 6 cm, handrail 1.1 m, toe board) at the bearing level (y deck - 2.45) with the
+  ladder through a hatch in it; on soundwall stretches it tops out at a railed landing outside the
+  wall at coping level (lateral 5.45..6.55) with an access door in the wall (`MAST_PAINT` quad,
+  0.84 x 1.4 m, uv metres, 7 mm proud of the outer panel face at 5.167).
+- **Station mid-bay portals:** inside a station (both neighbouring segments station) every
+  `i % 4 == 2` point now also has a light Warren-truss portal (masts at +-4.8 on the platforms,
+  `MAST_PAINT`), with drop poles, registration arms (stagger 0 there) and a messenger arm at the
+  sagged messenger height (MW - 0.5). The along view at a station no longer sees wires and
+  droppers 24 m from any support (judge st6 "arms hanging from the canopy").
+- **Canopy roof top:** the round-6 standing seams stay (I tried steep 7 cm ribs every 0.6 m: from
+  the grazing along view their eye-facing flanks merge into one evenly lit plane, flatter than the
+  45-degree seams, so the roof's read is the shader's tone / grime / roughness). **Box gutter** along the low (track-side) edge, in front of the fascia top:
+  a 0.25 m face toward the track (lateral 3.8, y CY+0.21..CY-0.04, `CM.paint 0x90`, uv.y metres down),
+  its soffit (3.8..4.0) and a near-black wet channel (`CM.paint 0x301`, up-facing, y CY+0.13)
+  seen from the train eye; the round eaves-gutter tube is gone. **Shader ask (roof):** albedo
+  ~0.45 instead of near-white, grime streaks down the slope toward the gutter (v -> 0), a
+  per-sheet (1 m along u) roughness / tone variation so the sky highlight breaks up.
+- **Concourse:** a lit station-name band behind the concourse name board on both long faces
+  (`CM.lamp 1` diffuser box 7.8 x 1.0 m at lateral 9.88; lamp 8 side faces were too dim, plus `CM.ledLine 0` edge lines top and
+  bottom); **back-lit portrait ad panels** (`CM.screen`, seed (si*13 + ...) & 0xff, uv 0..1,
+  1.2 x 1.8 m on a `CM.frame` box at lateral 9.85, 0.45..2.25 m up) two each side of the entrances
+  (not over the bike rack); an **IC gate line** under each entrance canopy: five `CM.paint 0xd0` gate
+  cabinets (1.1 m deep x 0.18 x 1.0 m, lateral 11.5..12.6) with a blue `CM.ledLine 1` IC reader
+  slab on top and a small white `CM.ledLine 0` indicator on the street end, and a
+  `LightKind.station` light (radius 6, LED) 2.4 m over them. No shader change needed.
+- Vertex cost (river, rail-only): round 6 1,040,922 → round 7 see the commit message.
