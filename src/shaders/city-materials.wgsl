@@ -7357,9 +7357,11 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         if (param == 6u) {
           s.emissive = led * night * (select(5.0, 45.0, n.y < -0.5)) * boost;
         } else {
-          // (The coping line is a solid min-width tube now: it needs only
-          // a little help at range, or it blooms out at far-night.)
-          s.emissive = led * night * 14.0 * min(boost, 2.5);
+          // Discrete coping fittings (one 1.2 m tube per span side): a dim
+          // warm or cool LED each, so the deck edge reads as a sparse dotted
+          // line at night, not a continuous neon stripe.
+          let tint = mix(vec3f(1.0, 0.86, 0.66), led, step(0.4, hash21(floor(world.xz * 0.5))));
+          s.emissive = tint * night * 3.5 * min(boost, 2.5);
         }
       }
     }
