@@ -159,6 +159,7 @@ fn leafCutout(i: VOut) {
   dWorldY = dpdy(i.world);
   dUvX = dpdx(i.uv);
   dUvY = dpdy(i.uv);
+  fragXY = i.pos.xy;
   leafCutout(i);
   // Widened thin tubes: hashed coverage, gone below 8 % of a pixel.
   if (i.cov >= 0.0 && i.cov < 1.0 && (i.cov < 0.08 || i.cov <= leafDither(i.pos.xy))) { discard; }
@@ -172,6 +173,7 @@ fn leafCutout(i: VOut) {
   dWorldY = dpdy(i.world);
   dUvX = dpdx(i.uv);
   dUvY = dpdy(i.uv);
+  fragXY = i.pos.xy;
   return shadeCity(i, ff);
 }
 

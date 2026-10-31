@@ -54,7 +54,9 @@ fn writeG(s: Surf, world: vec3f, fragPos: vec4f) -> GOut {
 fn applyWetness(s: ptr<function, Surf>, world: vec3f, flatness: f32, porous: f32) {
   let wet = frame.weather.z;
   if (wet <= 0.001) { return; }
-  let puddleNoise = fbm2(world.xz * 0.12) * 0.7 + valueNoise(world.xz * 0.9) * 0.3;
+  // (Walls, flatness 0, never pool: skip the noise.)
+  var puddleNoise = 0.0;
+  if (flatness > 0.0) { puddleNoise = fbm2(world.xz * 0.12) * 0.7 + valueNoise(world.xz * 0.9) * 0.3; }
   // Even in a downpour only about half the road pools; the crown stays
   // merely wet so the aggregate breaks the reflections up.
   let edge = 0.58 - wet * 0.18;

@@ -19,6 +19,14 @@ var<private> dWorldX: vec3f;
 var<private> dWorldY: vec3f;
 var<private> dUvX: vec2f;
 var<private> dUvY: vec2f;
+// Fragment position (pixels), for dithered crossovers that TAA resolves.
+var<private> fragXY: vec2f;
+
+// Interleaved gradient noise in [0, 1), advanced every frame.
+fn pixelDither(o: f32) -> f32 {
+  let p = fragXY + o + (frame.time.z % 64.0) * 5.588238;
+  return fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715))));
+}
 // Where rain runs on a blank wall (party walls set it, 0-1: below the
 // coping, the old roofline flashing, tie plates and vents); -1 elsewhere,
 // where facadeRain uses its general sill / ledge / flow streaks.
@@ -386,6 +394,41 @@ fn interior(local: vec2f, size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f,
   let night = nightLight();
   var light = vec3f(luminance(frame.skyAmbient.rgb)) * vec3f(1.0, 0.95, 0.88) * 0.24;
   // Dark offices still show a trace of corridor and exit lighting.
+  if (office) { light += vec3f(0.75, 0.85, 1.0) * 0.012 * night; }
+  light += roomL;
+  return c * light + glow;
+}
+
+// The room of interior() seen from far away, where a window spans only a
+// few pixels: its mean radiance over the opening, without tracing it. The
+// view ray decides how much of the opening shows the back wall (darkest
+// unlit, as interior() darkens with depth) and how much the floor, ceiling
+// (with the lamp's mean glow) or side walls; furniture darkens it a little;
+// at grazing angles it is the room's average colour, as interior() blends.
+// Facade materials cross over to it by pixel footprint (FACADE_FAR*).
+fn interiorMean(size: vec2f, depth: f32, N: vec3f, T: vec3f, V: vec3f, seed: u32, office: bool, roomL: vec3f) -> vec3f {
+  let rd = vec3f(dot(V, T), V.y, -dot(V, N));
+  let az = max(abs(rd.z), 1e-3);
+  let roomH = size.y + 1.15;
+  let shift = depth * abs(rd.xy) / az;
+  let wx = min(shift.x / size.x, 1.0);
+  let wy = min(shift.y / roomH, 1.0);
+  let back = (1.0 - wx) * (1.0 - wy);
+  let lit = any(roomL > vec3f(0.0));
+  let r0 = hashuf(seed);
+  let r1 = hashuf(seed ^ 0x9e37u);
+  let wallC = select(mix(vec3f(0.7, 0.63, 0.52), vec3f(0.6, 0.58, 0.52), r1), mix(vec3f(0.55, 0.55, 0.53), vec3f(0.4, 0.44, 0.47), r1), office);
+  let floorC = select(select(vec3f(0.32, 0.21, 0.12), vec3f(0.42, 0.4, 0.24), r0 < 0.3), vec3f(0.22, 0.24, 0.27), office);
+  let up = rd.y > 0.0;
+  let horiz = wy / max(wx + wy, 1e-4);
+  let sideC = mix(wallC * 0.75, select(floorC, vec3f(0.62), up), horiz) * select(0.68, 0.8, lit);
+  var c = mix(sideC, wallC * 0.9 * select(0.35, 0.6, lit), back) * 0.85;
+  let gz = smoothstep(0.4, 0.12, abs(rd.z));
+  c = mix(c, wallC * 0.55, gz);
+  var glow = roomL * select(0.18, 0.136, office) * select(0.0, (1.0 - back) * horiz, up) * (1.0 - gz);
+  if (!office) { glow += roomL * 0.03; }
+  let night = nightLight();
+  var light = vec3f(luminance(frame.skyAmbient.rgb)) * vec3f(1.0, 0.95, 0.88) * 0.24;
   if (office) { light += vec3f(0.75, 0.85, 1.0) * 0.012 * night; }
   light += roomL;
   return c * light + glow;
@@ -1068,11 +1111,13 @@ fn partyWall(s: ptr<function, Surf>, uvIn: vec2f, auxIn: u32, bodyH: f32, base: 
     let lw = max(0.035, foot * 0.6);
     let brk = smoothstep(0.2, 0.32, valueNoise(vec2f(uv.x * 1.7, 5.0)));
     var fl = (1.0 - smoothstep(lw * 0.5, lw * 0.5 + foot, abs(dw))) * brk;
-    let dc = floor(uv.x / 0.23);
-    let dh = hash21(vec2f(dc, ab));
-    let dx = abs(fract(uv.x / 0.23) - 0.5) * 0.23;
-    let dlen = mix(0.05, 0.35, dh);
-    fl = max(fl, step(0.6, dh) * brk * (1.0 - smoothstep(0.012, 0.02 + foot, dx + max(dw, 0.0) / dlen * 0.012)) * step(0.0, dw) * step(dw, dlen) * fFine);
+    if (fFine > 0.0) {
+      let dc = floor(uv.x / 0.23);
+      let dh = hash21(vec2f(dc, ab));
+      let dx = abs(fract(uv.x / 0.23) - 0.5) * 0.23;
+      let dlen = mix(0.05, 0.35, dh);
+      fl = max(fl, step(0.6, dh) * brk * (1.0 - smoothstep(0.012, 0.02 + foot, dx + max(dw, 0.0) / dlen * 0.012)) * step(0.0, dw) * step(dw, dlen) * fFine);
+    }
     a = mix(a, vec3f(0.1, 0.095, 0.09), fl * 0.85);
     // Run-off sheds off the old flashing in drips 0.5-2 m long.
     let rc = floor(uv.x / 0.6);
@@ -1092,7 +1137,8 @@ fn partyWall(s: ptr<function, Surf>, uvIn: vec2f, auxIn: u32, bodyH: f32, base: 
     // Each streak tails off at its own length on the way down.
     let len = mix(2.0, 11.0, fract(ch * 11.0));
     let topK = smoothstep(len, len * 0.3, below) * step(0.0, below);
-    let body = (1.0 - smoothstep(0.3, 1.0, abs(cx))) * mix(1.0, 0.6 + 0.4 * valueNoise(vec2f(uv.x * 9.0, uv.y * 0.3)), fFine);
+    var body = 1.0 - smoothstep(0.3, 1.0, abs(cx));
+    if (fFine > 0.0) { body *= mix(1.0, 0.6 + 0.4 * valueNoise(vec2f(uv.x * 9.0, uv.y * 0.3)), fFine); }
     let streak = body * step(0.5, ch) * mix(0.45, 1.0, fract(ch * 31.0)) * topK * (0.55 + 0.45 * valueNoise(vec2f(uv.x * 0.8, uv.y * 0.12)));
     a = mix(a, vec3f(0.11, 0.105, 0.1), clamp(streak * 0.65 * (1.0 - 0.8 * ghost), 0.0, 0.65));
     let band = smoothstep(0.9 + 0.4 * valueNoise(vec2f(uv.x * 1.3, 2.0)), 0.0, below) * step(0.0, below);
@@ -1104,53 +1150,66 @@ fn partyWall(s: ptr<function, Surf>, uvIn: vec2f, auxIn: u32, bodyH: f32, base: 
     src = max(src, body * step(0.5, ch) * smoothstep(wetLen, wetLen * 0.2, below) * step(0.0, below));
     src = max(src, band * 0.8);
   }
-  // Repairs: ragged patches of fresh render or dark waterproofing coat over
-  // cracks. Both stay matte (rough 0.75+): a glossy patch catches a grazing
-  // golden-hour sun and glows white.
-  let pc = floor(uv / vec2f(3.1, 2.3));
-  let ph = hash21(pc + f32(aux & 511u) + 31.0);
-  let pf = fract(uv / vec2f(3.1, 2.3)) - vec2f(0.2 + 0.4 * fract(ph * 7.0), 0.3 + 0.3 * fract(ph * 3.0));
-  let rag = 0.06 * (valueNoise(uv * 5.0) - 0.5);
-  let ext = vec2f(0.15 + 0.2 * fract(ph * 13.0), 0.1 + 0.25 * fract(ph * 17.0));
-  if (ph > 0.86 && all(abs(pf) + rag < ext)) {
-    let dark = fract(ph * 29.0) < 0.5;
-    a = mix(a, select(a * 1.1 + 0.02, vec3f(0.16, 0.165, 0.16), dark), select(0.6, 0.55, dark));
-    (*s).rough = select(0.9, 0.75, dark);
-  }
-  // Vertical crack sealant line now and then.
-  let cx = abs(fract(uv.x / 4.3 + hashuf(aux ^ 0x5c1u)) - 0.5) * 4.3 + 0.02 * sin(uv.y * 3.0);
-  if (hash21(vec2f(floor(uv.x / 4.3), f32(aux & 63u))) > 0.6) {
-    a *= 1.0 - 0.5 * (1.0 - smoothstep(0.008, 0.008 + foot, cx)) * clamp(0.016 / max(foot, 1e-4), 0.0, 1.0);
-  }
-  // Tie-rod plates (200 mm, rusty) at each slab line every ~3.6 m; rust
-  // bleeds 1-2 m down below each.
-  // Set out by hand: each plate a little off the grid, some never fitted.
-  let tc = vec2f(floor(uv.x / 3.6), floor(uv.y / 3.3 + 0.5));
-  let tj = hash22(tc + ab * 0.71);
-  let tp = vec2f(uv.x - (tc.x + 0.5) * 3.6 - (tj.x - 0.5) * 0.9, uv.y - tc.y * 3.3 - 0.1 - (tj.y - 0.5) * 0.25);
-  let plate = max(abs(tp.x), abs(tp.y));
-  if (hashuf(aux ^ 0x7e1u) < 0.6 && fract(tj.x * 7.3 + tj.y * 3.1) > 0.3) {
-    let bleed = (1.0 - smoothstep(0.03, 0.09, abs(tp.x) - max(-tp.y, 0.0) * 0.03)) * smoothstep(-1.6, 0.0, tp.y) * step(tp.y, 0.0);
-    a = mix(a, vec3f(0.3, 0.17, 0.08), bleed * 0.35 * mix(0.5, 1.0, fFine));
-    src = max(src, bleed * 0.8);
-    if (plate < 0.1) {
-      a = mix(vec3f(0.2, 0.15, 0.11), vec3f(0.3, 0.16, 0.07), smoothstep(0.05, 0.1, plate));
-      (*s).metal = 0.2;
-      (*s).rough = 0.8;
-      if (length(tp) < 0.025) { a = vec3f(0.12); }
+  // The small features below (repairs, crack, tie plates, vent: 0.2-0.7 m)
+  // fade out past ~0.5-0.8 m per pixel and are skipped beyond.
+  let kP = 1.0 - smoothstep(0.5, 0.8, foot);
+  if (kP > 0.0) {
+    let a0 = a;
+    let src0 = src;
+    let r0 = (*s).rough;
+    let m0 = (*s).metal;
+    // Repairs: ragged patches of fresh render or dark waterproofing coat over
+    // cracks. Both stay matte (rough 0.75+): a glossy patch catches a grazing
+    // golden-hour sun and glows white.
+    let pc = floor(uv / vec2f(3.1, 2.3));
+    let ph = hash21(pc + f32(aux & 511u) + 31.0);
+    let pf = fract(uv / vec2f(3.1, 2.3)) - vec2f(0.2 + 0.4 * fract(ph * 7.0), 0.3 + 0.3 * fract(ph * 3.0));
+    let rag = 0.06 * (valueNoise(uv * 5.0) - 0.5);
+    let ext = vec2f(0.15 + 0.2 * fract(ph * 13.0), 0.1 + 0.25 * fract(ph * 17.0));
+    if (ph > 0.86 && all(abs(pf) + rag < ext)) {
+      let dark = fract(ph * 29.0) < 0.5;
+      a = mix(a, select(a * 1.1 + 0.02, vec3f(0.16, 0.165, 0.16), dark), select(0.6, 0.55, dark));
+      (*s).rough = select(0.9, 0.75, dark);
     }
-  }
-  // At most one vent: a small louvred grille.
-  let vh = hashuf(aux ^ 0x7e7u);
-  let vp = uv - vec2f(mix(1.2, 4.0, vh), mix(3.0, 7.0, fract(vh * 7.0)));
-  if (vh < 0.6 && max(abs(vp.x), abs(vp.y)) < 0.16) {
-    a = vec3f(0.45, 0.45, 0.43) * mix(0.9, select(0.55, 1.0, fract(vp.y / 0.04) > 0.4), fFine);
-    (*s).metal = 0.3;
-    (*s).rough = 0.7;
-  }
-  if (vh < 0.6) {
-    let vb = (1.0 - smoothstep(0.1, 0.2, abs(vp.x))) * smoothstep(-1.4, -0.16, vp.y) * step(vp.y, -0.16);
-    src = max(src, vb * 0.8);
+    // Vertical crack sealant line now and then.
+    let cx = abs(fract(uv.x / 4.3 + hashuf(aux ^ 0x5c1u)) - 0.5) * 4.3 + 0.02 * sin(uv.y * 3.0);
+    if (hash21(vec2f(floor(uv.x / 4.3), f32(aux & 63u))) > 0.6) {
+      a *= 1.0 - 0.5 * (1.0 - smoothstep(0.008, 0.008 + foot, cx)) * clamp(0.016 / max(foot, 1e-4), 0.0, 1.0);
+    }
+    // Tie-rod plates (200 mm, rusty) at each slab line every ~3.6 m; rust
+    // bleeds 1-2 m down below each.
+    // Set out by hand: each plate a little off the grid, some never fitted.
+    let tc = vec2f(floor(uv.x / 3.6), floor(uv.y / 3.3 + 0.5));
+    let tj = hash22(tc + ab * 0.71);
+    let tp = vec2f(uv.x - (tc.x + 0.5) * 3.6 - (tj.x - 0.5) * 0.9, uv.y - tc.y * 3.3 - 0.1 - (tj.y - 0.5) * 0.25);
+    let plate = max(abs(tp.x), abs(tp.y));
+    if (hashuf(aux ^ 0x7e1u) < 0.6 && fract(tj.x * 7.3 + tj.y * 3.1) > 0.3) {
+      let bleed = (1.0 - smoothstep(0.03, 0.09, abs(tp.x) - max(-tp.y, 0.0) * 0.03)) * smoothstep(-1.6, 0.0, tp.y) * step(tp.y, 0.0);
+      a = mix(a, vec3f(0.3, 0.17, 0.08), bleed * 0.35 * mix(0.5, 1.0, fFine));
+      src = max(src, bleed * 0.8);
+      if (plate < 0.1) {
+        a = mix(vec3f(0.2, 0.15, 0.11), vec3f(0.3, 0.16, 0.07), smoothstep(0.05, 0.1, plate));
+        (*s).metal = 0.2;
+        (*s).rough = 0.8;
+        if (length(tp) < 0.025) { a = vec3f(0.12); }
+      }
+    }
+    // At most one vent: a small louvred grille.
+    let vh = hashuf(aux ^ 0x7e7u);
+    let vp = uv - vec2f(mix(1.2, 4.0, vh), mix(3.0, 7.0, fract(vh * 7.0)));
+    if (vh < 0.6 && max(abs(vp.x), abs(vp.y)) < 0.16) {
+      a = vec3f(0.45, 0.45, 0.43) * mix(0.9, select(0.55, 1.0, fract(vp.y / 0.04) > 0.4), fFine);
+      (*s).metal = 0.3;
+      (*s).rough = 0.7;
+    }
+    if (vh < 0.6) {
+      let vb = (1.0 - smoothstep(0.1, 0.2, abs(vp.x))) * smoothstep(-1.4, -0.16, vp.y) * step(vp.y, -0.16);
+      src = max(src, vb * 0.8);
+    }
+    a = mix(a0, a, kP);
+    src = mix(src0, src, kP);
+    (*s).rough = mix(r0, (*s).rough, kP);
+    (*s).metal = mix(m0, (*s).metal, kP);
   }
   (*s).albedo = a;
   rainSrc = src;
@@ -1205,7 +1264,7 @@ fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f,
     (*s).rough = c.a;
     (*s).normal = n;
   }
-  if (z.role == 2u && z.zone != FZ_CROWN) { partyWall(s, uv, aux, bodyH, z.zone == FZ_BASE); }
+  if (z.role == 2u && z.zone != FZ_CROWN ) { partyWall(s, uv, aux, bodyH, z.zone == FZ_BASE); }
   if (z.role == 3u && z.zone != FZ_CROWN) {
     // Render and ALC panels: no ledges to cast floor shadows; ALC shows a
     // joint every 0.6 m.
@@ -1227,6 +1286,7 @@ fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f,
 // further away it returns its mean coverage and no slope.
 fn rivulets(p: vec2f, density: f32, foot: f32) -> vec2f {
   let fk = 1.0 - smoothstep(0.012, 0.045, foot);
+  if (fk <= 0.0) { return vec2f(density * 0.12, 0.0); }
   let cw = 0.14;
   let cell = floor(p.x / cw);
   let h = hash21(vec2f(cell, 3.7));
@@ -1272,9 +1332,9 @@ fn facadeRain(s: ptr<function, Surf>, uv: vec2f, n: vec3f, T: vec3f, washAmt: f3
   // The sheet's surface is rippled into vertical runs (5-25 cm), each tilted
   // its own way: the glossy film catches the sky in bright and dark ribbons
   // that read as running water from across the street.
-  {
+  let rk = (1.0 - smoothstep(0.08, 0.3, foot)) * wet * clamp(sheet + select(0.35, 0.0, drip), 0.0, 1.0);
+  if (rk > 0.0) {
     let rx = uv.x * 9.0 + 1.5 * valueNoise(vec2f(uv.x * 3.0, uv.y * 0.6));
-    let rk = (1.0 - smoothstep(0.08, 0.3, foot)) * wet * clamp(sheet + select(0.35, 0.0, drip), 0.0, 1.0);
     // The film also bulges and thins down each run: tilting up and down
     // swings its reflection between the bright sky and the dark street, the
     // contrast that actually reads as a wet wall (sideways tilts only see
@@ -1343,9 +1403,9 @@ fn vinyl(p: vec2f, size: vec2f, lxg: f32, bayIdx: f32, floorIdx: f32, bay: f32, 
       let cell = word * 8u + u32(k);
       let px = (vec2f(f32(cell % 16u), f32(cell / 16u)) + vec2f(1.0 - q.x, 1.0 - q.y)) * 128.0;
       let want = atlasLod(dUvX * 128.0 / gs, dUvY * 128.0 / gs);
-      let a = atlasGrad(px, dUvX * 128.0 / gs, dUvY * 128.0 / gs, want).a;
       // Past mip 3 the cell would bleed: fall back to the mean ink.
-      cov = mix(a, 0.3, smoothstep(2.5, 3.5, want));
+      cov = 0.3;
+      if (want < 3.5) { cov = mix(atlasGrad(px, dUvX * 128.0 / gs, dUvY * 128.0 / gs, want).a, 0.3, smoothstep(2.5, 3.5, want)); }
     }
   }
   // Phone number or notice strip under the characters, centred on the run.
@@ -1362,11 +1422,52 @@ fn vinyl(p: vec2f, size: vec2f, lxg: f32, bayIdx: f32, floorIdx: f32, bay: f32, 
       let gxs = vec2f(dUvX.x * 512.0 / sw, dUvX.y * 64.0 / sh);
       let gys = vec2f(dUvY.x * 512.0 / sw, dUvY.y * 64.0 / sh);
       let want = atlasLod(gxs, gys);
-      let a = atlasGrad(px, gxs, gys, want).a;
-      cov = max(cov, mix(a, 0.25, smoothstep(2.5, 3.5, want)));
+      var a = 0.25;
+      if (want < 3.5) { a = mix(atlasGrad(px, gxs, gys, want).a, 0.25, smoothstep(2.5, 3.5, want)); }
+      cov = max(cov, a);
     }
   }
   return vec4f(col, cov);
+}
+
+// vinyl() averaged over one opening (facadeGridFar, a window a few pixels
+// across): the same runs, words and colours, as the glyph cells' and the
+// number strip's mean ink spread over the glass.
+fn vinylMean(size: vec2f, bayIdx: f32, floorIdx: f32, bay: f32, aux: u32, kind: u32) -> vec4f {
+  let fh = hashu(aux ^ (u32(floorIdx + 500.0) * 0x2c1b3c6du));
+  let runLen = 2.0 + f32(fh % 3u);
+  let run = floor(bayIdx / runLen);
+  let runStart = run * runLen;
+  let rs = hashu(fh ^ (u32(run + 1000.0) * 0x9e3779b1u));
+  let pLetter = select(0.25, 0.68, kind == 2u || kind == 3u);
+  if (hashuf(rs) >= pLetter) { return vec4f(0.0); }
+  let nSlot = select(1.0, 2.0, size.x > 1.2);
+  let slots = runLen * nSlot;
+  var word = (rs >> 4u) % VINYL_WORDS;
+  if (f32(VINYL_LEN[word]) > slots) { word = (rs >> 12u) % VINYL_WORDS; }
+  if (f32(VINYL_LEN[word]) > slots) { word = 1u; }
+  let len = f32(VINYL_LEN[word]);
+  let ch = hashuf(rs ^ 0xc01u);
+  var col = vec3f(0.85, 0.85, 0.82);
+  if (ch > 0.45) { col = vec3f(0.9, 0.72, 0.08); }
+  if (ch > 0.65) { col = vec3f(0.75, 0.08, 0.06); }
+  if (ch > 0.85) { col = select(vec3f(0.06, 0.25, 0.7), vec3f(0.08, 0.45, 0.2), fract(ch * 17.0) < 0.5); }
+  let slotW = size.x / nSlot;
+  let gs = min(min(slotW * 0.82, size.y * 0.5), 1.0);
+  // Glyph slots of this bay that hold a character (k in [0, len)).
+  let k0 = slots - 1.0 - (bayIdx - runStart) * nSlot - floor((slots - len) * 0.5);
+  let kHi = min(k0, len - 1.0);
+  let kLo = max(k0 - nSlot + 1.0, 0.0);
+  let nG = max(kHi - kLo + 1.0, 0.0);
+  var cov = 0.3 * nG * gs * gs / (size.x * size.y);
+  if (hashuf(rs ^ 0x51u) < 0.6) {
+    let runW = runLen * bay;
+    let sw = min(runW * 0.7, 2.6);
+    let sh = sw / 8.0;
+    let sy = size.y * 0.6 - gs * 0.5 - 0.05 - sh * 0.5;
+    if (sy - sh * 0.5 > 0.04) { cov += 0.25 * min(sw / runW * bay / size.x, 1.0) * sh / size.y; }
+  }
+  return vec4f(col, clamp(cov, 0.0, 1.0));
 }
 
 // Rear walls: render painted in the building's own colour (cream, pale
@@ -1380,7 +1481,10 @@ fn paintedRender(s: ptr<function, Surf>, uv: vec2f, style: u32, foot: f32) {
   // blow out to white in a low golden-hour sun.)
   let paint = array<vec3f, 5>(vec3f(0.74, 0.69, 0.57), vec3f(0.6, 0.67, 0.58), vec3f(0.6, 0.65, 0.7), vec3f(0.78, 0.77, 0.73), vec3f(0.74, 0.6, 0.52))[h % 5u] * 0.7;
   let base = (*s).albedo / 0.47;
-  let fl = valueNoise(uv * vec2f(1.6, 2.2) + f32(h & 255u)) * 0.7 + valueNoise(uv * 6.0) * 0.3;
+  // (The 0.17 m flake noise is lost in the footprint-wide edge past 0.3 m.)
+  var fine = 0.5;
+  if (foot < 0.3) { fine = mix(valueNoise(uv * 6.0), 0.5, smoothstep(0.15, 0.3, foot)); }
+  let fl = valueNoise(uv * vec2f(1.6, 2.2) + f32(h & 255u)) * 0.7 + fine * 0.3;
   let rise = 0.5 * (1.0 - smoothstep(0.4, 2.6, uv.y)) - 0.17;
   let edge = 0.03 + foot * 0.6;
   let bare = smoothstep(0.66 - edge, 0.66 + edge, fl + rise);
@@ -1809,6 +1913,11 @@ fn tileBond(uv: vec2f, aux: u32) -> TileBond {
   b.mortar = mh + mv - mh * mv;
   let tileF = max(fw.x, fw.y);
   b.kTile = 1.0 - smoothstep(0.5, 1.2, tileF);
+  // (Past ~1.2 px per tile only the mean joint fraction is left.)
+  b.tone = vec3f(1.0);
+  b.gloss = 0.3;
+  b.tilt = vec2f(0.0);
+  if (b.kTile <= 0.0) { return b; }
   let h = hash22(vec2f(col, row) + f32(aux & 255u) * 0.13);
   let h3 = hash21(vec2f(col, row) * 1.37 + 5.0 + f32(aux & 255u));
   // Kiln tone: most tiles within a few percent, a few flashed darker or
@@ -1827,6 +1936,224 @@ fn tileBond(uv: vec2f, aux: u32) -> TileBond {
   return b;
 }
 
+// Pixel footprint (m) over which facade windows cross from the traced room
+// to its mean (interiorMean).
+const FACADE_FAR0 = 0.25;
+const FACADE_FAR1 = 0.4;
+// Beyond these, the window grid itself is drawn as box-filtered coverage
+// (facadeGridFar) instead of per-opening geometry; pixels between them pick
+// one or the other by a per-frame dither that TAA averages.
+const FACADE_GRID0 = 0.5;
+const FACADE_GRID1 = 0.8;
+
+// Fraction of the pixel footprint [x - w/2, x + w/2] inside [a, b], as a
+// fraction of the part of the footprint inside [0, size]: coverage of a
+// feature within an opening, right whether the opening spans many pixels
+// or a fraction of one.
+fn condCov(x: f32, a: f32, b: f32, size: f32, w: f32) -> f32 {
+  let lo = max(x - w * 0.5, 0.0);
+  let hi = min(x + w * 0.5, size);
+  let inF = max(min(hi, b) - max(lo, a), 0.0);
+  return select(0.0, inF / max(hi - lo, 1e-5), hi > lo);
+}
+
+// windowCover over a pixel footprint fw (m, x and y) at p: the same blind,
+// curtain or lace in the same place, box-filtered at its mean tone.
+fn windowCoverFar(inside: vec3f, p: vec2f, size: vec2f, fw: vec2f, seed: u32, office: bool, roomL: vec3f) -> vec3f {
+  let h = hashuf(seed ^ 0xabcu);
+  let h2 = hashuf(seed ^ 0xdefu);
+  let h3 = hashuf(seed ^ 0x919u);
+  let amb = vec3f(luminance(frame.skyAmbient.rgb)) * vec3f(1.0, 0.96, 0.9) * 0.42;
+  let back = roomL * 1.3;
+  let drop = size.y * mix(0.15, 1.0, h2);
+  let pc = clamp(p, vec2f(0.0), size);
+  if (office || (h > 0.55 && h < 0.7)) {
+    let venetian = h < select(0.63, 0.45, office);
+    let vertical = office && h >= 0.45 && h < 0.56;
+    if (venetian) {
+      let c = condCov(pc.y, size.y - drop, size.y, size.y, fw.y);
+      let col = select(vec3f(0.8, 0.8, 0.78), vec3f(0.75, 0.68, 0.55), hashuf(seed ^ 0x3a3u) < 0.3);
+      let slat = 1.0 - mix(0.06, 0.55, h3);
+      return mix(inside, mix(inside, col * (amb + back * 0.5) * 0.875, slat), c);
+    }
+    if (vertical) {
+      let c = condCov(pc.x, 0.0, size.x * mix(0.3, 1.0, h2), size.x, fw.x);
+      return mix(inside, vec3f(0.8, 0.79, 0.74) * (amb + back * 0.32) * 0.85, 0.88 * c);
+    }
+    if (!office) {
+      let c = condCov(pc.y, size.y - drop, size.y, size.y, fw.y);
+      let col = mix(vec3f(0.85, 0.8, 0.68), vec3f(0.55, 0.6, 0.62), h3);
+      return mix(inside, col * (amb + back * 0.5), c);
+    }
+    return inside;
+  }
+  if (h < 0.3) {
+    return inside * 0.3 + vec3f(0.85, 0.84, 0.8) * (amb + back * 0.45) * 0.85;
+  }
+  if (h < 0.55) {
+    let wl = size.x * mix(0.08, 0.5, h2);
+    let wr = size.x * mix(0.08, 0.5, h3);
+    let c = condCov(pc.x, 0.0, wl, size.x, fw.x) + condCov(pc.x, size.x - wr, size.x, size.x, fw.x);
+    let col = array<vec3f, 4>(vec3f(0.75, 0.66, 0.5), vec3f(0.42, 0.5, 0.38), vec3f(0.25, 0.3, 0.45), vec3f(0.5, 0.22, 0.2))[hashu(seed ^ 0x5c5u) % 4u];
+    return mix(inside, col * (amb + back * 0.3) * 0.9, min(c, 1.0));
+  }
+  return inside;
+}
+// The window grid of facadeMat at a distance (pixel footprint past
+// FACADE_GRID0): each opening's glass, reveal and frame become box-filtered
+// coverage over the pixel (periodic over bays and floors, so it averages
+// right even when a pixel spans several windows), filled with the same
+// per-window choices as up close: the room's mean light (interiorMean,
+// windowCoverFar), solar film, pane tint and tilt, frosted rear panes, the
+// stair column's glass block, tenant vinyl at its mean ink. `s` is the
+// finished wall.
+fn facadeGridFar(sIn: Surf, st: FacadeStyle, fz: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f,
+                 sl: vec3f, fin: vec4f, kind: u32, style: u32, aux: u32) -> Surf {
+  var s = sIn;
+  let fu = max(abs(dUvX) + abs(dUvY), vec2f(1e-4));
+  let floorIdx = floor(uv.y / st.floorH);
+  let bayIdx = floor(uv.x / st.bay);
+  let lx = uv.x - bayIdx * st.bay;
+  let ly = uv.y - floorIdx * st.floorH;
+  let cellSeed = hashu(aux ^ hashu((u32(bayIdx + 1000.0) * 73856093u) ^ (u32(floorIdx + 1000.0) * 19349663u)));
+  let wet = frame.weather.z;
+  let office = kind <= 2u && !(kind == 2u && hashuf(style) < 0.4) && fz.role != 3u;
+  let section = hashu(aux ^ (u32(floorIdx + 500.0) * 7919u) ^ (u32(floor(uv.x / 6.0) + 500.0) * 104729u));
+  let core = fz.zone == FZ_CORE;
+  let stairBay = core || ((kind == 2u || kind == 3u || kind == 5u) && floorIdx >= 1.0 && !st.strip && st.family != 3u
+    && fz.role != 2u && ((u32(bayIdx + 1000.0) + (aux >> 4u)) % 11u) == 0u);
+  var wx0 = (1.0 - st.winW) * 0.5 * st.bay;
+  var wx1 = st.bay - wx0;
+  var sill = (1.0 - st.winH) * st.floorH * 0.55;
+  var wy1 = sill + st.winH * st.floorH;
+  var D = select(REVEAL_PUNCHED, 0.45, st.family == 2u);
+  let frosted = !stairBay && fz.role == 3u && hashuf(cellSeed ^ 0xf05u) < 0.35;
+  if (frosted) { D = REVEAL_FROSTED; }
+  if (stairBay) {
+    let hw = min(0.45, st.bay * 0.3);
+    wx0 = st.bay * 0.5 - hw;
+    wx1 = st.bay * 0.5 + hw;
+    sill = st.floorH * 0.3;
+    wy1 = sill + 1.2;
+    D = REVEAL_GLASSBLOCK;
+  }
+  let size = vec2f(wx1 - wx0, wy1 - sill);
+  // Opening coverage (periodic), and the part of it where the view ray
+  // reaches the glass past the reveal.
+  let cx = jointCov(uv.x / st.bay - (wx0 + wx1) * 0.5 / st.bay, fu.x / st.bay, size.x / st.bay);
+  let cy = jointCov((uv.y - (sill + wy1) * 0.5) / st.floorH, fu.y / st.floorH, size.y / st.floorH);
+  let cw = cx * cy;
+  if (cw <= 0.0) { return s; }
+  let ndv = max(-dot(V, n), 0.05);
+  let vT = vec2f(dot(V, T), V.y) / ndv;
+  let gf = clamp(1.0 - abs(vT) * D / size, vec2f(0.0), vec2f(1.0));
+  let cg = cw * gf.x * gf.y;
+  let cr = cw - cg;
+  let sunLit = sl.z > 0.0;
+  // Glass: sun through the opening (lintel and jamb shadows), edge AO.
+  let gsv = select(1.0, clamp(1.0 - abs(sl.x) * D / size.x, 0.0, 1.0) * clamp(1.0 - abs(sl.y) * D / size.y, 0.0, 1.0), sunLit);
+  let p = vec2f(lx - wx0, ly - sill);
+  var gA: vec3f;
+  var gE = vec3f(0.0);
+  var gR: f32;
+  var gN = n;
+  var gCls = CLASS_GLASS;
+  var roomL = vec3f(0.0);
+  if (stairBay && !core) {
+    // Glass block, joints at their mean.
+    gA = mix(vec3f(0.36, 0.42, 0.42), vec3f(0.6, 0.6, 0.58), 0.15);
+    gR = 0.2;
+    gE = vec3f(0.7, 0.9, 1.0) * mix(0.02, 0.2, gloomLight()) * 0.83;
+    gCls = CLASS_DEFAULT;
+  } else if (frosted) {
+    let gl = gloomLight();
+    let litF = hashuf(cellSeed ^ 0xf06u) < mix(0.03, 0.5, gl);
+    gA = vec3f(0.5, 0.52, 0.51);
+    gR = 0.4;
+    gE = select(vec3f(0.0), vec3f(1.0, 0.62, 0.32) * mix(0.08, 0.2, hashuf(cellSeed ^ 0xf07u)) * gl, litF);
+    gCls = CLASS_DEFAULT;
+  } else {
+    roomL = roomLight(cellSeed, office && !core, section);
+    let depth = select(mix(3.5, 7.0, hashuf(cellSeed)), mix(2.5, 4.5, hashuf(cellSeed)), core);
+    var inside = interiorMean(size, depth, n, T, V, cellSeed, office && !core, roomL);
+    inside = windowCoverFar(inside, p, size, fu, cellSeed, office && !core, roomL);
+    let paneSeed = hash22(vec2f(bayIdx, floorIdx) + f32(aux & 1023u) + 0.25);
+    let wob = (paneSeed - 0.5) * vec2f(0.12, 0.16);
+    gN = normalize(n + T * wob.x + vec3f(0.0, wob.y, 0.0));
+    var gl = vec3f(0.035, 0.045, 0.045);
+    var see = 1.0;
+    var gr = mix(0.025, 0.07, fract(paneSeed.y * 7.0));
+    if (!core) {
+      if (office && hashuf(hashu(style * 2246822519u + 77u)) < 0.3) {
+        gl = array<vec3f, 3>(vec3f(0.22, 0.23, 0.24), vec3f(0.22, 0.17, 0.12), vec3f(0.12, 0.18, 0.26))[hashu(style) % 3u];
+        see = mix(0.3, 0.75, nightLight());
+      }
+      gl *= mix(0.65, 1.7, paneSeed.y) * mix(vec3f(1.0), vec3f(0.85, 1.0, 1.2), fract(paneSeed.x * 7.0));
+      if (fract(paneSeed.x * 13.0) < 0.2) { gr = max(gr, mix(0.1, 0.18, paneSeed.y)); }
+      // Edge grime at its mean over the pane.
+      gl = mix(gl, vec3f(0.11, 0.1, 0.09), 0.12);
+      gr = mix(gr, 0.3, 0.15);
+    }
+    // Rain trails at their mean coverage.
+    let rivulet = 0.09 * wet;
+    let fres = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
+    gA = gl + vec3f(0.06) * wet;
+    gR = mix(gr, 0.12, rivulet * 0.5);
+    gE = inside * (1.0 - fres) * see * (1.0 - 0.2 * wet) * (1.0 - 0.45 * rivulet)
+      + (frame.skyAmbient.rgb * 0.35 + frame.cityGlow.rgb * 2.0) * rivulet;
+    if (!core && fz.zone == FZ_BODY && fz.role <= 1u && (kind == 0u || kind == 2u || kind == 3u)) {
+      let vn = vinylMean(size, bayIdx, floorIdx, st.bay, aux, kind);
+      gA = mix(gA, vn.rgb, vn.a);
+      gR = mix(gR, 0.45, vn.a);
+      gE = mix(gE, vn.rgb * luminance(roomL) * 2.4, vn.a);
+    }
+  }
+  // Sash and mullions: their share of the opening, in the frame finish.
+  var frameF = 1.0 - max(size.x - 0.09, 0.0) * max(size.y - 0.09, 0.0) / (size.x * size.y);
+  if (st.strip && !stairBay) { frameF += 0.096 / 1.6; }
+  if (!st.strip && !stairBay && !frosted && size.x > 1.2) { frameF += 0.044 / size.x; }
+  frameF = clamp(frameF, 0.0, 1.0);
+  // Each pixel shows wall, reveal, frame or glass with probability equal
+  // to its share of the footprint (a per-frame dither): TAA integrates the
+  // same mix that the separate openings give up close, where shading is
+  // not linear in the inputs (glass reflections, metal frames).
+  let u = pixelDither(37.0);
+  if (u >= cw) { return s; }
+  s.normal = n;
+  s.metal = 0.0;
+  if (u >= cg) {
+    // Reveal faces: wall-toned, in contact shade, lit by the room.
+    s.albedo = wall * 0.8;
+    s.rough = 0.8;
+    s.emissive = roomL * wall * 0.2;
+    // (Bounce from the sunlit faces opposite, about half the faces' worth.)
+    if (sunLit && frame.sunDir.w > 0.0) { s.emissive += s.albedo * frame.sunColor.rgb * clamp(sl.z, 0.0, 1.0) * 0.2; }
+    s.ao = 0.65;
+    s.sunVis = select(1.0, 0.5, sunLit);
+    s.cls = CLASS_DEFAULT;
+    return s;
+  }
+  s.ao = 0.85;
+  s.sunVis = gsv;
+  if (u >= cg * (1.0 - frameF)) {
+    s.albedo = fin.rgb;
+    s.metal = fin.w;
+    s.rough = mix(frameRough(fin), 0.12, wet);
+    s.emissive = vec3f(0.0);
+    s.cls = CLASS_DEFAULT;
+    return s;
+  }
+  s.albedo = gA;
+  s.rough = gR;
+  s.emissive = gE;
+  s.normal = gN;
+  s.cls = gCls;
+  return s;
+}
+
+// ?off=facfar (render/ablation.ts): the far facade path at every distance,
+// to compare its means against the near path.
+fn facadeFarForced() -> bool { return (frame.off.x & (1u << 24u)) != 0u; }
 fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
   rainSrc = -1.0;
@@ -1863,8 +2190,13 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let foot = max(length(dWorldX), length(dWorldY));
   let fFine = 1.0 - smoothstep(0.03, 0.1, foot);
   let fMid = 1.0 - smoothstep(0.25, 0.7, foot);
+  let farK = select(smoothstep(FACADE_FAR0, FACADE_FAR1, foot), 1.0, facadeFarForced());
+  // Metre-scale weathering noise is replaced by its mean past ~1-2 m/pixel.
+  let fVFar = smoothstep(1.0, 2.0, foot);
   let wet = frame.weather.z;
-  let streak = mix(0.125, valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25, fFine);
+  // (Terms weighted by fFine / fMid are only evaluated while they show.)
+  var streak = 0.125;
+  if (fFine > 0.0) { streak = mix(0.125, valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25, fFine); }
   // (The grout cavity darkens ambient light through s.ao below, not the
   // albedo: tile joints then read in shade, where the sun's N.L can't.)
   var wall = st.wall * (1.0 - streak * 0.5) * mix(1.0, wd.b * 2.0, select(0.6, 1.0, tiled)) * select(mix(0.6, 1.0, wd.a), 1.0, tiled);
@@ -1899,31 +2231,45 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let inX = step(wx0e - 0.1, lx) * step(lx, st.bay - wx0e + 0.1);
     let endD = min(abs(lx - wx0e), abs(lx - (st.bay - wx0e)));
     let endLen = 2.2 * mix(0.6, 1.0, hashuf(cellSeed ^ 0x3131u));
-    let dripCol = valueNoise(vec2f(uv.x * 9.0, floorIdx * 3.1));
-    let dripLen = mix(0.4, 1.6, valueNoise(vec2f(uv.x * 3.1, floorIdx * 1.7 + 4.0)));
-    let near = max(smoothstep(0.14, 0.03, endD) * (0.75 + 0.25 * valueNoise(vec2f(uv.x * 23.0, uv.y * 0.4))) * smoothstep(endLen, 0.0, below),
-      max(smoothstep(0.45, 0.75, dripCol) * smoothstep(dripLen, 0.0, below) * 0.8, 0.45 * smoothstep(0.5, 0.0, below)) * inX);
     let far = inX * smoothstep(endLen, 0.0, below) * mix(0.55, 0.75, smoothstep(0.14, 0.03, endD));
     if (below > 0.0 && !fz.solid) {
-      washAmt = max(washAmt, mix(far, near, fFine));
+      var wa = far;
+      if (fFine > 0.0) {
+        let dripCol = valueNoise(vec2f(uv.x * 9.0, floorIdx * 3.1));
+        let dripLen = mix(0.4, 1.6, valueNoise(vec2f(uv.x * 3.1, floorIdx * 1.7 + 4.0)));
+        let near = max(smoothstep(0.14, 0.03, endD) * (0.75 + 0.25 * valueNoise(vec2f(uv.x * 23.0, uv.y * 0.4))) * smoothstep(endLen, 0.0, below),
+          max(smoothstep(0.45, 0.75, dripCol) * smoothstep(dripLen, 0.0, below) * 0.8, 0.45 * smoothstep(0.5, 0.0, below)) * inX);
+        wa = mix(far, near, fFine);
+      }
+      washAmt = max(washAmt, wa);
       underSill = inX * smoothstep(1.5, 0.0, below);
     }
     // Slab and ledge wash: 0.7-1.4 m wide streaks of varying length below
     // every floor line (deep in the top part of the floor below it).
-    let col = valueNoise(vec2f(uv.x * 0.9, floorIdx * 5.3 + 7.0));
-    let len = mix(0.6, 2.6, valueNoise(vec2f(uv.x * 0.6 + 3.0, floorIdx * 2.7)));
-    washAmt = max(washAmt, smoothstep(0.42, 0.8, col) * smoothstep(len, 0.0, slabBelow) * 0.8);
+    // (Once the 1-2 m streak pattern is under a pixel or two, its mean:
+    // the smoothstep of the noise averages 0.33, the length 1.6 m.)
+    var slabW = 0.33 * smoothstep(1.6, 0.0, slabBelow) * 0.8;
+    if (fVFar < 1.0) {
+      let col = valueNoise(vec2f(uv.x * 0.9, floorIdx * 5.3 + 7.0));
+      let len = mix(0.6, 2.6, valueNoise(vec2f(uv.x * 0.6 + 3.0, floorIdx * 2.7)));
+      slabW = mix(smoothstep(0.42, 0.8, col) * smoothstep(len, 0.0, slabBelow) * 0.8, slabW, fVFar);
+    }
+    washAmt = max(washAmt, slabW);
     // Soot fringe under every ledge: a dark band right under the drip edge
     // that frays into drips of every length (0.2-1.8 m), so each floor line
     // carries a ragged shadow-like stain even in flat light.
     {
-      let dn = valueNoise(vec2f(uv.x * 2.7, floorIdx * 3.7 + 11.0));
-      let dLen = mix(0.2, 1.8, dn * dn) * mix(0.7, 1.0, valueNoise(vec2f(uv.x * 11.0, floorIdx)));
-      let fringe = max(smoothstep(dLen, 0.0, slabBelow) * 0.75, smoothstep(0.35, 0.0, slabBelow) * 0.85);
-      washAmt = max(washAmt, mix(smoothstep(1.1, 0.0, slabBelow) * 0.55, fringe, fMid) );
+      var fr = smoothstep(1.1, 0.0, slabBelow) * 0.55;
+      if (fMid > 0.0) {
+        let dn = valueNoise(vec2f(uv.x * 2.7, floorIdx * 3.7 + 11.0));
+        let dLen = mix(0.2, 1.8, dn * dn) * mix(0.7, 1.0, valueNoise(vec2f(uv.x * 11.0, floorIdx)));
+        let fringe = max(smoothstep(dLen, 0.0, slabBelow) * 0.75, smoothstep(0.35, 0.0, slabBelow) * 0.85);
+        fr = mix(fr, fringe, fMid);
+      }
+      washAmt = max(washAmt, fr);
     }
     // Fine drips inside the wash fade out at a distance.
-    washAmt *= mix(1.0, 0.75 + 0.5 * valueNoise(vec2f(uv.x * 14.0, floorIdx * 7.7)), fFine);
+    if (fFine > 0.0) { washAmt *= mix(1.0, 0.75 + 0.5 * valueNoise(vec2f(uv.x * 14.0, floorIdx * 7.7)), fFine); }
     // Wash is grime, not shadow: a brownish grey.
     wall = mix(wall, wall * vec3f(0.42, 0.39, 0.35), clamp(dirtAmt * washAmt, 0.0, 0.85));
     // Render is trowelled in patches; tile already has its kiln batches.
@@ -1938,7 +2284,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       wall *= mix(1.0, mix(0.6, 1.0, wd.a), edgeDirt * mix(0.5, 1.0, fFine));
       // Efflorescence: white salt bloom in the joints below each slab line,
       // in patches.
-      let eff = smoothstep(0.55, 0.8, valueNoise(uv * vec2f(0.8, 1.5) + 13.0)) * smoothstep(1.1, 0.1, slabBelow);
+      var effN = 0.24;
+      if (fVFar < 1.0) { effN = mix(smoothstep(0.55, 0.8, valueNoise(uv * vec2f(0.8, 1.5) + 13.0)), effN, fVFar); }
+      let eff = effN * smoothstep(1.1, 0.1, slabBelow);
       wall = mix(wall, vec3f(0.78, 0.77, 0.72), eff * mix(0.09, 0.28 * (1.0 - wd.a) + 0.05, fFine) * mix(0.5, 1.0, fMid));
     }
     // Rust bleed: below AC brackets on the rear (about where gen-tile hangs
@@ -2058,6 +2406,11 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   if (fz.zone == FZ_BASE) { s.albedo *= groundGrime(uv, foot); }
   if (fz.zone != FZ_LOBBY) { facadeRain(&s, uv, n, T, washAmt, underSill, select(0.6, 0.3, tiled)); }
   if (zoneDone) { return s; }
+  // Far away, the window grid as coverage (not the shopfronts or the base).
+  let farB = select(smoothstep(FACADE_GRID0, FACADE_GRID1, foot), 1.0, facadeFarForced());
+  if (farB > 0.0 && !(shop && abs(floorIdx) < 0.5) && !(fz.zone == FZ_BASE && fz.role <= 1u) && farB > pixelDither(0.0)) {
+    return facadeGridFar(s, st, fz, uv, wall, n, T, V, sl, fin, kind, style, aux);
+  }
 
   // Ground floor shopfront.
   if (shop && abs(floorIdx) < 0.5) {
@@ -2242,7 +2595,10 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         let rs = vec2f(2.0 * hw, 1.2);
         let ps = hash22(vec2f(bayIdx, floorIdx) + f32(aux & 1023u) + 0.7);
         s.normal = normalize(n + T * (ps.x - 0.5) * 0.12 + vec3f(0.0, (ps.y - 0.5) * 0.16, 0.0));
-        var inside = interior(pq, rs, mix(2.5, 4.5, hashuf(cellSeed)), n, T, V, cellSeed, false, section);
+        let depth = mix(2.5, 4.5, hashuf(cellSeed));
+        var inside = vec3f(0.0);
+        if (farK < 1.0) { inside = interior(pq, rs, depth, n, T, V, cellSeed, false, section); }
+        if (farK > 0.0) { inside = mix(inside, interiorMean(rs, depth, n, T, V, cellSeed, false, coreL), farK); }
         inside = windowCover(inside, pq, rs, cellSeed, false, coreL, foot);
         let fresC = 0.04 + 0.96 * pow(1.0 - abs(dot(V, n)), 5.0);
         s.albedo = vec3f(0.035, 0.045, 0.045) * mix(0.7, 1.5, ps.y);
@@ -2322,13 +2678,17 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     // Float-glass roller wave: a slow, pane-specific ripple that warps the
     // reflected sky and street differently in every pane (resolves at any
     // distance where the pane spans a few pixels).
-    let pw = vec2f(lxg, lyg) * vec2f(1.3, 2.1) + paneSeed * 37.0;
-    let warp = vec2f(valueNoise(pw), valueNoise(pw.yx + 11.0)) - 0.5;
+    // (Under a few pixels per pane the ripple averages out.)
+    var warp = vec2f(0.0);
+    if (farK < 1.0) {
+      let pw = vec2f(lxg, lyg) * vec2f(1.3, 2.1) + paneSeed * 37.0;
+      warp = (vec2f(valueNoise(pw), valueNoise(pw.yx + 11.0)) - 0.5) * (1.0 - farK);
+    }
     s.normal = normalize(n + T * (wob.x + pc.x * bow + warp.x * 0.02) + vec3f(0.0, wob.y + pc.y * bow + warp.y * 0.03, 0.0));
     // Clean and smudged panes; smudges only where they resolve.
     var rivulet = 0.0;
-    var glassRough = mix(0.025, 0.07, fract(paneSeed.y * 7.0))
-      + 0.04 * smoothstep(0.6, 0.9, valueNoise(vec2f(lxg, lyg) * 3.0 + paneSeed * 9.0)) * (1.0 - smoothstep(0.02, 0.08, foot));
+    var glassRough = mix(0.025, 0.07, fract(paneSeed.y * 7.0));
+    if (foot < 0.08) { glassRough += 0.04 * smoothstep(0.6, 0.9, valueNoise(vec2f(lxg, lyg) * 3.0 + paneSeed * 9.0)) * (1.0 - smoothstep(0.02, 0.08, foot)); }
     if (wet > 0.01) {
       // Rain on the glass: beads up close, and rivulets running down it
       // (heaviest under the head of the frame).
@@ -2357,7 +2717,12 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       let unitK = select(mix(0.3, 1.0, hashuf(unitH)), 0.06, hashuf(unitH ^ 0x5a5u) < 0.2);
       inside = shopInterior(vec2f(lxg - wx0, lyg - sill), roomSize, n, T, V, cellSeed, foot) * unitK;
     } else {
-      inside = interior(vec2f(lxg - wx0, lyg - sill), roomSize, mix(3.5, 7.0, hashuf(cellSeed)), n, T, V, cellSeed, office, section);
+      // Traced room up close, its mean beyond (windowCover and
+      // windowClutter are affine in the room, so one call covers both).
+      let depth = mix(3.5, 7.0, hashuf(cellSeed));
+      inside = vec3f(0.0);
+      if (farK < 1.0) { inside = interior(vec2f(lxg - wx0, lyg - sill), roomSize, depth, n, T, V, cellSeed, office, section); }
+      if (farK > 0.0) { inside = mix(inside, interiorMean(roomSize, depth, n, T, V, cellSeed, office, roomL), farK); }
       inside = windowCover(inside, vec2f(lxg - wx0, lyg - sill), roomSize, cellSeed, office, roomL, foot);
       if (!office) { inside = windowClutter(inside, vec2f(lxg - wx0, lyg - sill), roomSize, cellSeed, roomL, foot); }
     }
@@ -2379,7 +2744,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     // Grime collects in the glass's corners and along the bottom bead
     // (wiped clean in the middle): duller, greyer edges on every pane.
     let edgeD = min(min(fx, fy * 1.6), (lyg - sill) * 0.6) - 0.045;
-    let grime = (1.0 - smoothstep(0.0, mix(0.08, 0.2, paneSeed.x), edgeD)) * mix(0.35, 0.9, fract(paneSeed.y * 5.0)) * (0.6 + 0.4 * valueNoise(vec2f(lxg, lyg) * 9.0));
+    var gn = 0.5;
+    if (farK < 1.0) { gn = mix(valueNoise(vec2f(lxg, lyg) * 9.0), 0.5, farK); }
+    let grime = (1.0 - smoothstep(0.0, mix(0.08, 0.2, paneSeed.x), edgeD)) * mix(0.35, 0.9, fract(paneSeed.y * 5.0)) * (0.6 + 0.4 * gn);
     gl = mix(gl, vec3f(0.11, 0.1, 0.09), grime * 0.5);
     glassRough = mix(glassRough, 0.3, grime * 0.6);
     s.albedo = mix(gl + vec3f(0.06) * wet, sash, barCov);
@@ -2392,9 +2759,10 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     s.emissive += (frame.skyAmbient.rgb * 0.35 + frame.cityGlow.rgb * 2.0) * rivulet * (1.0 - barCov);
     s.ao = oh.glassAo;
     s.cls = select(CLASS_GLASS, CLASS_DEFAULT, barCov > 0.5);
-    if (!baseShop) {
+    // (Stickers are 0.1-0.3 m: gone at the far footprint.)
+    if (!baseShop && farK < 1.0) {
       let sk = glassSticker(vec2f(lxg - wx0, lyg - sill), roomSize, cellSeed, foot);
-      let c = sk.a * (1.0 - barCov);
+      let c = sk.a * (1.0 - barCov) * (1.0 - farK);
       if (c > 0.0) {
         s.albedo = mix(s.albedo, sk.rgb, c);
         s.rough = mix(s.rough, 0.5, c);
@@ -7613,7 +7981,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s = facadeMat(world, n, uv, param, aux);
       // Rain soaks the wall: porous render and granite darken more than
       // glazed tile; metal sashes and glass only get the water film.
-      if (s.cls != CLASS_GLASS) {
+      if (s.cls != CLASS_GLASS && frame.weather.z > 0.001) {
         let fam = facadeStyle(param & 0xffffu, (param >> 16u) & 7u, ((param >> 20u) & 1u) == 1u).family;
         let porous = select(select(0.8, 0.35, fam <= 1u), 0.0, s.metal > 0.5 || fam == 3u);
         // (facadeRain already set the wall's wet gloss and streaks.)

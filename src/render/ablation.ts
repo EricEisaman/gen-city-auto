@@ -29,6 +29,7 @@ export const OFF_BITS = {
   traffic: 1 << 21, // traffic not drawn
   c3: 1 << 22, // farthest shadow cascade not rendered
   c2: 1 << 23, // third shadow cascade not rendered
+  facfar: 1 << 24, // city-materials: far facade path at every distance (not a saving)
 } as const;
 
 export type OffName = keyof typeof OFF_BITS;
