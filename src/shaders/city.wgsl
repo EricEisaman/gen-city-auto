@@ -162,6 +162,20 @@ fn leafCutout(i: VOut) {
   leafCutout(i);
   // Widened thin tubes: hashed coverage, gone below 8 % of a pixel.
   if (i.cov >= 0.0 && i.cov < 1.0 && (i.cov < 0.08 || i.cov <= leafDither(i.pos.xy))) { discard; }
+  return shadeCity(i, ff);
+}
+
+// The same without any discard (opaque clusters: the GPU's hidden-surface
+// removal stays on for a pipeline that never discards).
+@fragment fn fsOpaque(i: VOut, @builtin(front_facing) ff: bool) -> GOut {
+  dWorldX = dpdx(i.world);
+  dWorldY = dpdy(i.world);
+  dUvX = dpdx(i.uv);
+  dUvY = dpdy(i.uv);
+  return shadeCity(i, ff);
+}
+
+fn shadeCity(i: VOut, ff: bool) -> GOut {
   var n = normalize(i.normal);
   if (!ff && (i.mat & 0xffu) != 25u) { n = -n; }
   // A widened (sub-pixel) overhead-line wire: each pixel used to sample one

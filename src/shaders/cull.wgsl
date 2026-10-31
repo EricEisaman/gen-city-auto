@@ -1,7 +1,7 @@
 // GPU cluster culling: frustum, per-tile LOD selection, distance-based detail
 // culling, and Hi-Z occlusion against the previous frame's depth pyramid.
-// Visible clusters are appended to a list and the indirect draw's instance
-// count is incremented.
+// Visible clusters are appended to a list (opaque or alpha-tested) and that
+// list's indirect draw instance count is incremented.
 
 struct Cluster {
   cx: f32, cy: f32, cz: f32, radius: f32,
@@ -32,6 +32,9 @@ struct DrawArgs {
 @group(0) @binding(3) var<storage, read_write> visible: array<u32>;
 @group(0) @binding(4) var<storage, read_write> args: DrawArgs;
 @group(0) @binding(5) var hizTex: texture_2d<f32>;
+// Alpha-tested clusters (flags bit 1) go to their own list and draw.
+@group(0) @binding(6) var<storage, read_write> visibleAlpha: array<u32>;
+@group(0) @binding(7) var<storage, read_write> argsAlpha: DrawArgs;
 
 fn hizTest(center: vec3f, radius: f32) -> bool {
   // Project the bounding box corners; reverse-Z so larger depth = closer.
@@ -84,6 +87,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dist = distance(center, view.camPos.xyz);
   if ((flags & 1u) != 0u && c.radius < dist * view.camPos.w) { return; }
   if (view.params.y != 0u && dist > c.radius * 1.5 && hizTest(center, c.radius)) { return; }
-  let slot = atomicAdd(&args.instanceCount, 1u);
-  visible[slot] = i;
+  if ((flags & 2u) != 0u) {
+    let slot = atomicAdd(&argsAlpha.instanceCount, 1u);
+    visibleAlpha[slot] = i;
+  } else {
+    let slot = atomicAdd(&args.instanceCount, 1u);
+    visible[slot] = i;
+  }
 }

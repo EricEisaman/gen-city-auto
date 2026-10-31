@@ -153,6 +153,9 @@ export class Renderer {
   private cullViewBuffers: GPUBuffer[] = [];
   private visibleBuffers: GPUBuffer[] = [];
   private argsBuffers: GPUBuffer[] = [];
+  /** Alpha-tested clusters (cmesh CLUSTER_ALPHA): their own list and draw. */
+  private visibleAlphaBuffers: GPUBuffer[] = [];
+  private argsAlphaBuffers: GPUBuffer[] = [];
   readonly shadowViewBuffers: GPUBuffer[] = [];
 
   private p!: Record<string, GPURenderPipeline | GPUComputePipeline>;
@@ -363,6 +366,23 @@ export class Renderer {
             GPUBufferUsage.COPY_DST,
         }),
       );
+      this.visibleAlphaBuffers.push(
+        device.createBuffer({
+          label: `cull/${name}/visible alpha-tested clusters`,
+          size: this.pool.maxClusters * 4,
+          usage: GPUBufferUsage.STORAGE,
+        }),
+      );
+      this.argsAlphaBuffers.push(
+        device.createBuffer({
+          label: `cull/${name}/indirect args alpha-tested`,
+          size: 16,
+          usage:
+            GPUBufferUsage.STORAGE |
+            GPUBufferUsage.INDIRECT |
+            GPUBufferUsage.COPY_DST,
+        }),
+      );
       if (v > 0)
         this.shadowViewBuffers.push(
           device.createBuffer({
@@ -439,6 +459,37 @@ export class Renderer {
             fragment: {module: cityMod, entryPoint: 'fs', targets: gTargets},
             primitive: {cullMode: 'back'},
             depthStencil: gDepth,
+          }),
+        ],
+        [
+          'cityOpaque',
+          d.createRenderPipelineAsync({
+            label: 'pipeline/city gbuffer opaque',
+            layout: 'auto',
+            vertex: {module: cityMod, entryPoint: 'vs'},
+            fragment: {
+              module: cityMod,
+              entryPoint: 'fsOpaque',
+              targets: gTargets,
+            },
+            primitive: {cullMode: 'back'},
+            depthStencil: gDepth,
+          }),
+        ],
+        [
+          'cityShadowOpaque',
+          d.createRenderPipelineAsync({
+            label: 'pipeline/city shadow opaque',
+            layout: 'auto',
+            vertex: {module: cityMod, entryPoint: 'vsShadow'},
+            primitive: {cullMode: 'none'},
+            depthStencil: {
+              format: DEPTH_FORMAT,
+              depthWriteEnabled: true,
+              depthCompare: 'less',
+              depthBias: 2,
+              depthBiasSlopeScale: 2.5,
+            },
           }),
         ],
         [
@@ -943,11 +994,9 @@ export class Renderer {
     f.set([w, h, mips, 0], 48);
     this.device.queue.writeBuffer(this.cullViewBuffers[v], 0, data);
     // Reset the indirect draw: 128 triangles * 3 vertices per instance (cluster).
-    this.device.queue.writeBuffer(
-      this.argsBuffers[v],
-      0,
-      new Uint32Array([128 * 3, 0, 0, 0]),
-    );
+    const reset = new Uint32Array([128 * 3, 0, 0, 0]);
+    this.device.queue.writeBuffer(this.argsBuffers[v], 0, reset);
+    this.device.queue.writeBuffer(this.argsAlphaBuffers[v], 0, reset);
   }
 
   private updateTerrainPatches(eye: Vec3) {
@@ -1287,6 +1336,8 @@ export class Renderer {
               this.ubuf(this.visibleBuffers[vi]),
               this.ubuf(this.argsBuffers[vi]),
               hizView,
+              this.ubuf(this.visibleAlphaBuffers[vi]),
+              this.ubuf(this.argsAlphaBuffers[vi]),
             ],
             `bg/cull/view${vi}`,
           ),
@@ -1298,17 +1349,17 @@ export class Renderer {
     }
 
     // --- Shadows.
-    const cityShadowG1 = (vi: number) =>
+    const cityG1 = (pipe: string, list: GPUBuffer, label: string) =>
       this.bg(
-        'cityShadow',
+        pipe,
         1,
         [
           this.ubuf(this.pool.vertexBuffer),
           this.ubuf(this.pool.triBuffer),
           this.ubuf(this.pool.clusterBuffer),
-          this.ubuf(this.visibleBuffers[vi]),
+          this.ubuf(list),
         ],
-        `bg/city shadow/view${vi}`,
+        label,
       );
     for (let c = 0; c < CASCADES; c++) {
       const rp = this.renderPass(
@@ -1335,6 +1386,27 @@ export class Renderer {
         (c === 2 && this.off('c2'));
       if ((sky.sunUp > 0 || sky.moonLight > 0) && !skipCascade) {
         const pass = rp.pass;
+        // Opaque clusters: depth only, no fragment stage.
+        pass.setPipeline(this.p.cityShadowOpaque as GPURenderPipeline);
+        pass.setBindGroup(
+          0,
+          this.bg(
+            'cityShadowOpaque',
+            0,
+            [null, this.ubuf(this.shadowViewBuffers[c])],
+            `bg/city shadow opaque/cascade${c}`,
+          ),
+        );
+        pass.setBindGroup(
+          1,
+          cityG1(
+            'cityShadowOpaque',
+            this.visibleBuffers[1 + c],
+            `bg/city shadow opaque/view${1 + c}`,
+          ),
+        );
+        pass.drawIndirect(this.argsBuffers[1 + c], 0);
+        // Alpha-tested clusters: leaf cutout.
         pass.setPipeline(this.p.cityShadow as GPURenderPipeline);
         pass.setBindGroup(
           0,
@@ -1345,7 +1417,14 @@ export class Renderer {
             `bg/city shadow/cascade${c}`,
           ),
         );
-        pass.setBindGroup(1, cityShadowG1(1 + c));
+        pass.setBindGroup(
+          1,
+          cityG1(
+            'cityShadow',
+            this.visibleAlphaBuffers[1 + c],
+            `bg/city shadow/view${1 + c}`,
+          ),
+        );
         pass.setBindGroup(
           2,
           this.bg(
@@ -1355,7 +1434,7 @@ export class Renderer {
             `bg/city shadow/leaves${c}`,
           ),
         );
-        pass.drawIndirect(this.argsBuffers[1 + c], 0);
+        pass.drawIndirect(this.argsAlphaBuffers[1 + c], 0);
         for (const hk of hooks)
           if (hk.shadow) hk.shadow(rp.seg(`shadow c${c} ${hk.name}`), c);
       }
@@ -1385,38 +1464,48 @@ export class Renderer {
       let pass = rp.pass;
       const frameG0 = (p: string) =>
         this.bg(p, 0, [this.ubuf(this.frameBuffer)], `bg/${p}/frame`);
-      pass.setPipeline(this.p.city as GPURenderPipeline);
-      pass.setBindGroup(0, frameG0('city'));
-      pass.setBindGroup(
-        1,
-        this.bg(
-          'city',
-          1,
-          [
-            this.ubuf(this.pool.vertexBuffer),
-            this.ubuf(this.pool.triBuffer),
-            this.ubuf(this.pool.clusterBuffer),
-            this.ubuf(this.visibleBuffers[0]),
-          ],
-          'bg/city/main',
-        ),
-      );
-      pass.setBindGroup(
-        2,
-        this.bg(
-          'city',
+      // Opaque clusters first (no discard: hidden-surface removal stays on),
+      // then the alpha-tested ones (leaf cards, widened tubes).
+      const cityDraw = (
+        pipe: string,
+        list: GPUBuffer,
+        args: GPUBuffer,
+        label: string,
+      ) => {
+        pass.setPipeline(this.p[pipe] as GPURenderPipeline);
+        pass.setBindGroup(0, frameG0(pipe));
+        pass.setBindGroup(1, cityG1(pipe, list, `bg/${label}/main`));
+        pass.setBindGroup(
           2,
-          [
-            this.signAtlas.createView(),
-            this.anisoClamp,
-            this.leafTex.createView(),
-            this.detailTex.createView({dimension: '2d-array'}),
-            this.detailSampler,
-          ],
-          'bg/city/textures',
-        ),
-      );
-      if (!this.off('city')) pass.drawIndirect(this.argsBuffers[0], 0);
+          this.bg(
+            pipe,
+            2,
+            [
+              this.signAtlas.createView(),
+              this.anisoClamp,
+              this.leafTex.createView(),
+              this.detailTex.createView({dimension: '2d-array'}),
+              this.detailSampler,
+            ],
+            `bg/${label}/textures`,
+          ),
+        );
+        pass.drawIndirect(args, 0);
+      };
+      if (!this.off('city')) {
+        cityDraw(
+          'cityOpaque',
+          this.visibleBuffers[0],
+          this.argsBuffers[0],
+          'city opaque',
+        );
+        cityDraw(
+          'city',
+          this.visibleAlphaBuffers[0],
+          this.argsAlphaBuffers[0],
+          'city alpha',
+        );
+      }
       if (this.heightTex && this.landTex) {
         pass = rp.seg('gbuffer terrain');
         pass.setPipeline(this.p.terrain as GPURenderPipeline);

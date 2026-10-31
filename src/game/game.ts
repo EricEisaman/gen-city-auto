@@ -682,11 +682,13 @@ export class Game {
     }
     prof?.mark('trains+helis');
     this.updateOrbit(dt);
-    const cam = frozen
-      ? this.lastCam!
-      : this.freeMode
-        ? this.freeCam.update(dt, this.input)
-        : this.camera.update(dt, this.player, this.input);
+    // (The free camera still moves while frozen: fixed-view A/B shots.)
+    const cam =
+      frozen && !this.freeMode
+        ? this.lastCam!
+        : this.freeMode
+          ? this.freeCam.update(dt, this.input)
+          : this.camera.update(dt, this.player, this.input);
     prof?.mark('camera');
     const focus = this.player.pos;
     if (!lab) {

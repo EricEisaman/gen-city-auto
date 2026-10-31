@@ -82,6 +82,20 @@ export const VERTEX_WORDS = 8;
 export const CLUSTER_TRIS = 128;
 export const CLUSTER_VERTS = 255;
 export const CLUSTER_WORDS = 8;
+/**
+ * Cluster flag (packed bits 12-15): the cluster holds alpha-tested geometry
+ * (leaf cards, or tubes the vertex shader may widen to hashed coverage), so
+ * it is drawn with the discarding pipeline; every other cluster goes through
+ * the opaque one, which keeps the GPU's hidden-surface removal on.
+ */
+export const CLUSTER_ALPHA = 2;
+
+/** True for a vertex the city fragment shader may discard. */
+function alphaTested(mat: number, aux: number) {
+  const id = mat & 0xff;
+  if (id === CM.leaves) return true;
+  return id < 32 && ((TUBE_MATS >>> id) & 1) === 1 && (aux & 0xffff) > 0;
+}
 
 export function packMat(id: number, param = 0) {
   return ((param & 0xffffff) << 8) | (id & 0xff);
@@ -656,6 +670,7 @@ export function clusterize(
     const tstart = tris.length;
     let cl: Vec3 = [Infinity, Infinity, Infinity];
     let ch: Vec3 = [-Infinity, -Infinity, -Infinity];
+    let alpha = false;
     while (t < triCount && tris.length - tstart < CLUSTER_TRIS) {
       const ids = [m.idx[t * 3], m.idx[t * 3 + 1], m.idx[t * 3 + 2]];
       const need = ids.filter(i => !local.has(i)).length;
@@ -668,6 +683,13 @@ export function clusterize(
           local.set(g, l);
           for (let w = 0; w < VERTEX_WORDS; w++)
             verts.push(vertexWords[g * VERTEX_WORDS + w]);
+          if (
+            alphaTested(
+              vertexWords[g * VERTEX_WORDS + 6],
+              vertexWords[g * VERTEX_WORDS + 7],
+            )
+          )
+            alpha = true;
           const x = vertexF[g * VERTEX_WORDS],
             y = vertexF[g * VERTEX_WORDS + 1],
             z = vertexF[g * VERTEX_WORDS + 2];
@@ -696,7 +718,9 @@ export function clusterize(
       f2u(r),
       vstart,
       tstart,
-      (tris.length - tstart) | (lod << 8) | (flags << 12),
+      (tris.length - tstart) |
+        (lod << 8) |
+        ((flags | (alpha ? CLUSTER_ALPHA : 0)) << 12),
       tile,
     );
   }
