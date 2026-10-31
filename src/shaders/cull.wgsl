@@ -13,7 +13,9 @@ struct Cluster {
 
 struct CullView {
   viewProj: mat4x4f,
-  planes: array<vec4f, 6>,
+  // Shadow views add the planes of their receivers (camera frustum slice)
+  // swept toward the light: a caster outside them shades no visible pixel.
+  planes: array<vec4f, 12>,
   camPos: vec4f,       // xyz, detail cull factor (min radius/distance)
   params: vec4u,       // cluster count, use occlusion, plane count, count triangles
   hiz: vec4f,          // hiz width, height, mip count, fine-detail distance scale (0 = off)

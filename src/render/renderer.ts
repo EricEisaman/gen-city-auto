@@ -20,6 +20,7 @@ import {ClusterPool, type PoolHandle} from './cluster-pool.ts';
 import {F, FrameData} from './frame.ts';
 import {CpuProfiler, GpuProfiler} from './profiler.ts';
 import {OFF_BITS, type OffName} from './ablation.ts';
+import {receiverPlanes} from './shadow-cull.ts';
 import {
   createLeafTexture,
   createSignAtlasTexture,
@@ -180,6 +181,7 @@ export class Renderer {
   private useOcclusion = false;
   private lastViewDir: Vec3 = [0, 0, -1];
   private cascadeMats: Mat4[] = [];
+  private cascadeRadii: number[] = [];
   /** GPU pass timer (only with ?prof=1; see enableProfiler). */
   prof: GpuProfiler | null = null;
   /** CPU marks inside render() when profiling. */
@@ -356,7 +358,7 @@ export class Renderer {
       this.cullViewBuffers.push(
         device.createBuffer({
           label: `cull/${name}/view`,
-          size: 256,
+          size: 320,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         }),
       );
@@ -945,6 +947,7 @@ export class Renderer {
           Math.hypot(q[0] - center[0], q[1] - center[1], q[2] - center[2]),
         );
       radius = Math.ceil(radius * 16) / 16;
+      this.cascadeRadii[c] = radius;
       // Snap the center to shadow texels in light space to avoid shimmering.
       const lz = norm3(lightDir);
       const lx = norm3(
@@ -996,23 +999,25 @@ export class Renderer {
     w: number,
     h: number,
     mips: number,
+    extraPlanes: number[] = [],
   ) {
-    const data = new ArrayBuffer(256);
+    const data = new ArrayBuffer(320);
     const f = new Float32Array(data);
     const u = new Uint32Array(data);
     f.set(viewProj, 0);
     f.set(frustumPlanes(viewProj), 16);
-    f.set([eye[0], eye[1], eye[2], detail], 40);
+    f.set(extraPlanes, 40);
+    f.set([eye[0], eye[1], eye[2], detail], 64);
     u.set(
       [
         this.pool.clusterHighWater,
         occlusion ? 1 : 0,
-        6,
+        6 + extraPlanes.length / 4,
         this.cullStats ? 1 : 0,
       ],
-      44,
+      68,
     );
-    f.set([w, h, mips, this.off('farcull') ? 0 : this.farCullScale], 48);
+    f.set([w, h, mips, this.off('farcull') ? 0 : this.farCullScale], 72);
     this.device.queue.writeBuffer(this.cullViewBuffers[v], 0, data);
     // Reset the indirect draw: 128 triangles * 3 vertices per instance (cluster).
     const reset = new Uint32Array([128 * 3, 0, 0, 0, 0]);
@@ -1179,6 +1184,7 @@ export class Renderer {
       Math.ceil(h / 2),
       t.hizMips,
     );
+    const camPlanes = frustumPlanes(viewProjNoJ);
     for (let c = 0; c < CASCADES; c++) {
       this.writeCullView(
         1 + c,
@@ -1189,6 +1195,22 @@ export class Renderer {
         0,
         0,
         0,
+        this.off('rcvcull')
+          ? []
+          : receiverPlanes(
+              camPlanes,
+              v.eye,
+              fwd,
+              c === 0 ? 0 : splits[c - 1],
+              splits[c],
+              lightDir,
+              // Margin: the receiver's normal offset (lighting.wgsl shadow():
+              // 1.5 x split / 1024) plus the 3x3 PCF footprint, doubled.
+              2 *
+                (1.5 * (splits[c] / 1024) +
+                  (3 * this.cascadeRadii[c]) / SHADOW_SIZE) +
+                0.5,
+            ),
       );
       d.queue.writeBuffer(this.shadowViewBuffers[c], 0, this.cascadeMats[c]);
     }
