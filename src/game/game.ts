@@ -643,6 +643,14 @@ export class Game {
         this.freeMode ? this.noInput : this.input,
         this.time,
       );
+    // Trains and helicopters move before the camera: the director films a
+    // train, and aiming at last frame's position leaves the car one frame's
+    // travel ahead of the aim point, so every uneven frame time made it jump
+    // forward and back on screen.
+    if (!lab) {
+      this.trains!.update(dt);
+      this.helis!.update(dt);
+    }
     this.updateOrbit(dt);
     const cam = this.freeMode
       ? this.freeCam.update(dt, this.input)
@@ -657,8 +665,6 @@ export class Game {
           ? [this.player.follower]
           : [],
       );
-      this.trains!.update(dt);
-      this.helis!.update(dt);
       this.peds!.update(dt, cam.eye);
     }
     this.city.updateStreaming(cam.eye);
