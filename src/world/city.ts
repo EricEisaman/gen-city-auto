@@ -25,6 +25,8 @@ interface TileState {
 type Progress = (msg: string, f: number) => void;
 
 const SKYLINE_N = 2048;
+/** Bare-terrain offset in the skyline map (lighting.wgsl SKYLINE_TERRAIN). */
+const SKYLINE_TERRAIN = 10000;
 
 export class City {
   summary!: LayoutSummary;
@@ -179,13 +181,21 @@ export class City {
     this.renderer.setTileLods(this.tileLods);
   }
 
-  /** Max of terrain and building tops on a 2048^2 grid (street-canyon sky visibility). */
+  /**
+   * Max of terrain and building tops on a 2048^2 grid (street-canyon sky
+   * visibility, the city reflection). Cells that are bare terrain store
+   * -(h + SKYLINE_TERRAIN) (lighting.wgsl skyH decodes), so the reflection
+   * can tell a hillside from a facade: it drew every rise of the ground as
+   * a building with lit windows (bright bars along the horizon in wet
+   * night views of the asset lab, which has no buildings).
+   */
   private buildSkyline(): Float32Array {
     const L = this.summary.layout;
     const size = L.params.size;
     const N = SKYLINE_N;
     const cell = size / N;
     const out = new Float32Array(N * N);
+    const built = new Uint8Array(N * N);
     for (let j = 0; j < N; j++) {
       for (let i = 0; i < N; i++) {
         out[j * N + i] = this.heights.sample(
@@ -226,10 +236,15 @@ export class City {
             )
               inside = !inside;
           }
-          if (inside && top > out[j * N + i]) out[j * N + i] = top;
+          if (inside && top > out[j * N + i]) {
+            out[j * N + i] = top;
+            built[j * N + i] = 1;
+          }
         }
       }
     }
+    for (let k = 0; k < N * N; k++)
+      if (!built[k]) out[k] = -(out[k] + SKYLINE_TERRAIN);
     return out;
   }
 

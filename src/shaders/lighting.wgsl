@@ -59,10 +59,10 @@ fn skyVisibility(world: vec3f, n: vec3f, pxf: vec2f) -> f32 {
       if (off > cell * 0.75) {
         let g = vec2i((p + size * 0.5) / size * N);
         if (all(g >= vec2i(0)) && all(g < vec2i(i32(N)))) {
-          var h = textureLoad(skyline, g, 0).r;
+          var h = skyH(textureLoad(skyline, g, 0).r);
           if (dist < cell * 2.0) {
             let g2 = clamp(vec2i((p + dir * cell + size * 0.5) / size * N), vec2i(0), vec2i(i32(N) - 1));
-            h = max(h, textureLoad(skyline, g2, 0).r);
+            h = max(h, skyH(textureLoad(skyline, g2, 0).r));
           }
           // (Less half a texel of rise: on sloping terrain the texel itself
           // stands above the point, and the near steps turned dunes and
@@ -111,13 +111,28 @@ fn contactShadow(world: vec3f, n: vec3f, dist: f32, pxf: vec2f) -> f32 {
 // Reflection of the city: march the reflected ray over the skyline height map.
 // A hit returns an approximate facade (wall + window grid, lit windows at
 // night) so glass, paint and wet streets reflect buildings beyond the screen.
-fn skylineAt(p: vec3f, N: f32, size: f32) -> f32 {
+// Bare terrain cells of the skyline map hold -(h + SKYLINE_TERRAIN)
+// (world/city.ts), building cells their top: the height either way.
+const SKYLINE_TERRAIN = 10000.0;
+fn skyH(v: f32) -> f32 {
+  return select(v, -v - SKYLINE_TERRAIN, v < -SKYLINE_TERRAIN * 0.5);
+}
+
+fn skylineRaw(p: vec3f, N: f32, size: f32) -> f32 {
   let g = vec2i((p.xz + size * 0.5) / size * N);
   if (any(g < vec2i(0)) || any(g >= vec2i(i32(N)))) { return -1e9; }
   return textureLoad(skyline, g, 0).r;
 }
 
-fn cityReflection(world: vec3f, r: vec3f) -> vec4f {
+fn skylineAt(p: vec3f, N: f32, size: f32) -> f32 {
+  let v = skylineRaw(p, N, size);
+  return select(skyH(v), v, v < -1e8);
+}
+
+// spread: x the lobe's half-angle (radians) from roughness, y metres of
+// facade per pixel per metre of eye distance: the eye's pixel angle over
+// the cosine at the reflector (a grazing reflector squeezes the image).
+fn cityReflection(world: vec3f, r: vec3f, spread: vec2f) -> vec4f {
   let N = f32(textureDimensions(skyline).x);
   let size = frame.world.x;
   var t = 1.5;
@@ -144,6 +159,12 @@ fn cityReflection(world: vec3f, r: vec3f) -> vec4f {
       }
       let tq = hi;
       let q = world + r * tq;
+      if (skylineRaw(q, N, size) < -SKYLINE_TERRAIN * 0.5) {
+        // Bare ground (a hillside, a graded lot): unlit earth, no windows.
+        var g = vec3f(0.12, 0.12, 0.1) * (frame.skyAmbient.rgb + frame.sunColor.rgb * max(frame.sunDir.y, 0.0) * 0.3);
+        g = mix(g, frame.skyAmbient.rgb + frame.cityGlow.rgb, clamp(tq / 1500.0, 0.0, 0.8));
+        return vec4f(g, 1.0);
+      }
       // Facade normal approximated as facing back along the ray.
       let fn_ = normalize(vec3f(-r.x, 0.0, -r.z));
       let along = dot(q.xz, vec2f(-fn_.z, fn_.x));
@@ -151,7 +172,13 @@ fn cityReflection(world: vec3f, r: vec3f) -> vec4f {
       // The window grid is only resolvable nearby; further away (where
       // neighbouring pixels land on different cells) use its average, or
       // it aliases into barcode stripes.
-      let far = smoothstep(6.0, 40.0, tq);
+      // So is a reflection blurred by roughness or squeezed by a grazing
+      // reflector: a wet lot 100 m off, seen a few degrees above its plane,
+      // mirrored each column of lit windows as a 3 px white bar the height
+      // of the ground (a "picket fence" along the horizon in night rain,
+      // which SSR then copied into the road).
+      let blur = tq * spread.x + length(q - frame.camPos.xyz) * spread.y;
+      let far = max(smoothstep(6.0, 40.0, tq), smoothstep(0.4, 1.6, blur / 3.0));
       let winH = step(0.35, fract(along / 3.0)) * step(0.3, fract(q.y / 3.4));
       let win = mix(winH, 0.45, far);
       let wall = mix(vec3f(0.35, 0.34, 0.32), vec3f(0.05, 0.06, 0.07), win * 0.5);
@@ -534,7 +561,10 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool, thi
     // (A floor on the stretch: a glossy film still smears a lamp into a
     // streak several times longer than wide.)
     let sr = max(rough, 0.2);
-    r = normalize(r + side * j.x * sr * 0.06 + fwd * j.y * sr * 0.9);
+    // Less stretch with range: at 100 m+ the long jittered lobe smeared the
+    // whole far carriageway into one grazing sheen.
+    let fk = mix(1.0, 0.45, smoothstep(25.0, 120.0, distance(world, frame.camPos.xyz)));
+    r = normalize(r + side * j.x * sr * 0.06 + fwd * j.y * sr * 0.9 * fk);
   } else {
     r = normalize(r + vec3f(j.x, 0.0, j.y) * rough * 0.6);
   }
@@ -987,7 +1017,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   env = mix(groundRadiance(), env, smoothstep(-0.08, reflLo, refl.y));
   if (cls == CLASS_GLASS) { env = glassEnv(refl); }
   if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE) {
-    let cr = cityReflection(world + n * 0.3, refl);
+    let pixAng = 2.0 / (frame.proj[1][1] * frame.resolution.y);
+    let cr = cityReflection(world + n * 0.3, refl, vec2f(rough * 0.7, pixAng / max(dot(n, v), 0.03)));
     // The skyline hit is a sharp mirror image: only near-specular surfaces
     // (glass, water, wet film) may show it. On glazed tile and paint it drew
     // a hard warm stripe (a lone sunlit tower) at golden hour and per-tile
@@ -1049,5 +1080,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (dbg == 10u) { textureStore(outColor, px, vec4f(vec3f(skyVis), 1.0)); return; }
   if (dbg == 6u) { color = vec3f(f32(min(u32(max(0.0, 0.0)), 3u))); }
   if (dbg == 4u) { color = vec3f(f32(count) / 32.0, 0.0, 0.0) + albedo * 0.2; }
+  // 11: material class (red ground, green default, blue foliage) + emissive;
+  // 12: metal (red) and roughness (green).
+  if (dbg == 11u) { color = vec3f(f32(cls == CLASS_GROUND), f32(cls == CLASS_DEFAULT), f32(cls == CLASS_FOLIAGE)) * 0.5 + em.rgb; }
+  if (dbg == 12u) { color = vec3f(metal, rough, 0.0); }
   textureStore(outColor, px, vec4f(color, 1.0));
 }

@@ -7016,19 +7016,18 @@ const POLE_FLANGE = 0x91;
  * CM.paint param of a pole's ID / management-number plate (POLE_ID, round
  * 6): a 9 x 22 cm aluminium plate at 1.65 m on the walk side of signal
  * and avenue lamp columns. Box uv in metres per face (the front face is
- * the one facing away from the road). Fallback: the 0xd0-0xef service
- * paint (albedo 0.62, rough 0.7); intended: white plate, a dark number
- * line and a green or blue band at the top.
+ * the one facing away from the road). Shaded by city-materials.wgsl
+ * roadFurniture: white plate, two lines of digits and a green or blue
+ * band at the top.
  */
 const POLE_ID = 0xe9;
 /**
  * CM.paint param of the white border round a vehicle signal's black
- * backplate (SIGNAL_BORDER, round 6): a box 1.6 x 0.76 m just behind the
- * 1.52 x 0.68 m backplate, so a 4 cm rim shows round it from the front
- * and the whole board from behind. Box uv in metres per face. Fallback:
- * the 0xd0-0xef service paint (albedo 0.62); intended: retroreflective
- * white (albedo ~0.8, rough ~0.4, a faint sparkle toward the camera at
- * night), grime along the bottom edge.
+ * backplate (SIGNAL_BORDER, round 6): a box 1.7 x 0.86 m just behind the
+ * 1.52 x 0.68 m backplate, so a 9 cm rim shows round it from the front
+ * and the whole board from behind. Box uv in metres per face; shaded by
+ * roadFurniture: retroreflective white (albedo ~0.75, rough 0.4, a faint
+ * glow back at night), grime along the bottom edge.
  */
 const SIGNAL_BORDER = 0xe8;
 
@@ -7037,17 +7036,22 @@ const SIGNAL_BORDER = 0xe8;
  * lathe of `sides`: a concrete footing collar (CM.concrete) 64 cm across
  * standing 8 cm proud of the paving, a 0.41 m base flange plate 3.5 cm
  * thick (dark paint POLE_FLANGE, so it reads against both) and a flared
- * base cover over the bottom 0.6 m (the column's `mat`). `full` adds four
- * anchor bolts standing 5 cm on the flange (bare galvanised boxes, bright
- * on the dark plate), a handhole door facing `back` (unit 2D) at 0.95 m,
- * the column's ID plate above it at 1.65 m and a clamp band at each of
- * `bands` (heights above the paving), these in `plain` (not the column's
- * material: its uv-driven foot dirt would land on them). Round 3's foot
- * (a 29 cm plate 2.5 cm thick, 4 cm nut squares) vanished at eye
- * distance. About 90 vertices, 200 when full.
- * Lathe uv: u = metres around, v = metres up the profile (collar from 0,
- * metal from 0); the pole's own cylinder: u metres around, v metres up
- * from SINK under the paving.
+ * base cover over the bottom 0.6 m (the column's `mat`; it and the flange
+ * at most 12 sides). A 16+-sided foot (signal columns) gets a 2 cm chamfer on the
+ * collar's top arris (a lit line round the plinth at eye distance) and
+ * four evenly spaced hex anchor nuts (3 cm across flats); a lower-sided
+ * one (avenue lamps) round 6's four 5 cm boxes. `full` adds the nuts, a
+ * handhole door facing `back` (unit
+ * 2D) at 0.95 m, the column's ID plate above it at 1.65 m and a clamp band
+ * at each of `bands` (heights above the paving), these in `plain` (not the
+ * column's material: its uv-driven foot dirt would land on them). Round
+ * 3's foot (a 29 cm plate 2.5 cm thick, 4 cm nut squares) vanished at eye
+ * distance; round 6's 8-sided one read as an octagon at 4 m. About
+ * (sides + 1) * 7 + 26 vertices, + 12 per nut and ~60 more when full.
+ * Lathe uv: u = metres around, v = metres up the profile for the collar
+ * and flange (from 0); the base cover (the column's material) v = metres
+ * up from SINK under the paving, like the column's own cylinder (u metres
+ * around), so the shader's foot rust and dirt run on across the seam.
  */
 function poleFoot(
   m: CMesh,
@@ -7060,16 +7064,32 @@ function poleFoot(
   bands: number[],
   full: boolean,
 ) {
-  const conc = packMat(CM.concrete);
+  // (The collar in the kerb concrete: grimy, a damp tide at its toe.)
+  const conc = packMat(CM.curb);
   const flange = packMat(CM.paint, POLE_FLANGE);
   // Profile rows: radius, height, normal (radial, up), material. A strip
   // joins two rows of the same material (a change is a seam: the same
   // ring twice).
   const FR = 0.205;
   const FT = 0.115;
+  // Collar: vertical side, then (a 16+-sided foot) a 2 cm 45-degree
+  // chamfer to the top (the smooth normal across it shades as a lit
+  // bevel). The base cover keeps at most 12 sides (the column's).
+  const hex = sides >= 16;
   const rows: [number, number, number, number, number][] = [
     [0.32, -0.06, 1, 0, conc],
-    [0.32, 0.08, 0.6, 0.8, conc],
+    ...(hex
+      ? ([
+          [0.32, 0.06, 1, 0.12, conc],
+          [0.3, 0.08, 0.3, 0.95, conc],
+        ] as [number, number, number, number, number][])
+      : ([[0.32, 0.08, 0.6, 0.8, conc]] as [
+          number,
+          number,
+          number,
+          number,
+          number,
+        ][])),
     [FR, 0.08, 0, 1, conc],
     [FR, 0.08, 1, 0, flange],
     [FR, FT, 0.8, 0.6, flange],
@@ -7077,21 +7097,26 @@ function poleFoot(
     [r * 1.3, FT, 0.5, 0.85, mat],
     [r * 1.12, 0.6, 1, 0.12, mat],
   ];
+  // (The dark flange plate and the base cover at most 12: only the pale
+  // collar shows its outline against the paving.)
+  const sidesOf = (mt: number) => (mt === conc ? sides : Math.min(sides, 12));
   let v = 0;
   const ids = rows.map(([rr, y, nr, ny, mt], k) => {
-    if (k && rows[k - 1][4] === mt)
+    if (mt === mat) v = y + SINK;
+    else if (k && rows[k - 1][4] === mt)
       v += Math.hypot(rr - rows[k - 1][0], y - rows[k - 1][1]);
     else v = 0;
     const row: number[] = [];
-    for (let i = 0; i <= sides; i++) {
-      const a = (i / sides) * Math.PI * 2;
+    const ns = sidesOf(mt);
+    for (let i = 0; i <= ns; i++) {
+      const a = (i / ns) * Math.PI * 2;
       const c = Math.cos(a);
       const sn = Math.sin(a);
       row.push(
         m.vertex(
           [p[0] + c * rr, p[1] + y, p[2] + sn * rr],
           [c * nr, ny, sn * nr],
-          (i / sides) * Math.PI * 2 * rr,
+          (i / ns) * Math.PI * 2 * rr,
           v,
           mt,
         ),
@@ -7101,8 +7126,9 @@ function poleFoot(
   });
   for (let k = 0; k + 1 < rows.length; k++) {
     if (rows[k][4] !== rows[k + 1][4]) continue; // material seam
-    for (let i = 0; i < sides; i++) {
-      const a = ((i + 0.5) / sides) * Math.PI * 2;
+    const ns = sidesOf(rows[k][4]);
+    for (let i = 0; i < ns; i++) {
+      const a = ((i + 0.5) / ns) * Math.PI * 2;
       const n: Vec3 = [
         Math.cos(a) * (rows[k][2] + rows[k + 1][2]),
         rows[k][3] + rows[k + 1][3],
@@ -7113,24 +7139,63 @@ function poleFoot(
     }
   }
   if (!full) return;
-  // Anchor bolts: nut and stud as one 5 x 5 x 5 cm box at each diagonal,
-  // set square to the radius, pale zinc (service paint) on the dark plate.
+  // Anchor nuts: hex prisms (3 cm across flats, 2.2 cm tall) evenly spaced
+  // round the flange, galvanised grey (0x90) on the dark plate; 12
+  // vertices each (corner normals, the top ring's leaning up: it is ~10 px
+  // at 4 m, read by its silhouette).
+  // (A low-sided foot, the avenue lamps' (budget: they are many), keeps
+  // round 6's four 5 cm boxes.)
   const bolt = packMat(CM.paint, 0xd8);
-  for (let k = 0; k < 4; k++) {
-    const a = Math.PI / 4 + (k * Math.PI) / 2;
-    m.box(
-      [
-        p[0] + Math.cos(a) * 0.155,
-        p[1] + FT + 0.025,
-        p[2] + Math.sin(a) * 0.155,
-      ],
-      [0.025, 0.025, 0.025],
-      bolt,
-      a,
-      0,
-      true,
-      true,
+  const nutMat = packMat(CM.paint, 0x90);
+  const nNuts = hex ? 4 : 0;
+  const NR = 0.015 / Math.cos(Math.PI / 6);
+  const NH = 0.022;
+  const nutAt = (FR + r * 1.3) / 2;
+  if (!hex)
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI / 4 + (k * Math.PI) / 2;
+      m.box(
+        [
+          p[0] + Math.cos(a) * 0.155,
+          p[1] + FT + 0.025,
+          p[2] + Math.sin(a) * 0.155,
+        ],
+        [0.025, 0.025, 0.025],
+        bolt,
+        a,
+        0,
+        true,
+        true,
+      );
+    }
+  for (let k = 0; k < nNuts; k++) {
+    const a = Math.PI / nNuts + (k * Math.PI * 2) / nNuts;
+    const cx = p[0] + Math.cos(a) * nutAt;
+    const cz = p[2] + Math.sin(a) * nutAt;
+    const y0 = p[1] + FT;
+    const ring = [0, 1].map(t =>
+      [0, 1, 2, 3, 4, 5].map(j => {
+        const b = a + (j * Math.PI) / 3;
+        const c = Math.cos(b);
+        const s = Math.sin(b);
+        return m.vertex(
+          [cx + c * NR, y0 + t * NH, cz + s * NR],
+          t ? [c * 0.5, 0.87, s * 0.5] : [c, 0, s],
+          j * NR,
+          t * NH,
+          nutMat,
+        );
+      }),
     );
+    for (let j = 0; j < 6; j++) {
+      const j1 = (j + 1) % 6;
+      const b = a + ((j + 0.5) * Math.PI) / 3;
+      const n: Vec3 = [Math.cos(b), 0, Math.sin(b)];
+      m.triFacing(ring[0][j], ring[0][j1], ring[1][j1], n);
+      m.triFacing(ring[0][j], ring[1][j1], ring[1][j], n);
+    }
+    const top = ring[1];
+    for (let j = 1; j < 5; j++) m.triFacing(top[0], top[j], top[j + 1], UP);
   }
   const yaw = Math.atan2(back[0], back[1]);
   m.box(
@@ -7150,7 +7215,14 @@ function poleFoot(
     true,
   );
   for (const y of bands)
-    m.cylinder([p[0], p[1] + y, p[2]], r + 0.02, 0.08, sides, plain, false);
+    m.cylinder(
+      [p[0], p[1] + y, p[2]],
+      r + 0.02,
+      0.08,
+      Math.min(sides, 8),
+      plain,
+      false,
+    );
 }
 
 function streetLight(
@@ -7317,6 +7389,32 @@ function signBoard(
       [uvr[0], uvr[1]],
     ],
     front,
+  );
+}
+
+/**
+ * CM.paint param of a push-button unit's face (PUSH_FACE): one quad, uv
+ * 0..1 across the 0.18 x 0.25 m white plate (v down from its top). The
+ * shader draws the "please wait" lamp window at the top (emissive orange
+ * while a request is pending), the round button with its dark bezel in the
+ * middle and the instruction lines.
+ */
+const PUSH_FACE = 0xea;
+
+/**
+ * Pedestrian push-button unit strapped to a pole at c (its box centre),
+ * facing f: the yellow 0.2 x 0.3 x 0.12 m housing and its white face
+ * plate (PUSH_FACE) 1.5 mm proud of the front.
+ */
+function pushButton(m: CMesh, c: Vec3, f: Vec2) {
+  m.box(c, [0.1, 0.15, 0.06], packMat(CM.paint, 0x92), Math.atan2(f[0], f[1]));
+  signBoardFace(
+    m,
+    [c[0] + f[0] * 0.0615, c[1] + 0.01, c[2] + f[1] * 0.0615],
+    f,
+    0.09,
+    0.125,
+    packMat(CM.paint, PUSH_FACE),
   );
 }
 
@@ -7534,7 +7632,7 @@ function signal(
     0.12,
     column,
     grey,
-    8,
+    16,
     [-armDir[0], -armDir[1]],
     [2.45, 3.15],
     true,
@@ -7568,8 +7666,9 @@ function signal(
   m.box(hc, [0.62, 0.2, 0.12], grey, fyaw);
   // Backplate: a matt black board 14 cm proud of the head all round (so
   // the head reads as a dark slab with three lenses at eye distance, and
-  // against the sky), just behind its face; a 4 cm white retroreflective
-  // border round it (SIGNAL_BORDER: the board behind, 4 cm larger).
+  // against the sky), just behind its face; a 9 cm white retroreflective
+  // border round it (SIGNAL_BORDER: the board behind, 9 cm larger: 4 cm
+  // was 1-2 px and gone beyond 15 m).
   m.box(
     [hc[0] - face[0] * 0.04, hc[1], hc[2] - face[1] * 0.04],
     [0.76, 0.34, 0.02],
@@ -7578,7 +7677,7 @@ function signal(
   );
   m.box(
     [hc[0] - face[0] * 0.05, hc[1], hc[2] - face[1] * 0.05],
-    [0.8, 0.38, 0.012],
+    [0.85, 0.43, 0.012],
     packMat(CM.paint, SIGNAL_BORDER),
     fyaw,
     0,
@@ -8235,15 +8334,82 @@ function prism3(m: CMesh, p: Vec3, r: number, h: number, mat: number) {
   }
 }
 
-function utilityPole(m: CMesh, p: Vec3) {
+/**
+ * CM.paint param of a concrete utility pole (UTIL_POLE): cylinder uv, u
+ * metres around, v metres up from SINK under the paving. The shader draws
+ * the spun-concrete shaft and the yellow-and-black striped guard sleeve
+ * over its foot.
+ */
+const UTIL_POLE = 0x94;
+/**
+ * CM.paint param of a utility pole's number plate (UTIL_PLATE): one quad,
+ * uv 0..1 over 0.12 x 0.3 m (v down from the top): white enamel with a
+ * blue band, the owner mark and the pole number.
+ */
+const UTIL_PLATE = 0xeb;
+/** Step bolts per utility pole (from 2 m up, every 0.45 m, alternating). */
+const STEP_BOLTS = 6;
+
+/**
+ * Concrete utility pole at p (LOD0): 10 m shaft (UTIL_POLE: guard sleeve
+ * painted on its foot), its number plate at 1.6 m facing the road
+ * (`toRoad`, unit 2D), staggered step bolts from 2 m up (the lineman's
+ * rungs, 22 cm stubs on the two sides along the street, every 0.45 m
+ * alternating, STEP_BOLTS of them: one quad each, facing the road),
+ * crossarm and transformer. About 120 vertices.
+ */
+function utilityPole(m: CMesh, p: Vec3, toRoad: Vec2) {
+  const R = 0.16;
   m.cylinder(
     [p[0], p[1] - SINK, p[2]],
-    0.16,
+    R,
     10 + SINK,
     6,
-    packMat(CM.concrete),
+    packMat(CM.paint, UTIL_POLE),
     false,
   );
+  signBoardFace(
+    m,
+    [
+      p[0] + toRoad[0] * (R + 0.004),
+      p[1] + 1.6,
+      p[2] + toRoad[1] * (R + 0.004),
+    ],
+    toRoad,
+    0.06,
+    0.15,
+    packMat(CM.paint, UTIL_PLATE),
+  );
+  const side: Vec2 = [-toRoad[1], toRoad[0]];
+  const boltMat = packMat(CM.paint, 0x91);
+  for (let k = 0; k < STEP_BOLTS; k++) {
+    const y = p[1] + 2 + k * 0.45;
+    const s = k & 1 ? -1 : 1;
+    const d: Vec2 = [side[0] * s, side[1] * s];
+    // One quad facing the road (the view that sees them; budget: a tube
+    // is twice the vertices), 2.4 cm tall, tilted up 4 degrees.
+    const P = (o: number, dy: number): Vec3 => [
+      p[0] + d[0] * o + toRoad[0] * 0.01,
+      y + dy + (o - R) * 0.07,
+      p[2] + d[1] * o + toRoad[1] * 0.01,
+    ];
+    m.quad(
+      [
+        P(R - 0.02, -0.012),
+        P(R + 0.2, -0.012),
+        P(R + 0.2, 0.012),
+        P(R - 0.02, 0.012),
+      ],
+      [toRoad[0], 0, toRoad[1]],
+      [
+        [0, 0],
+        [0.22, 0],
+        [0.22, 0.024],
+        [0, 0.024],
+      ],
+      boltMat,
+    );
+  }
   m.beam(
     [p[0] - 0.8, p[1] + 9, p[2]],
     [p[0] + 0.8, p[1] + 9, p[2]],
@@ -8969,12 +9135,11 @@ function walkCovers(
 
 /**
  * CM.paint param of the junction's signal controller cabinet (CABINET,
- * round 6): Tokyo's grey-green (paintColor's hashed fallback for 0xab is
- * 0.44 / 0.53 / 0.47). Box uv in metres per face; the front (+uv.x along
- * the 0.6 m width, uv.y up from the body's foot) faces the road. Intended
- * shading: door seam and hinge line 4 cm in from the edges, louvre band at
- * the top of the sides, a few sticker and flyer-scrape scraps on the
- * front, rain streaks down from the hood, foot splash.
+ * round 6): Tokyo grey-green (city-materials.wgsl roadFurniture). Box
+ * uv in metres per face (uv.y up from the body's foot); front (toward the
+ * road) and back carry a door panel (aux 0x10000: 1 cm seam, 6-slot
+ * louvre, lock, label, stickers); louvres under the hood on the sides,
+ * rain streaks, foot grime.
  */
 const CABINET = 0xab;
 /**
@@ -9065,6 +9230,19 @@ function junctionFixtures(
     }
     m.box([x, y + 0.04, z], [0.34, 0.06, 0.24], packMat(CM.concrete), yaw);
     m.box([x, y + 0.7, z], [0.3, 0.6, 0.2], paint, yaw);
+    // Doors front (toward the road) and back: 8 mm proud panels 0.54 x
+    // 1.1 m (aux 0x10000, above the tube-radius bits: the shader draws the
+    // door seam, louvre, lock, label and stickers).
+    for (const s of [1, -1])
+      m.box(
+        [x + armDir[0] * 0.204 * s, y + 0.7, z + armDir[1] * 0.204 * s],
+        [0.27, 0.55, 0.004],
+        paint,
+        yaw + (s < 0 ? Math.PI : 0),
+        0x10000,
+        true,
+        true,
+      );
     // Rain hood, overhanging 3 cm all round.
     m.box([x, y + 1.32, z], [0.33, 0.02, 0.23], paint, yaw, 0, false);
     poles.push([x, z]);
@@ -9203,12 +9381,12 @@ export function buildTile(
         const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
         const here = inTile(p[0], p[2]);
         if (here && lod === 0 && clearOfDecks(ctx, p, p, 10.2)) {
-          utilityPole(m, p);
+          utilityPole(m, p, [-l[0] * side, -l[1] * side]);
           serviceDrops(m, p, fronts);
         } else if (here && clearOfDecks(ctx, p, p, 10.2)) {
           // LOD1: the bare pole as a three-sided prism (6 vertices), so
           // distant streets keep the long pole shadows of low sun.
-          prism3(m, p, 0.19, 10, packMat(CM.concrete));
+          prism3(m, p, 0.19, 10, packMat(CM.paint, UTIL_POLE));
         }
         if (prev && lod === 0 && here && clearOfDecks(ctx, prev, p, 9.3)) {
           for (const dy of [9.05, 8.5, 8.0])
@@ -9462,11 +9640,10 @@ export function buildTile(
           group,
           phase,
         );
-        m.box(
+        pushButton(
+          m,
           [p[0] - l[0] * 0.15, p[1] + 1.25, p[2] - l[1] * 0.15],
-          [0.1, 0.15, 0.06],
-          packMat(CM.paint, 0x92),
-          Math.atan2(-l[0], -l[1]),
+          [-l[0], -l[1]],
         );
         // Far corner, level with the signal pole along the arm.
         const along = (p[0] - j.p[0]) * a.dir[0] + (p[2] - j.p[1]) * a.dir[1];
@@ -9500,11 +9677,10 @@ export function buildTile(
             group,
             phase,
           );
-          m.box(
+          pushButton(
+            m,
             [fp[0] + l[0] * 0.11, fp[1] + 1.25, fp[2] + l[1] * 0.11],
-            [0.1, 0.15, 0.06],
-            packMat(CM.paint, 0x92),
-            Math.atan2(l[0], l[1]),
+            l,
           );
         }
         // Regulatory sign beyond the crossing on the approach's kerb side,
