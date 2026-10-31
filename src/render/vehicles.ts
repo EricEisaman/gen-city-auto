@@ -12,6 +12,14 @@ import type {VehicleVariant} from '../workers/vehicle-worker.ts';
 import type {DrawHook, Renderer} from './renderer.ts';
 
 const INSTANCE_FLOATS = 44;
+
+interface Group {
+  part: Part;
+  lod: number;
+  body: boolean;
+  data: Float32Array;
+  n: number;
+}
 const MAX_INSTANCES = 8192;
 
 interface Part {
@@ -53,16 +61,29 @@ export interface VehicleInstance {
 
 const tmp = mat4.create();
 
+// Per-instance part matrices come from a ring of scratch matrices (no
+// allocation per wheel / rotor): each is consumed (copied by push) within the
+// same part, long before the ring wraps.
+const ring = Array.from({length: 16}, () => new Float32Array(16));
+let ringIndex = 0;
+const scratch = () => ring[ringIndex++ & 15];
+
+function setM(...v: number[]): Mat4 {
+  const m = scratch();
+  for (let i = 0; i < 16; i++) m[i] = v[i];
+  return m;
+}
+
 function rotX(a: number): Mat4 {
   const c = Math.cos(a),
     s = Math.sin(a);
-  return new Float32Array([1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]);
+  return setM(1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1);
 }
 
 function rotY(a: number): Mat4 {
   const c = Math.cos(a),
     s = Math.sin(a);
-  return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]);
+  return setM(c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1);
 }
 
 function rotAxis(axis: Vec3, a: number): Mat4 {
@@ -70,7 +91,7 @@ function rotAxis(axis: Vec3, a: number): Mat4 {
   const c = Math.cos(a),
     s = Math.sin(a),
     t = 1 - c;
-  return new Float32Array([
+  return setM(
     t * x * x + c,
     t * x * y + s * z,
     t * x * z - s * y,
@@ -87,32 +108,15 @@ function rotAxis(axis: Vec3, a: number): Mat4 {
     0,
     0,
     1,
-  ]);
+  );
 }
 
 function translate(p: Vec3): Mat4 {
-  return new Float32Array([
-    1,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    p[0],
-    p[1],
-    p[2],
-    1,
-  ]);
+  return setM(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, p[0], p[1], p[2], 1);
 }
 
 const mul = (...ms: Mat4[]) =>
-  ms.reduce((acc, m) => mat4.multiply(mat4.create(), acc, m));
+  ms.reduce((acc, m) => mat4.multiply(scratch(), acc, m));
 
 export class VehicleRenderer implements DrawHook {
   readonly name = 'vehicles';
@@ -137,10 +141,11 @@ export class VehicleRenderer implements DrawHook {
   private shadowPipe!: GPURenderPipeline;
   private frameBuffer: GPUBuffer;
   private shadowViews: GPUBuffer[];
-  private groups: Map<
-    string,
-    {part: Part; lod: number; body: boolean; data: number[]}
-  > = new Map();
+  // Instance groups (one draw each) persist across frames so their
+  // Float32Array storage is reused; `order` lists this frame's groups in
+  // first-use order (the draw order).
+  private groups: Map<number, Group> = new Map();
+  private order: Group[] = [];
   eye: Vec3 = [0, 0, 0];
   private contacts: {d: number; v: number[]}[] = [];
   private lodMemory = new WeakMap<Float32Array, number>();
@@ -336,12 +341,13 @@ export class VehicleRenderer implements DrawHook {
 
   begin(eye: Vec3) {
     this.eye = eye;
-    this.groups.clear();
+    for (const g of this.order) g.n = 0;
+    this.order = [];
     this.contacts = [];
   }
 
   private push(
-    key: string,
+    key: number,
     part: Part,
     lod: number,
     body: boolean,
@@ -350,19 +356,33 @@ export class VehicleRenderer implements DrawHook {
     inst: VehicleInstance,
   ) {
     let g = this.groups.get(key);
-    if (!g) this.groups.set(key, (g = {part, lod, body, data: []}));
-    g.data.push(
-      ...model,
-      ...prev,
-      ...inst.color,
-      inst.metallic,
-      ...inst.color2,
-      0.2,
-      inst.lights,
-      inst.brake,
-      inst.indicator,
-      0.15,
-    );
+    if (!g) {
+      g = {part, lod, body, data: new Float32Array(INSTANCE_FLOATS * 16), n: 0};
+      this.groups.set(key, g);
+    }
+    if (g.n === 0) this.order.push(g);
+    if ((g.n + 1) * INSTANCE_FLOATS > g.data.length) {
+      const grown = new Float32Array(g.data.length * 2);
+      grown.set(g.data);
+      g.data = grown;
+    }
+    const d = g.data;
+    const o = g.n * INSTANCE_FLOATS;
+    d.set(model, o);
+    d.set(prev, o + 16);
+    d[o + 32] = inst.color[0];
+    d[o + 33] = inst.color[1];
+    d[o + 34] = inst.color[2];
+    d[o + 35] = inst.metallic;
+    d[o + 36] = inst.color2[0];
+    d[o + 37] = inst.color2[1];
+    d[o + 38] = inst.color2[2];
+    d[o + 39] = 0.2;
+    d[o + 40] = inst.lights;
+    d[o + 41] = inst.brake;
+    d[o + 42] = inst.indicator;
+    d[o + 43] = 0.15;
+    g.n++;
   }
 
   add(inst: VehicleInstance) {
@@ -386,8 +406,9 @@ export class VehicleRenderer implements DrawHook {
     const lod = inst.lod ?? (dist < b0 * k(0) ? 0 : dist < b1 * k(1) ? 1 : 2);
     this.lodMemory.set(inst.model, lod);
     const L = v.lods[lod];
-    const key = `${inst.variant}|${lod}`;
-    this.push(`${key}|body`, L.body, lod, true, m, inst.prevModel, inst);
+    // Group key: variant, LOD, part (0 body, 1 wheel, 2 steering, 3+ rotors).
+    const key = (inst.variant * 4 + lod) * 64;
+    this.push(key, L.body, lod, true, m, inst.prevModel, inst);
     if (
       dist < 160 &&
       v.info.kind !== 'person' &&
@@ -421,9 +442,9 @@ export class VehicleRenderer implements DrawHook {
           rotY((w.steer ? inst.steer : 0) + (left ? Math.PI : 0)),
           rotX(left ? -inst.wheelSpin : inst.wheelSpin),
         );
-        const wm = mat4.multiply(mat4.create(), m, local);
-        const wp = mat4.multiply(mat4.create(), inst.prevModel, local);
-        this.push(`${key}|wheel`, L.wheel!, lod, false, wm, wp, inst);
+        const wm = mat4.multiply(scratch(), m, local);
+        const wp = mat4.multiply(scratch(), inst.prevModel, local);
+        this.push(key + 1, L.wheel!, lod, false, wm, wp, inst);
         void k;
       });
     } else if (L.wheel) {
@@ -433,12 +454,12 @@ export class VehicleRenderer implements DrawHook {
           rotY(w.position[0] < 0 ? Math.PI : 0),
         );
         this.push(
-          `${key}|wheel`,
+          key + 1,
           L.wheel!,
           lod,
           false,
-          mat4.multiply(mat4.create(), m, local),
-          mat4.multiply(mat4.create(), inst.prevModel, local),
+          mat4.multiply(scratch(), m, local),
+          mat4.multiply(scratch(), inst.prevModel, local),
           inst,
         );
       });
@@ -459,12 +480,12 @@ export class VehicleRenderer implements DrawHook {
         rotAxis(r.axis, angle(inst.prevRotor ?? inst.rotor)),
       );
       this.push(
-        `${key}|rotor${k}`,
+        key + 3 + k,
         L.rotors[k],
         lod,
         false,
-        mat4.multiply(mat4.create(), m, local),
-        mat4.multiply(mat4.create(), inst.prevModel, prevLocal),
+        mat4.multiply(scratch(), m, local),
+        mat4.multiply(scratch(), inst.prevModel, prevLocal),
         inst,
       );
     });
@@ -476,12 +497,12 @@ export class VehicleRenderer implements DrawHook {
         rotAxis([0, 0, 1], -inst.steer * 6),
       );
       this.push(
-        `${key}|steer`,
+        key + 2,
         L.steering,
         lod,
         false,
-        mat4.multiply(mat4.create(), m, local),
-        mat4.multiply(mat4.create(), inst.prevModel, local),
+        mat4.multiply(scratch(), m, local),
+        mat4.multiply(scratch(), inst.prevModel, local),
         inst,
       );
     }
@@ -495,10 +516,13 @@ export class VehicleRenderer implements DrawHook {
     this.renderer.setContacts(cd, cn);
     this.draws = [];
     let n = 0;
-    for (const g of this.groups.values()) {
-      const count = g.data.length / INSTANCE_FLOATS;
+    for (const g of this.order) {
+      const count = g.n;
       if (n + count > MAX_INSTANCES) break;
-      this.instanceData.set(g.data, n * INSTANCE_FLOATS);
+      this.instanceData.set(
+        g.data.subarray(0, count * INSTANCE_FLOATS),
+        n * INSTANCE_FLOATS,
+      );
       this.draws.push({
         part: g.part,
         first: n,

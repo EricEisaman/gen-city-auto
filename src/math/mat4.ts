@@ -5,6 +5,8 @@ import type {Vec3} from './vec.ts';
 
 export type Mat4 = Float32Array;
 
+const mulScratch = new Float32Array(16);
+
 export const mat4 = {
   create(): Mat4 {
     return mat4.identity(new Float32Array(16));
@@ -22,7 +24,8 @@ export const mat4 = {
   },
 
   multiply(out: Mat4, a: Mat4, b: Mat4): Mat4 {
-    const r = new Float32Array(16);
+    // Into a shared scratch first (out may alias a or b), with no allocation.
+    const r = mulScratch;
     for (let c = 0; c < 4; c++) {
       for (let row = 0; row < 4; row++) {
         r[c * 4 + row] =
