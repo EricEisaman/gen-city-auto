@@ -661,18 +661,49 @@ export function clusterize(
   };
   const lo: Vec3 = [Infinity, Infinity, Infinity];
   const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
-  let t = 0;
   const vertexWords = m.u32;
   const vertexF = m.f32;
+  // Opaque triangles first, then the alpha-tested ones (each in index
+  // order), so clusters never mix the two and most of the city draws
+  // through the opaque (no-discard) pipeline.
+  const triAlpha = (tri: number) => {
+    for (let k = 0; k < 3; k++) {
+      const g = m.idx[tri * 3 + k];
+      if (
+        alphaTested(
+          vertexWords[g * VERTEX_WORDS + 6],
+          vertexWords[g * VERTEX_WORDS + 7],
+        )
+      )
+        return true;
+    }
+    return false;
+  };
+  const order = new Uint32Array(triCount);
+  const isAlpha = new Uint8Array(triCount);
+  let nOpaque = 0;
+  for (let i = 0; i < triCount; i++)
+    if (!(isAlpha[i] = +triAlpha(i))) nOpaque++;
+  {
+    let a = 0;
+    let b = nOpaque;
+    for (let i = 0; i < triCount; i++) order[isAlpha[i] ? b++ : a++] = i;
+  }
+  let t = 0;
   while (t < triCount) {
     const local = new Map<number, number>();
     const vstart = verts.length / VERTEX_WORDS;
     const tstart = tris.length;
     let cl: Vec3 = [Infinity, Infinity, Infinity];
     let ch: Vec3 = [-Infinity, -Infinity, -Infinity];
-    let alpha = false;
-    while (t < triCount && tris.length - tstart < CLUSTER_TRIS) {
-      const ids = [m.idx[t * 3], m.idx[t * 3 + 1], m.idx[t * 3 + 2]];
+    const alpha = t >= nOpaque;
+    while (
+      t < triCount &&
+      tris.length - tstart < CLUSTER_TRIS &&
+      t >= nOpaque === alpha
+    ) {
+      const tri = order[t];
+      const ids = [m.idx[tri * 3], m.idx[tri * 3 + 1], m.idx[tri * 3 + 2]];
       const need = ids.filter(i => !local.has(i)).length;
       if (local.size + need > CLUSTER_VERTS) break;
       let packed = 0;
@@ -683,13 +714,6 @@ export function clusterize(
           local.set(g, l);
           for (let w = 0; w < VERTEX_WORDS; w++)
             verts.push(vertexWords[g * VERTEX_WORDS + w]);
-          if (
-            alphaTested(
-              vertexWords[g * VERTEX_WORDS + 6],
-              vertexWords[g * VERTEX_WORDS + 7],
-            )
-          )
-            alpha = true;
           const x = vertexF[g * VERTEX_WORDS],
             y = vertexF[g * VERTEX_WORDS + 1],
             z = vertexF[g * VERTEX_WORDS + 2];

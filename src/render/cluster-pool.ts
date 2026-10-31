@@ -1,7 +1,12 @@
 // GPU pool of city clusters: one big vertex buffer, triangle buffer and cluster
 // table shared by every tile, with simple first-fit range allocators.
 
-import {CLUSTER_WORDS, VERTEX_WORDS, type ClusterData} from '../city/cmesh.ts';
+import {
+  CLUSTER_ALPHA,
+  CLUSTER_WORDS,
+  VERTEX_WORDS,
+  type ClusterData,
+} from '../city/cmesh.ts';
 
 class RangeAllocator {
   private free: [number, number][] = [];
@@ -59,6 +64,8 @@ export interface PoolHandle {
   tn: number;
   c: number;
   cn: number;
+  /** Alpha-tested clusters among them (stats). */
+  an?: number;
 }
 
 export class ClusterPool {
@@ -100,6 +107,8 @@ export class ClusterPool {
   }
 
   /** Number of cluster slots the cull pass must scan. */
+  private alphaClusters = 0;
+
   get clusterHighWater() {
     return this.clusters.top;
   }
@@ -109,6 +118,7 @@ export class ClusterPool {
       verts: this.verts.used,
       tris: this.tris.used,
       clusters: this.clusters.used,
+      alphaClusters: this.alphaClusters,
     };
   }
 
@@ -126,19 +136,23 @@ export class ClusterPool {
       return null;
     }
     const cl = d.clusters.slice();
+    let an = 0;
     for (let i = 0; i < cn; i++) {
       cl[i * CLUSTER_WORDS + 4] += v;
       cl[i * CLUSTER_WORDS + 5] += t;
+      if ((cl[i * CLUSTER_WORDS + 6] >>> 12) & CLUSTER_ALPHA) an++;
     }
+    this.alphaClusters += an;
     const q = this.device.queue;
     q.writeBuffer(this.vertexBuffer, v * VERTEX_WORDS * 4, d.vertices);
     q.writeBuffer(this.triBuffer, t * 4, d.tris);
     q.writeBuffer(this.clusterBuffer, c * CLUSTER_WORDS * 4, cl);
-    return {v, vn, t, tn, c, cn};
+    return {v, vn, t, tn, c, cn, an};
   }
 
   free(h: PoolHandle) {
     if (h.cn === 0) return;
+    this.alphaClusters -= h.an ?? 0;
     // Zero the cluster records so culling skips them.
     this.device.queue.writeBuffer(
       this.clusterBuffer,

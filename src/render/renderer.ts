@@ -1882,6 +1882,7 @@ export class Renderer {
     const ps = this.pool.stats;
     Object.assign(this.stats, {
       clusters: ps.clusters,
+      alphaClusters: ps.alphaClusters,
       tris: ps.tris,
       verts: ps.verts,
       lights: this.lightCount,
