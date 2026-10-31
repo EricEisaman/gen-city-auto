@@ -1687,7 +1687,13 @@ export class Renderer {
     let post = t.lit;
     {
       const taa = !this.off('taa');
-      const mdof = taa && !this.off('mdof');
+      // Motion blur / DOF only when either is in use (most shots have no
+      // DOF, and no blur while the car stands still): otherwise tonemap
+      // reads the TAA output directly (the pass would copy it unchanged).
+      const blurOrDof =
+        (v.motionBlur ?? 0) > 0 ||
+        ((v.dofAperture ?? 0) > 0 && (v.focus ?? 0) > 0);
+      const mdof = taa && !this.off('mdof') && blurOrDof;
       // What bloom reads (the resolved frame) and what tonemap reads.
       const resolved = taa ? histNext : t.lit;
       post = mdof ? t.lit : resolved;
