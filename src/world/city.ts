@@ -89,6 +89,14 @@ export class City {
           case 'progress':
             progress(m.msg, m.f);
             break;
+          case 'band':
+            // The primary's curb band: the others' tile context waits on it
+            // (they never build the base mesh; see city-worker.ts).
+            for (const o of this.workers.slice(1)) {
+              const req: WorkerRequest = {type: 'band', band: m.band};
+              o.postMessage(req);
+            }
+            break;
           case 'base':
             this.onBase(m.summary, m.base, m.piers, m.lights, m.landUse);
             resolveBase();

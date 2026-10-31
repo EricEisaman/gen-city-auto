@@ -87,6 +87,12 @@ export interface RoadGeom {
   }[];
 }
 
+/**
+ * Furthest (m) a kerb-return crossing may extrapolate past its arc step
+ * before it is clamped onto the step (see cross() in computeRoadGeom).
+ */
+const MAX_CROSS_OVERSHOOT = 250;
+
 /** Grid of block curb vertices, for matching junction corners to blocks. */
 function curbGrid(L: CityLayout) {
   const g = new Map<number, [number, number][]>();
@@ -342,7 +348,15 @@ export function computeRoadGeom(L: CityLayout): RoadGeom {
       const arcH = arcPts.map((_, m) => hA + ((hB - hA) * m) / (n - 1));
       const cross = (p: Vec2, r: Vec2, a: Arm): Vec2 => {
         const u = along(p, a);
-        const t = (a.setback - u) / (along(r, a) - u || 1);
+        let t = (a.setback - u) / (along(r, a) - u || 1);
+        // A step nearly parallel to the mouth line extrapolates without
+        // bound (river seed 5: t ~ 1e5 put a plate vertex 55 km out, and
+        // landing()'s plate grid then took millions of cells, ~700 MB per
+        // worker). Clamp only such runaway crossings, so every other plate
+        // keeps its shape.
+        const run = Math.hypot(r[0] - p[0], r[1] - p[1]);
+        if ((t < 0 ? -t : t - 1) * run > MAX_CROSS_OVERSHOOT)
+          t = Math.max(0, Math.min(1, t));
         return [p[0] + (r[0] - p[0]) * t, p[1] + (r[1] - p[1]) * t];
       };
       const sA: Vec2[] = [mAl];

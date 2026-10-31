@@ -10,7 +10,7 @@ await withServer(async base => {
     }, {timeout: 180000});
     const bad = r.logs.filter(l => /\[WebGPU\]|\[WGSL error\]|pageerror|\[main\]|\[frame\]/.test(l));
     const ok = r.ready && !r.errors.length && !bad.length;
-    console.log(`${ok ? 'PASS' : 'FAIL'} ?${q} load ${(r.loadTime / 1000).toFixed(1)}s ${JSON.stringify(r.result ?? {})}`);
+    console.log(`${ok ? 'PASS' : 'FAIL'} ?${q} load ${(r.loadTime / 1000).toFixed(1)}s peak renderer RSS ${(r.peakRss / 1024).toFixed(1)} GB ${JSON.stringify(r.result ?? {})}`);
     if (!ok) {
       failed = true;
       console.log([...r.errors, ...bad].join('\n').slice(0, 3000));

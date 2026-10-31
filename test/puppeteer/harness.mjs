@@ -3,9 +3,37 @@
 // headless Chrome's compositor stalls (requestAnimationFrame stops ticking).
 import puppeteer from 'puppeteer';
 import fs from 'node:fs/promises';
+import {execFile} from 'node:child_process';
 import {startServer} from '../../server.mjs';
 
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Largest RSS (MB) among the descendants of process `root` (the browser):
+ * the renderer, which holds the page and all its workers.
+ */
+function maxChildRss(root) {
+  return new Promise(res =>
+    execFile('ps', ['-axo', 'pid=,ppid=,rss='], (err, out) => {
+      if (err) return res(0);
+      const kids = new Map();
+      for (const l of out.trim().split('\n')) {
+        const [pid, ppid, rss] = l.trim().split(/\s+/).map(Number);
+        if (!kids.has(ppid)) kids.set(ppid, []);
+        kids.get(ppid).push([pid, rss]);
+      }
+      let max = 0;
+      const walk = p => {
+        for (const [pid, rss] of kids.get(p) ?? []) {
+          max = Math.max(max, rss);
+          walk(pid);
+        }
+      };
+      walk(root);
+      res(max / 1024);
+    }),
+  );
+}
 
 export async function withServer(fn) {
   const server = await startServer(0);
@@ -23,6 +51,13 @@ export async function withServer(fn) {
 export async function withPage(url, fn, {width = 1280, height = 720, timeout = 90000, attempts = 4, args = []} = {}) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const browser = await puppeteer.launch({headless: true, protocolTimeout: 180000, args});
+    // Peak renderer RSS while loading (a city once ran the renderer out of
+    // memory before window.__ready).
+    let peakRss = 0;
+    const pid = browser.process()?.pid;
+    const rssTimer = pid
+      ? setInterval(() => maxChildRss(pid).then(v => (peakRss = Math.max(peakRss, v))), 250)
+      : null;
     try {
       const page = await browser.newPage();
       await page.setViewport({width, height});
@@ -64,8 +99,9 @@ export async function withPage(url, fn, {width = 1280, height = 720, timeout = 9
       }
       const result = ready ? await fn(page, logs) : undefined;
       const errors = await page.evaluate(() => window.__errors || []);
-      return {logs, errors, ready, loadTime: Date.now() - t0, result};
+      return {logs, errors, ready, loadTime: Date.now() - t0, peakRss, result};
     } finally {
+      if (rssTimer) clearInterval(rssTimer);
       await browser.close();
     }
   }

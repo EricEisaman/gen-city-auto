@@ -1461,6 +1461,35 @@ class BandTris {
 }
 const bandTrisOf = new WeakMap<RoadGeom, BandTris>();
 
+/** The curb band triangles blocks() recorded for `geom`, for tileGeom(). */
+export function bandTrisData(geom: RoadGeom): Float64Array {
+  return new Float64Array(bandTrisOf.get(geom)?.tris ?? []);
+}
+
+/**
+ * What tile generation needs from the base build without building the base
+ * mesh (several GB of transient memory across the tile workers): the road
+ * geometry, the road mask and the curb band triangles that the primary
+ * worker's buildBase() recorded (bandTrisData() of its geometry). The
+ * lazily built lookups (landing, light spots, tree shifts) are rebuilt on
+ * demand from the same inputs, so tiles come out identical.
+ */
+export function tileGeom(
+  L: CityLayout,
+  band: Float64Array,
+): {geom: RoadGeom; roadMask: Uint8Array} {
+  const geom = computeRoadGeom(L);
+  const bt = new BandTris();
+  for (let i = 0; i < band.length; i += 9)
+    bt.add(
+      [band[i], band[i + 1], band[i + 2]],
+      [band[i + 3], band[i + 4], band[i + 5]],
+      [band[i + 6], band[i + 7], band[i + 8]],
+    );
+  bandTrisOf.set(geom, bt);
+  return {geom, roadMask: roadMask(L)};
+}
+
 /**
  * Height of the curb band's surface at (x, z), or null where there is no
  * band (or the base mesh was not built in this realm: the tile worker
@@ -5638,6 +5667,9 @@ export function landing(L: CityLayout, geom: RoadGeom): Landing {
   const hit = landings.get(L);
   if (hit) return hit;
   const key = (gx: number, gz: number) => (gz + 4096) * 8192 + gx + 4096;
+  // Boxes are clipped to the map (plus a margin): nothing queries beyond
+  // it, and a stray far vertex would otherwise fill millions of cells.
+  const lim = L.params.size / 2 + 256;
   const add = (
     g: Map<number, number[]>,
     x0: number,
@@ -5646,6 +5678,10 @@ export function landing(L: CityLayout, geom: RoadGeom): Landing {
     z1: number,
     v: number,
   ) => {
+    x0 = Math.max(x0, -lim);
+    z0 = Math.max(z0, -lim);
+    x1 = Math.min(x1, lim);
+    z1 = Math.min(z1, lim);
     for (
       let gz = Math.floor(z0 / LAND_CELL);
       gz <= Math.floor(z1 / LAND_CELL);
