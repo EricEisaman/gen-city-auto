@@ -18,13 +18,19 @@ class RangeAllocator {
   }
 
   alloc(n: number): number {
+    // Best fit: small shells (LOD1 / LOD2 swap in and out all the time) go
+    // into small holes and leave the big ones for LOD0 tiles; first fit
+    // scattered them through every hole until no LOD0 tile fit any more.
+    let best = -1;
     for (let i = 0; i < this.free.length; i++) {
-      const [start, len] = this.free[i];
-      if (len >= n) {
-        if (len === n) this.free.splice(i, 1);
-        else this.free[i] = [start + n, len - n];
-        return start;
-      }
+      const len = this.free[i][1];
+      if (len >= n && (best < 0 || len < this.free[best][1])) best = i;
+    }
+    if (best >= 0) {
+      const [start, len] = this.free[best];
+      if (len === n) this.free.splice(best, 1);
+      else this.free[best] = [start + n, len - n];
+      return start;
     }
     if (this.top + n > this.capacity) return -1;
     const s = this.top;

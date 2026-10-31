@@ -1,5 +1,6 @@
-// City streaming: runs the generation workers, uploads base geometry, keeps
-// LOD1 shells for every tile resident and streams LOD0 detail near the camera.
+// City streaming: runs the generation workers, uploads base geometry, keeps a
+// shell resident for every tile (LOD1 within lod2Dist of the camera, the
+// thinner LOD2 beyond: city/lod.ts) and streams LOD0 detail near the camera.
 // Also selects the point lights near the camera each frame.
 
 import type {ClusterData} from '../city/cmesh.ts';
@@ -15,13 +16,24 @@ import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
 
 interface TileState {
+  lod2: PoolHandle | null;
   lod1: PoolHandle | null;
   lod0: PoolHandle | null;
   lights1: Float32Array;
   lights0: Float32Array;
   pending0: boolean;
   pending1: boolean;
+  pending2: boolean;
 }
+
+/**
+ * LOD1 / LOD2 residency band around lod2Dist: a tile asks for the shell it
+ * is about to need this far before the switch, and frees the one it no
+ * longer shows this far past it, so a moving camera always has the next
+ * shell ready (the swap itself is at lod2Dist, like LOD0 / LOD1's).
+ */
+const SHELL_PREFETCH = 100;
+const SHELL_KEEP = 150;
 
 type Progress = (msg: string, f: number) => void;
 
@@ -50,9 +62,18 @@ export class City {
   private candSrc = new Uint32Array(8192);
   private candI = new Uint32Array(8192);
   lod0Radius = 520;
+  /**
+   * Tiles farther than this show LOD2 (city/lod.ts); Infinity = LOD1
+   * everywhere. Set before load (?lod2=metres, 0 = off).
+   */
+  lod2Dist = 1500;
   /** Show every tile at LOD1 (asset lab: judge the distant shell up close). */
   forceLod1 = false;
-  stats = {lod0: 0, lod1: 0, queue: 0};
+  /** Show every tile at LOD2 (asset lab). */
+  forceLod2 = false;
+  stats = {lod0: 0, lod1: 0, lod2: 0, queue: 0};
+  /** Until this time (ms) the shell band has no prefetch (pool was full). */
+  private tightUntil = 0;
   private lab?: LabSpec;
 
   constructor(renderer: Renderer, type: CityType, seed: number, lab?: LabSpec) {
@@ -110,6 +131,8 @@ export class City {
             this.pump();
             break;
           case 'error':
+            // (After loading nothing awaits the promise: log it as well.)
+            console.error(`[city worker ${i}] ${m.message}`);
             rejectAll(new Error(`[city worker ${i}] ${m.message}`));
             break;
         }
@@ -126,14 +149,16 @@ export class City {
     }
     await baseDone;
     await allReady;
-    // Every tile gets its LOD1 shell; tiles near the focus get LOD0 first.
+    // Every tile gets its shell (LOD1 near, LOD2 far); tiles near the focus
+    // get LOD0 first.
     const total = this.tilesPerSide * this.tilesPerSide;
-    for (let t = 0; t < total; t++) this.queue.push({tile: t, lod: 1});
     this.updateStreaming(focus(), true);
     this.pump();
     await new Promise<void>(res => {
       const check = () => {
-        const done1 = this.tiles.filter(s => !s.pending1).length;
+        const done1 = this.tiles.filter(
+          s => s.lod1 || s.lod2 || (!s.pending1 && !s.pending2),
+        ).length;
         const near = this.nearTiles(focus(), this.lod0Radius);
         const done0 = near.filter(t => this.tiles[t].lod0).length;
         progress(
@@ -164,12 +189,14 @@ export class City {
     const total = this.tilesPerSide * this.tilesPerSide;
     this.tileLods = new Uint32Array(total).fill(1);
     this.tiles = Array.from({length: total}, () => ({
+      lod2: null,
       lod1: null,
       lod0: null,
       lights1: new Float32Array(0),
       lights0: new Float32Array(0),
       pending0: false,
-      pending1: true,
+      pending1: false,
+      pending2: false,
     }));
     this.renderer.setTerrain(
       L.heights,
@@ -296,11 +323,22 @@ export class City {
     lights: Float32Array,
   ) {
     const s = this.tiles[tile];
-    const h = this.renderer.uploadClusters(clusters);
+    let h = this.renderer.uploadClusters(clusters);
+    // Pool full (or too fragmented): drop the shells in the LOD1 / LOD2
+    // band that are not on show and try once more.
+    if (!h && clusters.clusterCount > 0 && this.reclaimShells())
+      h = this.renderer.uploadClusters(clusters);
     if (!h && clusters.clusterCount > 0)
       console.warn(`city: cluster pool full, tile ${tile} LOD${lod} dropped`);
-    if (lod === 1) {
+    if (lod === 2) {
+      s.pending2 = false;
+      if (s.lod2) this.renderer.freeClusters(s.lod2);
+      s.lod2 = h;
+      // (Shell lights are the same at LOD1 and LOD2.)
+      s.lights1 = lights;
+    } else if (lod === 1) {
       s.pending1 = false;
+      if (s.lod1) this.renderer.freeClusters(s.lod1);
       s.lod1 = h;
       s.lights1 = lights;
     } else {
@@ -309,6 +347,27 @@ export class City {
       s.lod0 = h;
       s.lights0 = lights;
     }
+  }
+
+  /** Frees every resident shell its tile is not showing; true if any. */
+  private reclaimShells() {
+    let freed = false;
+    // For a while, ask only for the shell a tile shows (no prefetch band),
+    // or the band would refill the pool straight away.
+    this.tightUntil = performance.now() + 10000;
+    for (let t = 0; t < this.tiles.length; t++) {
+      const s = this.tiles[t];
+      if (!s.lod1 || !s.lod2) continue;
+      if (this.tileLods[t] === 2) {
+        this.renderer.freeClusters(s.lod1);
+        s.lod1 = null;
+      } else {
+        this.renderer.freeClusters(s.lod2);
+        s.lod2 = null;
+      }
+      freed = true;
+    }
+    return freed;
   }
 
   private pump() {
@@ -325,12 +384,17 @@ export class City {
         this.workers[i].postMessage(req);
       }
     }
-    this.stats.queue = this.queue.length;
+    // Queued plus in flight (the asset lab waits for 0).
+    this.stats.queue = this.queue.length + this.busy.reduce((a, b) => a + b, 0);
   }
 
-  /** Request/evict LOD0 tiles around `p` and publish per-tile LOD choices. */
+  /**
+   * Request/evict LOD0 tiles around `p`, keep each tile's LOD1 or LOD2
+   * shell resident and publish per-tile LOD choices.
+   */
   updateStreaming(p: Vec3, initial = false) {
     if (!this.tiles.length) return;
+    this.updateShells(p, initial);
     const want = new Set(this.nearTiles(p, this.lod0Radius));
     // Prioritize LOD0 jobs by distance (they jump ahead of LOD1 jobs).
     const add: number[] = [];
@@ -345,25 +409,82 @@ export class City {
     if (add.length) this.queue.unshift(...add.map(tile => ({tile, lod: 0})));
     let lod0 = 0;
     let lod1 = 0;
+    let lod2 = 0;
+    const forced = this.forceLod1 || this.forceLod2;
     for (let t = 0; t < this.tiles.length; t++) {
       const s = this.tiles[t];
-      if (s.lod0 && this.tileDist(t, p) > this.lod0Radius + 250) {
+      const d = this.tileDist(t, p);
+      if (s.lod0 && d > this.lod0Radius + 250) {
         this.renderer.freeClusters(s.lod0);
         s.lod0 = null;
         s.lights0 = new Float32Array(0);
       }
-      const use0 =
-        !!s.lod0 &&
-        !this.forceLod1 &&
-        this.tileDist(t, p) < this.lod0Radius + 120;
-      this.tileLods[t] = use0 ? 0 : 1;
-      if (use0) lod0++;
-      else if (s.lod1) lod1++;
+      const use0 = !!s.lod0 && !forced && d < this.lod0Radius + 120;
+      // The shell for this distance (40 m hysteresis), or whichever one
+      // is resident.
+      const edge = this.lod2Dist + (this.tileLods[t] === 2 ? -40 : 0);
+      const far = this.forceLod2 || (!this.forceLod1 && d >= edge);
+      let lod = 1;
+      if (use0) lod = 0;
+      else if (s.lod2 && (far || !s.lod1)) lod = 2;
+      this.tileLods[t] = lod;
+      if (lod === 0) lod0++;
+      else if (lod === 1 && s.lod1) lod1++;
+      else if (lod === 2) lod2++;
     }
     this.renderer.setTileLods(this.tileLods);
     this.stats.lod0 = lod0;
     this.stats.lod1 = lod1;
+    this.stats.lod2 = lod2;
     if (!initial) this.pump();
+  }
+
+  /**
+   * Shell residency: LOD1 within lod2Dist (+ SHELL_PREFETCH), LOD2 beyond
+   * (- SHELL_PREFETCH); a shell is freed once the other one is resident and
+   * the tile is SHELL_KEEP past the switch. New requests go to the back of
+   * the queue (behind LOD0), nearest first.
+   */
+  private updateShells(p: Vec3, initial: boolean) {
+    const add: {tile: number; lod: number; d: number}[] = [];
+    const pre = performance.now() < this.tightUntil ? 0 : SHELL_PREFETCH;
+    for (let t = 0; t < this.tiles.length; t++) {
+      const s = this.tiles[t];
+      const d = this.tileDist(t, p);
+      const want1 =
+        this.forceLod1 || (!this.forceLod2 && d < this.lod2Dist + pre);
+      const want2 =
+        this.forceLod2 || (!this.forceLod1 && d >= this.lod2Dist - pre);
+      if (want1 && !s.lod1 && !s.pending1) {
+        s.pending1 = true;
+        add.push({tile: t, lod: 1, d});
+      }
+      if (want2 && !s.lod2 && !s.pending2) {
+        s.pending2 = true;
+        add.push({tile: t, lod: 2, d});
+      }
+      const forced = this.forceLod1 || this.forceLod2;
+      if (
+        s.lod1 &&
+        s.lod2 &&
+        (forced ? this.forceLod2 : d > this.lod2Dist + SHELL_KEEP)
+      ) {
+        this.renderer.freeClusters(s.lod1);
+        s.lod1 = null;
+      }
+      if (
+        s.lod1 &&
+        s.lod2 &&
+        (forced ? this.forceLod1 : d < this.lod2Dist - SHELL_KEEP)
+      ) {
+        this.renderer.freeClusters(s.lod2);
+        s.lod2 = null;
+      }
+    }
+    if (!add.length) return;
+    add.sort((a, b) => a.d - b.d);
+    for (const j of add) this.queue.push({tile: j.tile, lod: j.lod});
+    if (initial) this.stats.queue = this.queue.length;
   }
 
   /** Pick the nearest lights to the camera and upload them. */
@@ -451,6 +572,7 @@ export class City {
     for (const s of this.tiles) {
       if (s.lod0) this.renderer.freeClusters(s.lod0);
       if (s.lod1) this.renderer.freeClusters(s.lod1);
+      if (s.lod2) this.renderer.freeClusters(s.lod2);
     }
     for (const h of this.baseHandles) this.renderer.freeClusters(h);
     this.workers = [];

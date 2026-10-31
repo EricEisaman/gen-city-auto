@@ -58,6 +58,8 @@ export interface GameOptions {
   prof?: 'pass' | 'frame';
   /** Ablation bits (?off=..., see render/ablation.ts). */
   off?: number;
+  /** LOD2 distance in metres (?lod2=, 0 = LOD1 shells everywhere). */
+  lod2?: number;
 }
 
 export class Game {
@@ -189,6 +191,8 @@ export class Game {
     document.getElementById('loading')!.style.display = '';
     this.city?.dispose();
     this.city = new City(this.renderer, type, seed, this.opts.lab);
+    if (this.opts.lod2 !== undefined)
+      this.city.lod2Dist = this.opts.lod2 > 0 ? this.opts.lod2 : Infinity;
     let focus: Vec3 = [0, 0, 0];
     const city = this.city;
     // The asset lab knows its focus as soon as the layout arrives.
@@ -386,6 +390,7 @@ export class Game {
     this.labView = name;
     this.orbitAngle = 0.3;
     this.city!.forceLod1 = !!v.lod1;
+    this.city!.forceLod2 = !!v.lod2;
     const [yaw, pitch] = yawPitch(v.eye, v.target);
     this.freeCam.setPose(v.eye, yaw, pitch, v.fov);
     this.freeMode = true;

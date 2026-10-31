@@ -15,6 +15,11 @@ const VIEWS = [
   {name: 'skyline', hour: 17.2, weather: 'sunny', freecam: [-2400, 200, -2800, 2.34, -0.1]},
   {name: 'trees-wires', hour: 11, weather: 'cloudy', freecam: [230, 26, -340, 0.9, 0.25]},
   {name: 'aerial', hour: 15, weather: 'sunny', freecam: [0, 420, 300, 3.14, -0.6]},
+  // Far views (LOD2 tiles, far-culled base detail): night windows and signs,
+  // and a low aerial across the city.
+  {name: 'skyline-night', hour: 21, weather: 'sunny', freecam: [-2400, 200, -2800, 2.34, -0.1]},
+  {name: 'aerial-far', hour: 10, weather: 'sunny', freecam: [1800, 260, 1600, -0.8, -0.12]},
+  {name: 'aerial-far-night', hour: 23, weather: 'sunny', freecam: [1800, 260, 1600, -0.8, -0.12]},
 ];
 
 await ensureDir(outDir);
@@ -32,6 +37,11 @@ await withServer(async base => {
         g.freeCam.setPose([x, y, z], yaw, pitch);
         g.freeMode = true;
       }, v);
+      // Let streaming catch up (queued + in flight), then TAA settle.
+      for (let i = 0; i < 80; i++) {
+        await sleep(250);
+        if ((await page.evaluate(() => window.__stats.queue)) === 0) break;
+      }
       await sleep(4000);
       await page.screenshot({path: `${outDir}/${v.name}.png`});
       console.log(`${outDir}/${v.name}.png`);

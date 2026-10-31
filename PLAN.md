@@ -10,8 +10,11 @@ All milestones M0–M13 are implemented in a first version. Notes against the pl
 
 - **Geometry:** clusters with vertex pulling, GPU culling with Hi-Z occlusion and
   per-tile LOD selection are in place. Instead of a full Nanite DAG there are
-  two levels: LOD1 shells for every tile are always resident, and LOD0 detail
-  tiles stream in near the camera. An outskirts HLOD skyline extends the city
+  three levels: every tile always has a shell resident (LOD1 within 1.5 km
+  of the camera, the thinner LOD2 beyond: no leaf cards or thin props, one
+  solid blob per tree crown; city/lod.ts), and LOD0 detail tiles stream in
+  near the camera. Fine detail of the base mesh (kerbs, railings, wires, thin
+  road paint) carries a per-cluster cull distance (700-1800 m). An outskirts HLOD skyline extends the city
   3.6 km past the generated world.
 - **Lighting:** the deferred lighting is tiled per 16×16 tile in compute rather
   than clustered.

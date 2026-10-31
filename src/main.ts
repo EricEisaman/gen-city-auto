@@ -62,6 +62,7 @@ async function main() {
           ? 'frame'
           : undefined,
     off: parseOff(params.get('off')),
+    lod2: num('lod2', 1500),
   });
   await game.init();
   (window as unknown as {__game: Game}).__game = game;

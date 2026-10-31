@@ -55,6 +55,8 @@ export interface LabView {
   fov: number;
   /** Show every tile at LOD1 (the distant shell). */
   lod1?: boolean;
+  /** Show every tile at LOD2 (the far shell beyond ~1.5 km, city/lod.ts). */
+  lod2?: boolean;
 }
 
 export interface LabInfo {
@@ -821,6 +823,7 @@ export function labInfo(
     const dFar = Math.max(180, fitAt(0.47) * 1.3);
     views.far = look(from(C, d34, dFar, y0 + dFar * 0.17), C, 0.47);
     views.shell = {...views.far, lod1: true};
+    views.shell2 = {...views.far, lod2: true};
     views['far-iso'] = look(from(C, d34, Math.max(350, fit * 2.5), y0 + 60), C);
     // Aerial: 45 degrees down onto the roof, close enough that the roof
     // fills about 40 % of the frame (the top of the front facade shows).
@@ -906,6 +909,7 @@ export function labInfo(
     views.mid = look(from(J, rot(arm.dir, 0.8), 45, j.h + 30), J);
     views.far = look(from(J, rot(arm.dir, 0.35), 250, j.h + 50), J);
     views.shell = {...views.far, lod1: true};
+    views.shell2 = {...views.far, lod2: true};
     // Looking along the gutter toward the junction, 1.6 m out from the
     // kerb of the block the eye view stands on (the other side of a
     // divided road may be a flush overlap strip with no kerb at all): kerb
@@ -996,6 +1000,7 @@ export function labInfo(
     // Far: a long lens, so the viaduct is more than a sliver at 300 m.
     views.far = look(from(F, rot(l, 0.5), 300, gF + 45), F, 0.5);
     views.shell = {...views.far, lod1: true};
+    views.shell2 = {...views.far, lod2: true};
     // Station: from the street, 3/4 onto the platforms.
     const si =
       site.station >= 0

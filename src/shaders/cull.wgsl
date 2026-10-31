@@ -16,7 +16,7 @@ struct CullView {
   planes: array<vec4f, 6>,
   camPos: vec4f,       // xyz, detail cull factor (min radius/distance)
   params: vec4u,       // cluster count, use occlusion, plane count, count triangles
-  hiz: vec4f,          // hiz width, height, mip count, unused
+  hiz: vec4f,          // hiz width, height, mip count, fine-detail distance scale (0 = off)
 };
 
 struct DrawArgs {
@@ -88,6 +88,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Small details vanish at distance (flags bit 0 = detail).
   let dist = distance(center, view.camPos.xyz);
   if ((flags & 1u) != 0u && c.radius < dist * view.camPos.w) { return; }
+  // Fine detail with a cull distance (cmesh.ts CLUSTER_FAR_SHIFT), jittered
+  // per cluster (+-20 %, hashed from its centre) so it thins out over a band.
+  let farD = f32(c.packed >> 16u) * view.hiz.w;
+  if (farD > 0.0) {
+    var k = (bitcast<u32>(c.cx) * 747796405u) ^ (bitcast<u32>(c.cz) * 2891336453u);
+    k = (k ^ (k >> 16u)) * 2246822519u;
+    let h = f32(k >> 8u) / 16777216.0;
+    if (dist - c.radius > farD * (0.8 + 0.4 * h)) { return; }
+  }
   if (view.params.y != 0u && dist > c.radius * 1.5 && hizTest(center, c.radius)) { return; }
   if ((flags & 2u) != 0u) {
     let slot = atomicAdd(&argsAlpha.instanceCount, 1u);

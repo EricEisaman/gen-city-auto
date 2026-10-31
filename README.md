@@ -55,11 +55,11 @@ central signalized junction / first straight viaduct section),
 building, its streets and the neighbours within 120 m, minus any that stand
 between a preset camera and it),
 `view=<preset>`: building
-`street|facade|mid|far|shell|far-iso|aerial|rear|service|orbit` (`mid` 70 m,
+`street|facade|mid|far|shell|shell2|far-iso|aerial|rear|service|orbit` (`mid` 70 m,
 `far` 180 m at a long lens, `far-iso` the old 350 m silhouette view),
-road `eye|low|top|mid|far|shell|curb|orbit`, rail
-`side|under|along|mid|far|shell|station|orbit`. `shell` is `far` with every
-tile forced to LOD1. Traffic, pedestrians, trains and the director are off;
+road `eye|low|top|mid|far|shell|shell2|curb|orbit`, rail
+`side|under|along|mid|far|shell|shell2|station|orbit`. `shell` is `far` with every
+tile forced to LOD1, `shell2` to LOD2 (the shell past 1.5 km). Traffic, pedestrians, trains and the director are off;
 `time`, `weather`, `ui=0` and `freecam` still apply.
 
 ## Development

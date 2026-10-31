@@ -39,6 +39,7 @@ import {
   type CityLayout,
 } from './layout.ts';
 import {chainAt, type RoadGeom} from './roadgeom.ts';
+import {lod2} from './lod.ts';
 import {
   SHOP_TYPE,
   SIGN,
@@ -9298,6 +9299,11 @@ export function buildTile(
   tile: number,
   lod: number,
 ): {mesh: CMesh; lights: number[]} {
+  // LOD2 (far tiles): the LOD1 shell thinned out (city/lod.ts).
+  if (lod === 2) {
+    const r = buildTile(ctx, tile, 1);
+    return {mesh: lod2(r.mesh), lights: r.lights};
+  }
   const L = ctx.layout;
   const m = new CMesh(1 << 14, 1 << 15);
   const lights = new LightList();

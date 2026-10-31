@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {PRESETS} from '../../src/city/config.ts';
 import {bandTrisData, buildBase, tileGeom} from '../../src/city/gen-base.ts';
+import {CLUSTER_ALPHA, CM, clusterize} from '../../src/city/cmesh.ts';
 import {buildTile, makeTileContext} from '../../src/city/gen-tile.ts';
+import {LEAF_SOLID} from '../../src/city/lod.ts';
 import {generateLayout} from '../../src/city/layout.ts';
 import {computeRoadGeom} from '../../src/city/roadgeom.ts';
 
@@ -49,4 +51,35 @@ void test('tileGeom() tiles match buildBase() tiles', () => {
       );
       assert.deepEqual(rb.lights, ra.lights);
     }
+});
+
+// LOD2 (far tiles) is the LOD1 shell thinned out: deterministic, a subset of
+// LOD1's triangles plus one solid blob per tree crown, no cut-out leaves.
+void test('LOD2 tiles thin the LOD1 shell', () => {
+  const p = {...PRESETS.neon, size: 1024};
+  const L = generateLayout(p, 3);
+  const base = buildBase(L);
+  const ctx = makeTileContext(L, base.geom, base.roadMask);
+  let t1 = 0;
+  let t2 = 0;
+  for (let tile = 0; tile < 16; tile++) {
+    const a = buildTile(ctx, tile, 2).mesh;
+    const b = buildTile(ctx, tile, 2).mesh;
+    assert.deepEqual(
+      b.u32.subarray(0, b.vcount * 8),
+      a.u32.subarray(0, a.vcount * 8),
+    );
+    t1 += buildTile(ctx, tile, 1).mesh.icount;
+    t2 += a.icount;
+    for (let v = 0; v < a.vcount; v++) {
+      const mat = a.u32[v * 8 + 6];
+      if ((mat & 0xff) === CM.leaves) assert.ok(mat & (LEAF_SOLID << 8));
+    }
+    const c = clusterize(a, 2, tile, 1);
+    for (let i = 0; i < c.clusterCount; i++) {
+      const flags = (c.clusters[i * 8 + 6] >>> 12) & 0xf;
+      assert.equal(flags & CLUSTER_ALPHA, 0, `tile ${tile}: alpha cluster`);
+    }
+  }
+  assert.ok(t2 < t1 * 0.7, `LOD2 ${t2 / 3} vs LOD1 ${t1 / 3} triangles`);
 });

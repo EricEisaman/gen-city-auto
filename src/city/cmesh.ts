@@ -89,11 +89,35 @@ export const CLUSTER_WORDS = 8;
  * the opaque one, which keeps the GPU's hidden-surface removal on.
  */
 export const CLUSTER_ALPHA = 2;
+/**
+ * Cluster record bits 16-31 (packed word): the distance in metres past which
+ * the cull pass drops the cluster (0 = never), so fine detail of always-
+ * resident meshes (kerbs, railings, wires, thin road paint) goes at range.
+ * cull.wgsl jitters it per cluster (+-20 %) so the cut is not one ring.
+ */
+export const CLUSTER_FAR_SHIFT = 16;
+export const CLUSTER_FAR_MAX = 0xffff;
+/** Grid cell (m) clusterize() groups far-classed triangles by. */
+const CLUSTER_CELL = 64;
+
+/** Interleaves the low 16 bits of x and z (Z-order). */
+function morton(x: number, z: number) {
+  const spread = (v: number) => {
+    v &= 0xffff;
+    v = (v | (v << 8)) & 0x00ff00ff;
+    v = (v | (v << 4)) & 0x0f0f0f0f;
+    v = (v | (v << 2)) & 0x33333333;
+    v = (v | (v << 1)) & 0x55555555;
+    return v;
+  };
+  return (spread(x) | (spread(z) << 1)) >>> 0;
+}
 
 /** True for a vertex the city fragment shader may discard. */
 function alphaTested(mat: number, aux: number) {
   const id = mat & 0xff;
-  if (id === CM.leaves) return true;
+  // Leaf cards cut out; solid LOD2 crowns (param LEAF_SOLID) do not.
+  if (id === CM.leaves) return ((mat >>> 8) & 0x100) === 0;
   return id < 32 && ((TUBE_MATS >>> id) & 1) === 1 && (aux & 0xffff) > 0;
 }
 
@@ -164,6 +188,16 @@ export class CMesh {
     this.f32[o + 5] = v;
     this.u32[o + 6] = mat >>> 0;
     this.u32[o + 7] = aux >>> 0;
+    return this.vcount++;
+  }
+
+  /** Appends a copy of vertex `i` of `src`; returns its index. */
+  copyVertex(src: CMesh, i: number) {
+    this.growV(1);
+    this.u32.set(
+      src.u32.subarray(i * VERTEX_WORDS, (i + 1) * VERTEX_WORDS),
+      this.vcount * VERTEX_WORDS,
+    );
     return this.vcount++;
   }
 
@@ -648,6 +682,15 @@ export function clusterize(
   lod: number,
   tile: number,
   flags = 0,
+  /**
+   * Optional per-triangle cull distance (metres, 0 = never; see
+   * CLUSTER_FAR_SHIFT). Clusters then hold one distance each: triangles are
+   * grouped by it, and within a group by CLUSTER_CELL grid cell (Morton
+   * order) then index order, so pulling the fine detail out of the stream
+   * does not stretch clusters along it (index order alone made the base
+   * mesh's clusters 30 % larger, which cost the near views in culling).
+   */
+  farOf?: (tri: number) => number,
 ): ClusterData {
   const triCount = m.icount / 3;
   const verts: number[] = [];
@@ -689,6 +732,37 @@ export function clusterize(
     let b = nOpaque;
     for (let i = 0; i < triCount; i++) order[isAlpha[i] ? b++ : a++] = i;
   }
+  // Group keys per triangle: cull distance, then grid cell (each sort is
+  // stable within opaque / alpha).
+  let far: Uint16Array | null = null;
+  let cell: Uint32Array | null = null;
+  if (farOf) {
+    far = new Uint16Array(triCount);
+    cell = new Uint32Array(triCount);
+    for (let i = 0; i < triCount; i++) {
+      far[i] = Math.min(CLUSTER_FAR_MAX, Math.max(0, Math.round(farOf(i))));
+      let x = 0;
+      let z = 0;
+      for (let k = 0; k < 3; k++) {
+        const g = m.idx[i * 3 + k] * VERTEX_WORDS;
+        x += vertexF[g];
+        z += vertexF[g + 2];
+      }
+      cell[i] = morton(
+        Math.floor(x / 3 / CLUSTER_CELL) + 0x8000,
+        Math.floor(z / 3 / CLUSTER_CELL) + 0x8000,
+      );
+    }
+    const f = far;
+    const c = cell;
+    const sortPart = (lo: number, hi: number) => {
+      const part = Array.from(order.subarray(lo, hi));
+      part.sort((x, y) => f[x] - f[y] || c[x] - c[y] || x - y);
+      order.set(part, lo);
+    };
+    sortPart(0, nOpaque);
+    sortPart(nOpaque, triCount);
+  }
   let t = 0;
   while (t < triCount) {
     const local = new Map<number, number>();
@@ -697,11 +771,21 @@ export function clusterize(
     let cl: Vec3 = [Infinity, Infinity, Infinity];
     let ch: Vec3 = [-Infinity, -Infinity, -Infinity];
     const alpha = t >= nOpaque;
+    const farD = far ? far[order[t]] : 0;
+    let cellK = cell ? cell[order[t]] : 0;
     while (
       t < triCount &&
       tris.length - tstart < CLUSTER_TRIS &&
-      t >= nOpaque === alpha
+      t >= nOpaque === alpha &&
+      (!far || far[order[t]] === farD)
     ) {
+      // A new cell starts a new cluster once this one is 3/4 full (the
+      // remainder of a cell spills into the next rather than leaving tiny
+      // clusters the small-detail cull would drop at range).
+      if (cell && cell[order[t]] !== cellK) {
+        if (tris.length - tstart >= (CLUSTER_TRIS * 3) / 4) break;
+        cellK = cell[order[t]];
+      }
       const tri = order[t];
       const ids = [m.idx[tri * 3], m.idx[tri * 3 + 1], m.idx[tri * 3 + 2]];
       const need = ids.filter(i => !local.has(i)).length;
@@ -744,7 +828,8 @@ export function clusterize(
       tstart,
       (tris.length - tstart) |
         (lod << 8) |
-        ((flags | (alpha ? CLUSTER_ALPHA : 0)) << 12),
+        ((flags | (alpha ? CLUSTER_ALPHA : 0)) << 12) |
+        (farD << CLUSTER_FAR_SHIFT),
       tile,
     );
   }

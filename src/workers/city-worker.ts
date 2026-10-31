@@ -13,6 +13,7 @@ import {
   makeTileContext,
   type TileContext,
 } from '../city/gen-tile.ts';
+import {baseFarOf} from '../city/lod.ts';
 import {isolate, labInfo, type LabInfo, type LabSpec} from '../city/lab.ts';
 import {generateLayout, type CityLayout} from '../city/layout.ts';
 import type {RoadGeom} from '../city/roadgeom.ts';
@@ -83,7 +84,14 @@ function init(req: Extract<WorkerRequest, {type: 'init'}>) {
     solids: base.solids,
     lab: iso ? labInfo(iso, base.geom, base.solids) : undefined,
   };
-  const baseClusters = clusterize(base.mesh, 0, 0xffffffff, 1);
+  // Fine base detail (kerbs, railings, wires, thin paint) drops at range.
+  const baseClusters = clusterize(
+    base.mesh,
+    0,
+    0xffffffff,
+    1,
+    baseFarOf(base.mesh),
+  );
   const pierClusters = clusterize(base.piers, 0, 0xffffffff, 0);
   post(
     {

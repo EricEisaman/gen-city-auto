@@ -123,6 +123,8 @@ export class Renderer {
    * back every few frames. Off by default (one extra atomic per cluster).
    */
   cullStats = false;
+  /** Scales the fine-detail cull distances (cmesh CLUSTER_FAR_SHIFT). */
+  farCullScale = 1;
   private cullStatsBuf: GPUBuffer | null = null;
   private cullStatsBusy = false;
 
@@ -1002,10 +1004,15 @@ export class Renderer {
     f.set(frustumPlanes(viewProj), 16);
     f.set([eye[0], eye[1], eye[2], detail], 40);
     u.set(
-      [this.pool.clusterHighWater, occlusion ? 1 : 0, 6, this.cullStats ? 1 : 0],
+      [
+        this.pool.clusterHighWater,
+        occlusion ? 1 : 0,
+        6,
+        this.cullStats ? 1 : 0,
+      ],
       44,
     );
-    f.set([w, h, mips, 0], 48);
+    f.set([w, h, mips, this.off('farcull') ? 0 : this.farCullScale], 48);
     this.device.queue.writeBuffer(this.cullViewBuffers[v], 0, data);
     // Reset the indirect draw: 128 triangles * 3 vertices per instance (cluster).
     const reset = new Uint32Array([128 * 3, 0, 0, 0, 0]);

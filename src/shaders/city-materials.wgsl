@@ -8079,7 +8079,8 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       // in the crown's own shade.
       let sunSide = dot(n.xz, normalize(frame.sunDir.xz + 1e-4)) * (1.0 - nightLight());
       let deep = clamp((1.0 - smoothstep(-0.6, 0.35, n.y)) * 0.7 + (1.0 - smoothstep(-0.7, 0.2, sunSide)) * 0.35 + inner * 0.3, 0.0, 1.0);
-      s.albedo = leafTint(param, hashuf(aux)) * hue * (0.6 + 0.8 * l.r) * (0.85 + 0.3 * cell) * (1.0 - 0.3 * inner) * (1.0 - 0.25 * deep);
+      // (param 0x100: a solid LOD2 crown, lod.ts LEAF_SOLID.)
+      s.albedo = leafTint(param & 0xffu, hashuf(aux)) * hue * (0.6 + 0.8 * l.r) * (0.85 + 0.3 * cell) * (1.0 - 0.3 * inner) * (1.0 - 0.25 * deep);
       s.rough = 0.8;
       // Leaves are never fully occluded: light scatters through the crown.
       s.ao = clamp(0.6 + 0.4 * n.y, 0.4, 1.0) * (1.0 - 0.45 * inner) * (1.0 - 0.45 * deep);

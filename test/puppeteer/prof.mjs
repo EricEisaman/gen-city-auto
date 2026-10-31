@@ -186,8 +186,19 @@ await withServer(async base => {
           }
           // Visible clusters / triangles per cull view (after timing: the
           // count costs an extra atomic per visible cluster).
-          await page.evaluate(() => (window.__game.renderer.cullStats = true));
-          await sleep(300);
+          // The first readback lands late (behind the uncapped frame queue):
+          // wait for two fresh ones.
+          for (let k = 0; k < 2; k++) {
+            await page.evaluate(() => {
+              const r = window.__game.renderer;
+              r.cullStats = true;
+              delete r.stats.mainTris;
+            });
+            for (let t = 0; t < 100; t++) {
+              await sleep(100);
+              if (await page.evaluate(() => window.__game.renderer.stats.mainTris !== undefined)) break;
+            }
+          }
           res.info = await page.evaluate(() => {
             const s = window.__stats;
             return {
@@ -199,6 +210,7 @@ await withServer(async base => {
               mainTris: s.mainTris,
               shadowClusters: s.shadowClusters,
               shadowTris: s.shadowTris,
+              cascadeTris: [0, 1, 2, 3].map(c => s[`shadow${c}Tris`]),
               lod: [s.lod0, s.lod1, s.lod2],
             };
           });
