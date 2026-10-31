@@ -31,6 +31,11 @@ export const OFF_BITS = {
   c2: 1 << 23, // third shadow cascade not rendered
   facfar: 1 << 24, // city-materials: far facade path at every distance (not a saving)
   farcull: 1 << 25, // cull: no distance cut of fine base detail (a cost; A/B shots)
+  streak: 1 << 26, // lighting: no wet-ground lamp streaks / film glow (wetGround = 0)
+  reach: 1 << 27, // lighting: tile light cull without the wet streak reach (2.5x radius)
+  gndrefl: 1 << 28, // lighting: no SSR / skyline reflection on CLASS_GROUND
+  roadrain: 1 << 29, // city-materials: road / junction rain layer skipped
+  rcvcull: 1 << 30, // cull: shadow casters not culled to their cascade's receivers (A/B shots)
 } as const;
 
 export type OffName = keyof typeof OFF_BITS;

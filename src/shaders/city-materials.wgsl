@@ -3948,7 +3948,7 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   // soaked film (rough ~0.25); the crown sheds it; paint stands proud.
   // Drainage asphalt (kind 3 and half of kind 2) pools only in the gutter.
   let drains = kind == 3u || (kind == 2u && rdH(seed, 0, 70) < 0.5);
-  if (frame.weather.z > 0.001) {
+  if (frame.weather.z > 0.001 && (frame.off.x & (1u << 29u)) == 0u) {
     let tr0r = exp(-pow((abs(o) - 0.85) * 2.4, 2.0));
     var sag = 0.1;
     sag = max(sag, smoothstep(hw - 1.05, hw - 0.7, ax));
@@ -4138,7 +4138,7 @@ fn junctionMat(world: vec3f, n: vec3f, param: u32, aux: u32) -> Surf {
   // Rain: the crowned box sheds water; an even soaked film (no world-noise
   // puddle blotches, which read as dirt), streaky gloss; patch dips hold a
   // little water; sealed cracks stay glossy black lines.
-  if (frame.weather.z > 0.001) {
+  if (frame.weather.z > 0.001 && (frame.off.x & (1u << 29u)) == 0u) {
     let dryA = s.albedo;
     applyWetness(&s, world, 0.0, 0.6);
     // Wet diffuse capped at ~0.65x dry (see roadMat): the lamp pools stay

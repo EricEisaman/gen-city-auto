@@ -37,6 +37,9 @@ const OFF_CONTACT = 8u;
 const OFF_SHADOWS = 32u;
 const OFF_GTAO = 64u;
 const OFF_LIT = 524288u;
+const OFF_STREAK = 1u << 26u;
+const OFF_REACH = 1u << 27u;
+const OFF_GNDREFL = 1u << 28u;
 
 // Fraction of the sky visible from a point, from a horizon search over the
 // building/terrain height map (8 azimuths x 8 doubling steps, 0.5 m .. 64 m).
@@ -256,10 +259,15 @@ const SUN_ILLUMINANCE = 12.0;
 const TILE = 16u;
 const MAX_TILE_LIGHTS = 256u;
 
-var<workgroup> tileMinZ: atomic<u32>;
-var<workgroup> tileMaxZ: atomic<u32>;
+// Tile bounds in world space (sortKey'd): min xyz, max xyz.
+var<workgroup> tileBox: array<atomic<u32>, 6>;
+var<workgroup> tileWetBox: array<atomic<u32>, 6>;
 var<workgroup> tileCount: atomic<u32>;
 var<workgroup> tileLights: array<u32, 256>;
+// Street lights whose pool misses the tile but whose wet-film streak (out
+// to STREAK_REACH radii) may reach it: only wet-ground pixels loop these.
+var<workgroup> tileStreakCount: atomic<u32>;
+var<workgroup> tileStreak: array<u32, 256>;
 
 fn worldFromDepth(px: vec2f, depth: f32) -> vec3f {
   let uv = px * frame.resolution.zw;
@@ -587,9 +595,12 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool, thi
   if (dot(r, n) < 0.0) { return vec4f(0.0); }
   var t = 0.4 + hash21(px + frame.time.z) * 0.6;
   var prevT = 0.0;
+  // Clip space is affine along the ray: clip(world + r t) = c0 + dc t.
+  let c0 = frame.viewProj * vec4f(world, 1.0);
+  let dc = frame.viewProj * vec4f(r, 0.0);
   for (var i = 0; i < 40; i++) {
     let p = world + r * t;
-    let clip = frame.viewProj * vec4f(p, 1.0);
+    let clip = c0 + dc * t;
     if (clip.w <= 0.0) { break; }
     let ndc = clip.xyz / clip.w;
     let uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
@@ -703,55 +714,108 @@ fn applyFog(c: vec3f, world: vec3f, uv: vec2f, dist: f32, rd: vec3f) -> vec3f {
   return col;
 }
 
+// Floats as order-preserving u32 (workgroup atomic min / max of positions).
+fn sortKey(f: f32) -> u32 {
+  let b = bitcast<u32>(f);
+  return select(b | 0x80000000u, ~b, (b & 0x80000000u) != 0u);
+}
+fn unsortKey(k: u32) -> f32 {
+  return bitcast<f32>(select(~k, k & 0x7fffffffu, (k & 0x80000000u) != 0u));
+}
+
+// Squared distance from p to the box [lo, hi] (huge if the box is empty).
+fn boxDist2(p: vec3f, lo: vec3f, hi: vec3f) -> f32 {
+  if (any(lo > hi)) { return 3e38; }
+  let d = max(max(lo - p, p - hi), vec3f(0.0));
+  return dot(d, d);
+}
+
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wid: vec3u) {
   let size = vec2u(frame.resolution.xy);
   let px = min(gid.xy, size - 1u);
   let depth = textureLoad(gDepth, vec2i(px), 0);
-  if (li == 0u) {
-    atomicStore(&tileMinZ, 0x7f7fffffu);
-    atomicStore(&tileMaxZ, 0u);
-    atomicStore(&tileCount, 0u);
-  }
-  workgroupBarrier();
   let vd = viewDepth(depth);
+  if (li < 6u) {
+    // Boxes start empty (min = +max key, max = 0).
+    atomicStore(&tileBox[li], select(0u, 0xffffffffu, li < 3u));
+    atomicStore(&tileWetBox[li], select(0u, 0xffffffffu, li < 3u));
+  }
+  if (li == 0u) {
+    atomicStore(&tileCount, 0u);
+    atomicStore(&tileStreakCount, 0u);
+  }
+  let pxf = vec2f(px) + 0.5;
+  let uv = pxf * frame.resolution.zw;
+  let world = worldFromDepth(pxf, max(depth, 1e-7));
+  let a = textureLoad(gAlbedo, px, 0);
+  let nr = textureLoad(gNormal, px, 0);
+  let em = textureLoad(gEmissive, px, 0);
+  let n = decodeNormal(nr.xy);
+  let rough = nr.z;
+  let cls = u32(floor(em.a + 1e-3));
+  // Wet ground (carriageway, pavement): the water film mirrors every lamp
+  // as a long streak running toward the eye (Forza / GTA rain nights). Only
+  // where the film is glossy (paint and dry patches stay satin).
+  let wetGround = select(0.0, frame.weather.z, cls == CLASS_GROUND) * smoothstep(0.8, 0.95, n.y)
+    * (1.0 - smoothstep(0.1, 0.22, rough)) * select(1.0, 0.0, (frame.off.x & OFF_STREAK) != 0u);
+  workgroupBarrier();
+  // The tile's world-space bounds: of all its surface pixels, and of those
+  // on wet ground (the only ones that see the streak-only lights).
   if (depth > 0.0) {
-    atomicMin(&tileMinZ, bitcast<u32>(vd));
-    atomicMax(&tileMaxZ, bitcast<u32>(vd));
+    let kw = vec3u(sortKey(world.x), sortKey(world.y), sortKey(world.z));
+    for (var c = 0u; c < 3u; c++) {
+      atomicMin(&tileBox[c], kw[c]);
+      atomicMax(&tileBox[c + 3u], kw[c]);
+    }
+    if (wetGround > 0.0) {
+      for (var c = 0u; c < 3u; c++) {
+        atomicMin(&tileWetBox[c], kw[c]);
+        atomicMax(&tileWetBox[c + 3u], kw[c]);
+      }
+    }
   }
   workgroupBarrier();
-  let zMin = bitcast<f32>(atomicLoad(&tileMinZ));
-  let zMax = bitcast<f32>(atomicLoad(&tileMaxZ));
-  // Cull lights against the tile (screen rect + depth range), 256 threads in parallel.
-  let tileMin = vec2f(wid.xy * TILE);
-  let tileMax = tileMin + f32(TILE);
+  var bLo: vec3f;
+  var bHi: vec3f;
+  var wLo: vec3f;
+  var wHi: vec3f;
+  for (var c = 0u; c < 3u; c++) {
+    let a0 = atomicLoad(&tileBox[c]);
+    let a1 = atomicLoad(&tileBox[c + 3u]);
+    let w0 = atomicLoad(&tileWetBox[c]);
+    let w1 = atomicLoad(&tileWetBox[c + 3u]);
+    // (An empty box keeps lo > hi.)
+    bLo[c] = select(unsortKey(a0), 1e30, a0 > a1);
+    bHi[c] = select(unsortKey(a1), -1e30, a0 > a1);
+    wLo[c] = select(unsortKey(w0), 1e30, w0 > w1);
+    wHi[c] = select(unsortKey(w1), -1e30, w0 > w1);
+  }
+  // Cull lights against the tile's bounds, 256 threads in parallel. A light
+  // is listed if its sphere reaches the box (every pixel farther away than
+  // the radius skips it anyway; a small margin covers rounding).
+  let streaky = frame.weather.z > 0.3 && (frame.off.x & OFF_REACH) == 0u;
   for (var i = li; i < lightBuf.count; i += 256u) {
     let L = lightBuf.lights[i];
-    // In the wet, street lights reach 2.5x further: their streaks on the
-    // film (and only those) carry well beyond the pool.
-    let R = L.radius * select(1.0, STREAK_REACH, frame.weather.z > 0.3 && L.kind < 0.5);
-    let vp = frame.view * vec4f(L.pos, 1.0);
-    let lz = -vp.z;
-    if (lz + R < zMin || lz - R > zMax) { continue; }
-    // Conservative screen-space bounds of the light sphere.
-    let clip = frame.viewProj * vec4f(L.pos, 1.0);
-    var inside = true;
-    if (lz > R) {
-      let c = clip.xy / clip.w;
-      let spx = vec2f(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5) * frame.resolution.xy;
-      let rpx = R * frame.proj[1][1] * 0.5 * frame.resolution.y / (lz - R * 0.9);
-      inside = all(spx + rpx >= tileMin) && all(spx - rpx <= tileMax);
+    let r0 = L.radius * 1.001 + 0.01;
+    if (boxDist2(L.pos, bLo, bHi) <= r0 * r0) {
+      let slot = atomicAdd(&tileCount, 1u);
+      if (slot < MAX_TILE_LIGHTS) { tileLights[slot] = i; }
+    } else if (streaky && L.kind < 0.5) {
+      // In the wet, street lights reach 2.5x further: their streaks on the
+      // film (and only those) carry well beyond the pool. A light whose
+      // pool misses the tile but whose streak reach meets its wet ground
+      // goes to the streak list, which only wet-ground pixels walk.
+      let r1 = r0 * STREAK_REACH;
+      if (boxDist2(L.pos, wLo, wHi) <= r1 * r1) {
+        let slot = atomicAdd(&tileStreakCount, 1u);
+        if (slot < MAX_TILE_LIGHTS) { tileStreak[slot] = i; }
+      }
     }
-    if (!inside) { continue; }
-    let slot = atomicAdd(&tileCount, 1u);
-    if (slot < MAX_TILE_LIGHTS) { tileLights[slot] = i; }
   }
   workgroupBarrier();
   if (any(gid.xy >= size)) { return; }
 
-  let pxf = vec2f(px) + 0.5;
-  let uv = pxf * frame.resolution.zw;
-  let world = worldFromDepth(pxf, max(depth, 1e-7));
   let rd = normalize(world - frame.camPos.xyz);
   if (u32(frame.misc.x) == 7u) {
     let cl = textureSampleLevel(cloudTex, linearSampler, uv, 0.0);
@@ -763,18 +827,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     textureStore(outColor, px, vec4f(sky, 1.0));
     return;
   }
-  let a = textureLoad(gAlbedo, px, 0);
-  let nr = textureLoad(gNormal, px, 0);
-  let em = textureLoad(gEmissive, px, 0);
   // Ablation: unlit albedo + emissive (the whole shading cost removed).
   if ((frame.off.x & OFF_LIT) != 0u) {
     textureStore(outColor, px, vec4f(a.rgb * frame.sunColor.rgb * 0.5 + em.rgb, 1.0));
     return;
   }
-  let n = decodeNormal(nr.xy);
-  let rough = nr.z;
   let metal = nr.w;
-  let cls = u32(floor(em.a + 1e-3));
   let sunVis = clamp((em.a - f32(cls)) / 0.75, 0.0, 1.0);
   var albedo = a.rgb;
   let v = -rd;
@@ -835,17 +893,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
     * (1.0 - smoothstep(0.02, 0.1, luminance(em.rgb)));
   // How glossy a wet wall is (its rain streaks and run-off sheets).
   let wetGloss = 1.0 - smoothstep(0.06, 0.22, rough);
-  // Wet ground (carriageway, pavement): the water film mirrors every lamp
-  // as a long streak running toward the eye (Forza / GTA rain nights). Only
-  // where the film is glossy (paint and dry patches stay satin).
-  let wetGround = select(0.0, frame.weather.z, cls == CLASS_GROUND) * smoothstep(0.8, 0.95, n.y)
-    * (1.0 - smoothstep(0.1, 0.22, rough));
+  // (wetGround: above.)
   // The film's normal: the aggregate's bump drowned (a streak, not glitter).
   let nFilm = normalize(n + vec3f(0.0, 3.0, 0.0));
   let fwdV = normalize(vec3f(v.x, 0.0, v.z) + vec3f(1e-5, 0.0, 0.0));
   let count = min(atomicLoad(&tileCount), MAX_TILE_LIGHTS);
-  for (var k = 0u; k < count; k++) {
-    let L = lightBuf.lights[tileLights[k]];
+  // Wet ground also walks the streak-only lights (all beyond their pool
+  // radius here, so they take the streak branch below).
+  let total = count + select(0u, min(atomicLoad(&tileStreakCount), MAX_TILE_LIGHTS), wetGround > 0.0);
+  for (var k = 0u; k < total; k++) {
+    var idx: u32;
+    if (k < count) { idx = tileLights[k]; } else { idx = tileStreak[k - count]; }
+    let L = lightBuf.lights[idx];
     let dl = L.pos - world;
     let d2 = dot(dl, dl);
     // Beyond the pool, on the wet film, only the lamp's streak (the head
@@ -1037,7 +1096,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let reflLo = select(0.15, 0.01, cls == CLASS_WATER);
   env = mix(groundRadiance(), env, smoothstep(-0.08, reflLo, refl.y));
   if (cls == CLASS_GLASS) { env = glassEnv(refl); }
-  if (rough < 0.5 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE) {
+  // (Its weight below is zero from rough 0.3 up.)
+  if (rough < 0.3 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE && !(cls == CLASS_GROUND && (frame.off.x & OFF_GNDREFL) != 0u)) {
     let pixAng = 2.0 / (frame.proj[1][1] * frame.resolution.y);
     let cr = cityReflection(world + n * 0.3, refl, vec2f(rough * 0.7, pixAng / max(dot(n, v), 0.03)));
     // The skyline hit is a sharp mirror image: only near-specular surfaces
@@ -1052,7 +1112,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
   // Screen-space reflections only nearby: far away the depth tolerance grows
   // to kilometres and grazing rays report false hits.
-  if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0 && (cls != CLASS_GLASS || dist < 150.0)) {
+  if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0 && (cls != CLASS_GLASS || dist < 150.0) && !(cls == CLASS_GROUND && (frame.off.x & OFF_GNDREFL) != 0u)) {
     // Car paint reflects through its clear coat: a sharp, unjittered ray.
     // Jittered rays on a moving car hit and miss leaves frame to frame and
     // sparkle in a way TAA can't resolve.

@@ -11,6 +11,10 @@ const DOWNTOWN = [208, 26.7, -349, 2.13, 0.02];
 const VIEWS = [
   {name: 'downtown-day', hour: 13, weather: 'sunny', freecam: DOWNTOWN},
   {name: 'downtown-night-rain', hour: 22, weather: 'rain', freecam: DOWNTOWN},
+  // Street level in the rain, looking down the wet carriageway (lamp
+  // streaks, puddles, reflections).
+  {name: 'street-night-rain', hour: 22, weather: 'rain', freecam: [208, 26.7, -349, 2.13, -0.12]},
+  {name: 'street-dusk-rain', hour: 18.6, weather: 'rain', freecam: [215, 26.5, -330, 3.6, -0.1]},
   {name: 'downtown-golden', hour: 17.7, weather: 'sunny', freecam: [215, 30, -330, 3.6, -0.15]},
   {name: 'skyline', hour: 17.2, weather: 'sunny', freecam: [-2400, 200, -2800, 2.34, -0.1]},
   {name: 'trees-wires', hour: 11, weather: 'cloudy', freecam: [230, 26, -340, 0.9, 0.25]},
