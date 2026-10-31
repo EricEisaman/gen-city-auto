@@ -97,7 +97,12 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
     // World size of one pixel at this depth (projected radius r covers
     // r * proj[1][1] * h / (2 w) pixels).
     let px = 2.0 * max(o.pos.w, 1e-3) / (frame.proj[1][1] * frame.resolution.y);
-    let isLine = id == 11u || (id == 20u && (v.mat >> 8u) != 0u);
+    // Lines: lamp tubes, overhead-line wires (params 1-2) and every other
+    // thin wire under 2 cm radius (utility spans, service drops, cable
+    // stubs): a hashed sub-pixel wire beaded into a dotted line in the sky
+    // (the TAA variance clip drops the sparse dither). Bike / tyre rings
+    // (wire param 0, r 2.2 cm) keep the hashed coverage.
+    let isLine = id == 11u || (id == 20u && ((v.mat >> 8u) != 0u || r < 0.02));
     let rMin = select(MIN_TUBE_PX, MIN_LINE_PX, isLine) * px;
     if (r < rMin) {
       p += o.normal * (rMin - r);

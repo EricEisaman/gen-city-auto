@@ -2146,6 +2146,15 @@ export const SKYLIGHT = 0xd2;
  */
 export const CANOPY_FASCIA = 0xd7;
 /**
+ * CM.sign flag on the concourse's main station-name board (| 64 + k): one
+ * JR board unit (2.4 x 0.6 m in the atlas) stretched over a NB_SCALE x
+ * larger box face (box UVs, metres from the face's corner), so the name is
+ * one big glyph run, not the 2.4 m unit tiled. city-materials.wgsl
+ * railNameBoard reads the same NB_SCALE.
+ */
+export const NAME_BIG = 0x400;
+export const NB_SCALE = 4.5;
+/**
  * CM.vending flags (| body 0..2) on the platform machines' proud lower-door
  * box (0x100: uv.y from its own bottom) and header box (0x200: uv.y from
  * its own bottom + 1.5); 0x300 is VENDING_FRONT.
@@ -2445,22 +2454,21 @@ function railViaduct(
         if (glowOf(i, s))
           E(L(5.23, 1.03), L(5.4, 1.03), 0, -1, packMat(CM.lamp, 1), 'h');
         // (The coping light line is a lamp tube, see copingLine below.)
-        if (s < 0) {
-          // Signal/power cable trough hung on the outer fascia.
-          const tq = conc(RC_TROUGH);
-          E(L(5.2, 0.3), L(5.5, 0.3), 0, 1, tq, 'h');
-          E(L(5.5, 0.3), L(5.5, -0.06), s, 0, tq, 'v');
-          E(L(5.5, -0.06), L(5.2, -0.06), 0, -1, tq, 'h');
-        } else {
-          // Galvanised cable tray on the +1 outer fascia (0.4 m deep, 0.35
+        {
+          // Galvanised cable tray on both outer fascias (0.45 m deep, 0.45
           // out, a 4 cm return lip on top, the dark cable bundle showing
           // over it): its soffit throws a shadow line on the fascia under
           // it, read from the street (the under-deck tray is hidden there).
-          E(L(5.25, -0.05), L(5.6, -0.05), 0, -1, galv, 'h');
-          E(L(5.6, 0.35), L(5.6, -0.05), s, 0, galv, 'v');
-          E(L(5.6, 0.35), L(5.56, 0.35), 0, 1, galv, 'h');
-          E(L(5.56, 0.35), L(5.56, 0.31), -s, 0, galv, 'v');
-          E(L(5.25, 0.22), L(5.56, 0.22), 0, 1, packMat(CM.paint, 0x301), 'h');
+          // (Round 8: the -1 side had a concrete trough the fascia's own
+          // tone, and the side views look at the -1 side: no tray read.
+          // Its outer face is dark green painted steel, MAST_PAINT, so it
+          // reads as a dark line against the pale fascia from the street.)
+          const trayM = packMat(CM.paint, MAST_PAINT);
+          E(L(5.25, -0.1), L(5.65, -0.1), 0, -1, galv, 'h');
+          E(L(5.65, 0.35), L(5.65, -0.1), s, 0, trayM, 'v');
+          E(L(5.65, 0.35), L(5.61, 0.35), 0, 1, trayM, 'h');
+          E(L(5.61, 0.35), L(5.61, 0.31), -s, 0, galv, 'v');
+          E(L(5.25, 0.22), L(5.61, 0.22), 0, 1, packMat(CM.paint, 0x301), 'h');
         }
       }
       if (s > 0 && g < 0 && !st) {
@@ -3071,6 +3079,25 @@ function railViaduct(
             return [p[0] + d[0] * f * a, p[1], p[2] + d[1] * f * a];
           };
           m.box(at(0, -2.88, 0.78), [4.5, 0.12, 0.28], bm, yaw, sd, false);
+          // Bird-spike strips along the shelf's outer edge (pigeons perch
+          // on every ledge under a viaduct): a steel base strip with a
+          // bristle band over it (CM.metal), between the pads.
+          for (const o of [-1.6, 1.6]) {
+            m.box(
+              at(o, -2.755, 0.95),
+              [1.4, 0.006, 0.035],
+              packMat(CM.metal),
+              yaw,
+            );
+            m.box(
+              at(o, -2.715, 0.95),
+              [1.4, 0.035, 0.012],
+              packMat(CM.metal, 0),
+              yaw,
+              0,
+              true,
+            );
+          }
           for (const o of [-4.4, -3.4, 3.4, 4.4])
             m.box(
               at(o, -2.71, 0.85),
@@ -3779,41 +3806,26 @@ function railViaduct(
       );
       lights.add(mid(i, 0.5, s * 6.3, -0.4), 8, cool, LightKind.station);
     }
-    // Brackets under the outer cable trough and the +1 tray, every 4th bay.
+    // Brackets under the outer cable trays (both sides), every 4th bay.
     if (!st && i % 4 === 2) {
       const d = fr[i].d;
-      m.quad(
-        [
-          mid(i, 0.5, 5.2, -0.05),
-          mid(i, 0.5, 5.6, -0.05),
-          mid(i, 0.5, 5.25, -0.45),
-          mid(i, 0.5, 5.2, -0.45),
-        ],
-        [d[0], 0, d[1]],
-        [
-          [0, 0],
-          [0.4, 0],
-          [0.05, 0.4],
-          [0, 0.4],
-        ],
-        galv,
-      );
-      m.quad(
-        [
-          mid(i, 0.5, -5.2, -0.06),
-          mid(i, 0.5, -5.46, -0.06),
-          mid(i, 0.5, -5.25, -0.42),
-          mid(i, 0.5, -5.2, -0.42),
-        ],
-        [d[0], 0, d[1]],
-        [
-          [0, 0],
-          [0.26, 0],
-          [0.05, 0.36],
-          [0, 0.36],
-        ],
-        galv,
-      );
+      for (const sg of [-1, 1])
+        m.quad(
+          [
+            mid(i, 0.5, sg * 5.2, -0.1),
+            mid(i, 0.5, sg * 5.65, -0.1),
+            mid(i, 0.5, sg * 5.25, -0.5),
+            mid(i, 0.5, sg * 5.2, -0.5),
+          ],
+          [d[0], 0, d[1]],
+          [
+            [0, 0],
+            [0.45, 0],
+            [0.05, 0.4],
+            [0, 0.4],
+          ],
+          galv,
+        );
     }
     // Rail joint plates (fishplates) on the field side of the outer rails
     // every 16 bays.
@@ -4103,16 +4115,17 @@ function railViaduct(
   }
 
   // Hanging platform clock at c (face centre), faces along the line: a
-  // 0.56 m round (10-gon) back-lit face each way (CM.lamp 1), a dark rim,
+  // 0.56 m round (24-gon) back-lit face each way (CM.lamp 1), a dark rim,
   // black hour / minute hands 2 cm proud showing 10:08, a hanger rod to
   // the canopy roof.
+  const CLOCK_SEGS = 24;
   function clock(c: Vec3, k: number) {
     const d = fr[W(k)].d;
     const l = fr[W(k)].l;
     const R = 0.28;
     const rim: Vec3[] = [];
-    for (let q = 0; q <= 10; q++) {
-      const a = (q / 10) * Math.PI * 2;
+    for (let q = 0; q <= CLOCK_SEGS; q++) {
+      const a = (q / CLOCK_SEGS) * Math.PI * 2;
       rim.push([
         c[0] + l[0] * Math.cos(a) * R,
         c[1] + Math.sin(a) * R,
@@ -4138,8 +4151,8 @@ function railViaduct(
       const nf: Vec3 = [d[0] * f, 0, d[1] * f];
       const ring: number[] = [];
       const ctr = m.vertex(A(0, 0, 0.045), nf, 0.5, 0.5, packMat(CM.lamp, 1));
-      for (let q = 0; q < 10; q++) {
-        const a = (q / 10) * Math.PI * 2;
+      for (let q = 0; q < CLOCK_SEGS; q++) {
+        const a = (q / CLOCK_SEGS) * Math.PI * 2;
         ring.push(
           m.vertex(
             A(Math.cos(a) * R * 0.92, Math.sin(a) * R * 0.92, 0.045),
@@ -4150,8 +4163,8 @@ function railViaduct(
           ),
         );
       }
-      for (let q = 0; q < 10; q++)
-        m.triFacing(ctr, ring[q], ring[(q + 1) % 10], nf);
+      for (let q = 0; q < CLOCK_SEGS; q++)
+        m.triFacing(ctr, ring[q], ring[(q + 1) % CLOCK_SEGS], nf);
       // Hands (angles from 12 o'clock, clockwise as seen from this face).
       for (const [ang, len, w] of [
         [((10 + 8 / 60) / 12) * Math.PI * 2, 0.15, 0.022],
@@ -4177,6 +4190,7 @@ function railViaduct(
     const i0 = Math.max(0, si - 7);
     const i1 = Math.min(n - 1, si + 7);
     const name = packMat(CM.sign, 64 + (si % 8));
+    const nameBig = packMat(CM.sign, NAME_BIG | (64 + (si % 8)));
     for (const side of [-1, 1]) {
       const o = (x: number) => side * x;
       for (let i = i0; i < i1; i++) {
@@ -4311,42 +4325,53 @@ function railViaduct(
         // edge (lit face down and toward the track), back fascia 0.3 m.
         flat(r1, r0, dn(r0, 0.45), dn(r1, 0.45), inn, len, 0.45, fasciaM);
         flat(r0, r1, dn(r1, 0.45), dn(r0, 0.45), out, len, 0.45, fasciaM);
+        // The light-box strip along the fascia foot is a dark steel channel
+        // (0x90) with discrete 1.6 m diffuser fittings in it, one under each
+        // purlin (round 8: the continuous lit strip read as one white
+        // "Tron" stripe along the outer canopy edge at night).
         const b0 = dn(r0, 0.45);
         const b1 = dn(r1, 0.45);
-        flat(
-          b1,
-          b0,
-          dn(b0, 0.2),
-          dn(b1, 0.2),
-          inn,
-          len,
-          0.2,
-          packMat(CM.lamp, 8),
-        );
+        const chM = packMat(CM.paint, 0x90);
         const c0 = P(i, o(4.15), CY - 0.5);
         const c1 = P(i + 1, o(4.15), CY - 0.5);
-        flat(
-          dn(b0, 0.2),
-          dn(b1, 0.2),
-          c1,
-          c0,
-          [0, -1, 0],
-          len,
-          0.15,
-          packMat(CM.lamp, 8),
-        );
+        flat(b1, b0, dn(b0, 0.2), dn(b1, 0.2), inn, len, 0.2, chM);
+        flat(dn(b0, 0.2), dn(b1, 0.2), c1, c0, [0, -1, 0], len, 0.15, chM);
+        const np = Math.max(2, Math.round(len / 2.5));
+        {
+          const lm = packMat(CM.lamp, 8);
+          const tin: Vec3 = [inn[0] * 0.012, 0, inn[2] * 0.012];
+          const sh = (p: Vec3, d: Vec3, y = 0): Vec3 => [
+            p[0] + d[0],
+            p[1] + y,
+            p[2] + d[2],
+          ];
+          for (let q = 1; q < np; q++) {
+            const ta = q / np - 0.8 / len;
+            const tb = q / np + 0.8 / len;
+            const A = (t: number, x: number, y: number) => mid(i, t, o(x), y);
+            flat(
+              sh(A(tb, 4.0, CY - 0.33), tin),
+              sh(A(ta, 4.0, CY - 0.33), tin),
+              sh(A(ta, 4.0, CY - 0.47), tin),
+              sh(A(tb, 4.0, CY - 0.47), tin),
+              inn,
+              1.6,
+              0.14,
+              lm,
+            );
+            flat(
+              A(ta, 4.03, CY - 0.512),
+              A(tb, 4.03, CY - 0.512),
+              A(tb, 4.13, CY - 0.512),
+              A(ta, 4.13, CY - 0.512),
+              [0, -1, 0],
+              1.6,
+              0.1,
+              lm,
+            );
+          }
+        }
         flat(r2, r3, dn(r3, 0.3), dn(r2, 0.3), out, len, 0.3, fasciaM);
-        // Fluorescent line under the roof along the platform.
-        flat(
-          P(i, o(6.2), CY + 0.2),
-          P(i + 1, o(6.2), CY + 0.2),
-          P(i + 1, o(6.35), CY + 0.21),
-          P(i, o(6.35), CY + 0.21),
-          [0, -1, 0],
-          len,
-          0.15,
-          packMat(CM.lamp, 8),
-        );
         // T-frame at every point: a centre column and a sloped arm.
         const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
         const post = P(i, o(6.8), PL);
@@ -4369,10 +4394,11 @@ function railViaduct(
           lights.add(lp, 14, LED, LightKind.station);
         }
         // Purlins across the soffit every ~2.5 m (between the T-frames),
-        // each carrying a 1.2 m tube fitting (CM.lamp 8, dim linear) over
-        // the walking band, so the canopy underside has a rhythm of lit
-        // bars instead of one flat grey sheet.
-        const np = Math.max(2, Math.round(len / 2.5));
+        // each carrying a 1.2 m fluorescent fitting over the walking band:
+        // a steel batten box hung under the purlin with its tube (CM.lamp 8)
+        // parallel to the track (round 8: the tube used to lie along the
+        // purlin, a lit diagonal across the bay in the platform view; the
+        // continuous lamp strip beside them is gone too).
         for (let q = 1; q < np; q++) {
           const t = q / np;
           m.tube(
@@ -4380,9 +4406,21 @@ function railViaduct(
             0.06,
             metal,
           );
+          const dt = 0.6 / len;
+          m.box(
+            mid(i, t, o(6.0), CY + 0.1),
+            [0.07, 0.025, 0.63],
+            packMat(CM.paint, 0x90),
+            yaw,
+            0,
+            false,
+          );
           m.tube(
-            [mid(i, t, o(5.4), CY + 0.08), mid(i, t, o(6.6), CY + 0.14)],
-            0.04,
+            [
+              mid(i, t - dt, o(6.0), CY + 0.045),
+              mid(i, t + dt, o(6.0), CY + 0.045),
+            ],
+            0.03,
             packMat(CM.lamp, 8),
           );
         }
@@ -4619,10 +4657,16 @@ function railViaduct(
             }
           }
         } else if (r === 1) {
+          // Vending pair standing across the platform against the fence,
+          // lit fronts facing along it toward the station centre (round 8:
+          // facing the track they showed a blank side slab down the
+          // platform), and a recycling-bin trio beside them.
+          const fs = k >= si ? -1 : 1;
+          const fd: Vec3 = [fr[k].d[0] * fs, 0, fr[k].d[1] * fs];
           for (const v of [0, 1]) {
-            const c = mid(k, 0.45 + v * 0.08, o(9.15), PL + 0.9);
+            const c = mid(k, 0.45, o(9.05 - v * 0.92), PL + 0.9);
             const vm = packMat(CM.vending, (k + v + (side > 0 ? 1 : 0)) % 3);
-            const vy = yaw + (side < 0 ? Math.PI : 0);
+            const vy = Math.atan2(-fd[2], fd[0]);
             // Front (the box's +x face) toward the platform.
             m.box(c, [0.38, 0.9, 0.45], vm, vy);
             // The display front as its own quad 3 mm proud with the
@@ -4656,10 +4700,11 @@ function railViaduct(
             // body (coin slot, buttons, flap) and the header panel stand
             // proud of it, so the window reads as a lit box set into the
             // machine with a shadowed lip, not a decal.
-            const fx = (x: number, y: number): Vec3 => {
-              const p = mid(k, 0.45 + v * 0.08, o(9.15 - x), 0);
-              return [p[0], PL + y, p[2]];
-            };
+            const fx = (x: number, y: number): Vec3 => [
+              c[0] + fd[0] * x,
+              PL + y,
+              c[2] + fd[2] * x,
+            ];
             const body = (k + v + (side > 0 ? 1 : 0)) % 3;
             m.box(
               fx(0.41, 0.35),
@@ -4680,6 +4725,24 @@ function railViaduct(
               true,
             );
           }
+          // Bins: three 0.4 m grey cabinets (cans / bottles / paper) with
+          // coloured lid bands, against the fence 3 m in front of the machines.
+          const lenB = dist2(pts[k], pts[W(k + 1)]) || 1;
+          [0x92, 0x0c, 0x90].forEach((lid, q) => {
+            const t = 0.45 + (fs * (3.0 + q * 0.44)) / lenB;
+            m.box(
+              mid(k, t, o(9.28), PL + 0.45),
+              [0.2, 0.45, 0.2],
+              packMat(CM.paint, 0xd0),
+              yaw,
+            );
+            m.box(
+              mid(k, t, o(9.28), PL + 0.86),
+              [0.205, 0.05, 0.205],
+              packMat(CM.paint, lid),
+              yaw,
+            );
+          });
         }
         // Car-position floor markers behind the tactile strip, every 6 m:
         // 0.45 m line-colour squares painted on the paving (4 mm proud),
@@ -4799,6 +4862,9 @@ function railViaduct(
           seed(ck),
         );
         const ub = roof - (gnd + hg);
+        // Main name board half-width (big board when the band allows it).
+        const nbBig = ub - 0.5 >= 0.6 * NB_SCALE;
+        const nbHalf = nbBig ? 1.2 * NB_SCALE : 3.6;
         m.box(
           [cx, gnd + hg + ub / 2, cz],
           [9.85, ub / 2, half + 0.1],
@@ -4849,7 +4915,7 @@ function railViaduct(
             if (ub > 3.0) {
               let q = 0;
               for (let a = a0 + 1.6; a + 1.6 <= a1; a += 3.6) {
-                if (Math.abs(a) < 5.6) continue;
+                if (Math.abs(a) < nbHalf + 1.75) continue;
                 const p = Q(a, 1.25);
                 const fo = (x: number) =>
                   [p[0] + l2[0] * s * x, p[1], p[2] + l2[1] * s * x] as Vec3;
@@ -4912,44 +4978,43 @@ function railViaduct(
           m.box(f(11.27, 2.42, 0), [0.03, 0.05, 1.2], fm, yaw);
           // Granite threshold step.
           m.box(f(11.6, 0.08, 0), [0.35, 0.1, 1.6], conc(RC_PARAPET), yaw);
-          // Canopy: steel slab, lamp underside, line-colour fascia band.
+          // Canopy: steel slab with a 0.5 m fascia (line-colour band on
+          // it) and a dark soffit with two rows of square downlights over
+          // the doors (CM.lamp 1, the lit underside was one glowing slab).
           m.box(f(11.0, 3.05), [1.75, 0.09, 2.9], metal, yaw, 0, false);
-          flat(
-            f(12.6, 2.95, -2.7),
-            f(12.6, 2.95, 2.7),
-            f(10.0, 2.95, 2.7),
-            f(10.0, 2.95, -2.7),
-            [0, -1, 0],
-            5.4,
-            2.6,
-            packMat(CM.lamp, 1),
-          );
-          m.box(
-            f(12.77, 3.05),
-            [0.02, 0.16, 2.9],
-            packMat(CM.paint, 0x0c),
-            yaw,
-          );
+          m.box(f(12.7, 2.97), [0.05, 0.25, 2.9], packMat(CM.paint, 0x90), yaw);
+          m.box(f(12.77, 3.0), [0.02, 0.12, 2.9], packMat(CM.paint, 0x0c), yaw);
+          for (const x of [10.75, 11.95])
+            for (const a of [-1.9, -0.95, 0, 0.95, 1.9])
+              flat(
+                f(x + 0.13, 2.955, a - 0.13),
+                f(x + 0.13, 2.955, a + 0.13),
+                f(x - 0.13, 2.955, a + 0.13),
+                f(x - 0.13, 2.955, a - 0.13),
+                [0, -1, 0],
+                0.26,
+                0.26,
+                packMat(CM.lamp, 1),
+              );
+          lights.add(f(11.0, 2.7), 7, LED, LightKind.station);
           if (ub > 1.4) {
-            m.box(f(9.9, hg + ub / 2), [0.05, 0.36, 3.6], name, yaw);
-            // Lit station-name band: a 7.8 x 1.0 m back-lit diffuser panel
-            // (CM.lamp 1: white by day, its side term glowing at night) behind the name
-            // board with LED edge lines (CM.ledLine 0), so the name reads
-            // as one big lit band on the upper storey at night and as a
-            // white sign band by day.
+            // Main station-name board: one back-lit JR board drawn once at
+            // NB_SCALE x the 2.4 x 0.6 m platform board (CM.sign 64.. |
+            // NAME_BIG: the shader stretches the atlas unit over the whole
+            // face), ~1 m kanji, as big as the upper band allows, with LED
+            // edge lines (CM.ledLine 0) top and bottom.
+            const bw = nbHalf;
+            const bh = nbBig ? 0.3 * NB_SCALE : 0.36;
             m.box(
-              f(9.88, hg + ub / 2),
-              [0.03, 0.5, 3.9],
-              packMat(CM.lamp, 1),
+              f(9.9, hg + ub / 2),
+              [0.06, bh, bw],
+              nbBig ? nameBig : name,
               yaw,
-              0,
-              false,
-              true,
             );
-            for (const y of [-0.52, 0.52])
+            for (const y of [-bh - 0.03, bh + 0.03])
               m.box(
-                f(9.92, hg + ub / 2 + y),
-                [0.02, 0.025, 3.92],
+                f(9.93, hg + ub / 2 + y),
+                [0.03, 0.025, bw + 0.03],
                 packMat(CM.ledLine, 0),
                 yaw,
                 0,
@@ -5010,7 +5075,7 @@ function railViaduct(
           // Fins on the upper band every 1.6 m, clear of the name board.
           if (ub > 0.8)
             for (let a = -half + 0.8; a <= half - 0.8; a += 1.6) {
-              if (Math.abs(a) < 4.0) continue;
+              if (Math.abs(a) < nbHalf + 0.4) continue;
               m.box(
                 f(9.97, hg + ub / 2, a),
                 [0.12, ub / 2 - 0.08, 0.035],
