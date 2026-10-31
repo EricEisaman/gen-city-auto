@@ -15,7 +15,7 @@ struct CullView {
   viewProj: mat4x4f,
   planes: array<vec4f, 6>,
   camPos: vec4f,       // xyz, detail cull factor (min radius/distance)
-  params: vec4u,       // cluster count, use occlusion, plane count, unused
+  params: vec4u,       // cluster count, use occlusion, plane count, count triangles
   hiz: vec4f,          // hiz width, height, mip count, unused
 };
 
@@ -24,6 +24,8 @@ struct DrawArgs {
   instanceCount: atomic<u32>,
   firstVertex: u32,
   firstInstance: u32,
+  // Stats only (params.w != 0): triangles in the visible clusters.
+  tris: atomic<u32>,
 };
 
 @group(0) @binding(0) var<uniform> view: CullView;
@@ -90,8 +92,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if ((flags & 2u) != 0u) {
     let slot = atomicAdd(&argsAlpha.instanceCount, 1u);
     visibleAlpha[slot] = i;
+    if (view.params.w != 0u) { atomicAdd(&argsAlpha.tris, triCount); }
   } else {
     let slot = atomicAdd(&args.instanceCount, 1u);
     visible[slot] = i;
+    if (view.params.w != 0u) { atomicAdd(&args.tris, triCount); }
   }
 }

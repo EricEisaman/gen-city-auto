@@ -118,6 +118,13 @@ export class Renderer {
   sky: SkyState = computeSky(12, 0.3, 0, 1, 1);
   hooks: DrawHook[] = [];
   readonly stats: Record<string, number | string> = {};
+  /**
+   * Count visible clusters and triangles per cull view (stats.view*), read
+   * back every few frames. Off by default (one extra atomic per cluster).
+   */
+  cullStats = false;
+  private cullStatsBuf: GPUBuffer | null = null;
+  private cullStatsBusy = false;
 
   readonly frameBuffer: GPUBuffer;
   private atmoBuffer: GPUBuffer;
@@ -361,11 +368,12 @@ export class Renderer {
       this.argsBuffers.push(
         device.createBuffer({
           label: `cull/${name}/indirect args`,
-          size: 16,
+          size: 32,
           usage:
             GPUBufferUsage.STORAGE |
             GPUBufferUsage.INDIRECT |
-            GPUBufferUsage.COPY_DST,
+            GPUBufferUsage.COPY_DST |
+            GPUBufferUsage.COPY_SRC,
         }),
       );
       this.visibleAlphaBuffers.push(
@@ -378,11 +386,12 @@ export class Renderer {
       this.argsAlphaBuffers.push(
         device.createBuffer({
           label: `cull/${name}/indirect args alpha-tested`,
-          size: 16,
+          size: 32,
           usage:
             GPUBufferUsage.STORAGE |
             GPUBufferUsage.INDIRECT |
-            GPUBufferUsage.COPY_DST,
+            GPUBufferUsage.COPY_DST |
+            GPUBufferUsage.COPY_SRC,
         }),
       );
       if (v > 0)
@@ -992,11 +1001,14 @@ export class Renderer {
     f.set(viewProj, 0);
     f.set(frustumPlanes(viewProj), 16);
     f.set([eye[0], eye[1], eye[2], detail], 40);
-    u.set([this.pool.clusterHighWater, occlusion ? 1 : 0, 6, 0], 44);
+    u.set(
+      [this.pool.clusterHighWater, occlusion ? 1 : 0, 6, this.cullStats ? 1 : 0],
+      44,
+    );
     f.set([w, h, mips, 0], 48);
     this.device.queue.writeBuffer(this.cullViewBuffers[v], 0, data);
     // Reset the indirect draw: 128 triangles * 3 vertices per instance (cluster).
-    const reset = new Uint32Array([128 * 3, 0, 0, 0]);
+    const reset = new Uint32Array([128 * 3, 0, 0, 0, 0]);
     this.device.queue.writeBuffer(this.argsBuffers[v], 0, reset);
     this.device.queue.writeBuffer(this.argsAlphaBuffers[v], 0, reset);
   }
@@ -1877,6 +1889,8 @@ export class Renderer {
     this.cpuProf?.mark('render encode');
     d.queue.submit([enc.finish()]);
     this.prof?.afterSubmit();
+    if (this.cullStats && !this.cullStatsBusy && this.frameIndex % 8 === 0)
+      this.readCullStats();
     this.prevViewProj = viewProj;
     this.frameIndex++;
     const ps = this.pool.stats;
@@ -1889,6 +1903,49 @@ export class Renderer {
       patches: this.patchCount,
       cullGroups: this.cullCount,
     });
+  }
+
+  /** Copies the indirect args out and publishes stats.viewClusters/Tris. */
+  private readCullStats() {
+    const d = this.device;
+    this.cullStatsBuf ??= d.createBuffer({
+      label: 'cull/stats readback',
+      size: VIEWS * 2 * 32,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const buf = this.cullStatsBuf;
+    const enc = d.createCommandEncoder({label: 'cull stats'});
+    for (let v = 0; v < VIEWS; v++) {
+      enc.copyBufferToBuffer(this.argsBuffers[v], 0, buf, v * 64, 32);
+      enc.copyBufferToBuffer(this.argsAlphaBuffers[v], 0, buf, v * 64 + 32, 32);
+    }
+    d.queue.submit([enc.finish()]);
+    this.cullStatsBusy = true;
+    void buf.mapAsync(GPUMapMode.READ).then(
+      () => {
+        const u = new Uint32Array(buf.getMappedRange().slice(0));
+        buf.unmap();
+        this.cullStatsBusy = false;
+        const name = (v: number) => (v === 0 ? 'main' : `shadow${v - 1}`);
+        let sc = 0;
+        let st = 0;
+        for (let v = 0; v < VIEWS; v++) {
+          const o = v * 16;
+          const clusters = u[o + 1] + u[o + 9];
+          const tris = u[o + 4] + u[o + 12];
+          this.stats[`${name(v)}Clusters`] = clusters;
+          this.stats[`${name(v)}AlphaClusters`] = u[o + 9];
+          this.stats[`${name(v)}Tris`] = tris;
+          if (v > 0) {
+            sc += clusters;
+            st += tris;
+          }
+        }
+        this.stats.shadowClusters = sc;
+        this.stats.shadowTris = st;
+      },
+      () => (this.cullStatsBusy = false),
+    );
   }
 
   get viewProj() {

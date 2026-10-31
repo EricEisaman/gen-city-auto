@@ -184,10 +184,25 @@ await withServer(async base => {
             await sleep(400);
             res.base2 = await measure(page, frames);
           }
+          // Visible clusters / triangles per cull view (after timing: the
+          // count costs an extra atomic per visible cluster).
+          await page.evaluate(() => (window.__game.renderer.cullStats = true));
+          await sleep(300);
           res.info = await page.evaluate(() => {
             const s = window.__stats;
-            return {shot: s.shot, tris: s.tris, clusters: s.clusters, lights: s.lights};
+            return {
+              shot: s.shot,
+              tris: s.tris,
+              clusters: s.clusters,
+              lights: s.lights,
+              mainClusters: s.mainClusters,
+              mainTris: s.mainTris,
+              shadowClusters: s.shadowClusters,
+              shadowTris: s.shadowTris,
+              lod: [s.lod0, s.lod1, s.lod2],
+            };
           });
+          await page.evaluate(() => (window.__game.renderer.cullStats = false));
           out[s.name] = res;
           console.log(
             `[${size}] ${s.name}: frame ${fmt(res.base.frame)}ms gpu ${fmt(res.base.gpu)}ms cpu ${fmt(res.base.cpu)}ms (live: frame ${fmt(live.frame)} gpu ${fmt(live.gpu)} cpu ${fmt(live.cpu)})`,
