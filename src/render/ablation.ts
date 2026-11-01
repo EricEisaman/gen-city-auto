@@ -45,6 +45,7 @@ export const OFF_BITS = {
   rcvcull: 1 << 30, // cull: shadow casters not culled to their cascade's receivers (A/B shots)
   shcache: HI * (1 << 0), // shadows: no static shadow-map cache (every cascade redrawn every frame)
   hrefl: HI * (1 << 1), // lighting: SSR + skyline reflections traced at full res in the lighting kernel
+  hskyvis: HI * (1 << 4), // sky visibility traced at full res in lighting (not at half res in the GTAO pass)
 } as const;
 
 export type OffName = keyof typeof OFF_BITS;

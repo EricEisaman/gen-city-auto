@@ -15,6 +15,12 @@
 @group(1) @binding(0) var aoDepth: texture_depth_2d;
 @group(1) @binding(1) var aoNormal: texture_2d<f32>;
 @group(1) @binding(2) var aoOut: texture_storage_2d<rgba16float, write>;
+// Sky visibility (skyvis.wgsl) is traced here too, at half resolution, and
+// rides along in .g through lighting's depth-aware AO resolve.
+@group(1) @binding(3) var skyline: texture_2d<f32>;
+
+const OFF_GTAO = 64u;
+const OFF_HSKYVIS = 16u; // frame.off.z
 
 fn worldAt(uv: vec2f, d: f32) -> vec3f {
   let w = frame.invViewProj * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
@@ -48,12 +54,22 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   }
   let uv = (vec2f(fp) + 0.5) / full;
   let p = worldAt(uv, d);
+  let gbn = decodeNormal(textureLoad(aoNormal, fp, 0).xy);
+  // (?off=hskyvis: lighting traces it at full res instead.)
+  var sky = 1.0;
+  if (distance(p, frame.camPos.xyz) < 1500.0 && (frame.off.z & OFF_HSKYVIS) == 0u) {
+    sky = skyVisibility(p, gbn, vec2f(fp) + 0.5);
+  }
+  if ((frame.off.x & OFF_GTAO) != 0u) {
+    textureStore(aoOut, id.xy, vec4f(1.0, sky, 1.0, 1.0));
+    return;
+  }
   // Geometric normal from the depth buffer (the nearer neighbour on each
   // axis, so silhouettes don't bend it). The G-buffer normal carries normal
   // maps and smoothed vertex normals that disagree with the depth surface:
   // GTAO then sees the surface's own plane as a raised horizon, and grazing
   // ground came out striped. The G-buffer normal is the fallback.
-  var n = decodeNormal(textureLoad(aoNormal, fp, 0).xy);
+  var n = gbn;
   {
     let ip = vec2i(full) - 1;
     let px1 = worldAt((vec2f(min(fp + vec2i(1, 0), ip)) + 0.5) / full, textureLoad(aoDepth, min(fp + vec2i(1, 0), ip), 0)) - p;
@@ -156,5 +172,5 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   // Fade toward 1 far away, where 6 px span many metres and every street
   // would otherwise fill with canyon-scale grey (the sky term covers that).
   ao = mix(ao, 1.0, smoothstep(250.0, 700.0, dist));
-  textureStore(aoOut, id.xy, vec4f(ao, ao, ao, 1.0));
+  textureStore(aoOut, id.xy, vec4f(ao, sky, ao, 1.0));
 }

@@ -13,6 +13,7 @@ import aoWgsl from '../shaders/ao.wgsl';
 import cullWgsl from '../shaders/cull.wgsl';
 import lightingWgsl from '../shaders/lighting.wgsl';
 import postWgsl from '../shaders/post.wgsl';
+import skyvisWgsl from '../shaders/skyvis.wgsl';
 import surfaceWgsl from '../shaders/surface.wgsl';
 import terrainWgsl from '../shaders/terrain.wgsl';
 import {computeSky, type SkyState} from '../world/sky.ts';
@@ -466,11 +467,12 @@ export class Renderer {
       'shader/lighting',
       commonWgsl,
       surfaceWgsl.replace(/struct GOut[\s\S]*$/, ''),
+      skyvisWgsl,
       lightingWgsl,
     );
     const postMod = mod('shader/post', commonWgsl, postWgsl);
     const cloudMod = mod('shader/clouds', commonWgsl, cloudsWgsl);
-    const aoMod = mod('shader/ao', commonWgsl, aoWgsl);
+    const aoMod = mod('shader/ao', commonWgsl, skyvisWgsl, aoWgsl);
     const gTargets: GPUColorTargetState[] = GBUFFER_FORMATS.map(format => ({
       format,
     }));
@@ -591,13 +593,23 @@ export class Renderer {
           'aerial',
           compute('pipeline/aerial perspective', atmoMod, 'aerialPerspective'),
         ],
-        ['lighting', compute('pipeline/lighting', lightMod, 'main')],
-        [
-          'lightingFull',
-          compute('pipeline/lighting full-res reflections', lightMod, 'main', {
-            HALF_REFL: 0,
-          }),
-        ],
+        // Variants: reflections / sky visibility at half res (r1 s1, the
+        // default) or traced in the kernel (?off=hrefl, hskyvis).
+        ...[0, 1, 2, 3].map(
+          k =>
+            [
+              `lighting:r${k & 1}s${k >> 1}`,
+              compute(
+                `pipeline/lighting r${k & 1}s${k >> 1}`,
+                lightMod,
+                'main',
+                {
+                  HALF_REFL: k & 1,
+                  HALF_SKYVIS: k >> 1,
+                },
+              ),
+            ] as [string, Promise<GPUComputePipeline>],
+        ),
         [
           'reflect',
           compute('pipeline/reflections half res', lightMod, 'reflectHalf'),
@@ -1805,8 +1817,9 @@ export class Renderer {
           Math.ceil(Math.max(1, t.hiz.height >> m) / 8),
         );
       }
+      // (Also traces sky visibility: runs with ?off=gtao too, writing AO 1.)
       pass = this.compute(enc, 'gtao');
-      if (!this.off('gtao')) {
+      {
         pass.setPipeline(this.p.ao as GPUComputePipeline);
         pass.setBindGroup(
           0,
@@ -1817,7 +1830,12 @@ export class Renderer {
           this.bg(
             'ao',
             1,
-            [t.depth.createView(), t.gbuf[1].createView(), t.ao.createView()],
+            [
+              t.depth.createView(),
+              t.gbuf[1].createView(),
+              t.ao.createView(),
+              (this.skylineTex ?? this.heightTex!).createView(),
+            ],
             'bg/ssao',
           ),
         );
@@ -1890,7 +1908,7 @@ export class Renderer {
           Math.ceil(t.refl[0].height / 8),
         );
       }
-      const pipe = half ? 'lighting' : 'lightingFull';
+      const pipe = `lighting:r${half ? 1 : 0}s${this.off('hskyvis') ? 0 : 1}`;
       const pass = this.compute(enc, 'lighting');
       pass.setPipeline(this.p[pipe] as GPUComputePipeline);
       pass.setBindGroup(
