@@ -1,6 +1,7 @@
 // Instanced rendering of NURBS vehicles: body, wheels, rotors and steering
 // wheel per instance, three LODs, G-buffer + shadow + forward glass passes.
 
+import {cores, lowMemory} from '../caps.ts';
 import {createShader} from '../gpu/device.ts';
 import {begin, counters, pipeline} from '../ui/timeline.ts';
 import {mat4, type Mat4} from '../math/mat4.ts';
@@ -314,7 +315,7 @@ export class VehicleRenderer implements DrawHook {
     const names = [...Object.keys(designs), 'person'];
     const nWorkers = Math.max(
       2,
-      Math.min(names.length, (navigator.hardwareConcurrency || 4) - 1),
+      Math.min(names.length, lowMemory() ? 2 : 16, cores() - 1),
     );
     const groups: string[][] = Array.from({length: nWorkers}, () => []);
     counters.vehicles.total += nWorkers;

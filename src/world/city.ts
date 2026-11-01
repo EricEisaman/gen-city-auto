@@ -12,6 +12,7 @@ import {Heightfield} from '../city/terrain.ts';
 import type {Vec3} from '../math/vec.ts';
 import {nearestFirst} from './nearest.ts';
 import {release} from '../mem.ts';
+import {cores, lowMemory} from '../caps.ts';
 import type {PoolHandle} from '../render/cluster-pool.ts';
 import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
@@ -102,10 +103,11 @@ export class City {
   }
 
   async load(progress: LoadListener, focus: () => Vec3) {
-    const n = Math.max(
-      2,
-      Math.min(6, (navigator.hardwareConcurrency || 4) - 1),
-    );
+    // One core is left to the main thread. Each worker keeps its own copy
+    // of the layout and tile context (~150 MB), so low-memory devices get at
+    // most 3; the output does not depend on the count (min 2: the primary
+    // and a helper building base parts).
+    const n = Math.max(2, Math.min(lowMemory() ? 3 : 6, cores() - 1));
     let resolveSummary!: () => void;
     let rejectAll!: (e: Error) => void;
     const summaryDone = new Promise<void>((res, rej) => {
