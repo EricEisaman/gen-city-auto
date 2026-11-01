@@ -1354,6 +1354,7 @@ export function generateLayout(
   gradeBlocks(hf, blocks);
 
   progress?.('Designing buildings', 0.6, {blocks});
+  const railSegs = binRailSegments(elevated, hf);
   const buildings: Building[] = [];
   // Buildings standing on each block, for the open-ground pass.
   const onBlock: number[][] = blocks.map(() => []);
@@ -1427,7 +1428,7 @@ export function generateLayout(
       kind === 'house' ? 2.9 : kind === 'glass' || kind === 'tower' ? 3.9 : 3.3;
     // Trim any edge that cuts through a viaduct (the checks above only look
     // at corners); the design above is unchanged, only the plan shrinks.
-    const cut = clipToRail(fp, [cx, cz], elevated, 7, hf);
+    const cut = clipToRail(fp, [cx, cz], railSegs, 7);
     if (cut !== fp) {
       const clean = cleanPolygon(cut, 1.2);
       if (clean.length >= 3 && polygonArea(clean) > 25) fp = clean;
@@ -1787,6 +1788,9 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
   const n = hf.n;
   const cell = hf.cell;
   const S = hf.size / 2;
+  const data = hf.data;
+  let inside = new Int32Array(4096);
+  let rowAt = new Int32Array(256);
   for (const b of blocks) {
     const poly = b.curb;
     // Least-squares plane h = a x + c z + d through curb samples.
@@ -1850,24 +1854,78 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
     const gx1 = Math.min(n - 2, Math.ceil((x1 + S) / cell));
     const gz0 = Math.max(1, Math.floor((z0 + S) / cell));
     const gz1 = Math.min(n - 2, Math.ceil((z1 + S) / cell));
-    const inside: number[] = [];
+    // Interior cell indices in scan order, and where each grid row's start.
+    const rows = gz1 - gz0 + 1;
+    const cells = (gx1 - gx0 + 1) * rows;
+    if (cells > inside.length) inside = new Int32Array(cells * 2);
+    if (rows + 1 > rowAt.length) rowAt = new Int32Array((rows + 1) * 2);
+    let ni = 0;
     for (let gz = gz0; gz <= gz1; gz++) {
+      rowAt[gz - gz0] = ni;
       for (let gx = gx0; gx <= gx1; gx++) {
         const x = gx * cell - S;
         const z = gz * cell - S;
         if (pointInPolygon([x, z], poly)) {
           const k = gz * n + gx;
-          hf.data[k] = plane(x, z);
-          inside.push(k);
+          data[k] = plane(x, z);
+          inside[ni++] = k;
         }
       }
     }
+    rowAt[rows] = ni;
     const iters = Math.min(160, 20 + 4 * Math.max(gx1 - gx0, gz1 - gz0));
-    for (let it = 0; it < iters; it++) {
-      for (const k of inside) {
-        hf.data[k] =
-          (hf.data[k - 1] + hf.data[k + 1] + hf.data[k - n] + hf.data[k + n]) *
-          0.25;
+    relaxBlock(data, n, inside, rowAt, rows, iters);
+  }
+}
+
+/**
+ * Gauss-Seidel sweeps in scan order: a cell reads its left and upper
+ * neighbours from this sweep and its right and lower ones from the last.
+ * Sweep t runs two rows behind sweep t - 1, so at each step the rows in
+ * flight (one per sweep) see exactly what the sweeps one after another
+ * would; two of those rows at a time go cell by cell, so the CPU
+ * overlaps their (otherwise serial) dependency chains. Cells are the
+ * indices inside[rowAt[r] .. rowAt[r + 1]) of each of the block's rows.
+ */
+function relaxBlock(
+  data: Float32Array,
+  n: number,
+  inside: Int32Array,
+  rowAt: Int32Array,
+  rows: number,
+  iters: number,
+) {
+  for (let s = 0; s < rows + 2 * (iters - 1); s++) {
+    const t0 = Math.max(0, (s - rows + 2) >> 1);
+    let t = Math.min(iters - 1, s >> 1);
+    for (; t >= t0; t -= 2) {
+      const r = s - 2 * t;
+      let i = rowAt[r];
+      const e = rowAt[r + 1];
+      // The pair's other row (sweep t - 1, two rows down), if any.
+      let j = 0;
+      let f = 0;
+      if (t - 1 >= t0) {
+        j = rowAt[r + 2];
+        f = rowAt[r + 3];
+      }
+      for (; i < e && j < f; i++, j++) {
+        const k = inside[i];
+        const m = inside[j];
+        data[k] =
+          (data[k - 1] + data[k + 1] + data[k - n] + data[k + n]) * 0.25;
+        data[m] =
+          (data[m - 1] + data[m + 1] + data[m - n] + data[m + n]) * 0.25;
+      }
+      for (; i < e; i++) {
+        const k = inside[i];
+        data[k] =
+          (data[k - 1] + data[k + 1] + data[k - n] + data[k + n]) * 0.25;
+      }
+      for (; j < f; j++) {
+        const m = inside[j];
+        data[m] =
+          (data[m - 1] + data[m + 1] + data[m - n] + data[m + n]) * 0.25;
       }
     }
   }
@@ -2021,10 +2079,24 @@ function carveRoads(hf: Heightfield, chains: RoadChain[]) {
       const x1 = Math.ceil((Math.max(a[0], b[0]) + falloff + S) / cell);
       const z0 = Math.floor((Math.min(a[1], b[1]) - falloff + S) / cell);
       const z1 = Math.ceil((Math.max(a[1], b[1]) + falloff + S) / cell);
+      // pointSegment, inlined (the same operations), with cells clearly
+      // beyond the falloff dropped before the exact distance.
+      const abx = b[0] - a[0];
+      const abz = b[1] - a[1];
+      const l2 = abx * abx + abz * abz;
+      const far2 = falloff * falloff * (1 + 1e-9);
       for (let gz = Math.max(0, z0); gz <= Math.min(n - 1, z1); gz++) {
         for (let gx = Math.max(0, x0); gx <= Math.min(n - 1, x1); gx++) {
-          const q: Vec2 = [gx * cell - S, gz * cell - S];
-          const [d, t] = pointSegment(q, a, b);
+          const qx = gx * cell - S;
+          const qz = gz * cell - S;
+          const t =
+            l2 > 0
+              ? clamp(((qx - a[0]) * abx + (qz - a[1]) * abz) / l2, 0, 1)
+              : 0;
+          const ex = qx - (a[0] + abx * t);
+          const ez = qz - (a[1] + abz * t);
+          if (ex * ex + ez * ez > far2) continue;
+          const d = Math.hypot(ex, ez);
           if (d > falloff) continue;
           const h = lerp(c.heights[i], c.heights[i + 1], t);
           const w = d < half ? 1 : 1 - smoothstep(half, falloff, d);
@@ -2248,39 +2320,85 @@ function segmentGap(a: Vec2, b: Vec2, c: Vec2, d: Vec2) {
 }
 
 /**
+ * The rail segments clipToRail considers (every one not in a tunnel at both
+ * ends), in line order, binned by their first point (CLIP_REACH cells).
+ */
+interface RailSegments {
+  segs: [Vec2, Vec2][];
+  grid: Map<number, number[]>;
+}
+
+const CLIP_REACH = 150;
+const clipCell = (x: number, z: number) =>
+  (Math.floor(z / CLIP_REACH) + 1024) * 2048 +
+  Math.floor(x / CLIP_REACH) +
+  1024;
+
+function binRailSegments(elevated: Elevated[], hf: Heightfield): RailSegments {
+  const segs: [Vec2, Vec2][] = [];
+  const grid = new Map<number, number[]>();
+  for (const e of elevated) {
+    if (e.kind !== 'rail') continue;
+    for (let i = 0; i + 1 < e.pts.length; i++) {
+      if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
+      const a = e.pts[i];
+      const k = clipCell(a[0], a[1]);
+      let l = grid.get(k);
+      if (!l) grid.set(k, (l = []));
+      l.push(segs.push([a, e.pts[i + 1]]) - 1);
+    }
+  }
+  return {segs, grid};
+}
+
+/**
  * Trim a building footprint off an elevated rail line's clearance band. Lots
  * are rejected by their corners and centre only, so a long plot can still
  * have an edge that crosses the viaduct between two far-off corners; this cuts
  * it back along the deck, on the side its centre `c` lies, `pad` metres clear.
  * Pure geometry (no random draws), applied after the building is designed.
+ * Segments whose first point is within CLIP_REACH of `c` (on both axes) are
+ * tried in line order.
  */
 function clipToRail(
   fp: Vec2[],
   c: Vec2,
-  elevated: Elevated[],
+  rail: RailSegments,
   pad: number,
-  hf: Heightfield,
 ): Vec2[] {
+  const near: number[] = [];
+  const x0 = Math.floor((c[0] - CLIP_REACH) / CLIP_REACH);
+  const x1 = Math.floor((c[0] + CLIP_REACH) / CLIP_REACH);
+  const z0 = Math.floor((c[1] - CLIP_REACH) / CLIP_REACH);
+  const z1 = Math.floor((c[1] + CLIP_REACH) / CLIP_REACH);
+  for (let z = z0; z <= z1; z++)
+    for (let x = x0; x <= x1; x++)
+      for (const si of rail.grid.get(
+        clipCell(x * CLIP_REACH, z * CLIP_REACH),
+      ) ?? []) {
+        const a = rail.segs[si][0];
+        if (
+          Math.abs(a[0] - c[0]) > CLIP_REACH ||
+          Math.abs(a[1] - c[1]) > CLIP_REACH
+        )
+          continue;
+        near.push(si);
+      }
+  near.sort((p, q) => p - q);
   let poly = fp;
-  for (const e of elevated) {
-    if (e.kind !== 'rail') continue;
-    for (let i = 0; i + 1 < e.pts.length; i++) {
-      const a = e.pts[i];
-      const b = e.pts[i + 1];
-      if (Math.abs(a[0] - c[0]) > 150 || Math.abs(a[1] - c[1]) > 150) continue;
-      if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
-      let near = false;
-      for (let j = 0; j < poly.length && !near; j++)
-        near = segmentGap(poly[j], poly[(j + 1) % poly.length], a, b) < pad;
-      if (!near) continue;
-      const d = sub2(b, a);
-      const l = Math.hypot(d[0], d[1]);
-      if (l < 1e-6) continue;
-      let n: Vec2 = [-d[1] / l, d[0] / l];
-      if (dot2(sub2(c, a), n) < 0) n = [-n[0], -n[1]];
-      poly = clipHalfPlane(poly, [a[0] + n[0] * pad, a[1] + n[1] * pad], n);
-      if (poly.length < 3) return poly;
-    }
+  for (const si of near) {
+    const [a, b] = rail.segs[si];
+    let close = false;
+    for (let j = 0; j < poly.length && !close; j++)
+      close = segmentGap(poly[j], poly[(j + 1) % poly.length], a, b) < pad;
+    if (!close) continue;
+    const d = sub2(b, a);
+    const l = Math.hypot(d[0], d[1]);
+    if (l < 1e-6) continue;
+    let n: Vec2 = [-d[1] / l, d[0] / l];
+    if (dot2(sub2(c, a), n) < 0) n = [-n[0], -n[1]];
+    poly = clipHalfPlane(poly, [a[0] + n[0] * pad, a[1] + n[1] * pad], n);
+    if (poly.length < 3) return poly;
   }
   return poly;
 }

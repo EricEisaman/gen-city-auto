@@ -92,8 +92,12 @@ export class Graph {
 }
 
 /** Snapping point index for node creation. */
+/** Map key of grid cell (x, y) (|x|, |y| < 2^20). */
+const cellKey = (x: number, y: number) =>
+  (y + 0x100000) * 0x200000 + x + 0x100000;
+
 class PointIndex {
-  private cells = new Map<string, number[]>();
+  private cells = new Map<number, number[]>();
   private size: number;
   private nodes: GNode[];
 
@@ -103,7 +107,7 @@ class PointIndex {
   }
 
   private key(x: number, y: number) {
-    return `${Math.floor(x / this.size)},${Math.floor(y / this.size)}`;
+    return cellKey(Math.floor(x / this.size), Math.floor(y / this.size));
   }
 
   find(p: Vec2): number {
@@ -113,7 +117,7 @@ class PointIndex {
     let bd = this.size;
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
-        for (const n of this.cells.get(`${cx + dx},${cy + dy}`) ?? []) {
+        for (const n of this.cells.get(cellKey(cx + dx, cy + dy)) ?? []) {
           const d = dist2(this.nodes[n].p, p);
           if (d < bd) {
             bd = d;
@@ -154,7 +158,7 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
   }
   // Spatial hash of segments for intersection tests.
   const cell = 64;
-  const grid = new Map<string, number[]>();
+  const grid = new Map<number, number[]>();
   segs.forEach((s, i) => {
     const x0 = Math.floor(Math.min(s.a[0], s.b[0]) / cell);
     const x1 = Math.floor(Math.max(s.a[0], s.b[0]) / cell);
@@ -162,7 +166,7 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
     const y1 = Math.floor(Math.max(s.a[1], s.b[1]) / cell);
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
-        const k = `${x},${y}`;
+        const k = cellKey(x, y);
         let c = grid.get(k);
         if (!c) grid.set(k, (c = []));
         c.push(i);
@@ -178,7 +182,7 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
     const seen = new Set<number>();
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
-        for (const sj of grid.get(`${x},${y}`) ?? []) {
+        for (const sj of grid.get(cellKey(x, y)) ?? []) {
           if (sj <= si || seen.has(sj)) continue;
           seen.add(sj);
           const B = segs[sj];
@@ -331,7 +335,9 @@ export function extractFaces(g: Graph, maxArea = Infinity): Face[] {
       .sort((x, y) => x.a - y.a)
       .map(x => x.e);
   });
-  const visited = new Set<string>();
+  // Directed edges walked (u * nodes + v).
+  const nn = g.nodes.length;
+  const visited = new Set<number>();
   const faces: Face[] = [];
   for (let e = 0; e < g.edges.length; e++) {
     if (g.edges[e].dead) continue;
@@ -339,7 +345,7 @@ export function extractFaces(g: Graph, maxArea = Infinity): Face[] {
       [g.edges[e].a, g.edges[e].b],
       [g.edges[e].b, g.edges[e].a],
     ]) {
-      if (visited.has(`${from}>${to}`)) continue;
+      if (visited.has(from * nn + to)) continue;
       const nodes: number[] = [];
       const edges: number[] = [];
       let u = from;
@@ -347,7 +353,7 @@ export function extractFaces(g: Graph, maxArea = Infinity): Face[] {
       let edge = e;
       let ok = true;
       for (let guard = 0; guard < 10000; guard++) {
-        const key = `${u}>${v}`;
+        const key = u * nn + v;
         if (visited.has(key)) {
           ok = u === from && v === to;
           break;
