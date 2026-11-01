@@ -3108,6 +3108,30 @@ fn rdNearLine(d: f32, w: f32, n: f32) -> f32 {
   return 1.0 - smoothstep(w * 0.5 + 0.004, w * 0.5 + 0.012 + 0.07 * n * n, d);
 }
 
+// The cracks' width (x: wandering 1.5-7 cm along each crack at two
+// scales, opening to 4-8 cm where it has spalled: squared noise, mostly
+// thin) and the raggedness of the paint-erosion halo round them (y).
+fn rdCrackW(x: f32, along: f32) -> vec2f {
+  let wv = valueNoise(vec2f(x * 3.3, along * 3.3) + 2.0);
+  let w = (0.02 + 0.035 * valueNoise(vec2f(x * 1.3, along * 1.3) + 5.0)) * (0.15 + 1.7 * wv * wv);
+  let en = valueNoise(vec2f(x, along) * 30.0) * 0.6 + valueNoise(vec2f(x, along) * 7.0 + 4.0) * 0.4;
+  return vec2f(w, en);
+}
+
+// Distance (m) past which a crack of any width (rdCrackW: at most 0.1 m)
+// and its erosion halo (at most 0.13 m from the line) cover nothing.
+const RD_CRACK_REACH = 0.14;
+
+// ?off=rdfast: the road material evaluates every layer's noise everywhere.
+fn roadFastOff() -> bool { return (frame.off.z & (1u << 9u)) != 0u; }
+
+// valueNoise(p) where its weight k is non-zero, else its mean (callers mix
+// it toward 0.5 by k, so the result is the same).
+fn rdNoiseIf(p: vec2f, k: f32) -> f32 {
+  if (k > 0.0 || roadFastOff()) { return valueNoise(p); }
+  return 0.5;
+}
+
 fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: i32, seed: u32, ck: f32, foot: f32) -> f32 {
   rdNearC = 0.0;
   if (ck <= 0.0) { return 0.0; }
@@ -3118,14 +3142,12 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
   let fpL = max(length(vec2f(dUvX.x, dUvY.x)), 1e-4);
   let fpT = max(length(vec2f(dUvX.y, dUvY.y)), 1e-4);
   let ax = abs(x);
+  // Only pixels near a crack's line pay for its width noise (rdCrackW):
+  // past RD_CRACK_REACH (+ the line's footprint) both the crack line and
+  // its paint-erosion halo are zero for any width (?off=rdfast: always).
+  let lazy = !roadFastOff();
   var c = 0.0;
-  // Width wanders 1.5-7 cm along each crack (two scales), and each run
-  // tapers to a hairline over its last metre.
-  // Width: hairline over most of a run, opening to 4-8 cm where it has
-  // spalled (squared noise: mostly thin, a few wide stretches).
-  let wv = valueNoise(vec2f(x * 3.3, along * 3.3) + 2.0);
-  let w = (0.02 + 0.035 * valueNoise(vec2f(x * 1.3, along * 1.3) + 5.0)) * (0.15 + 1.7 * wv * wv);
-  let en = valueNoise(vec2f(x, along) * 30.0) * 0.6 + valueNoise(vec2f(x, along) * 7.0 + 4.0) * 0.4;
+  var wn = vec2f(-1.0);
   // Longitudinal, wheel paths: runs of 3-12 m in 9 m cells.
   {
     let cell = floor(along / 9.0);
@@ -3135,10 +3157,16 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
       let s0 = cell * 9.0 + 6.0 * rdH(seed, hk, 81);
       let s1 = s0 + 3.0 + 9.0 * rdH(seed, hk, 82);
       let span = smoothstep(s0, s0 + 1.0, along) * (1.0 - smoothstep(s1 - 1.0, s1, along));
-      let wander = (valueNoise(vec2f(along * 0.7, f32(hk))) - 0.5) * 0.3 + (valueNoise(vec2f(along * 4.0, f32(hk) + 3.0)) - 0.5) * 0.05;
-      let dd = abs(abs(o) - 0.85 - wander);
-      c = max(c, rdCrackLine(dd, w * (0.25 + 0.75 * span), fpL) * smoothstep(0.0, 0.3, span));
-      rdNearC = max(rdNearC, rdNearLine(dd, w, en) * smoothstep(0.0, 0.3, span));
+      if (!lazy || span > 0.0) {
+        let wander = (valueNoise(vec2f(along * 0.7, f32(hk))) - 0.5) * 0.3 + (valueNoise(vec2f(along * 4.0, f32(hk) + 3.0)) - 0.5) * 0.05;
+        let dd = abs(abs(o) - 0.85 - wander);
+        if (!lazy || dd < RD_CRACK_REACH + fpL) {
+          if (wn.x < 0.0) { wn = rdCrackW(x, along); }
+          let w = wn.x;
+          c = max(c, rdCrackLine(dd, w * (0.25 + 0.75 * span), fpL) * smoothstep(0.0, 0.3, span));
+          rdNearC = max(rdNearC, rdNearLine(dd, w, wn.y) * smoothstep(0.0, 0.3, span));
+        }
+      }
     }
   }
   // Longitudinal, paving joints (lane lines and the crown): long runs.
@@ -3150,10 +3178,16 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
       let s0 = cell * 14.0 + 4.0 * rdH(seed, hk, 84);
       let s1 = s0 + 6.0 + 10.0 * rdH(seed, hk, 85);
       let span = smoothstep(s0, s0 + 1.0, along) * (1.0 - smoothstep(s1 - 1.0, s1, along));
-      let wander = (valueNoise(vec2f(along * 0.5, f32(hk) + 9.0)) - 0.5) * 0.16 + (valueNoise(vec2f(along * 5.0, f32(hk))) - 0.5) * 0.04;
-      let dd = abs(ax - jx - 0.12 - wander);
-      c = max(c, rdCrackLine(dd, w * (0.25 + 0.75 * span), fpL) * smoothstep(0.0, 0.3, span));
-      rdNearC = max(rdNearC, rdNearLine(dd, w, en) * smoothstep(0.0, 0.3, span));
+      if (!lazy || span > 0.0) {
+        let wander = (valueNoise(vec2f(along * 0.5, f32(hk) + 9.0)) - 0.5) * 0.16 + (valueNoise(vec2f(along * 5.0, f32(hk))) - 0.5) * 0.04;
+        let dd = abs(ax - jx - 0.12 - wander);
+        if (!lazy || dd < RD_CRACK_REACH + fpL) {
+          if (wn.x < 0.0) { wn = rdCrackW(x, along); }
+          let w = wn.x;
+          c = max(c, rdCrackLine(dd, w * (0.25 + 0.75 * span), fpL) * smoothstep(0.0, 0.3, span));
+          rdNearC = max(rdNearC, rdNearLine(dd, w, wn.y) * smoothstep(0.0, 0.3, span));
+        }
+      }
     }
   }
   // Transverse: one per 5-10 m cell on old surface, across 30-100 % of the
@@ -3169,23 +3203,33 @@ fn rdRoadCracks(x: f32, along: f32, o: f32, hw: f32, laneW: f32, li: f32, side: 
       // along its length (spalled stretches 3-4x the hairline), with a
       // chipped halo where it crosses paint.
       let span = smoothstep(x0, x0 + 1.5, x) * (1.0 - smoothstep(x1 - 1.5, x1, x));
-      let tp = valueNoise(vec2f(x * 0.8, f32(hk) + 5.0));
-      let wander = (valueNoise(vec2f(x * 0.9, f32(hk) + 1.0)) - 0.5) * 0.35 + (valueNoise(vec2f(x * 6.0, f32(hk) + 2.0)) - 0.5) * 0.05 + x * (rdH(seed, hk, 90) - 0.5) * 0.08;
-      let dd = abs(along - t0 - wander);
-      c = max(c, rdCrackLine(dd, w * (0.12 + 0.88 * span * span) * (0.35 + 1.3 * tp * tp), fpT) * smoothstep(0.0, 0.2, span));
-      rdNearC = max(rdNearC, rdNearLine(dd, w * (0.5 + 1.5 * tp), en) * smoothstep(0.0, 0.3, span));
+      if (!lazy || span > 0.0) {
+        let wander = (valueNoise(vec2f(x * 0.9, f32(hk) + 1.0)) - 0.5) * 0.35 + (valueNoise(vec2f(x * 6.0, f32(hk) + 2.0)) - 0.5) * 0.05 + x * (rdH(seed, hk, 90) - 0.5) * 0.08;
+        let dd = abs(along - t0 - wander);
+        // (Spalled up to 1.65x the widest crack.)
+        if (!lazy || dd < RD_CRACK_REACH * 1.65 + fpT) {
+          let tp = valueNoise(vec2f(x * 0.8, f32(hk) + 5.0));
+          if (wn.x < 0.0) { wn = rdCrackW(x, along); }
+          let w = wn.x;
+          c = max(c, rdCrackLine(dd, w * (0.12 + 0.88 * span * span) * (0.35 + 1.3 * tp * tp), fpT) * smoothstep(0.0, 0.2, span));
+          rdNearC = max(rdNearC, rdNearLine(dd, w * (0.5 + 1.5 * tp), wn.y) * smoothstep(0.0, 0.3, span));
+        }
+      }
     }
   }
   // Alligator blocks in the wheel paths of the oldest stretches.
   {
     let band = 1.0 - smoothstep(0.18, 0.4, abs(abs(o) - 0.85));
-    let zone = smoothstep(0.62, 0.72, valueNoise(vec2f(along * 0.11, li * 5.0 + f32(side) * 11.0) + f32(seed & 0xffu))) * smoothstep(0.6, 0.9, ck);
-    if (band * zone > 0.01 && foot < 0.05) {
-      let q = vec2f(x, along);
-      let warp = vec2f(valueNoise(q * 3.1), valueNoise(q * 3.1 + 17.0)) - 0.5;
-      let v = rdVoronoiEdge(q / 0.32 + warp * 0.2);
-      c = max(c, paintLine(v.x * 0.32, 0.025, foot) * band * zone * (1.0 - smoothstep(0.025, 0.05, foot)));
-      rdNearC = max(rdNearC, rdNearLine(v.x * 0.32, 0.025, en) * band * zone);
+    if (!lazy || (band > 0.01 && foot < 0.05 && ck > 0.6)) {
+      let zone = smoothstep(0.62, 0.72, valueNoise(vec2f(along * 0.11, li * 5.0 + f32(side) * 11.0) + f32(seed & 0xffu))) * smoothstep(0.6, 0.9, ck);
+      if (band * zone > 0.01 && foot < 0.05) {
+        let q = vec2f(x, along);
+        let warp = vec2f(valueNoise(q * 3.1), valueNoise(q * 3.1 + 17.0)) - 0.5;
+        let v = rdVoronoiEdge(q / 0.32 + warp * 0.2);
+        if (wn.x < 0.0) { wn = rdCrackW(x, along); }
+        c = max(c, paintLine(v.x * 0.32, 0.025, foot) * band * zone * (1.0 - smoothstep(0.025, 0.05, foot)));
+        rdNearC = max(rdNearC, rdNearLine(v.x * 0.32, 0.025, wn.y) * band * zone);
+      }
     }
   }
   return mix(mean, c, fade);
@@ -3427,7 +3471,9 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let band = select(0.0, 0.4, rdH(seed, seamK, 6) < 0.5);
     var seam = max(paintLine(dT, 0.025, foot), band * paintLine(dT, 0.15, foot));
     seam = max(seam, max(paintLine(dL, 0.025, foot), select(0.0, 0.4, rdH(seed, sk, 7) < 0.5) * paintLine(dL, 0.15, foot)));
-    if (trSd < 100.0) {
+    // (The band is at most 0.2 m wide and its edge wanders 1.5 cm: past
+    // that, plus a footprint, it covers nothing.)
+    if (trSd < 100.0 && (roadFastOff() || abs(trSd) - 0.015 < max(0.1 + 0.5 * foot, foot))) {
       // Patch outlines: a 5 cm glossy tar seal all round, wandering a
       // little; a 15 cm overband on half the chains.
       // Bitumen seal band over the cut: 6-16 cm, squeegeed on so its
@@ -3553,12 +3599,12 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     // pixel's minor axis: at grazing range it beat into long smears.)
     let fminW = min(length(dWorldX), length(dWorldY));
     let stK = 1.0 - smoothstep(0.03, 0.08, fminW);
-    let streak = 0.75 + 0.5 * (mix(0.5, valueNoise(vec2f(o * 5.0, along * 1.6)), stK) * 0.5 + valueNoise(world.xz * 0.9 + 2.0) * 0.5);
+    let streak = 0.75 + 0.5 * (mix(0.5, rdNoiseIf(vec2f(o * 5.0, along * 1.6), stK), stK) * 0.5 + valueNoise(world.xz * 0.9 + 2.0) * 0.5);
     s.albedo *= 1.0 - select(-0.12, 0.26, old) * track * streak * redK;
     s.rough -= select(0.06, 0.2, old) * track * gz * redK;
     // Oil drip line down every lane centre (cars idle and drip there),
     // blotchy, between the wheel paths.
-    let drip = exp(-pow(o / 0.45, 2.0)) * smoothstep(0.35, 0.7, mix(0.5, valueNoise(vec2f(o * 3.0, along * 1.2) + 7.0), stK) * 0.6 + valueNoise(world.xz * 0.35) * 0.6) * redK;
+    let drip = exp(-pow(o / 0.45, 2.0)) * smoothstep(0.35, 0.7, mix(0.5, rdNoiseIf(vec2f(o * 3.0, along * 1.2) + 7.0, stK), stK) * 0.6 + valueNoise(world.xz * 0.35) * 0.6) * redK;
     s.albedo *= 1.0 - select(0.25, 0.35, old) * drip * select(1.0, 0.0, kind == 0u);
     s.rough -= 0.15 * drip * gz;
     // Oil / rubber band behind the stop line, down the lane centre: where
@@ -3617,7 +3663,8 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
 
   // ---- S3: markings, as coverage terms --------------------------------
   // Edge wobble: the line wanders a centimetre.
-  let axw = ax + (valueNoise(vec2f(along * 1.3, f32(side) * 7.0)) - 0.5) * 0.02 * smoothstep(0.03, 0.01, foot);
+  let axwK = smoothstep(0.03, 0.01, foot);
+  let axw = ax + (rdNoiseIf(vec2f(along * 1.3, f32(side) * 7.0), axwK) - 0.5) * 0.02 * axwK;
   var covW = 0.0;
   var covY = 0.0;
   var bev = 0.0;          // raised-edge coverage of the dominant line
@@ -3757,8 +3804,8 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let midK = 1.0 - smoothstep(0.01, 0.03, foot);
     let barV = select(valueNoise(vec2f(along * 0.25, o * 0.6) + 11.0), hash11(cwBar * 7.31 + f32(seed & 0xffu)), cwBar > -0.5);
     let track = tr0w * mix(0.35, 1.15, barV) + select(0.0, 0.12, ageHost > 0.6);
-    let n4 = mix(0.5, valueNoise(world.xz * 22.0), midK) * 0.6 + mix(0.5, valueNoise(world.xz * 55.0 + 3.0), fineK) * 0.4;
-    let chip = (1.0 - smoothstep(0.0, 0.05, edgeD)) * mix(0.5, valueNoise(world.xz * 40.0 + 7.0), fineK) * 0.55;
+    let n4 = mix(0.5, rdNoiseIf(world.xz * 22.0, midK), midK) * 0.6 + mix(0.5, rdNoiseIf(world.xz * 55.0 + 3.0, fineK), fineK) * 0.4;
+    let chip = (1.0 - smoothstep(0.0, 0.05, edgeD)) * mix(0.5, rdNoiseIf(world.xz * 40.0 + 7.0, fineK), fineK) * 0.55;
     let holeF = smoothstep(0.5, 0.56, track * 0.82 + (n4 - 0.5) * 0.7 + chip + 0.04);
     // Aggregate speckle: round 0.5-1.2 cm chips poking through, jittered
     // in 2 cm cells, denser in the tracks.
@@ -3979,11 +4026,38 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     sag = max(sag, 0.85 * tr0r * smoothstep(0.45, 0.6, age));
     sag = max(sag, 0.8 * max(trAc, paintLine(abs(trSd), 0.25, foot)));
     sag = max(sag, basin);
-    sag = max(sag, 0.75 * smoothstep(0.58, 0.72, fbm2(world.xz * 0.045 + 3.0)));
-    sag *= smoothstep(0.6, 1.1, ax);
+    // Broad sags: fbm2, its octaves summed only while they can still lift
+    // the sag (each octave adds at most its amplitude), and not at all where
+    // the crown or drainage asphalt zeroes the sag below (?off=rdfast: every
+    // octave everywhere).
+    let crown = smoothstep(0.6, 1.1, ax);
+    let drained = drains && ax <= hw - 1.0;
+    if (roadFastOff() || (crown > 0.0 && !drained)) {
+      var fs = 0.0;
+      var fa = 0.5;
+      var fq = world.xz * 0.045 + 3.0;
+      for (var i = 0; i < 4; i++) {
+        // fs + 2 fa: this octave and all the finer ones at their maximum.
+        if (!roadFastOff() && 0.75 * smoothstep(0.58, 0.72, fs + 2.0 * fa) <= sag) { break; }
+        fs += fa * valueNoise(fq);
+        fq = fq * 2.03 + vec2f(1.7, 9.2);
+        fa *= 0.5;
+        if (i == 3) { sag = max(sag, 0.75 * smoothstep(0.58, 0.72, fs)); }
+      }
+    }
+    sag *= crown;
     if (drains) { sag = select(0.0, sag, ax > hw - 1.0); }
-    let nb = valueNoise(world.xz * 0.55) * 0.6 + valueNoise(world.xz * 2.3 + 9.0) * 0.4;
-    let pv = sag + (nb - 0.5) * 0.8;
+    // Standing water where pv = sag + (nb - 0.5) * 0.8 passes 0.44 (nb in
+    // [0, 1]); its noise only where it can (?off=rdfast: everywhere).
+    var pv = 0.0;
+    let wetRoad = (1.0 - paintCov) * frame.weather.z;
+    if (roadFastOff() || (wetRoad > 0.0 && sag + 0.4 > 0.44)) {
+      let nb0 = valueNoise(world.xz * 0.55) * 0.6;
+      if (roadFastOff() || sag + (nb0 + 0.4 - 0.5) * 0.8 > 0.44) {
+        let nb = nb0 + valueNoise(world.xz * 2.3 + 9.0) * 0.4;
+        pv = sag + (nb - 0.5) * 0.8;
+      }
+    }
     let puddle = smoothstep(0.56, 0.62, pv) * (1.0 - paintCov) * frame.weather.z;
     let margin = smoothstep(0.44, 0.56, pv) * (1.0 - paintCov) * frame.weather.z;
     let dryA = s.albedo;
@@ -3999,7 +4073,9 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     // ~0.6x its dry albedo (applyWetness takes it to ~0.45).
     let wn = valueNoise(vec2f(x * 0.8, along * 0.12) + 3.0) * 0.6 + valueNoise(world.xz * 0.07 + 11.0) * 0.4;
     let wmask = smoothstep(0.22, 0.42, wn + 0.25 * sag) * (1.0 - surfCov);
-    let film = mix(0.18 + 0.06 * wn, 0.08 + 0.07 * valueNoise(world.xz * 0.6 + 5.0), wmask);
+    var filmN = 0.0;
+    if (roadFastOff() || wmask > 0.0) { filmN = valueNoise(world.xz * 0.6 + 5.0); }
+    let film = mix(0.18 + 0.06 * wn, 0.08 + 0.07 * filmN, wmask);
     s.rough = mix(s.rough, film, frame.weather.z * (1.0 - gutterC * 0.5));
     s.normal = normalize(mix(s.normal, n, 0.6 * wmask * frame.weather.z));
     s.albedo *= mix(1.0, 1.1, frame.weather.z * (1.0 - gutterC));
