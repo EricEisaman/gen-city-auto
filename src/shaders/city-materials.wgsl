@@ -2153,6 +2153,16 @@ fn facadeGridFar(sIn: Surf, st: FacadeStyle, fz: FacadeZone, uv: vec2f, wall: ve
 
 // ?off=facfar (render/ablation.ts): the far facade path at every distance,
 // to compare its means against the near path.
+// Far pipeline (renderer.ts cityFar, cull.wgsl argsFar): the opaque
+// clusters wholly past the depth where a pixel spans FAR_FOOT (0.8 m,
+// FACADE_GRID1) of a surface facing the camera. The facade's fine, mid and
+// per-opening terms are compiled out there (they had faded to their means
+// by that footprint), and the shop row and street-face base, which up close
+// keep their per-opening shopfronts (traced konbini and boutique interiors),
+// take the box-filtered window grid too, with the konbini fascia bands kept.
+// The far city's pixels no longer pay for the near facade's registers:
+// ~2-3 ms of the 1440p far skyline.
+override FAR_SHADE = false;
 fn facadeFarForced() -> bool { return (frame.off.x & (1u << 24u)) != 0u; }
 fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
@@ -2188,9 +2198,9 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   // smaller than a few pixels, and each fine pattern is backed by a 1-10 m
   // one carrying the same idea to a distance.
   let foot = max(length(dWorldX), length(dWorldY));
-  let fFine = 1.0 - smoothstep(0.03, 0.1, foot);
-  let fMid = 1.0 - smoothstep(0.25, 0.7, foot);
-  let farK = select(smoothstep(FACADE_FAR0, FACADE_FAR1, foot), 1.0, facadeFarForced());
+  let fFine = select(1.0 - smoothstep(0.03, 0.1, foot), 0.0, FAR_SHADE);
+  let fMid = select(1.0 - smoothstep(0.25, 0.7, foot), 0.0, FAR_SHADE);
+  let farK = select(smoothstep(FACADE_FAR0, FACADE_FAR1, foot), 1.0, facadeFarForced() || FAR_SHADE);
   // Metre-scale weathering noise is replaced by its mean past ~1-2 m/pixel.
   let fVFar = smoothstep(1.0, 2.0, foot);
   let wet = frame.weather.z;
@@ -2408,7 +2418,21 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   if (zoneDone) { return s; }
   // Far away, the window grid as coverage (not the shopfronts or the base).
   let farB = select(smoothstep(FACADE_GRID0, FACADE_GRID1, foot), 1.0, facadeFarForced());
-  if (farB > 0.0 && !(shop && abs(floorIdx) < 0.5) && !(fz.zone == FZ_BASE && fz.role <= 1u) && farB > pixelDither(0.0)) {
+  if (FAR_SHADE && shop && abs(floorIdx) < 0.5) {
+    // Far pipeline: the shop row as the window grid, but each konbini's
+    // lit fascia band kept (the brightest read of a far street at night).
+    let unit = floor(bayIdx / 2.0);
+    let shopSeed = hashu(aux ^ u32(unit + 3000.0));
+    let shutter = hashuf(cellSeed ^ 77u) < 0.12 || hashuf(shopSeed ^ 0x5a5u) < 0.2;
+    if (!shutter && shopSeed % 4u == 0u && ly > st.floorH * 0.66 && ly < st.floorH * 0.78) {
+      let bandC = array<vec3f, 3>(vec3f(0.1, 0.5, 0.25), vec3f(0.9, 0.3, 0.05), vec3f(0.1, 0.3, 0.8))[shopSeed % 3u];
+      s.albedo = bandC;
+      s.rough = 0.3;
+      s.emissive = bandC * mix(0.8, 4.0, gloomLight());
+      return s;
+    }
+  }
+  if (FAR_SHADE || (farB > 0.0 && !(shop && abs(floorIdx) < 0.5) && !(fz.zone == FZ_BASE && fz.role <= 1u) && farB > pixelDither(0.0))) {
     return facadeGridFar(s, st, fz, uv, wall, n, T, V, sl, fin, kind, style, aux);
   }
 

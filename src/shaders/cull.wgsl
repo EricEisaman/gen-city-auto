@@ -19,6 +19,7 @@ struct CullView {
   camPos: vec4f,       // xyz, detail cull factor (min radius/distance)
   params: vec4u,       // cluster count, use occlusion, plane count, count triangles
   hiz: vec4f,          // hiz width, height, mip count, fine-detail distance scale (0 = off)
+  far: vec4f,          // far-shading view depth (0 = off), -, -, -
 };
 
 struct DrawArgs {
@@ -39,6 +40,10 @@ struct DrawArgs {
 // Alpha-tested clusters (flags bit 1) go to their own list and draw.
 @group(0) @binding(6) var<storage, read_write> visibleAlpha: array<u32>;
 @group(0) @binding(7) var<storage, read_write> argsAlpha: DrawArgs;
+// Opaque clusters wholly past far.x view depth (every pixel's footprint
+// over FAR_FOOT, city-materials.wgsl) go to their own draw with the
+// far-specialised material pipeline; they fill `visible` from its end.
+@group(0) @binding(8) var<storage, read_write> argsFar: DrawArgs;
 
 fn hizTest(center: vec3f, radius: f32) -> bool {
   // Project the bounding box corners; reverse-Z so larger depth = closer.
@@ -104,6 +109,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let slot = atomicAdd(&argsAlpha.instanceCount, 1u);
     visibleAlpha[slot] = i;
     if (view.params.w != 0u) { atomicAdd(&argsAlpha.tris, triCount); }
+  } else if (view.far.x > 0.0 && (view.viewProj * vec4f(center, 1.0)).w - c.radius > view.far.x) {
+    let slot = atomicAdd(&argsFar.instanceCount, 1u);
+    visible[arrayLength(&visible) - 1u - slot] = i;
+    if (view.params.w != 0u) { atomicAdd(&argsFar.tris, triCount); }
   } else {
     let slot = atomicAdd(&args.instanceCount, 1u);
     visible[slot] = i;

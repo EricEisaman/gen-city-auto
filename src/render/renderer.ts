@@ -85,6 +85,8 @@ export const GBUFFER_FORMATS: GPUTextureFormat[] = [
   'rg16float',
 ];
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
+/** city-materials.wgsl FAR_FOOT (m per pixel where far shading starts). */
+const FAR_FOOT = 0.8;
 const SHADOW_SIZE = 2048;
 const CASCADES = 4;
 const VIEWS = 1 + CASCADES;
@@ -174,6 +176,8 @@ export class Renderer {
   private argsBuffers: GPUBuffer[] = [];
   /** Alpha-tested clusters (cmesh CLUSTER_ALPHA): their own list and draw. */
   private visibleAlphaBuffers: GPUBuffer[] = [];
+  /** Far opaque clusters (cull.wgsl argsFar): drawn with cityFar. */
+  private argsFarBuffers: GPUBuffer[] = [];
   private argsAlphaBuffers: GPUBuffer[] = [];
   readonly shadowViewBuffers: GPUBuffer[] = [];
 
@@ -425,6 +429,17 @@ export class Renderer {
             GPUBufferUsage.COPY_SRC,
         }),
       );
+      this.argsFarBuffers.push(
+        device.createBuffer({
+          label: `cull/${name}/indirect args far`,
+          size: 32,
+          usage:
+            GPUBufferUsage.STORAGE |
+            GPUBufferUsage.INDIRECT |
+            GPUBufferUsage.COPY_DST |
+            GPUBufferUsage.COPY_SRC,
+        }),
+      );
       if (v > 0)
         this.shadowViewBuffers.push(
           device.createBuffer({
@@ -515,6 +530,26 @@ export class Renderer {
               module: cityMod,
               entryPoint: 'fsOpaque',
               targets: gTargets,
+            },
+            primitive: {cullMode: 'back'},
+            depthStencil: gDepth,
+          }),
+        ],
+        [
+          'cityFar',
+          d.createRenderPipelineAsync({
+            label: 'pipeline/city gbuffer far',
+            layout: 'auto',
+            vertex: {
+              module: cityMod,
+              entryPoint: 'vs',
+              constants: {FAR_LIST: 1},
+            },
+            fragment: {
+              module: cityMod,
+              entryPoint: 'fsOpaque',
+              targets: gTargets,
+              constants: {FAR_SHADE: 1},
             },
             primitive: {cullMode: 'back'},
             depthStencil: gDepth,
@@ -1124,6 +1159,7 @@ export class Renderer {
     h: number,
     mips: number,
     extraPlanes: number[] = [],
+    farDepth = 0,
   ) {
     const data = new ArrayBuffer(320);
     const f = new Float32Array(data);
@@ -1142,11 +1178,13 @@ export class Renderer {
       68,
     );
     f.set([w, h, mips, this.off('farcull') ? 0 : this.farCullScale], 72);
+    f[76] = farDepth;
     this.device.queue.writeBuffer(this.cullViewBuffers[v], 0, data);
     // Reset the indirect draw: 128 triangles * 3 vertices per instance (cluster).
     const reset = new Uint32Array([128 * 3, 0, 0, 0, 0]);
     this.device.queue.writeBuffer(this.argsBuffers[v], 0, reset);
     this.device.queue.writeBuffer(this.argsAlphaBuffers[v], 0, reset);
+    this.device.queue.writeBuffer(this.argsFarBuffers[v], 0, reset);
   }
 
   private updateTerrainPatches(eye: Vec3) {
@@ -1330,6 +1368,10 @@ export class Renderer {
       Math.ceil(w / 2),
       Math.ceil(h / 2),
       t.hizMips,
+      [],
+      // Far-shading pipeline past the depth where a pixel spans FAR_FOOT
+      // (city-materials.wgsl) of a surface facing the camera.
+      this.off('farshade') ? 0 : (FAR_FOOT * h) / (2 * Math.tan(v.fov / 2)),
     );
     const camPlanes = frustumPlanes(viewProjNoJ);
     // A point of a slice is at most diag x its far depth from the eye.
@@ -1539,6 +1581,7 @@ export class Renderer {
               hizView,
               this.ubuf(this.visibleAlphaBuffers[vi]),
               this.ubuf(this.argsAlphaBuffers[vi]),
+              this.ubuf(this.argsFarBuffers[vi]),
             ],
             `bg/cull/view${vi}`,
           ),
@@ -1725,6 +1768,12 @@ export class Renderer {
           this.visibleBuffers[0],
           this.argsBuffers[0],
           'city opaque',
+        );
+        cityDraw(
+          'cityFar',
+          this.visibleBuffers[0],
+          this.argsFarBuffers[0],
+          'city far',
         );
         cityDraw(
           'city',
@@ -2157,14 +2206,15 @@ export class Renderer {
     const d = this.device;
     this.cullStatsBuf ??= d.createBuffer({
       label: 'cull/stats readback',
-      size: VIEWS * 2 * 32,
+      size: VIEWS * 3 * 32,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
     const buf = this.cullStatsBuf;
     const enc = d.createCommandEncoder({label: 'cull stats'});
     for (let v = 0; v < VIEWS; v++) {
-      enc.copyBufferToBuffer(this.argsBuffers[v], 0, buf, v * 64, 32);
-      enc.copyBufferToBuffer(this.argsAlphaBuffers[v], 0, buf, v * 64 + 32, 32);
+      enc.copyBufferToBuffer(this.argsBuffers[v], 0, buf, v * 96, 32);
+      enc.copyBufferToBuffer(this.argsAlphaBuffers[v], 0, buf, v * 96 + 32, 32);
+      enc.copyBufferToBuffer(this.argsFarBuffers[v], 0, buf, v * 96 + 64, 32);
     }
     d.queue.submit([enc.finish()]);
     this.cullStatsBusy = true;
@@ -2177,9 +2227,9 @@ export class Renderer {
         let sc = 0;
         let st = 0;
         for (let v = 0; v < VIEWS; v++) {
-          const o = v * 16;
-          const clusters = u[o + 1] + u[o + 9];
-          const tris = u[o + 4] + u[o + 12];
+          const o = v * 24;
+          const clusters = u[o + 1] + u[o + 9] + u[o + 17];
+          const tris = u[o + 4] + u[o + 12] + u[o + 20];
           this.stats[`${name(v)}Clusters`] = clusters;
           this.stats[`${name(v)}AlphaClusters`] = u[o + 9];
           this.stats[`${name(v)}Tris`] = tris;
