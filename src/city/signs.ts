@@ -9,6 +9,8 @@
 //                    four 256x128 faces each, so billboards use 48..53.
 //   rows 2048..2559  square cube signs     256x256,  8 x 2 = 16 (ids 72..87)
 
+import type {CityType} from './config.ts';
+
 export const ATLAS_W = 2048;
 export const ATLAS_H = 2560;
 export const SIGN = {
@@ -68,8 +70,33 @@ export type GuideFace =
       street: [string, string];
       t: number;
     }
-  | {kind: 'dist'; rows: [string, string, number][]};
-export const GUIDE_FACES: GuideFace[] = [
+  | {kind: 'dist'; rows: [string, string, number][]}
+  | UsGuideFace;
+
+/**
+ * US (MUTCD) guide sign faces, for the 'nyc' locale: green field, white
+ * border and Highway-Gothic-style lettering.
+ *   'us'      overhead advance guide sign: route shields with a cardinal
+ *             direction over them, one or two destination lines, an arrow
+ *             (up, up-left, up-right, or down: one lane), and an optional
+ *             exit tab (yellow-free, white on green, at the top right) and a
+ *             bottom distance line ("1/2 MILE").
+ *   'usDist'  distance sign: destinations with the miles to them.
+ */
+export type UsShield = {kind: 'interstate' | 'us' | 'state'; num: string};
+export type UsGuideFace =
+  | {
+      kind: 'us';
+      shields: UsShield[];
+      cardinal: string;
+      lines: string[];
+      arrow: 'up' | 'left' | 'right' | 'down';
+      exit?: string;
+      dist?: string;
+    }
+  | {kind: 'usDist'; rows: [string, string][]};
+
+const GUIDE_FACES_TOKYO: GuideFace[] = [
   {
     kind: 'dir',
     ahead: ['新宿', 'Shinjuku'],
@@ -147,6 +174,79 @@ export const GUIDE_FACES: GuideFace[] = [
     ],
   },
 ];
+const GUIDE_FACES_NYC: GuideFace[] = [
+  {
+    kind: 'us',
+    shields: [{kind: 'interstate', num: '495'}],
+    cardinal: 'EAST',
+    lines: ['Queens', 'Midtown Tunnel'],
+    arrow: 'up',
+    dist: '1/2 MILE',
+  },
+  {
+    kind: 'us',
+    shields: [],
+    cardinal: 'NORTH',
+    lines: ['FDR Dr', 'Bronx'],
+    arrow: 'right',
+    exit: 'EXIT 12',
+  },
+  {
+    kind: 'us',
+    shields: [{kind: 'state', num: '9A'}],
+    cardinal: 'NORTH',
+    lines: ['West Side Hwy', 'G W Bridge'],
+    arrow: 'up',
+    dist: '1 MILE',
+  },
+  {
+    kind: 'us',
+    shields: [{kind: 'interstate', num: '278'}],
+    cardinal: 'WEST',
+    lines: ['Brooklyn', 'Staten Island'],
+    arrow: 'left',
+    exit: 'EXIT 2',
+  },
+  {
+    kind: 'us',
+    shields: [
+      {kind: 'interstate', num: '78'},
+      {kind: 'us', num: '1'},
+    ],
+    cardinal: 'WEST',
+    lines: ['Holland Tunnel', 'New Jersey'],
+    arrow: 'down',
+  },
+  {
+    kind: 'us',
+    shields: [{kind: 'interstate', num: '87'}],
+    cardinal: 'NORTH',
+    lines: ['Upstate New York', 'Albany'],
+    arrow: 'up',
+    dist: '2 MILES',
+  },
+  {
+    kind: 'usDist',
+    rows: [
+      ['Midtown', '1/2'],
+      ['Queens', '3'],
+      ['Bronx', '8'],
+    ],
+  },
+  {
+    kind: 'usDist',
+    rows: [
+      ['Downtown', '1'],
+      ['Brooklyn', '4'],
+      ['JFK Airport', '15'],
+    ],
+  },
+];
+/**
+ * Guide faces by locale. Every locale has the same number (8) and the same
+ * split (GUIDE_DIR), so gen-tile picks the same face ids in every city.
+ */
+export const GUIDE_FACES = GUIDE_FACES_TOKYO;
 /** Number of advance-direction faces (the rest are distance faces). */
 export const GUIDE_DIR = 6;
 
@@ -315,6 +415,213 @@ export const BRAND_WORDS = [
   'GEN CITY',
   'NOVA',
 ];
+
+// ---------------------------------------------------------------------------
+// Sign locales. Each city preset paints the shared atlas layout (ids above)
+// with one locale's words, and gen-tile dresses shopfronts in its street
+// style. Ids, counts and per-tenant id lists keep the same lengths in every
+// locale, so the sign geometry draws the same random numbers everywhere.
+
+export type SignLocale = 'tokyo' | 'nyc';
+/** Locale index the city shader branches on (frame.off.w). */
+export const SIGN_LOCALES: readonly SignLocale[] = ['tokyo', 'nyc'];
+
+/** Sign locale of a city preset. */
+export function signLocaleOf(type: CityType): SignLocale {
+  return type === 'metro' ? 'nyc' : 'tokyo';
+}
+
+export interface SignSet {
+  locale: SignLocale;
+  /** CSS font stack for shop signs, boards and billboards. */
+  font: string;
+  /** Font stack for road guide signs. */
+  guideFont: string;
+  /** Words on the vertical signs, by id (32). */
+  vertical: string[];
+  /** Words on the horizontal (fascia) signs, ids 32..43 (12). */
+  horizontal: string[];
+  /** Horizontal sign ids per SHOP_TYPE. */
+  tenantSigns: number[][];
+  /** Vertical sign ids for nobori banners per SHOP_TYPE (empty: none). */
+  tenantNobori: number[][];
+  /** Text of the square cube signs, ids 72..87 (16). */
+  square: string[];
+  /** Square sign ids (A-boards) per SHOP_TYPE. */
+  tenantSquares: number[][];
+  /** Station names (the board cells use the first 4). */
+  stations: string[];
+  brands: string[];
+  /** Road guide sign faces (GUIDE_FACES.length, GUIDE_DIR split). */
+  guide: GuideFace[];
+  /**
+   * Street style (gen-tile): stacks of vertical blades and zakkyo sign
+   * columns, nobori banners, noren and plastic-food cases (Tokyo); or
+   * mostly fascia signs and awnings naming the shop, a few blades, neon
+   * OPEN signs in the windows (New York).
+   */
+  street: 'tokyo' | 'nyc';
+}
+
+export const SIGNS_TOKYO: SignSet = {
+  locale: 'tokyo',
+  font: '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", "Meiryo", sans-serif',
+  guideFont:
+    '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", "Meiryo", sans-serif',
+  vertical: Array.from({length: 32}, (_, id) => verticalWord(id)),
+  horizontal: HORIZONTAL_WORDS,
+  tenantSigns: TENANT_SIGNS,
+  tenantNobori: TENANT_NOBORI,
+  square: [
+    'P',
+    '24H',
+    'BAR',
+    '酒',
+    '湯',
+    '薬',
+    '寿司',
+    '質',
+    '茶',
+    'ATM',
+    '肉',
+    '鮨',
+    'NEW',
+    '麺',
+    '占',
+    'OPEN',
+  ],
+  tenantSquares: TENANT_SQUARES,
+  stations: STATION_NAMES,
+  brands: BRAND_WORDS,
+  guide: GUIDE_FACES_TOKYO,
+  street: 'tokyo',
+};
+
+/**
+ * New York: English words, Helvetica / Arial lettering, green MUTCD guide
+ * signs and MTA station boards. Square sign k % 3 == 0 is painted as a disc
+ * logo (sign-atlas.ts), so short marks sit there; OPEN (id 79) is a plain
+ * cell, as the neon window signs use it.
+ */
+export const SIGNS_NYC: SignSet = {
+  locale: 'nyc',
+  font: '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif',
+  guideFont:
+    '"Highway Gothic", "Roadgeek 2005 Series E", Overpass, "DIN Alternate", "Arial Narrow", Arial, sans-serif',
+  vertical: [
+    'HOTEL',
+    'BAR',
+    'THEATER',
+    'PIZZA',
+    'DELI',
+    'CAFE',
+    'DINER',
+    'JAZZ',
+    'PAWN',
+    'TATTOO',
+    'PUB',
+    'GRILL',
+    'HOTEL',
+    'LIQUORS',
+    'DRUGS',
+    'BOOKS',
+    'CINEMA',
+    'TAVERN',
+    'CLUB',
+    'BAGELS',
+    'LOANS',
+    'STEAKS',
+    'SHOES',
+    'BAR',
+    'PARKING',
+    'HOTEL',
+    'GYM',
+    'NOODLES',
+    'DANCE',
+    'SALOON',
+    'BILLIARDS',
+    'ROOMS',
+  ],
+  horizontal: [
+    'PIZZA',
+    'DINER',
+    'BAGELS',
+    'BAR & GRILL',
+    'COFFEE SHOP',
+    'DELI GROCERY',
+    'PHARMACY',
+    'NAIL SALON',
+    'CLEANERS',
+    'BANK',
+    'LAUNDROMAT',
+    'LIQUORS',
+  ],
+  // konbini -> deli / pharmacy; restaurant; boutique -> salon, cleaners;
+  // office -> bank, laundromat, liquor store (lobbies read as any of them).
+  tenantSigns: [
+    [37, 38],
+    [32, 33, 34, 35, 36],
+    [39, 40],
+    [41, 42, 43],
+  ],
+  tenantNobori: [[], [], [], []],
+  square: [
+    'P',
+    '24 HR',
+    'BAR',
+    'Rx',
+    'BEER',
+    'HOTEL',
+    'ATM',
+    'OPEN',
+    'PIZZA',
+    'DELI',
+    'CAFE',
+    'LOANS',
+    'SALE',
+    'GRILL',
+    'TATTOO',
+    'BAR',
+  ],
+  tenantSquares: [
+    [73, 75],
+    [74, 76, 80, 82, 85],
+    [79, 84],
+    [72, 78],
+  ],
+  stations: [
+    'Times Sq-42 St',
+    'Union Sq',
+    'Canal St',
+    'Grand Central',
+    '14 St',
+    'Fulton St',
+    'Columbus Circle',
+    'Delancey St',
+  ],
+  brands: [
+    'SPARKLE',
+    'METRO',
+    'BOLT',
+    'EMPIRE',
+    'LIBERTY',
+    'HUDSON',
+    'SKYLINE',
+    'GOTHAM',
+    'GEN CITY',
+    'NOVA',
+  ],
+  guide: GUIDE_FACES_NYC,
+  street: 'nyc',
+};
+
+export const SIGN_SETS: Record<SignLocale, SignSet> = {
+  tokyo: SIGNS_TOKYO,
+  nyc: SIGNS_NYC,
+};
+
+/** Square sign id of the neon OPEN sign in shop windows (nyc street style). */
+export const SIGN_OPEN = 79;
 
 /** Dominant color of a sign (linear RGB), shared by the atlas painter and sign lights. */
 export function signColor(id: number): [number, number, number] {

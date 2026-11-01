@@ -31,9 +31,9 @@ import {
   type CascadeCache,
 } from './shadow-cache.ts';
 import {createLeafTexture, uploadSignAtlas, vinylWgsl} from './sign-atlas.ts';
-import {signWaysWgsl} from '../city/signs.ts';
+import {SIGN_LOCALES, type SignLocale, signWaysWgsl} from '../city/signs.ts';
 import {uploadDetailTexture} from './detail-tex.ts';
-import type {TextureResult} from '../workers/texture-worker.ts';
+import type {TextureRequest, TextureResult} from '../workers/texture-worker.ts';
 import {MAT_GROUPS, groupMatMask, type ClusterData} from '../city/cmesh.ts';
 
 export interface Weather {
@@ -142,6 +142,8 @@ export const CLOUD_LEVELS = [
 export interface RendererOptions {
   /** Smaller cluster pool (see City.lowMemory). */
   lowMemory?: boolean;
+  /** Sign locale of the first city (signLocaleOf); default Tokyo. */
+  signLocale?: SignLocale;
 }
 
 export class Renderer {
@@ -194,6 +196,13 @@ export class Renderer {
   private linearRepeat: GPUSampler;
   private shadowSampler: GPUSampler;
   private signAtlas!: GPUTexture;
+  /**
+   * Locale the sign atlas is painted in; the city shader reads its index
+   * (frame.off.w) for the locale's procedural lettering and boards.
+   */
+  private signLocale: SignLocale = 'tokyo';
+  /** Pending setSignLocale() repaint, if any. */
+  private signRepaint: Promise<void> | null = null;
   private leafTex: GPUTexture;
   private detailTex!: GPUTexture;
   private detailSampler: GPUSampler;
@@ -523,16 +532,22 @@ export class Renderer {
    * so they run while the city generates.
    */
   ready!: Promise<void>;
+  /** The first sign atlas and detail layers are uploaded. */
+  private texturesReady!: Promise<void>;
 
   static create(gpu: Gpu, opts: RendererOptions = {}): Renderer {
     const r = timed('renderer resources', () => new Renderer(gpu, opts));
     const endAll = begin('renderer pipelines + textures');
-    r.ready = Promise.all([r.createPipelines(), r.loadTextures()]).then(endAll);
+    r.texturesReady = r.loadTextures(opts.signLocale ?? 'tokyo', true);
+    r.ready = Promise.all([r.createPipelines(), r.texturesReady]).then(endAll);
     return r;
   }
 
-  /** Sign atlas and detail layers, painted in a worker. */
-  private loadTextures() {
+  /**
+   * Sign atlas (in `locale`) and, with `detail`, the detail layers, painted
+   * in a worker.
+   */
+  private loadTextures(locale: SignLocale, detail: boolean) {
     const w = new Worker(new URL('./texture-worker.js', import.meta.url), {
       type: 'module',
       name: 'texture-worker',
@@ -544,14 +559,35 @@ export class Renderer {
         for (const [name, t0, t1] of m.spans)
           addSpan(name, fromWorker(t0), fromWorker(t1), 'textures');
         timed('upload generated textures', () => {
+          const old = this.signAtlas;
           this.signAtlas = uploadSignAtlas(this.device, m.sign);
-          this.detailTex = uploadDetailTexture(this.device, m.detail);
+          this.signLocale = m.locale;
+          old?.destroy();
+          if (m.detail)
+            this.detailTex = uploadDetailTexture(this.device, m.detail);
         });
         resolve();
       };
       w.onerror = e => reject(new Error(`[texture worker] ${e.message}`));
-      w.postMessage(null);
+      const req: TextureRequest = {locale, detail};
+      w.postMessage(req);
     });
+  }
+
+  /**
+   * Repaint the sign atlas in another locale (a city of another preset);
+   * resolves once it is uploaded. No-op when the atlas is in it already.
+   */
+  async setSignLocale(locale: SignLocale) {
+    await this.texturesReady;
+    while (this.signRepaint) await this.signRepaint;
+    if (locale === this.signLocale) return;
+    this.signRepaint = this.loadTextures(locale, false);
+    try {
+      await this.signRepaint;
+    } finally {
+      this.signRepaint = null;
+    }
   }
 
   private async createPipelines() {
@@ -1559,7 +1595,10 @@ export class Renderer {
       this.bloom,
     ]);
     const [offLo, offHi] = offWords(this.bits);
-    new Uint32Array(fd.f.buffer).set([offLo, this.offMats, offHi], F.off);
+    new Uint32Array(fd.f.buffer).set(
+      [offLo, this.offMats, offHi, SIGN_LOCALES.indexOf(this.signLocale)],
+      F.off,
+    );
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);
     d.queue.writeBuffer(
       this.atmoBuffer,

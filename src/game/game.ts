@@ -3,6 +3,7 @@
 
 import {lowMemory} from '../caps.ts';
 import {PRESETS as PRESETS_CITY, type CityType} from '../city/config.ts';
+import {signLocaleOf} from '../city/signs.ts';
 import {reportError, resizeToCss, type Gpu} from '../gpu/device.ts';
 import {Rng} from '../math/random.ts';
 import type {Vec3} from '../math/vec.ts';
@@ -242,7 +243,10 @@ export class Game {
     // Everything slow starts here and runs at once: pipeline compiles and
     // the texture worker (Renderer.create), the city workers (loadCity) and
     // the vehicle workers. Pipelines are awaited only before the first frame.
-    this.renderer = Renderer.create(this.gpu, {lowMemory: lowMemory()});
+    this.renderer = Renderer.create(this.gpu, {
+      lowMemory: lowMemory(),
+      signLocale: signLocaleOf(this.cityType),
+    });
     this.renderer.offBits = this.opts.off ?? 0;
     this.applySettings();
     if (this.opts.prof) {
@@ -314,8 +318,13 @@ export class Game {
     this.city.lod2Dist = lod2 > 0 ? lod2 : Infinity;
     let focus: Vec3 = [0, 0, 0];
     const city = this.city;
+    // A city of another preset repaints the sign atlas in its locale
+    // (in the texture worker, while the city loads).
+    const signs = this.renderer.setSignLocale(signLocaleOf(type));
+    signs.catch(() => {}); // (awaited below)
     // The asset lab knows its focus as soon as the layout arrives.
     await city.load(loadScreen, () => city.summary?.lab?.focus ?? focus);
+    await signs;
     // Focus streaming on the spawn point before revealing.
     focus = this.spawnPoint();
     city.updateStreaming(focus);
