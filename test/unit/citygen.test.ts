@@ -5,7 +5,8 @@ import {bandTrisData, buildBase, tileGeom} from '../../src/city/gen-base.ts';
 import {CLUSTER_ALPHA, CM, clusterize} from '../../src/city/cmesh.ts';
 import {buildTile, makeTileContext} from '../../src/city/gen-tile.ts';
 import {LEAF_SOLID} from '../../src/city/lod.ts';
-import {generateLayout} from '../../src/city/layout.ts';
+import {generateLayout, stableOrder} from '../../src/city/layout.ts';
+import {SEA_LEVEL} from '../../src/city/terrain.ts';
 import {computeRoadGeom} from '../../src/city/roadgeom.ts';
 
 // river seed 5 once had a kerb-return crossing extrapolated 55 km out of its
@@ -82,4 +83,42 @@ void test('LOD2 tiles thin the LOD1 shell', () => {
     }
   }
   assert.ok(t2 < t1 * 0.7, `LOD2 ${t2 / 3} vs LOD1 ${t1 / 3} triangles`);
+});
+
+// Full-size layouts shared by the tests below (each takes a few seconds).
+const layouts = new Map<string, ReturnType<typeof generateLayout>>();
+const layoutOf = (type: keyof typeof PRESETS, seed: number) => {
+  const k = `${type} ${seed}`;
+  let L = layouts.get(k);
+  if (!L) layouts.set(k, (L = generateLayout(PRESETS[type], seed)));
+  return L;
+};
+
+void test('stableOrder keeps surviving items at their old index', () => {
+  const before = ['a', 'b', 'c', 'd', 'e'];
+  // b and d went, x is new: a and c keep 0 and 2; e (old 4, past the end)
+  // and x fill the gaps in order.
+  const out = stableOrder(['a', 'c', 'e', 'x'], s => s, before);
+  assert.deepEqual(out, ['a', 'e', 'c', 'x']);
+});
+
+// Hong Kong seed 1 once had a lattice of ~20 long bridges across the
+// harbour, crossing each other at junctions in mid-water.
+void test('long water crossings do not meet in mid-water (harbour)', () => {
+  for (const seed of [1, 2]) {
+    const L = layoutOf('harbour', seed);
+    const hf = L.terrain.heights;
+    const wetLen = (ci: number) =>
+      L.chains[ci].bridge.filter(b => b).length * 8;
+    for (const j of L.junctions) {
+      if (hf.sample(j.p[0], j.p[1]) > SEA_LEVEL + 0.5) continue;
+      const long = j.arms.filter(a => wetLen(a.chain) > 150).length;
+      assert.ok(
+        long < 3,
+        `seed ${seed}: ${long} long bridges meet at ${j.p.map(Math.round)}`,
+      );
+    }
+    const long = L.chains.filter((_, ci) => wetLen(ci) > 400).length;
+    assert.ok(long >= 1 && long <= 8, `seed ${seed}: ${long} long bridges`);
+  }
 });

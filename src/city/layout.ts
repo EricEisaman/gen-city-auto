@@ -493,6 +493,158 @@ export function splitLots(
 }
 
 // ---------------------------------------------------------------------------
+// Bridges
+
+/** Water crossings at least this long are thinned out (rivers keep theirs). */
+const LONG_CROSSING = 200;
+/** Least distance between the ends of two long crossings kept. */
+const CROSSING_SPACING = 700;
+
+/**
+ * The street tracer runs every arterial on across open water, so a wide
+ * harbour got a lattice of long bridges meeting at junctions in mid-water.
+ * Keep the shortest crossings that are far enough apart and don't meet any
+ * other, and drop the rest (their dead ends go with pruneDeadEnds); edges in
+ * `keepEdges` stay regardless. Returns whether any edge was removed.
+ */
+function thinBridges(
+  g: Graph,
+  isLand: (q: Vec2) => boolean,
+  keepEdges: Set<number>,
+): boolean {
+  const wet = g.edges.map(e => {
+    if (e.dead) return false;
+    const a = g.nodes[e.a].p;
+    const b = g.nodes[e.b].p;
+    return !isLand([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+  });
+  if (!wet.some(w => w)) return false;
+  const len = (e: number) =>
+    dist2(g.nodes[g.edges[e].a].p, g.nodes[g.edges[e].b].p);
+  const shore = (n: number) => g.liveEdges(n).some(e => !wet[e]);
+  const dir = (from: number, e: number): Vec2 => {
+    const p = g.nodes[from].p;
+    const q = g.nodes[g.other(e, from)].p;
+    const l = dist2(p, q) || 1;
+    return [(q[0] - p[0]) / l, (q[1] - p[1]) / l];
+  };
+  interface Crossing {
+    edges: number[];
+    nodes: number[];
+    len: number;
+    kind: number;
+  }
+  const crossings = new Map<string, Crossing>();
+  for (let s = 0; s < g.nodes.length; s++) {
+    if (!shore(s)) continue;
+    for (const e0 of g.liveEdges(s)) {
+      if (!wet[e0]) continue;
+      // Straight on from node to node across the water to the far shore.
+      const edges = [e0];
+      const nodes = [s];
+      let n = g.other(e0, s);
+      let d = dir(s, e0);
+      let ok = true;
+      while (!shore(n)) {
+        nodes.push(n);
+        let best = -1;
+        let bestDot = Math.cos((35 * Math.PI) / 180);
+        for (const e of g.liveEdges(n)) {
+          if (!wet[e] || edges.includes(e)) continue;
+          const dd = dir(n, e);
+          const dot = d[0] * dd[0] + d[1] * dd[1];
+          if (dot > bestDot) {
+            bestDot = dot;
+            best = e;
+          }
+        }
+        if (best < 0 || edges.length > 400) {
+          ok = false;
+          break;
+        }
+        d = dir(n, best);
+        edges.push(best);
+        n = g.other(best, n);
+      }
+      if (!ok || n === s) continue;
+      nodes.push(n);
+      const key = edges
+        .slice()
+        .sort((x, y) => x - y)
+        .join(',');
+      if (crossings.has(key)) continue;
+      crossings.set(key, {
+        edges,
+        nodes,
+        len: edges.reduce((t, e) => t + len(e), 0),
+        kind: Math.min(...edges.map(e => g.edges[e].kind)),
+      });
+    }
+  }
+  const long = [...crossings.values()].filter(c => c.len >= LONG_CROSSING);
+  if (!long.length) return false;
+  // Shortest first (boulevards count a little shorter).
+  long.sort(
+    (a, b) =>
+      a.len / (a.kind >= Road.boulevard ? 1.25 : 1) -
+      b.len / (b.kind >= Road.boulevard ? 1.25 : 1),
+  );
+  const keep: Crossing[] = [];
+  const used = new Set<number>();
+  for (const c of long) {
+    if (c.nodes.some(n => used.has(n))) continue;
+    const ends = [c.nodes[0], c.nodes[c.nodes.length - 1]].map(
+      n => g.nodes[n].p,
+    );
+    const crowded = keep.some(k =>
+      [k.nodes[0], k.nodes[k.nodes.length - 1]].some(n =>
+        ends.some(p => dist2(p, g.nodes[n].p) < CROSSING_SPACING),
+      ),
+    );
+    if (crowded) continue;
+    keep.push(c);
+    for (const n of c.nodes) used.add(n);
+  }
+  keepEdges = new Set(keepEdges);
+  for (const c of keep) for (const e of c.edges) keepEdges.add(e);
+  for (const c of crossings.values())
+    if (c.len < LONG_CROSSING) for (const e of c.edges) keepEdges.add(e);
+  // Every other edge out over the water goes, including the bits of
+  // lattice no straight crossing ran along.
+  let removed = false;
+  wet.forEach((w, e) => {
+    if (w && !keepEdges.has(e)) {
+      g.removeEdge(e);
+      removed = true;
+    }
+  });
+  return removed;
+}
+
+/**
+ * `items` reordered so each whose key was at index i of `before` is at i
+ * again where it can be; the rest fill the gaps in their own order.
+ */
+export function stableOrder<T>(
+  items: T[],
+  key: (t: T) => string,
+  before: string[],
+): T[] {
+  const at = new Map(before.map((k, i) => [k, i]));
+  const out: (T | undefined)[] = new Array(items.length);
+  const rest: T[] = [];
+  for (const t of items) {
+    const i = at.get(key(t));
+    if (i !== undefined && i < items.length) out[i] = t;
+    else rest.push(t);
+  }
+  let r = 0;
+  for (let i = 0; i < out.length; i++)
+    if (out[i] === undefined) out[i] = rest[r++];
+  return out as T[];
+}
+
+// ---------------------------------------------------------------------------
 // Elevated lines
 
 function elevateProfile(
@@ -750,10 +902,32 @@ export function generateLayout(
   }
   pruneDeadEnds(g);
   g = g.compact();
+  // Thin out the arterials crossing open water (no random draws, and the
+  // graph is not compacted again, so every other edge, block and lot stays
+  // as it was). Chains and junctions untouched by it keep their indices:
+  // street furniture is hashed from them.
+  const chainKey = (c: Chain) => c.edges.join(',');
+  const chainsBefore = buildChains(g);
+  // Edges round a face that may become a block stay (a merged face would
+  // change the blocks, so the lots and every random draw after them).
+  const landEdges = new Set<number>();
+  for (const f of extractFaces(g, 400000)) {
+    // The block test below, with some margin.
+    const curb = insetPolygon(
+      f.nodes.map(n => g.nodes[n].p),
+      f.edges.map(e => ROAD_WIDTH[g.edges[e].kind] / 2),
+    );
+    if (curb && wetFraction(curb, hf) <= 0.3)
+      for (const e of f.edges) landEdges.add(e);
+  }
+  const thinned = thinBridges(g, isLand, landEdges);
+  if (thinned) pruneDeadEnds(g);
+  const chainsG: Chain[] = thinned
+    ? stableOrder(buildChains(g), chainKey, chainsBefore.map(chainKey))
+    : chainsBefore;
 
   progress?.('Grading roads', 0.35);
   // Smooth the road heights and carve the terrain so roads sit on it.
-  const chainsG: Chain[] = buildChains(g);
   const nodeH = g.nodes.map(n =>
     Math.max(hf.sample(n.p[0], n.p[1]), SEA_LEVEL + 1.2),
   );
@@ -836,6 +1010,21 @@ export function generateLayout(
   for (const j of junctions) {
     const maxKind = Math.max(...j.arms.map(a => chains[a.chain].kind));
     j.signal = j.arms.length >= 3 && maxKind >= Road.street;
+  }
+  if (thinned) {
+    // Junction order as it was before thinning (first chain end at each).
+    const before: string[] = [];
+    const seen = new Set<number>();
+    for (const c of chainsBefore)
+      for (const n of [c.nodes[0], c.nodes[c.nodes.length - 1]])
+        if (!seen.has(n)) {
+          seen.add(n);
+          before.push(String(n));
+        }
+    const nodeOf = new Map<Junction, number>();
+    junctionOf.forEach((j, n) => nodeOf.set(junctions[j], n));
+    const order = stableOrder(junctions, j => String(nodeOf.get(j)), before);
+    junctions.splice(0, junctions.length, ...order);
   }
 
   progress?.('Elevated rail and expressways', 0.45);
