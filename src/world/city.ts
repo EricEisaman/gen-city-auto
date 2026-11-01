@@ -74,6 +74,8 @@ export class City {
   private busy: number[] = [];
   /** Per worker: posted ready (its tile jobs can be sent). */
   private ready: boolean[] = [];
+  /** Per worker: retired after the initial load (see retire). */
+  private retiring: boolean[] = [];
   private nextId = 1;
   private tileLods = new Uint32Array(0);
   private lightScratch = new Float32Array(1024 * 8);
@@ -193,11 +195,12 @@ export class City {
           case 'ready':
             // (Tile jobs go only to workers that have their tile context
             // or will have it before they read the job.)
-            this.ready[i] = true;
+            this.ready[i] = !this.retiring[i];
             this.pump();
             break;
           case 'tile': {
             this.busy[i]--;
+            if (this.retiring[i] && this.busy[i] === 0) w.terminate();
             tileMs[i] = m.tileMs;
             tileCount[i] = m.tileCount;
             const t = performance.now();
@@ -276,6 +279,21 @@ export class City {
       'city: base mesh + skyline',
       Promise.all([baseDone, skyDone]),
     );
+    // Streaming needs fewer workers than the initial load: let the rest go
+    // (each holds its own layout and tile context, ~150 MB, plus heap).
+    for (let i = this.streamWorkers; i < n; i++) this.retire(i);
+  }
+
+  /** City workers kept after the initial load. */
+  private get streamWorkers() {
+    return lowMemory() ? 2 : 3;
+  }
+
+  /** Takes worker i out of the pool; terminated once its jobs are back. */
+  private retire(i: number) {
+    this.ready[i] = false;
+    this.retiring[i] = true;
+    if (this.busy[i] === 0) this.workers[i].terminate();
   }
 
   private onSummary(
