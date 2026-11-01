@@ -11,6 +11,7 @@ import {TILE_SIZE} from '../city/gen-tile.ts';
 import {Heightfield} from '../city/terrain.ts';
 import type {Vec3} from '../math/vec.ts';
 import {nearestFirst} from './nearest.ts';
+import {release} from '../mem.ts';
 import type {PoolHandle} from '../render/cluster-pool.ts';
 import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
@@ -171,9 +172,11 @@ export class City {
           case 'base':
             mark('base message received');
             timed('upload base mesh', () => {
-              for (const c of [m.base, m.piers]) {
+              for (const c of [m.base, m.piers] as ClusterData[]) {
                 const h = this.renderer.uploadClusters(c);
                 if (h) this.baseHandles.push(h);
+                // (Copied to the GPU: free now, not at the next GC.)
+                release(c.vertices, c.tris, c.clusters);
               }
             });
             resolveBase();
@@ -356,6 +359,7 @@ export class City {
       h = this.renderer.uploadClusters(clusters);
     if (!h && clusters.clusterCount > 0)
       console.warn(`city: cluster pool full, tile ${tile} LOD${lod} dropped`);
+    release(clusters.vertices, clusters.tris, clusters.clusters);
     if (lod === 2) {
       s.pending2 = false;
       if (s.lod2) this.renderer.freeClusters(s.lod2);

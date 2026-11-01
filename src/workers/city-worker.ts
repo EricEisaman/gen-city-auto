@@ -12,6 +12,7 @@
 
 import {clusterize, type ClusterData} from '../city/cmesh.ts';
 import {packClusters} from '../city/vpack.ts';
+import {release} from '../mem.ts';
 import {PRESETS, type CityType} from '../city/config.ts';
 import {
   assembleBase,
@@ -136,6 +137,13 @@ function timed<T>(name: string, fn: () => T): T {
 /** Tile builds served since the last report (sum of ms). */
 let tileMs = 0;
 let tileCount = 0;
+
+/** The GPU's packed vertex format (vpack.ts); frees the unpacked arrays. */
+function pack(c: ClusterData) {
+  const p = packClusters(c);
+  release(c.vertices, c.clusters);
+  return p;
+}
 
 function clusterTransfer(c: ClusterData): Transferable[] {
   return [c.vertices.buffer, c.tris.buffer, c.clusters.buffer];
@@ -282,7 +290,8 @@ function finishCity(
   const base = timed('assembleBase', () =>
     assembleBase(lay, geom, undefined, parts),
   );
-  // (Let the parts' copies go before clusterize allocates.)
+  // (Free the parts' copies before clusterize allocates.)
+  for (const p of parts) release(p.words, p.idx, p.pierWords, p.pierIdx);
   parts.length = 0;
   ctx = timed('makeTileContext', () =>
     makeTileContext(lay, base.geom, base.roadMask),
@@ -312,10 +321,12 @@ function finishCity(
   );
   // Fine base detail (kerbs, railings, wires, thin paint) drops at range.
   const tc = abs();
-  const baseClusters = packClusters(
+  const baseClusters = pack(
     clusterize(base.mesh, 0, 0xffffffff, 1, baseFarOf(base.mesh)),
   );
-  const pierClusters = packClusters(clusterize(base.piers, 0, 0xffffffff, 0));
+  release(base.mesh.u32, base.mesh.idx);
+  const pierClusters = pack(clusterize(base.piers, 0, 0xffffffff, 0));
+  release(base.piers.u32, base.piers.idx);
   span('clusterize base', tc);
   post({type: 'base', base: baseClusters, piers: pierClusters}, [
     ...clusterTransfer(baseClusters),
@@ -359,7 +370,9 @@ function handle(req: WorkerRequest) {
     if (!ctx) throw new Error('tile request before init');
     const t0 = abs();
     const r = buildTile(ctx, req.tile, req.lod);
-    const c = packClusters(clusterize(r.mesh, req.lod, req.tile, 1));
+    const raw = clusterize(r.mesh, req.lod, req.tile, 1);
+    release(r.mesh.u32, r.mesh.idx);
+    const c = pack(raw);
     const lights = new Float32Array(r.lights);
     tileMs += abs() - t0;
     tileCount++;

@@ -1,6 +1,7 @@
 // Per-tile city geometry: buildings (LOD0 detailed, LOD1 shells) and street
 // props (lights, utility poles and wires, signals, trees, vending machines).
 
+import {release} from '../mem.ts';
 import {Rng, hash2, hash3} from '../math/random.ts';
 import {
   dist2,
@@ -9317,7 +9318,9 @@ export function buildTile(
   // LOD2 (far tiles): the LOD1 shell thinned out (city/lod.ts).
   if (lod === 2) {
     const r = buildTile(ctx, tile, 1);
-    return {mesh: lod2(r.mesh), lights: r.lights};
+    const mesh = lod2(r.mesh);
+    release(r.mesh.u32, r.mesh.idx);
+    return {mesh, lights: r.lights};
   }
   const L = ctx.layout;
   const m = new CMesh(1 << 14, 1 << 15);

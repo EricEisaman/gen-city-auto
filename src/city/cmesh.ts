@@ -16,6 +16,7 @@
 // triangle is stored as one u32 holding three 8-bit cluster-local indices.
 
 import type {Vec2, Vec3} from '../math/vec.ts';
+import {release} from '../mem.ts';
 
 export const CM = {
   road: 0,
@@ -207,6 +208,7 @@ export class CMesh {
     while (cap < this.vcount + n) cap *= 2;
     const buf = new ArrayBuffer(cap * VERTEX_BYTES);
     new Uint32Array(buf).set(this.u32.subarray(0, this.vcount * VERTEX_WORDS));
+    release(this.u32);
     this.f32 = new Float32Array(buf);
     this.u32 = new Uint32Array(buf);
   }
@@ -217,6 +219,7 @@ export class CMesh {
     while (cap < this.icount + n) cap *= 2;
     const idx = new Uint32Array(cap);
     idx.set(this.idx.subarray(0, this.icount));
+    release(this.idx);
     this.idx = idx;
   }
 
@@ -913,6 +916,7 @@ export function clusterize(
           if (nv + VERTEX_WORDS > verts.length) {
             const grown = new Uint32Array(verts.length * 2);
             grown.set(verts);
+            release(verts);
             verts = grown;
           }
           const gw = g * VERTEX_WORDS;
@@ -944,6 +948,7 @@ export function clusterize(
     if (nc + CLUSTER_WORDS > clusters.length) {
       const grown = new Uint32Array(clusters.length * 2);
       grown.set(clusters);
+      release(clusters);
       clusters = grown;
     }
     clusters[nc] = f2u((cl0 + ch0) / 2);
@@ -961,11 +966,13 @@ export function clusterize(
     clusters[nc + 7] = tile;
     nc += CLUSTER_WORDS;
   }
-  return {
+  const out: ClusterData = {
     vertices: verts.slice(0, nv),
     tris,
     clusters: clusters.slice(0, nc),
     clusterCount: nc / CLUSTER_WORDS,
     bounds: [lo, hi],
   };
+  release(verts, clusters, stamp, localOf, order, isAlpha, grp, far, cell);
+  return out;
 }

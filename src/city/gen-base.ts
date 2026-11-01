@@ -2,6 +2,7 @@
 // slabs, parks, elevated rail viaducts and expressways. Also produces the
 // street light list and the land-use raster used by the terrain shader.
 
+import {release} from '../mem.ts';
 import {Rng, hash2} from '../math/random.ts';
 import {
   dist2,
@@ -5822,6 +5823,7 @@ export function buildBasePart(
     unP();
     part.pierWords = meshWords(piers);
     part.pierIdx = meshIdx(piers);
+    release(piers.u32, piers.idx);
     part.settled = settled;
     part.landUse = landUse(
       L,
@@ -5842,6 +5844,7 @@ export function buildBasePart(
   unM();
   part.words = meshWords(m);
   part.idx = meshIdx(m);
+  release(m.u32, m.idx);
   part.lights = new Float64Array(lights.data);
   part.solids = new Float64Array(solids);
   return part as BasePart;
