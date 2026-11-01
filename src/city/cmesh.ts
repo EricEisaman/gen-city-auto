@@ -3,12 +3,12 @@
 // Vertex format (32 bytes, read with vertex pulling in WGSL):
 //   pos: f32x3, normal: u32 (octahedral unorm16x2), uv: f32x2, mat: u32, aux: u32
 // mat = material id (low 8 bits) | parameter (high 24 bits).
-// aux: material-specific. For TUBE_MATS (wire, frame, paint, metal, lamp) the
-// low 16 bits are the tube radius in 0.5 mm units, written by tube() and 0 on
-// every other primitive (vertex() clears them); city.wgsl's vs widens such
-// tubes to a minimum on-screen width: hashed partial coverage for most, a
+// aux: material-specific. For TUBE_MATS (wire, frame, paint, metal, lamp,
+// ledLine) the low 16 bits are the tube radius in 0.5 mm units, written by
+// tube() and 0 on every other primitive (vertex() clears them); city.wgsl's
+// vs widens such tubes to a minimum on-screen width: hashed partial coverage for most, a
 // solid ~1 px line for wires (CM.wire params != 0, or param 0 under 2 cm
-// radius: utility spans; tyres stay hashed) and lamp
+// radius: utility spans; tyres stay hashed) and lamp / LED line
 // tubes (whose light is scaled by the true coverage). The high 16 bits stay
 // free (seed), except bit 31 on a tube: FINE_TUBE (distance fade).
 //
@@ -68,7 +68,8 @@ const TUBE_MATS =
   (1 << CM.frame) |
   (1 << CM.paint) |
   (1 << CM.metal) |
-  (1 << CM.lamp);
+  (1 << CM.lamp) |
+  (1 << CM.ledLine);
 
 /**
  * Tube aux flag: fine hardware (OHLE droppers, arms, insulators) that
@@ -118,7 +119,13 @@ function alphaTested(mat: number, aux: number) {
   const id = mat & 0xff;
   // Leaf cards cut out; solid LOD2 crowns (param LEAF_SOLID) do not.
   if (id === CM.leaves) return ((mat >>> 8) & 0x100) === 0;
-  return id < 32 && ((TUBE_MATS >>> id) & 1) === 1 && (aux & 0xffff) > 0;
+  // LED line tubes are always drawn solid (never hashed): opaque pipeline.
+  return (
+    id !== CM.ledLine &&
+    id < 32 &&
+    ((TUBE_MATS >>> id) & 1) === 1 &&
+    (aux & 0xffff) > 0
+  );
 }
 
 export function packMat(id: number, param = 0) {
@@ -693,9 +700,6 @@ export function clusterize(
   farOf?: (tri: number) => number,
 ): ClusterData {
   const triCount = m.icount / 3;
-  const verts: number[] = [];
-  const tris: number[] = [];
-  const clusters: number[] = [];
   const clusterF = new Float32Array(1);
   const asU = new Uint32Array(clusterF.buffer);
   const f2u = (f: number) => {
@@ -763,19 +767,41 @@ export function clusterize(
     sortPart(0, nOpaque);
     sortPart(nOpaque, triCount);
   }
+  // Typed-array output (grown by doubling) and a per-vertex "local index in
+  // the current cluster" table stamped with the cluster number, instead of
+  // number[] pushes and a Map per cluster: same output, several times faster.
+  let verts = new Uint32Array(
+    Math.max(1024, Math.ceil(m.vcount * 1.25)) * VERTEX_WORDS,
+  );
+  let nv = 0;
+  const tris = new Uint32Array(triCount);
+  let nt = 0;
+  let clusters = new Uint32Array(
+    Math.max(64, Math.ceil(triCount / 64)) * CLUSTER_WORDS,
+  );
+  let nc = 0;
+  const stamp = new Int32Array(m.vcount).fill(-1);
+  const localOf = new Uint8Array(m.vcount);
+  const idx = m.idx;
+  let cid = 0;
   let t = 0;
   while (t < triCount) {
-    const local = new Map<number, number>();
-    const vstart = verts.length / VERTEX_WORDS;
-    const tstart = tris.length;
-    let cl: Vec3 = [Infinity, Infinity, Infinity];
-    let ch: Vec3 = [-Infinity, -Infinity, -Infinity];
+    cid++;
+    let localSize = 0;
+    const vstart = nv / VERTEX_WORDS;
+    const tstart = nt;
+    let cl0 = Infinity,
+      cl1 = Infinity,
+      cl2 = Infinity,
+      ch0 = -Infinity,
+      ch1 = -Infinity,
+      ch2 = -Infinity;
     const alpha = t >= nOpaque;
     const farD = far ? far[order[t]] : 0;
     let cellK = cell ? cell[order[t]] : 0;
     while (
       t < triCount &&
-      tris.length - tstart < CLUSTER_TRIS &&
+      nt - tstart < CLUSTER_TRIS &&
       t >= nOpaque === alpha &&
       (!far || far[order[t]] === farD)
     ) {
@@ -783,61 +809,83 @@ export function clusterize(
       // remainder of a cell spills into the next rather than leaving tiny
       // clusters the small-detail cull would drop at range).
       if (cell && cell[order[t]] !== cellK) {
-        if (tris.length - tstart >= (CLUSTER_TRIS * 3) / 4) break;
+        if (nt - tstart >= (CLUSTER_TRIS * 3) / 4) break;
         cellK = cell[order[t]];
       }
       const tri = order[t];
-      const ids = [m.idx[tri * 3], m.idx[tri * 3 + 1], m.idx[tri * 3 + 2]];
-      const need = ids.filter(i => !local.has(i)).length;
-      if (local.size + need > CLUSTER_VERTS) break;
+      const i0 = idx[tri * 3],
+        i1 = idx[tri * 3 + 1],
+        i2 = idx[tri * 3 + 2];
+      // (A vertex repeated in a degenerate triangle counts once per use.)
+      const need =
+        (stamp[i0] !== cid ? 1 : 0) +
+        (stamp[i1] !== cid ? 1 : 0) +
+        (stamp[i2] !== cid ? 1 : 0);
+      if (localSize + need > CLUSTER_VERTS) break;
       let packed = 0;
-      ids.forEach((g, k) => {
-        let l = local.get(g);
-        if (l === undefined) {
-          l = local.size;
-          local.set(g, l);
+      for (let k = 0; k < 3; k++) {
+        const g = k === 0 ? i0 : k === 1 ? i1 : i2;
+        let l: number;
+        if (stamp[g] === cid) l = localOf[g];
+        else {
+          l = localSize++;
+          stamp[g] = cid;
+          localOf[g] = l;
+          if (nv + VERTEX_WORDS > verts.length) {
+            const grown = new Uint32Array(verts.length * 2);
+            grown.set(verts);
+            verts = grown;
+          }
+          const gw = g * VERTEX_WORDS;
           for (let w = 0; w < VERTEX_WORDS; w++)
-            verts.push(vertexWords[g * VERTEX_WORDS + w]);
-          const x = vertexF[g * VERTEX_WORDS],
-            y = vertexF[g * VERTEX_WORDS + 1],
-            z = vertexF[g * VERTEX_WORDS + 2];
-          cl = [Math.min(cl[0], x), Math.min(cl[1], y), Math.min(cl[2], z)];
-          ch = [Math.max(ch[0], x), Math.max(ch[1], y), Math.max(ch[2], z)];
+            verts[nv + w] = vertexWords[gw + w];
+          nv += VERTEX_WORDS;
+          const x = vertexF[gw],
+            y = vertexF[gw + 1],
+            z = vertexF[gw + 2];
+          cl0 = Math.min(cl0, x);
+          cl1 = Math.min(cl1, y);
+          cl2 = Math.min(cl2, z);
+          ch0 = Math.max(ch0, x);
+          ch1 = Math.max(ch1, y);
+          ch2 = Math.max(ch2, z);
         }
         packed |= l << (k * 8);
-      });
-      tris.push(packed >>> 0);
+      }
+      tris[nt++] = packed >>> 0;
       t++;
     }
-    const c: Vec3 = [
-      (cl[0] + ch[0]) / 2,
-      (cl[1] + ch[1]) / 2,
-      (cl[2] + ch[2]) / 2,
-    ];
-    const r = Math.hypot(ch[0] - cl[0], ch[1] - cl[1], ch[2] - cl[2]) / 2;
-    for (let k = 0; k < 3; k++) {
-      lo[k] = Math.min(lo[k], cl[k]);
-      hi[k] = Math.max(hi[k], ch[k]);
+    const r = Math.hypot(ch0 - cl0, ch1 - cl1, ch2 - cl2) / 2;
+    lo[0] = Math.min(lo[0], cl0);
+    lo[1] = Math.min(lo[1], cl1);
+    lo[2] = Math.min(lo[2], cl2);
+    hi[0] = Math.max(hi[0], ch0);
+    hi[1] = Math.max(hi[1], ch1);
+    hi[2] = Math.max(hi[2], ch2);
+    if (nc + CLUSTER_WORDS > clusters.length) {
+      const grown = new Uint32Array(clusters.length * 2);
+      grown.set(clusters);
+      clusters = grown;
     }
-    clusters.push(
-      f2u(c[0]),
-      f2u(c[1]),
-      f2u(c[2]),
-      f2u(r),
-      vstart,
-      tstart,
-      (tris.length - tstart) |
-        (lod << 8) |
-        ((flags | (alpha ? CLUSTER_ALPHA : 0)) << 12) |
-        (farD << CLUSTER_FAR_SHIFT),
-      tile,
-    );
+    clusters[nc] = f2u((cl0 + ch0) / 2);
+    clusters[nc + 1] = f2u((cl1 + ch1) / 2);
+    clusters[nc + 2] = f2u((cl2 + ch2) / 2);
+    clusters[nc + 3] = f2u(r);
+    clusters[nc + 4] = vstart;
+    clusters[nc + 5] = tstart;
+    clusters[nc + 6] =
+      (nt - tstart) |
+      (lod << 8) |
+      ((flags | (alpha ? CLUSTER_ALPHA : 0)) << 12) |
+      (farD << CLUSTER_FAR_SHIFT);
+    clusters[nc + 7] = tile;
+    nc += CLUSTER_WORDS;
   }
   return {
-    vertices: new Uint32Array(verts),
-    tris: new Uint32Array(tris),
-    clusters: new Uint32Array(clusters),
-    clusterCount: clusters.length / CLUSTER_WORDS,
+    vertices: verts.slice(0, nv),
+    tris,
+    clusters: clusters.slice(0, nc),
+    clusterCount: nc / CLUSTER_WORDS,
     bounds: [lo, hi],
   };
 }
