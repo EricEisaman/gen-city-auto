@@ -8685,8 +8685,9 @@ function deckFloor(L: CityLayout) {
         const t = k / steps;
         const x = lerp(a[0], b[0], t);
         const z = lerp(a[1], b[1], t);
-        // Underside of the deck with its girders.
+        // Underside of the deck with its girders (none over a tunnel).
         const h = lerp(e.heights[i], e.heights[i + 1], t) - 3.5;
+        if (h + 3.5 < L.terrain.heights.sample(x, z)) continue;
         for (let dz = -r; dz <= r; dz += DECK_CELL / 2) {
           for (let dx = -r; dx <= r; dx += DECK_CELL / 2) {
             if (dx * dx + dz * dz > r * r) continue;

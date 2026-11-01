@@ -398,7 +398,8 @@ export class Game {
       let bd = Infinity;
       for (const tr of t.trains) {
         const m = tr.cars[Math.floor(tr.cars.length / 2)]?.model;
-        if (!m) continue;
+        // Not one in a tunnel.
+        if (!m || m[13] < this.net!.hf.sample(m[12], m[14])) continue;
         const d = Math.hypot(
           m[12] - this.player.pos[0],
           m[14] - this.player.pos[2],
@@ -417,7 +418,7 @@ export class Game {
       let bd = Infinity;
       for (let i = 0; i < t.trains.length; i++) {
         const p = t.focusPoint(i);
-        if (!p) continue;
+        if (!p || p[1] < this.net!.hf.sample(p[0], p[2])) continue;
         const d = Math.hypot(
           p[0] - this.player.pos[0],
           p[2] - this.player.pos[2],

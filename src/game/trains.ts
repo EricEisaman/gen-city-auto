@@ -26,6 +26,9 @@ interface Train {
   color2: Vec3;
 }
 
+/** How far short of an open line's end (the buffer stops) trains stop. */
+const END_GAP = 6;
+
 export class Trains {
   lines: Line[] = [];
   trains: Train[] = [];
@@ -61,20 +64,36 @@ export class Trains {
         );
       const total = arc[arc.length - 1];
       const li = this.lines.length;
+      const ncars = e.loop ? 10 : 8;
+      const len = ncars * this.carLen;
+      // An open line's termini (layout addTermini) are where trains stop at
+      // the buffers (END_GAP), not stations to stop at on the way.
+      const terminus = (a: number) =>
+        !e.loop && (a < len + END_GAP + 40 || a > total - len - END_GAP - 40);
       this.lines.push({
         e,
         arc,
         total,
-        stationArcs: e.stations.map(s => arc[s]).sort((a, b) => a - b),
+        stationArcs: e.stations
+          .map(s => arc[s])
+          .filter(a => !terminus(a))
+          .sort((a, b) => a - b),
       });
       if (!variants.length || total < 400) continue;
       const count = e.loop ? 4 : 2;
       for (let k = 0; k < count; k++) {
-        const ncars = e.loop ? 10 : 8;
+        const dir = k % 2 === 0 ? 1 : -1;
+        let s = (total * (k + 0.3)) / count;
+        // The whole train on the line, its front (s) leading.
+        if (!e.loop)
+          s =
+            dir === 1
+              ? Math.min(Math.max(s, len + END_GAP), total - END_GAP)
+              : Math.min(Math.max(s, END_GAP), total - len - END_GAP);
         this.trains.push({
           line: li,
-          dir: k % 2 === 0 ? 1 : -1,
-          s: (total * (k + 0.3)) / count,
+          dir,
+          s,
           speed: 15,
           dwell: 0,
           cars: Array.from({length: ncars}, () => ({
@@ -135,23 +154,23 @@ export class Trains {
         if (line.e.loop) d = ((d % line.total) + line.total) % line.total;
         if (d > 0.5 && d < distToStation) distToStation = d;
       }
-      if (!line.e.loop) {
-        const endDist =
-          tr.dir === 1
-            ? line.total - 30 - tr.s
-            : tr.s - 30 - this.carLen * tr.cars.length;
-        if (endDist < distToStation) distToStation = endDist;
-      }
+      // Open lines: stop with the front END_GAP short of the buffers.
+      const endDist = line.e.loop
+        ? Infinity
+        : tr.dir === 1
+          ? line.total - END_GAP - tr.s
+          : tr.s - END_GAP;
+      if (endDist < distToStation) distToStation = endDist;
       if (tr.dwell > 0) {
         tr.dwell -= dt;
         tr.speed = 0;
         if (tr.dwell <= 0) {
-          tr.s += tr.dir * 1.0;
-          if (
-            !line.e.loop &&
-            (tr.s > line.total - 40 || tr.s < this.carLen * tr.cars.length + 40)
-          )
+          if (endDist < 5) {
+            // Reverse out of the terminus: the last car leads.
+            tr.s -= tr.dir * this.carLen * tr.cars.length;
             tr.dir = tr.dir === 1 ? -1 : 1;
+          }
+          tr.s += tr.dir * 1.0;
         }
       } else {
         const brake = Math.sqrt(Math.max(0, 2 * 0.9 * distToStation));

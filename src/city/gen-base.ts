@@ -19,6 +19,7 @@ import {
   SIDEWALK,
   closestOnPolyline,
   elevatedHalfWidth,
+  inTunnel,
   type CityLayout,
   type Elevated,
 } from './layout.ts';
@@ -1954,7 +1955,9 @@ function elevatedStructures(
       if (c.d > hw + width + 0.5) continue;
       const a = o.pts[c.i];
       const b = o.pts[c.i + 1];
-      if (lerp(o.heights[c.i], o.heights[c.i + 1], c.t) > top) continue;
+      const oh = lerp(o.heights[c.i], o.heights[c.i + 1], c.t);
+      // A deck above this one, or one in a tunnel under the ground here.
+      if (oh > top || oh < hf.sample(q[0], q[1])) continue;
       const len = dist2(a, b) || 1;
       const nx = -(b[1] - a[1]) / len;
       const nz = (b[0] - a[0]) / len;
@@ -1984,10 +1987,148 @@ function elevatedStructures(
     fallback();
   };
   L.elevated.forEach((e, ei) => {
-    if (e.kind === 'rail')
+    if (e.kind === 'rail') {
+      const i0 = m.icount;
+      const l0 = lights.data.length;
       railViaduct(e, ei, hf, onRoad, pier, m, lights, solid);
-    else expressway(e, hf, pier, m, lights);
+      railBufferStops(e, m);
+      railTunnels(e, hf, m, i0, lights, l0);
+    } else expressway(e, hf, pier, m, lights);
   });
+}
+
+/**
+ * Open rail line ends: an end wall across the deck and a buffer stop (steel
+ * frame, yellow buffer beam, red lamp) on each track, at the terminus
+ * platforms, instead of the tracks running off the end of the viaduct.
+ */
+function railBufferStops(e: Elevated, m: CMesh) {
+  if (e.loop) return;
+  const n = e.pts.length;
+  const fr = frames(e.pts);
+  const galv = packMat(CM.metal, GALV);
+  for (const k of [0, n - 1]) {
+    const inward = k === 0 ? 1 : -1;
+    const {d, l} = fr[k];
+    const yaw = Math.atan2(d[0], d[1]);
+    const q = e.pts[k];
+    const at = (along: number, lat: number, y: number): Vec3 => [
+      q[0] + d[0] * inward * along + l[0] * lat,
+      e.heights[k] + y,
+      q[1] + d[1] * inward * along + l[1] * lat,
+    ];
+    m.box(at(0.3, 0, 0.9), [5.2, 0.9, 0.3], packMat(CM.concrete), yaw);
+    for (const c of [-2.1, 2.1]) {
+      for (const s of [-0.75, 0.75]) {
+        m.box(at(2.3, c + s, RAIL_TOP + 0.5), [0.09, 0.5, 0.09], galv, yaw);
+        m.box(at(1.0, c + s, RAIL_TOP + 0.25), [0.09, 0.25, 0.09], galv, yaw);
+        m.box(at(1.65, c + s, RAIL_TOP + 0.62), [0.07, 0.07, 0.7], galv, yaw);
+      }
+      m.box(
+        at(2.45, c, RAIL_TOP + 1.05),
+        [1.0, 0.2, 0.12],
+        packMat(CM.paint, 0x92),
+        yaw,
+      );
+      m.box(
+        at(2.4, c, RAIL_TOP + 1.5),
+        [0.12, 0.12, 0.06],
+        packMat(CM.lamp, 3),
+        yaw,
+      );
+    }
+  }
+}
+
+/**
+ * Rail lines run through hills in tunnels (layout elevateProfile): leave out
+ * everything built (from triangle i0 and light l0 on) nearest a point of the
+ * line whose deck is under the ground, and close each tunnel mouth with a
+ * portal: a concrete headwall round a dark opening.
+ */
+function railTunnels(
+  e: Elevated,
+  hf: Heightfield,
+  m: CMesh,
+  i0: number,
+  lights: LightList,
+  l0: number,
+) {
+  const n = e.pts.length;
+  const under = e.pts.map((_, i) => inTunnel(e, i, hf));
+  if (!under.some(u => u)) return;
+  const G = 16;
+  const grid = new Map<number, number[]>();
+  const key = (gx: number, gz: number) => (gz + 4096) * 8192 + gx + 4096;
+  e.pts.forEach((q, i) => {
+    const k = key(Math.floor(q[0] / G), Math.floor(q[1] / G));
+    let l = grid.get(k);
+    if (!l) grid.set(k, (l = []));
+    l.push(i);
+  });
+  const buried = (x: number, z: number) => {
+    const gx = Math.floor(x / G);
+    const gz = Math.floor(z / G);
+    let bi = -1;
+    let bd = Infinity;
+    for (let dz = -2; dz <= 2; dz++)
+      for (let dx = -2; dx <= 2; dx++)
+        for (const i of grid.get(key(gx + dx, gz + dz)) ?? []) {
+          const q = e.pts[i];
+          const dd = (q[0] - x) ** 2 + (q[1] - z) ** 2;
+          if (dd < bd) {
+            bd = dd;
+            bi = i;
+          }
+        }
+    return bi >= 0 && under[bi];
+  };
+  let w = i0;
+  for (let t = i0; t < m.icount; t += 3) {
+    const a = m.pos(m.idx[t]);
+    const b = m.pos(m.idx[t + 1]);
+    const c = m.pos(m.idx[t + 2]);
+    if (buried((a[0] + b[0] + c[0]) / 3, (a[2] + b[2] + c[2]) / 3)) continue;
+    m.idx[w++] = m.idx[t];
+    m.idx[w++] = m.idx[t + 1];
+    m.idx[w++] = m.idx[t + 2];
+  }
+  m.icount = w;
+  const L = lights.data;
+  let lw = l0;
+  for (let k = l0; k < L.length; k += LIGHT_FLOATS) {
+    if (buried(L[k], L[k + 2])) continue;
+    for (let j = 0; j < LIGHT_FLOATS; j++) L[lw + j] = L[k + j];
+    lw += LIGHT_FLOATS;
+  }
+  L.length = lw;
+  // Portals where the line goes under: the opening spans both tracks
+  // (9.2 m) and 7.4 m over the deck, in a 14 m wide, 0.9 m thick headwall.
+  const conc = packMat(CM.concrete);
+  const fr = frames(e.pts);
+  for (let i = 0; i + 1 < n; i++) {
+    if (under[i] === under[i + 1]) continue;
+    const a = e.pts[i];
+    const b = e.pts[i + 1];
+    const mid: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const h = (e.heights[i] + e.heights[i + 1]) / 2;
+    const {d, l} = fr[i];
+    // Unit vector into the hill.
+    const s = under[i + 1] ? 1 : -1;
+    const yaw = Math.atan2(d[0], d[1]);
+    const at = (along: number, lat: number, y: number): Vec3 => [
+      mid[0] + d[0] * s * along + l[0] * lat,
+      h + y,
+      mid[1] + d[1] * s * along + l[1] * lat,
+    ];
+    for (const side of [-1, 1])
+      m.box(at(0, side * 5.8, 3.2), [1.2, 5.6, 0.45], conc, yaw, 0, false);
+    m.box(at(0, 0, 8.1), [7.0, 0.7, 0.45], conc, yaw, 0, false);
+    // Coping along the top.
+    m.box(at(-0.1, 0, 8.9), [7.2, 0.1, 0.6], conc, yaw, 0, false);
+    // The dark bore a few metres in.
+    m.box(at(3, 0, 3.6), [4.6, 3.8, 0.1], packMat(CM.paint, 0x91), yaw);
+  }
 }
 
 /** Records a camera-solid box (centre, half extents, yaw). */

@@ -5,7 +5,13 @@ import {bandTrisData, buildBase, tileGeom} from '../../src/city/gen-base.ts';
 import {CLUSTER_ALPHA, CM, clusterize} from '../../src/city/cmesh.ts';
 import {buildTile, makeTileContext} from '../../src/city/gen-tile.ts';
 import {LEAF_SOLID} from '../../src/city/lod.ts';
-import {generateLayout, stableOrder} from '../../src/city/layout.ts';
+import {
+  generateLayout,
+  inTunnel,
+  MAX_DECK_RISE,
+  stableOrder,
+  TERMINUS_OFFSET,
+} from '../../src/city/layout.ts';
 import {SEA_LEVEL} from '../../src/city/terrain.ts';
 import {computeRoadGeom} from '../../src/city/roadgeom.ts';
 
@@ -121,4 +127,44 @@ void test('long water crossings do not meet in mid-water (harbour)', () => {
     const long = L.chains.filter((_, ci) => wetLen(ci) > 400).length;
     assert.ok(long >= 1 && long <= 8, `seed ${seed}: ${long} long bridges`);
   }
+});
+
+// Hong Kong and Chongqing viaducts once stood 100-136 m over the valleys
+// (held at a 3% grade off every hilltop) and ran off the end of the deck
+// at the harbour. Lines now tunnel through hills, end at termini, and a
+// loop that bridges a river stays a loop.
+void test('rail viaducts follow the ground and end at termini', () => {
+  for (const [type, seed] of [
+    ['harbour', 1],
+    ['harbour', 2],
+    ['river', 1],
+  ] as const) {
+    const L = layoutOf(type, seed);
+    const hf = L.terrain.heights;
+    for (const e of L.elevated) {
+      if (e.kind !== 'rail') continue;
+      e.pts.forEach((q, i) => {
+        const ground = Math.max(hf.sample(q[0], q[1]), SEA_LEVEL);
+        // Clearance (<= 15) + MAX_DECK_RISE, plus a lift over another line.
+        const above = e.heights[i] - ground;
+        assert.ok(
+          above < 15 + MAX_DECK_RISE + 12,
+          `${type} ${seed}: deck ${above.toFixed(0)} m up at ${q.map(Math.round)}`,
+        );
+      });
+      if (e.loop) continue;
+      const n = e.pts.length;
+      for (const [end, si] of [
+        [0, TERMINUS_OFFSET],
+        [n - 1, n - 1 - TERMINUS_OFFSET],
+      ]) {
+        assert.ok(
+          e.stations.includes(si) || inTunnel(e, end, hf),
+          `${type} ${seed}: open line ends at ${e.pts[end].map(Math.round)} without a terminus`,
+        );
+      }
+    }
+  }
+  // Neon seed 1's loop line crosses a river: it used to be cut open there.
+  assert.ok(layoutOf('neon', 1).elevated[0].loop);
 });

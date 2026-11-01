@@ -647,28 +647,84 @@ export function stableOrder<T>(
 // ---------------------------------------------------------------------------
 // Elevated lines
 
-function elevateProfile(
-  pts: Vec2[],
-  hf: Heightfield,
-  clearance: number,
-  grade: number,
-): number[] {
+/**
+ * Most a deck rises above its clearance profile (terrain plus clearance).
+ * Holding the gentle grade off every hilltop left decks 90-130 m up in the
+ * valleys of the hilly cities.
+ */
+export const MAX_DECK_RISE = 25;
+/** Expressways past MAX_DECK_RISE come down on this grade instead. */
+const STEEP_GRADE = 0.2;
+
+/** Point i of an elevated line is under the ground (in a tunnel). */
+export function inTunnel(e: Elevated, i: number, hf: Heightfield) {
+  const q = e.pts[i];
+  return e.heights[i] < hf.sample(q[0], q[1]);
+}
+
+/**
+ * Lowest profile over `floor` whose grade is at most `grade` both ways (a
+ * descent off a hilltop starts early enough to stay at or under it).
+ * Entries of `floor` may be -Infinity (no constraint).
+ */
+function gradeEnvelope(pts: Vec2[], floor: number[], grade: number) {
   const n = pts.length;
-  const h = pts.map(
-    q => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 2) + clearance,
-  );
-  // Limit grade both ways while staying above the clearance profile.
+  const h = floor.slice();
   for (let pass = 0; pass < 2; pass++) {
     for (let i = 1; i < n; i++)
       h[i] = Math.max(h[i], h[i - 1] - grade * dist2(pts[i], pts[i - 1]));
     for (let i = n - 2; i >= 0; i--)
       h[i] = Math.max(h[i], h[i + 1] - grade * dist2(pts[i], pts[i + 1]));
   }
+  return h;
+}
+
+/**
+ * Deck heights along an elevated line: at least `clearance` over the ground
+ * (or the water), at most `grade` steep, and at most MAX_DECK_RISE over that
+ * clearance profile. Rail lines (`tunnels`) keep their grade and go through
+ * the hills that would break that in tunnels (gen-base leaves out what is
+ * buried and builds the portals); expressways steepen to STEEP_GRADE.
+ */
+export function elevateProfile(
+  pts: Vec2[],
+  hf: Heightfield,
+  clearance: number,
+  grade: number,
+  tunnels = false,
+): number[] {
+  const n = pts.length;
+  const floor = pts.map(
+    q => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 2) + clearance,
+  );
+  const top = floor.map(f => f + MAX_DECK_RISE);
+  let need = floor;
+  let ceil: number[];
+  if (tunnels) {
+    // The highest gentle profile under `top`. Where it runs below the
+    // clearance profile the line is bored through the hill: the floor there
+    // no longer holds the deck up, so it never rises past `top` anywhere.
+    ceil = gradeEnvelope(
+      pts,
+      top.map(t => -t),
+      grade,
+    ).map(v => -v);
+    const bored = floor.map((f, i) => ceil[i] < f);
+    if (bored.some(b => !b))
+      need = floor.map((f, i) => (bored[i] ? -Infinity : f));
+    else ceil = gradeEnvelope(pts, top, grade);
+  } else {
+    ceil = gradeEnvelope(pts, top, Math.max(grade, STEEP_GRADE));
+  }
+  const h = gradeEnvelope(pts, need, grade).map((v, i) => Math.min(v, ceil[i]));
   // Smooth.
   for (let it = 0; it < 4; it++) {
     const c = h.slice();
     for (let i = 1; i + 1 < n; i++)
-      h[i] = Math.max(c[i], (c[i - 1] + c[i] * 2 + c[i + 1]) / 4);
+      h[i] = Math.min(
+        Math.max(c[i], (c[i - 1] + c[i] * 2 + c[i + 1]) / 4),
+        ceil[i],
+      );
   }
   return h;
 }
@@ -730,7 +786,7 @@ function railLines(
     if (!wet) {
       out.push({
         pts,
-        heights: elevateProfile(pts, hf, 9, 0.03),
+        heights: elevateProfile(pts, hf, 9, 0.03, true),
         kind: 'rail',
         loop: true,
         stations: [],
@@ -739,12 +795,14 @@ function railLines(
       // The loop would cross open water: keep the longest stretch on land.
       const piece =
         clipToLand(pts, hf, 350).sort((a, b) => b.length - a.length)[0] ?? [];
+      // Bridges over narrow water (rivers) keep it in one piece: then it is
+      // still a loop, not a line with two dead ends side by side.
       if (piece.length > 20)
         out.push({
           pts: piece,
-          heights: elevateProfile(piece, hf, 9, 0.03),
+          heights: elevateProfile(piece, hf, 9, 0.03, true),
           kind: 'rail',
-          loop: false,
+          loop: piece.length === pts.length,
           stations: [],
         });
     }
@@ -771,7 +829,7 @@ function railLines(
     if (pts.length > 10)
       out.push({
         pts,
-        heights: elevateProfile(pts, hf, 9 + k * 3, 0.03),
+        heights: elevateProfile(pts, hf, 9 + k * 3, 0.03, true),
         kind: 'rail',
         loop: false,
         stations: [],
@@ -791,8 +849,32 @@ function railLines(
       });
       if (bi >= 0) line.stations.push(bi);
     }
+    if (!line.loop) addTermini(line);
   }
   return out;
+}
+
+/**
+ * Stations' platforms cover segments si - 7 .. si + 6 (railViaduct), so a
+ * terminus at index 7 / n - 8 runs right up to the deck end.
+ */
+export const TERMINUS_OFFSET = 7;
+
+/**
+ * An open line ends at a terminus at each end (platforms up to the buffer
+ * stop) instead of a bare viaduct stopping in mid-air; hub stations that
+ * would overlap one give way to it.
+ */
+function addTermini(line: Elevated) {
+  const n = line.pts.length;
+  const a = TERMINUS_OFFSET;
+  const b = n - 1 - TERMINUS_OFFSET;
+  if (b - a < 30) return;
+  line.stations = line.stations.filter(
+    si =>
+      si - a >= 2 * TERMINUS_OFFSET + 4 && b - si >= 2 * TERMINUS_OFFSET + 4,
+  );
+  line.stations.push(a, b);
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,6 +1113,7 @@ export function generateLayout(
   const elevated = railLines(params, rng, noise, hubs, center, hf);
   elevated.push(...expressways(params, rng, chains, hf));
   separateCrossings(elevated);
+  for (const e of elevated) e.stations = clearStations(e, hf);
 
   progress?.('Subdividing blocks', 0.5);
   const faces = extractFaces(g, 400000);
@@ -1042,6 +1125,7 @@ export function generateLayout(
       for (let i = 0; i + 1 < e.pts.length; i++) {
         const a = e.pts[i];
         if (Math.abs(a[0] - q[0]) > 60 || Math.abs(a[1] - q[1]) > 60) continue;
+        if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
         if (pointSegment(q, a, e.pts[i + 1])[0] < pad) return true;
       }
     }
@@ -1260,7 +1344,7 @@ export function generateLayout(
       kind === 'house' ? 2.9 : kind === 'glass' || kind === 'tower' ? 3.9 : 3.3;
     // Trim any edge that cuts through a viaduct (the checks above only look
     // at corners); the design above is unchanged, only the plan shrinks.
-    const cut = clipToRail(fp, [cx, cz], elevated, 7);
+    const cut = clipToRail(fp, [cx, cz], elevated, 7, hf);
     if (cut !== fp) {
       const clean = cleanPolygon(cut, 1.2);
       if (clean.length >= 3 && polygonArea(clean) > 25) fp = clean;
@@ -1305,7 +1389,7 @@ export function generateLayout(
     });
   }
   progress?.('Open ground', 0.68);
-  fillOpenGround(blocks, onBlock, buildings, elevated);
+  fillOpenGround(blocks, onBlock, buildings, elevated, hf);
   // Every seeded decision is made: give the river back the cells the road
   // carve heaped up around bridge ends (see carveRoads).
   restoreChannels(hf, flooded, buildings);
@@ -1339,6 +1423,7 @@ function fillOpenGround(
   onBlock: number[][],
   buildings: Building[],
   elevated: Elevated[],
+  hf: Heightfield,
 ) {
   const C = FILL_CELL;
   const bkey = (x: number, z: number) => (z + 1000) * 2000 + x + 1000;
@@ -1348,6 +1433,7 @@ function fillOpenGround(
   for (const e of elevated) {
     const r = elevatedHalfWidth(e);
     for (let i = 0; i + 1 < e.pts.length; i++) {
+      if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
       const a = e.pts[i],
         b = e.pts[i + 1];
       const steps = Math.ceil(dist2(a, b) / 3);
@@ -1700,7 +1786,8 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
 
 /**
  * Where two elevated lines cross, lift the later one so it clears the other's
- * deck (train + overhead wires) with a gentle approach grade.
+ * deck (train + overhead wires) with a gentle approach grade, unless it
+ * already runs that far below it.
  */
 function separateCrossings(lines: Elevated[]) {
   const clearance = 8.5;
@@ -1716,6 +1803,7 @@ function separateCrossings(lines: Elevated[]) {
       // hundreds of metres, not just at the centreline intersection), B must
       // clear A's deck. A line that folds over itself clears its earlier part.
       const reach = elevatedHalfWidth(A) + elevatedHalfWidth(B) + 2;
+      // [arc length, lift over B's own deck there].
       const need: [number, number][] = [];
       for (let k = 0; k < B.pts.length; k++) {
         const own = a === b ? A.pts.slice(0, Math.max(0, k - SELF_GAP)) : A.pts;
@@ -1723,20 +1811,46 @@ function separateCrossings(lines: Elevated[]) {
         const c = closestOnPolyline(own, B.pts[k]);
         if (c.d < reach) {
           const h = lerp(A.heights[c.i], A.heights[c.i + 1], c.t);
-          need.push([along[k], h + clearance]);
+          // B already passes under A (out of a hill, or in a tunnel below
+          // it) with room to spare: leave it there.
+          if (h + clearance > B.heights[k] && B.heights[k] + clearance > h)
+            need.push([along[k], h + clearance - B.heights[k]]);
         }
       }
       if (!need.length) continue;
+      // The lift eases off along B's own profile, not as an absolute height:
+      // a crossing on a hilltop used to hold B up at the hilltop height for
+      // a kilometre and more down into the valleys on either side.
+      const own = B.heights.slice();
       for (let k = 0; k < B.pts.length; k++) {
-        for (const [s, h] of need) {
+        for (const [s, lift] of need) {
           B.heights[k] = Math.max(
             B.heights[k],
-            h - grade * Math.max(0, Math.abs(along[k] - s) - 30),
+            own[k] + lift - grade * Math.max(0, Math.abs(along[k] - s) - 30),
           );
         }
       }
     }
   }
+}
+
+/**
+ * Stations whose platforms (si - 7 .. si + 7) stand clear of the ground, or
+ * lie wholly in a tunnel (an underground station: trains still stop there).
+ * One at the mouth of a tunnel, cut through by the portal, is left out.
+ */
+function clearStations(e: Elevated, hf: Heightfield) {
+  const n = e.pts.length;
+  return e.stations.filter(si => {
+    let open = true;
+    let deep = true;
+    for (let k = si - 7; k <= si + 7; k++) {
+      const i = e.loop ? (k + n) % n : clamp(k, 0, n - 1);
+      if (e.heights[i] < hf.sample(e.pts[i][0], e.pts[i][1]) + 5) open = false;
+      if (!inTunnel(e, i, hf)) deep = false;
+    }
+    return open || deep;
+  });
 }
 
 /** Points (12 m apart) that must separate two parts of one line to count as a fold. */
@@ -2056,6 +2170,7 @@ function clipToRail(
   c: Vec2,
   elevated: Elevated[],
   pad: number,
+  hf: Heightfield,
 ): Vec2[] {
   let poly = fp;
   for (const e of elevated) {
@@ -2064,6 +2179,7 @@ function clipToRail(
       const a = e.pts[i];
       const b = e.pts[i + 1];
       if (Math.abs(a[0] - c[0]) > 150 || Math.abs(a[1] - c[1]) > 150) continue;
+      if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
       let near = false;
       for (let j = 0; j < poly.length && !near; j++)
         near = segmentGap(poly[j], poly[(j + 1) % poly.length], a, b) < pad;
