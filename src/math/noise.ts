@@ -5,16 +5,9 @@ import {Rng} from './random.ts';
 
 const F2 = 0.5 * (Math.sqrt(3) - 1);
 const G2 = (3 - Math.sqrt(3)) / 6;
-const GRAD = [
-  [1, 1],
-  [-1, 1],
-  [1, -1],
-  [-1, -1],
-  [1, 0],
-  [-1, 0],
-  [0, 1],
-  [0, -1],
-];
+/** Gradient directions (x, y) by index. */
+const GX = new Float64Array([1, -1, 1, -1, 1, -1, 0, 0]);
+const GY = new Float64Array([1, 1, -1, -1, 0, 0, 1, -1]);
 
 export class Noise2D {
   private perm = new Uint8Array(512);
@@ -50,21 +43,21 @@ export class Noise2D {
     let n = 0;
     let t0 = 0.5 - x0 * x0 - y0 * y0;
     if (t0 > 0) {
-      const g = GRAD[p[ii + p[jj]] & 7];
+      const g = p[ii + p[jj]] & 7;
       t0 *= t0;
-      n += t0 * t0 * (g[0] * x0 + g[1] * y0);
+      n += t0 * t0 * (GX[g] * x0 + GY[g] * y0);
     }
     let t1 = 0.5 - x1 * x1 - y1 * y1;
     if (t1 > 0) {
-      const g = GRAD[p[ii + i1 + p[jj + j1]] & 7];
+      const g = p[ii + i1 + p[jj + j1]] & 7;
       t1 *= t1;
-      n += t1 * t1 * (g[0] * x1 + g[1] * y1);
+      n += t1 * t1 * (GX[g] * x1 + GY[g] * y1);
     }
     let t2 = 0.5 - x2 * x2 - y2 * y2;
     if (t2 > 0) {
-      const g = GRAD[p[ii + 1 + p[jj + 1]] & 7];
+      const g = p[ii + 1 + p[jj + 1]] & 7;
       t2 *= t2;
-      n += t2 * t2 * (g[0] * x2 + g[1] * y2);
+      n += t2 * t2 * (GX[g] * x2 + GY[g] * y2);
     }
     return 70 * n;
   }

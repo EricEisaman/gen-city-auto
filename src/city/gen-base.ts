@@ -9,10 +9,18 @@ import {
   pointInPolygon,
   pointSegment,
   polygonArea,
+  rowCrossings,
   type Vec2,
   type Vec3,
 } from '../math/vec.ts';
-import {CM, CMesh, FINE_TUBE, packMat, triangulate} from './cmesh.ts';
+import {
+  CM,
+  CMesh,
+  FINE_TUBE,
+  packMat,
+  triangulate,
+  VERTEX_WORDS,
+} from './cmesh.ts';
 import {
   LANES,
   ROAD_WIDTH,
@@ -80,6 +88,8 @@ export function roadMask(
   for (const [ci, c] of L.chains.entries()) {
     if (visible && L.hidden?.chains[ci]) continue;
     const half = ROAD_WIDTH[c.kind] / 2 + 1;
+    const half2In = half * half * (1 - 1e-9);
+    const half2Out = half * half * (1 + 1e-9);
     let sMin = -Infinity;
     let sMax = Infinity;
     if (geom && ends.size) {
@@ -109,8 +119,13 @@ export function roadMask(
             const X = gx + dx,
               Z = gz + dz;
             if (X < 0 || Z < 0 || X >= n || Z >= n) continue;
-            if (Math.hypot(X * hf.cell - S - x, Z * hf.cell - S - z) < half)
-              mask[Z * n + X] = 1;
+            if (mask[Z * n + X]) continue;
+            // The exact distance only near the edge of the band.
+            const ex = X * hf.cell - S - x;
+            const ez = Z * hf.cell - S - z;
+            const d2 = ex * ex + ez * ez;
+            if (d2 > half2Out) continue;
+            if (d2 < half2In || Math.hypot(ex, ez) < half) mask[Z * n + X] = 1;
           }
         }
       }
@@ -135,6 +150,7 @@ export function landUse(
   // In the asset lab everything outside the shown asset is bare urban
   // ground (a neutral backdrop rather than patches of grass).
   const out = new Uint8Array(n * n).fill(visible ? 1 : 0);
+  const xs: number[] = [];
   for (const [bi, b] of L.blocks.entries()) {
     const use = L.hidden?.blocks[bi] ? 1 : b.park ? 2 : 1;
     let x0 = Infinity,
@@ -152,13 +168,17 @@ export function landUse(
       gz <= Math.min(n - 1, Math.ceil((z1 + S) / hf.cell));
       gz++
     ) {
+      // pointInPolygon along the row (see rowCrossings).
+      const nx = rowCrossings(b.curb, gz * hf.cell - S, xs);
+      let c = 0;
       for (
         let gx = Math.max(0, Math.floor((x0 + S) / hf.cell));
         gx <= Math.min(n - 1, Math.ceil((x1 + S) / hf.cell));
         gx++
       ) {
-        if (pointInPolygon([gx * hf.cell - S, gz * hf.cell - S], b.curb))
-          out[gz * n + gx] = use;
+        const x = gx * hf.cell - S;
+        while (c < nx && xs[c] <= x) c++;
+        if ((nx - c) & 1) out[gz * n + gx] = use;
       }
     }
   }
@@ -1350,8 +1370,15 @@ function fillMesh(
   uvOf?: (p: Vec2) => [number, number, number],
   yOf?: (p: Vec2) => number,
 ) {
+  // Points are shared by their coordinates to 1 cm (toFixed(2)); `exact`
+  // remembers each exact point's vertex so equal points skip the key.
   const cache = new Map<string, number>();
+  const exact = new Map<number, Map<number, number>>();
   const vid = (q: FillPt) => {
+    let row = exact.get(q.p[0]);
+    if (!row) exact.set(q.p[0], (row = new Map()));
+    const e = row.get(q.p[1]);
+    if (e !== undefined) return e;
     const k = `${q.p[0].toFixed(2)},${q.p[1].toFixed(2)}`;
     let v = cache.get(k);
     if (v === undefined) {
@@ -1370,6 +1397,7 @@ function fillMesh(
       );
       cache.set(k, v);
     }
+    row.set(q.p[1], v);
     return v;
   };
   for (const t of tris) m.triFacing(vid(t[0]), vid(t[1]), vid(t[2]), UP);
@@ -1473,13 +1501,21 @@ export function bandTrisData(geom: RoadGeom): Float64Array {
  * geometry, the road mask and the curb band triangles that the primary
  * worker's buildBase() recorded (bandTrisData() of its geometry). The
  * lazily built lookups (landing, light spots, tree shifts) are rebuilt on
- * demand from the same inputs, so tiles come out identical.
+ * demand from the same inputs, so tiles come out identical. Without `band`
+ * the band is attached later (attachBand), so the rest can be made while
+ * the primary is still building the base.
  */
 export function tileGeom(
   L: CityLayout,
-  band: Float64Array,
+  band?: Float64Array,
 ): {geom: RoadGeom; roadMask: Uint8Array} {
   const geom = computeRoadGeom(L);
+  if (band) attachBand(geom, band);
+  return {geom, roadMask: roadMask(L)};
+}
+
+/** Gives `geom` the curb band triangles of bandTrisData(). */
+export function attachBand(geom: RoadGeom, band: Float64Array) {
   const bt = new BandTris();
   for (let i = 0; i < band.length; i += 9)
     bt.add(
@@ -1488,7 +1524,6 @@ export function tileGeom(
       [band[i + 6], band[i + 7], band[i + 8]],
     );
   bandTrisOf.set(geom, bt);
-  return {geom, roadMask: roadMask(L)};
 }
 
 /**
@@ -2684,18 +2719,18 @@ function railViaduct(
     const c1 = Math.min(segs, c0 + 8);
     const per: Edge[][] = [];
     for (let i = c0; i < c1; i++) per.push(edgesOf(i));
+    const keys = per.map(es => es.map(edgeKey));
     const done = per.map(es => es.map(() => false));
     for (let s = 0; s < per.length; s++) {
       for (let k = 0; k < per[s].length; k++) {
         if (done[s][k]) continue;
         const x = per[s][k];
-        const key = edgeKey(x);
+        const key = keys[s][k];
         // Extend the run over following segments with the same edge.
         let s1 = s + 1;
         for (; s1 < per.length; s1++) {
-          const j = per[s1].findIndex(
-            (y, q) => !done[s1][q] && edgeKey(y) === key,
-          );
+          const ks = keys[s1];
+          const j = per[s1].findIndex((_, q) => !done[s1][q] && ks[q] === key);
           if (j < 0) break;
           done[s1][j] = true;
         }
@@ -5684,57 +5719,190 @@ export interface BaseGeometry {
   solids: number[];
 }
 
-export function buildBase(L: CityLayout): BaseGeometry {
-  const m = new CMesh(1 << 18, 1 << 19);
+/**
+ * The independent parts of the base build, in mesh order: the roads (with
+ * the bridge piers, the settled terrain and the land use raster), the
+ * blocks (sidewalks, ground fill; they record the curb band) and the
+ * elevated rail and expressways (with the street lights).
+ * Each can be built in its own worker (buildBasePart) and the parts put
+ * together in this order (assembleBase) give the same base as one build.
+ */
+export const BASE_PARTS = ['roads', 'blocks', 'elevated'] as const;
+export type BasePartName = (typeof BASE_PARTS)[number];
+
+/** A built part: mesh, lights and camera solids, as transferable arrays. */
+export interface BasePart {
+  name: BasePartName;
+  /** Vertex words (VERTEX_WORDS per vertex) and triangle indices. */
+  words: Uint32Array;
+  idx: Uint32Array;
+  lights: Float64Array;
+  solids: Float64Array;
+  /** roads: the pier mesh, the terrain heights as rendered, land use. */
+  pierWords?: Uint32Array;
+  pierIdx?: Uint32Array;
+  settled?: Float32Array;
+  landUse?: Uint8Array;
+  /** The road mask, if the maker sends it along (assembleBase's default). */
+  mask?: Uint8Array;
+  /** elevated: the street lights (after the part's own lights). */
+  streetLights?: Float64Array;
+  /** blocks: the curb band triangles (bandTrisData). */
+  band?: Float64Array;
+}
+
+export function basePartTransfer(p: BasePart): Transferable[] {
+  const out: Transferable[] = [
+    p.words.buffer,
+    p.idx.buffer,
+    p.lights.buffer,
+    p.solids.buffer,
+  ];
+  for (const a of [
+    p.pierWords,
+    p.pierIdx,
+    p.settled,
+    p.landUse,
+    p.mask,
+    p.streetLights,
+    p.band,
+  ])
+    if (a) out.push(a.buffer);
+  return out;
+}
+
+/**
+ * Record the large boxes the bridge and viaduct builders emit into `mesh`,
+ * so the camera can treat them as solid (they are otherwise only render
+ * meshes). Returns the undo.
+ */
+function recordSolids(mesh: CMesh, solids: number[]) {
+  const box = mesh.box.bind(mesh);
+  mesh.box = (
+    c,
+    h,
+    mat,
+    yaw = 0,
+    aux = 0,
+    skipBottom = true,
+    skipBack = false,
+  ) => {
+    if (h[1] >= 0.75 && Math.max(h[0], h[2]) >= 0.5)
+      solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw);
+    box(c, h, mat, yaw, aux, skipBottom, skipBack);
+  };
+  return () => {
+    mesh.box = box;
+  };
+}
+
+const meshWords = (m: CMesh) => m.u32.slice(0, m.vcount * VERTEX_WORDS);
+const meshIdx = (m: CMesh) => m.idx.slice(0, m.icount);
+
+/**
+ * One part of the base: geom = computeRoadGeom(L), mask = roadMask(L) (the
+ * blocks do without it).
+ */
+export function buildBasePart(
+  L: CityLayout,
+  name: BasePartName,
+  geom: RoadGeom,
+  mask: Uint8Array = new Uint8Array(0),
+): BasePart {
+  const m = new CMesh(1 << 16, 1 << 17);
+  const lights = new LightList();
+  const solids: number[] = [];
+  const unM = recordSolids(m, solids);
+  const part: Partial<BasePart> = {name};
+  if (name === 'roads') {
+    const piers = new CMesh(1 << 12, 1 << 13);
+    const unP = recordSolids(piers, solids);
+    const settled = settleRoadbed(L);
+    roads(L, geom, m, lights, piers, settled);
+    unP();
+    part.pierWords = meshWords(piers);
+    part.pierIdx = meshIdx(piers);
+    part.settled = settled;
+    part.landUse = landUse(
+      L,
+      mask,
+      L.hidden ? roadMask(L, true, geom) : undefined,
+    );
+  } else if (name === 'blocks') {
+    blocks(L, m, geom);
+    part.band = bandTrisData(geom);
+  } else {
+    elevatedStructures(L, mask, m, lights, (c, h, yaw) =>
+      solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw),
+    );
+    const street = new LightList();
+    streetLights(L, geom, street);
+    part.streetLights = new Float64Array(street.data);
+  }
+  unM();
+  part.words = meshWords(m);
+  part.idx = meshIdx(m);
+  part.lights = new Float64Array(lights.data);
+  part.solids = new Float64Array(solids);
+  return part as BasePart;
+}
+
+/**
+ * The base from its parts (one of each, any order) and the rest; `mask`
+ * defaults to the one a part carries.
+ */
+export function assembleBase(
+  L: CityLayout,
+  geom: RoadGeom,
+  mask: Uint8Array | undefined,
+  parts: BasePart[],
+): BaseGeometry {
+  // Sized for the parts plus the outskirts (up to ~330k vertices), so the
+  // largest buffer of the load is not grown by doubling (and copying).
+  let nv = 1 << 19;
+  let ni = 1 << 20;
+  for (const p of parts) {
+    nv += p.words.length / VERTEX_WORDS;
+    ni += p.idx.length;
+  }
+  const m = new CMesh(nv, ni);
   const piers = new CMesh(1 << 12, 1 << 13);
   const lights = new LightList();
-  const geom = computeRoadGeom(L);
-  const mask = roadMask(L);
-  // Record the large boxes the bridge and viaduct builders emit, so the
-  // camera can treat them as solid (they are otherwise only render meshes).
   const solids: number[] = [];
-  const record = (mesh: CMesh) => {
-    const box = mesh.box.bind(mesh);
-    mesh.box = (
-      c,
-      h,
-      mat,
-      yaw = 0,
-      aux = 0,
-      skipBottom = true,
-      skipBack = false,
-    ) => {
-      if (h[1] >= 0.75 && Math.max(h[0], h[2]) >= 0.5)
-        solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw);
-      box(c, h, mat, yaw, aux, skipBottom, skipBack);
-    };
-    return () => {
-      mesh.box = box;
-    };
-  };
-  const unM = record(m);
-  const unP = record(piers);
-  const settled = settleRoadbed(L);
-  roads(L, geom, m, lights, piers, settled);
-  blocks(L, m, geom);
-  elevatedStructures(L, mask, m, lights, (c, h, yaw) =>
-    solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw),
-  );
-  unM();
-  unP();
-  streetLights(L, geom, lights);
+  const of = (name: BasePartName) => parts.find(p => p.name === name)!;
+  for (const name of BASE_PARTS) {
+    const p = of(name);
+    m.append(p.words, p.idx);
+    for (const v of p.lights) lights.data.push(v);
+    for (const v of p.solids) solids.push(v);
+  }
+  for (const v of of('elevated').streetLights!) lights.data.push(v);
+  const r = of('roads');
+  piers.append(r.pierWords!, r.pierIdx!);
+  if (!bandTrisOf.has(geom)) attachBand(geom, of('blocks').band!);
   // The asset lab shows its subject alone, without the distant skyline.
   if (!L.hidden) outskirts(L, m);
   return {
     mesh: m,
     piers,
     lights: lights.data,
-    landUse: landUse(L, mask, L.hidden ? roadMask(L, true, geom) : undefined),
-    roadMask: mask,
+    landUse: r.landUse!,
+    roadMask: mask ?? parts.find(p => p.mask)!.mask!,
     geom,
-    terrainHeights: settled,
+    terrainHeights: r.settled!,
     solids,
   };
+}
+
+export function buildBase(L: CityLayout): BaseGeometry {
+  const geom = computeRoadGeom(L);
+  const mask = roadMask(L);
+  return assembleBase(
+    L,
+    geom,
+    mask,
+    BASE_PARTS.map(name => buildBasePart(L, name, geom, mask)),
+  );
 }
 
 /** Street light positions (the poles themselves are props in detail tiles). */

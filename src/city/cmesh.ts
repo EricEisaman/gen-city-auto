@@ -236,6 +236,22 @@ export class CMesh {
     return this.vcount++;
   }
 
+  /**
+   * Appends another mesh's vertex words (VERTEX_WORDS per vertex) and its
+   * triangles (re-indexed past this mesh's vertices).
+   */
+  append(words: Uint32Array, idx: Uint32Array) {
+    const base = this.vcount;
+    const nv = words.length / VERTEX_WORDS;
+    this.growV(nv);
+    this.u32.set(words, base * VERTEX_WORDS);
+    this.vcount += nv;
+    this.growI(idx.length);
+    for (let i = 0; i < idx.length; i++)
+      this.idx[this.icount + i] = idx[i] + base;
+    this.icount += idx.length;
+  }
+
   /** Appends a copy of vertex `i` of `src`; returns its index. */
   copyVertex(src: CMesh, i: number) {
     this.growV(1);

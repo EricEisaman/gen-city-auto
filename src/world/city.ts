@@ -15,7 +15,14 @@ import type {PoolHandle} from '../render/cluster-pool.ts';
 import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
 import type {Preview} from '../city/preview.ts';
-import {addSpan, begin, fromWorker, mark, timed} from '../ui/timeline.ts';
+import {
+  addSpan,
+  begin,
+  fromWorker,
+  mark,
+  timed,
+  timedAsync,
+} from '../ui/timeline.ts';
 
 interface TileState {
   lod2: PoolHandle | null;
@@ -63,6 +70,8 @@ export class City {
   private baseLightTiles: number[][] = [];
   private queue: {tile: number; lod: number}[] = [];
   private busy: number[] = [];
+  /** Per worker: posted ready (its tile jobs can be sent). */
+  private ready: boolean[] = [];
   private nextId = 1;
   private tileLods = new Uint32Array(0);
   private lightScratch = new Float32Array(1024 * 8);
@@ -96,21 +105,31 @@ export class City {
       2,
       Math.min(6, (navigator.hardwareConcurrency || 4) - 1),
     );
-    let readyCount = 0;
-    let resolveBase!: () => void;
+    let resolveSummary!: () => void;
     let rejectAll!: (e: Error) => void;
-    const baseDone = new Promise<void>((res, rej) => {
-      resolveBase = res;
+    const summaryDone = new Promise<void>((res, rej) => {
+      resolveSummary = res;
       rejectAll = rej;
     });
-    let resolveReady!: () => void;
-    const allReady = new Promise<void>(res => (resolveReady = res));
+    let resolveBase!: () => void;
+    const baseDone = new Promise<void>(res => (resolveBase = res));
     let resolveSky!: () => void;
     const skyDone = new Promise<void>(res => (resolveSky = res));
     const endSpawn = begin(`spawn ${n} city workers`);
     const endBase = begin('city: layout + base mesh (workers)');
     const tileMs: number[] = new Array(n).fill(0);
     const tileCount: number[] = new Array(n).fill(0);
+    // The workers' distribution tree: terrain bands and base parts go up to
+    // the primary, the layout comes down (see city-worker.ts). Workers 1-3
+    // hang off the primary (1 and 2 build base parts as soon as the layout
+    // reaches them, so they forward nothing); 3 forwards to the rest.
+    const parents: (MessagePort | undefined)[] = [undefined];
+    const children: MessagePort[][] = Array.from({length: n}, () => []);
+    for (let i = 1; i < n; i++) {
+      const ch = new MessageChannel();
+      children[i <= 3 ? 0 : 3 + ((i - 4) >> 1)].push(ch.port1);
+      parents.push(ch.port2);
+    }
     for (let i = 0; i < n; i++) {
       const w = new Worker(new URL('./city-worker.js', import.meta.url), {
         type: 'module',
@@ -118,6 +137,7 @@ export class City {
       });
       this.workers.push(w);
       this.busy.push(0);
+      this.ready.push(false);
       w.onmessage = (e: MessageEvent) => {
         const m = e.data;
         switch (m.type) {
@@ -142,9 +162,20 @@ export class City {
               }
             });
             break;
+          case 'summary':
+            // Tiles can start: the base clusters follow.
+            mark('summary message received');
+            this.onSummary(m.summary, m.lights, m.landUse);
+            resolveSummary();
+            break;
           case 'base':
             mark('base message received');
-            this.onBase(m.summary, m.base, m.piers, m.lights, m.landUse);
+            timed('upload base mesh', () => {
+              for (const c of [m.base, m.piers]) {
+                const h = this.renderer.uploadClusters(c);
+                if (h) this.baseHandles.push(h);
+              }
+            });
             resolveBase();
             break;
           case 'preview':
@@ -155,7 +186,10 @@ export class City {
             resolveSky();
             break;
           case 'ready':
-            if (++readyCount === n) resolveReady();
+            // (Tile jobs go only to workers that have their tile context
+            // or will have it before they read the job.)
+            this.ready[i] = true;
+            this.pump();
             break;
           case 'tile': {
             this.busy[i]--;
@@ -183,17 +217,19 @@ export class City {
         seed: this.seed,
         primary: i === 0,
         lab: this.lab,
+        index: i,
+        count: n,
+        parent: parents[i],
+        children: children[i],
       };
-      w.postMessage(req);
+      const ports = parents[i] ? [parents[i]!, ...children[i]] : children[i];
+      w.postMessage(req, ports);
     }
     endSpawn();
     let uploadMs = 0;
     let uploads = 0;
-    await baseDone;
+    await summaryDone;
     endBase();
-    const endReady = begin('city: other workers ready');
-    await allReady;
-    endReady();
     const endTiles = begin('city: tiles (initial set)');
     // Every tile gets its shell (LOD1 near, LOD2 far); tiles near the focus
     // get LOD0 first.
@@ -231,13 +267,14 @@ export class City {
       };
       check();
     });
-    await skyDone;
+    await timedAsync(
+      'city: base mesh + skyline',
+      Promise.all([baseDone, skyDone]),
+    );
   }
 
-  private onBase(
+  private onSummary(
     summary: LayoutSummary,
-    base: ClusterData,
-    piers: ClusterData,
     lights: Float32Array,
     landUse: Uint8Array,
   ) {
@@ -266,12 +303,6 @@ export class City {
         landUse,
       ),
     );
-    timed('upload base mesh', () => {
-      for (const c of [base, piers]) {
-        const h = this.renderer.uploadClusters(c);
-        if (h) this.baseHandles.push(h);
-      }
-    });
     this.baseLights = lights;
     this.baseLightTiles = Array.from({length: total}, () => []);
     for (let i = 0; i < lights.length / LIGHT_FLOATS; i++) {
@@ -367,6 +398,7 @@ export class City {
 
   private pump() {
     for (let i = 0; i < this.workers.length; i++) {
+      if (!this.ready[i]) continue;
       while (this.busy[i] < 2 && this.queue.length) {
         const job = this.queue.shift()!;
         this.busy[i]++;

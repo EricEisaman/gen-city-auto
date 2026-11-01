@@ -120,19 +120,29 @@ class PointGrid {
     const n = Math.ceil(r / this.cell);
     const cx = Math.floor(p[0] / this.cell);
     const cz = Math.floor(p[1] / this.cell);
-    let best: {p: Vec2; line: number; d: number} | null = null;
+    let best: {p: Vec2; line: number} | null = null;
+    let bd = r;
+    // Squared distance clearly beyond bd: skip the exact distance.
+    let far2 = r * r * (1 + 1e-9);
     for (let dz = -n; dz <= n; dz++) {
       for (let dx = -n; dx <= n; dx++) {
         for (const q of this.cells.get(
           (cz + dz + 2000) * 4096 + cx + dx + 2000,
         ) ?? []) {
           if (q.line === ignore) continue;
-          const d = Math.hypot(q.p[0] - p[0], q.p[1] - p[1]);
-          if (d < r && (!best || d < best.d)) best = {p: q.p, line: q.line, d};
+          const ex = q.p[0] - p[0];
+          const ez = q.p[1] - p[1];
+          if (ex * ex + ez * ez > far2) continue;
+          const d = Math.hypot(ex, ez);
+          if (d < bd) {
+            best = q;
+            bd = d;
+            far2 = d * d * (1 + 1e-9);
+          }
         }
       }
     }
-    return best;
+    return best && {p: best.p, line: best.line, d: bd};
   }
 }
 

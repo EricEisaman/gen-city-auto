@@ -104,6 +104,25 @@ export function pointInPolygon(p: Vec2, poly: Vec2[]) {
   return inside;
 }
 
+/**
+ * pointInPolygon along the row z = y: fills `xs` (sorted) with the x where
+ * each edge pointInPolygon would count crosses the row, computed the same
+ * way, so a point (x, y) is inside exactly when an odd number of them are
+ * greater than x. Returns the count.
+ */
+export function rowCrossings(poly: Vec2[], y: number, xs: number[]) {
+  let n = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (a[1] > y !== b[1] > y)
+      xs[n++] = ((b[0] - a[0]) * (y - a[1])) / (b[1] - a[1]) + a[0];
+  }
+  xs.length = n;
+  xs.sort((p, q) => p - q);
+  return n;
+}
+
 /** Intersect segments p0-p1 and q0-q1, returning parameters along each, or null. */
 export function segmentIntersect(
   p0: Vec2,
