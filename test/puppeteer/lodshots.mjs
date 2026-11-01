@@ -21,7 +21,7 @@ const MODES = [
 ];
 await ensureDir(outDir);
 await withServer(async base => {
-  const r = await withPage(`${base}/index.html?timespeed=0&ui=0&traffic=380`, async page => {
+  const r = await withPage(`${base}/index.html?timespeed=0&ui=0&traffic=380&scale=100`, async page => {
     await sleep(2000);
     await page.evaluate(() => (window.__game.freeze = true));
     for (const v of VIEWS) {

@@ -59,6 +59,9 @@ async function run(base, ctx) {
     timespeed: '0',
     ui: '0',
     size: `${width}x${height}`,
+    // Native resolution (the default render scale drops below 100% at
+    // 1080p and up): lab renders compare across builds and sizes.
+    scale: '100',
   });
   if (kind) q.set('kind', kind);
   if (ctx) q.set('ctx', '1');
