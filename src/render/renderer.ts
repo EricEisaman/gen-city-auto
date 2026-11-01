@@ -114,6 +114,8 @@ interface Targets {
   bloomUp: GPUTexture[];
   clouds: GPUTexture[];
   ao: GPUTexture;
+  /** Half-res reflections (lighting.wgsl reflectHalf): skyline, SSR. */
+  refl: GPUTexture[];
   rays: GPUTexture;
 }
 
@@ -481,11 +483,12 @@ export class Renderer {
       label: string,
       module: GPUShaderModule,
       entryPoint: string,
+      constants?: Record<string, number>,
     ) =>
       d.createComputePipelineAsync({
         label,
         layout: 'auto',
-        compute: {module, entryPoint},
+        compute: {module, entryPoint, constants},
       });
     const entries: [string, Promise<GPURenderPipeline | GPUComputePipeline>][] =
       [
@@ -589,6 +592,16 @@ export class Renderer {
           compute('pipeline/aerial perspective', atmoMod, 'aerialPerspective'),
         ],
         ['lighting', compute('pipeline/lighting', lightMod, 'main')],
+        [
+          'lightingFull',
+          compute('pipeline/lighting full-res reflections', lightMod, 'main', {
+            HALF_REFL: 0,
+          }),
+        ],
+        [
+          'reflect',
+          compute('pipeline/reflections half res', lightMod, 'reflectHalf'),
+        ],
         ['taa', compute('pipeline/taa', postMod, 'taa')],
         [
           'motionDof',
@@ -956,6 +969,10 @@ export class Renderer {
         ),
       ),
       ao: tex('ssao/half res', 'rgba16float', hw, hh, ST),
+      refl: [
+        tex('reflect/skyline half res', 'rgba16float', hw, hh, ST),
+        tex('reflect/ssr half res', 'rgba16float', hw, hh, ST),
+      ],
       rays: tex('post/god rays', 'rgba16float', hw, hh, ST),
     };
     this.frameIndex = 0;
@@ -1817,44 +1834,72 @@ export class Renderer {
     const histPrev = t.history[this.frameIndex % 2];
     const histNext = t.history[(this.frameIndex + 1) % 2];
     {
-      const pass = this.compute(enc, 'lighting');
-      pass.setPipeline(this.p.lighting as GPUComputePipeline);
-      pass.setBindGroup(
-        0,
+      const half = !this.off('hrefl');
+      const inputs = (pipe: string, refl: boolean, main: boolean) =>
         this.bg(
-          'lighting',
-          0,
-          [this.ubuf(this.frameBuffer)],
-          'bg/lighting/frame',
-        ),
-      );
-      pass.setBindGroup(
-        1,
-        this.bg(
-          'lighting',
+          pipe,
           1,
           [
-            t.gbuf[0].createView(),
+            main ? t.gbuf[0].createView() : null,
             t.gbuf[1].createView(),
             t.gbuf[2].createView(),
             t.depth.createView(),
-            this.shadowMap.createView({dimension: '2d-array'}),
-            this.shadowSampler,
-            this.skyView.createView(),
-            this.transmittance.createView(),
-            this.apVolume.createView(),
+            main ? this.shadowMap.createView({dimension: '2d-array'}) : null,
+            main ? this.shadowSampler : null,
+            main ? this.skyView.createView() : null,
+            main ? this.transmittance.createView() : null,
+            main ? this.apVolume.createView() : null,
             this.linear,
-            t.clouds[(this.frameIndex + 1) % 2].createView(),
-            histPrev.createView(),
-            t.lit.createView(),
-            this.ubuf(this.lightBuffer),
-            t.ao.createView(),
-            this.ubuf(this.contactBuffer),
+            main ? t.clouds[(this.frameIndex + 1) % 2].createView() : null,
+            refl ? histPrev.createView() : null,
+            main ? t.lit.createView() : null,
+            main ? this.ubuf(this.lightBuffer) : null,
+            main ? t.ao.createView() : null,
+            main ? this.ubuf(this.contactBuffer) : null,
             (this.skylineTex ?? this.heightTex!).createView(),
+            main ? t.refl[0].createView() : null,
+            main ? t.refl[1].createView() : null,
           ],
-          'bg/lighting/inputs',
-        ),
+          `bg/${pipe}/inputs`,
+        );
+      if (half) {
+        // Reflections at half resolution (one pixel per 2x2 block).
+        const pass = this.compute(enc, 'reflect');
+        pass.setPipeline(this.p.reflect as GPUComputePipeline);
+        pass.setBindGroup(
+          0,
+          this.bg(
+            'reflect',
+            0,
+            [this.ubuf(this.frameBuffer)],
+            'bg/reflect/frame',
+          ),
+        );
+        pass.setBindGroup(1, inputs('reflect', true, false));
+        pass.setBindGroup(
+          2,
+          this.bg(
+            'reflect',
+            2,
+            [t.refl[0].createView(), t.refl[1].createView()],
+            'bg/reflect/out',
+          ),
+        );
+        pass.dispatchWorkgroups(
+          Math.ceil(t.refl[0].width / 8),
+          Math.ceil(t.refl[0].height / 8),
+        );
+      }
+      const pipe = half ? 'lighting' : 'lightingFull';
+      const pass = this.compute(enc, 'lighting');
+      pass.setPipeline(this.p[pipe] as GPUComputePipeline);
+      pass.setBindGroup(
+        0,
+        this.bg(pipe, 0, [this.ubuf(this.frameBuffer)], 'bg/lighting/frame'),
       );
+      // (Both variants keep every binding: an override does not change
+      // which ones are statically used.)
+      pass.setBindGroup(1, inputs(pipe, true, true));
       pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16));
       this.endCompute();
     }

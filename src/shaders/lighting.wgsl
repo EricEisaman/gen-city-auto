@@ -28,6 +28,14 @@ struct Contact { a: vec4f, b: vec4f, c: vec4f };
 struct ContactBuf { count: u32, pad0: u32, pad1: u32, pad2: u32, items: array<Contact> };
 @group(1) @binding(15) var<storage, read> contacts: ContactBuf;
 @group(1) @binding(16) var skyline: texture_2d<f32>;
+// Half-resolution reflections (the `reflect` pass, upsampled in main):
+// skyline march and SSR, premultiplied by their weights.
+@group(1) @binding(17) var reflCityTex: texture_2d<f32>;
+@group(1) @binding(18) var reflSsrTex: texture_2d<f32>;
+@group(2) @binding(0) var reflCityOut: texture_storage_2d<rgba16float, write>;
+@group(2) @binding(1) var reflSsrOut: texture_storage_2d<rgba16float, write>;
+// false: main traces its own reflections at full resolution (?off=hrefl).
+override HALF_REFL: bool = true;
 
 // Ablation bits (frame.off.x; render/ablation.ts). Zero in normal runs.
 const OFF_SSR = 1u;
@@ -664,6 +672,115 @@ fn ssr(world: vec3f, n: vec3f, v: vec3f, px: vec2f, rough: f32, aniso: bool, thi
   return vec4f(0.0);
 }
 
+// The two reflection terms of a surface: the skyline march (city) and SSR,
+// each premultiplied by the weight it replaces the env lobe with.
+struct Refl { city: vec4f, ssr: vec4f };
+
+// Which pixel of each 2x2 block the half-res pass traces this frame (a
+// 4-frame cycle; TAA resolves the rest).
+fn reflOffset() -> vec2u {
+  let k = u32(frame.time.z) & 3u;
+  return vec2u(k & 1u, ((k >> 1u) ^ k) & 1u);
+}
+
+fn reflTerms(px: vec2u) -> Refl {
+  var o: Refl;
+  o.city = vec4f(0.0);
+  o.ssr = vec4f(0.0);
+  let depth = textureLoad(gDepth, vec2i(px), 0);
+  if (depth <= 0.0 || frame.misc.y <= 0.5) { return o; }
+  let nr = textureLoad(gNormal, px, 0);
+  let rough = nr.z;
+  if (rough >= 0.35) { return o; }
+  let cls = u32(floor(textureLoad(gEmissive, px, 0).a + 1e-3));
+  if (cls == CLASS_GROUND && (frame.off.x & OFF_GNDREFL) != 0u) { return o; }
+  let n = decodeNormal(nr.xy);
+  let pxf = vec2f(px) + 0.5;
+  let world = worldFromDepth(pxf, depth);
+  let v = normalize(frame.camPos.xyz - world);
+  let dist = length(world - frame.camPos.xyz);
+  var refl = reflect(-v, n);
+  if (cls == CLASS_WATER) { refl = normalize(vec3f(refl.x, max(refl.y, 0.015), refl.z)); }
+  if (rough < 0.3 && dist < 800.0 && cls != CLASS_VEHICLE) {
+    let pixAng = 2.0 / (frame.proj[1][1] * frame.resolution.y);
+    let cr = cityReflection(world + n * 0.3, refl, vec2f(rough * 0.7, pixAng / max(dot(n, v), 0.03)));
+    // The skyline hit is a sharp mirror image: only near-specular surfaces
+    // (glass, water, wet film) may show it. On glazed tile and paint it drew
+    // a hard warm stripe (a lone sunlit tower) at golden hour and per-tile
+    // lit-window speckle at night. A pane looking down sees the street,
+    // which the height map can't tell from a wall: glassEnv's lit street,
+    // not a dark "facade" at the window's own foot.
+    let crK = select(1.0, smoothstep(-0.2, -0.04, refl.y), cls == CLASS_GLASS);
+    let w = cr.a * crK * (1.0 - smoothstep(0.1, 0.3, rough));
+    o.city = vec4f(cr.rgb * w, w);
+  }
+  // Screen-space reflections only nearby: far away the depth tolerance grows
+  // to kilometres and grazing rays report false hits.
+  if (dist < 1200.0 && (cls != CLASS_GLASS || dist < 150.0)) {
+    // Car paint reflects through its clear coat: a sharp, unjittered ray.
+    // Jittered rays on a moving car hit and miss leaves frame to frame and
+    // sparkle in a way TAA can't resolve.
+    // So does window glass: its roughness is grime and haze, which the
+    // env lobe already blurs; jittered rays dithered a noisy ghost of
+    // every pole and sign in front of a pane.
+    let r = ssr(world, n, v, pxf, select(rough, 0.0, cls == CLASS_VEHICLE || cls == CLASS_GLASS), cls == CLASS_GROUND && frame.weather.z > 0.3, cls == CLASS_GLASS);
+    let w = r.a * smoothstep(1200.0, 700.0, dist);
+    o.ssr = vec4f(r.rgb * w, w);
+  }
+  return o;
+}
+
+// Half-resolution reflections: one pixel of each 2x2 block (reflOffset)
+// traced. Rough (>= 0.35), sky and non-reflective pixels exit at once.
+@compute @workgroup_size(8, 8)
+fn reflectHalf(@builtin(global_invocation_id) gid: vec3u) {
+  let hs = textureDimensions(reflCityOut);
+  if (any(gid.xy >= hs)) { return; }
+  let size = vec2u(frame.resolution.xy);
+  let r = reflTerms(min(gid.xy * 2u + reflOffset(), size - 1u));
+  textureStore(reflCityOut, gid.xy, r.city);
+  textureStore(reflSsrOut, gid.xy, r.ssr);
+}
+
+// The half-res terms at a full-res pixel: the four nearest traced pixels,
+// bilinear weights times plane distance and normal agreement (a reflection
+// never bleeds across a kerb or onto a wall).
+fn reflUpsample(px: vec2u, world: vec3f, n: vec3f, vd: f32) -> Refl {
+  let o = reflOffset();
+  let hs = vec2i(textureDimensions(reflCityTex));
+  let size = vec2i(frame.resolution.xy);
+  // Texel q was traced at full-res pixel 2q + o.
+  let f = (vec2f(px) - vec2f(o)) * 0.5;
+  let q0 = vec2i(floor(f));
+  let fr = f - floor(f);
+  var acc: Refl;
+  acc.city = vec4f(0.0);
+  acc.ssr = vec4f(0.0);
+  var wsum = 0.0;
+  let tol = 0.01 * vd + 0.05;
+  for (var k = 0u; k < 4u; k++) {
+    let d = vec2i(i32(k & 1u), i32(k >> 1u));
+    let q = clamp(q0 + d, vec2i(0), hs - 1);
+    let rp = min(q * 2 + vec2i(o), size - 1);
+    let dep = textureLoad(gDepth, rp, 0);
+    if (dep <= 0.0) { continue; }
+    let wr = worldFromDepth(vec2f(rp) + 0.5, dep);
+    let nq = decodeNormal(textureLoad(gNormal, rp, 0).xy);
+    let bw = select(1.0 - fr.x, fr.x, d.x == 1) * select(1.0 - fr.y, fr.y, d.y == 1) + 1e-3;
+    let pw = max(0.0, 1.0 - abs(dot(n, wr - world)) / tol);
+    let nw = pow(max(dot(n, nq), 0.0), 8.0);
+    let w = bw * pw * nw;
+    acc.city += textureLoad(reflCityTex, q, 0) * w;
+    acc.ssr += textureLoad(reflSsrTex, q, 0) * w;
+    wsum += w;
+  }
+  if (wsum > 1e-4) {
+    acc.city /= wsum;
+    acc.ssr /= wsum;
+  }
+  return acc;
+}
+
 // Transmittance of the last applyFog() call (how much of the surface's own
 // radiance got through): emitters use it to punch through the haze.
 var<private> fogTrans: f32 = 1.0;
@@ -1096,32 +1213,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let reflLo = select(0.15, 0.01, cls == CLASS_WATER);
   env = mix(groundRadiance(), env, smoothstep(-0.08, reflLo, refl.y));
   if (cls == CLASS_GLASS) { env = glassEnv(refl); }
-  // (Its weight below is zero from rough 0.3 up.)
-  if (rough < 0.3 && dist < 800.0 && frame.misc.y > 0.5 && cls != CLASS_VEHICLE && !(cls == CLASS_GROUND && (frame.off.x & OFF_GNDREFL) != 0u)) {
-    let pixAng = 2.0 / (frame.proj[1][1] * frame.resolution.y);
-    let cr = cityReflection(world + n * 0.3, refl, vec2f(rough * 0.7, pixAng / max(dot(n, v), 0.03)));
-    // The skyline hit is a sharp mirror image: only near-specular surfaces
-    // (glass, water, wet film) may show it. On glazed tile and paint it drew
-    // a hard warm stripe (a lone sunlit tower) at golden hour and per-tile
-    // lit-window speckle at night. A pane looking down sees the street,
-    // which the height map can't tell from a wall: glassEnv's lit street,
-    // not a dark "facade" at the window's own foot.
-    let crK = select(1.0, smoothstep(-0.2, -0.04, refl.y), cls == CLASS_GLASS);
-    env = mix(env, cr.rgb, cr.a * crK * (1.0 - smoothstep(0.1, 0.3, rough)));
+  // Skyline march and SSR (reflTerms): traced at half resolution by the
+  // reflect pass and upsampled here, or here at full resolution.
+  var R: Refl;
+  R.city = vec4f(0.0);
+  R.ssr = vec4f(0.0);
+  if (HALF_REFL) {
+    if (rough < 0.35 && frame.misc.y > 0.5) { R = reflUpsample(px, world, n, vd); }
+  } else {
+    R = reflTerms(px);
   }
+  env = env * (1.0 - R.city.a) + R.city.rgb;
   env *= mix(1.0, 0.25, rough) * mix(0.35, 1.0, skyVis);
-  // Screen-space reflections only nearby: far away the depth tolerance grows
-  // to kilometres and grazing rays report false hits.
-  if (rough < 0.35 && frame.misc.y > 0.5 && dist < 1200.0 && (cls != CLASS_GLASS || dist < 150.0) && !(cls == CLASS_GROUND && (frame.off.x & OFF_GNDREFL) != 0u)) {
-    // Car paint reflects through its clear coat: a sharp, unjittered ray.
-    // Jittered rays on a moving car hit and miss leaves frame to frame and
-    // sparkle in a way TAA can't resolve.
-    // So does window glass: its roughness is grime and haze, which the
-    // env lobe already blurs; jittered rays dithered a noisy ghost of
-    // every pole and sign in front of a pane.
-    let r = ssr(world, n, v, pxf, select(rough, 0.0, cls == CLASS_VEHICLE || cls == CLASS_GLASS), cls == CLASS_GROUND && frame.weather.z > 0.3, cls == CLASS_GLASS);
-    env = mix(env, r.rgb, r.a * smoothstep(1200.0, 700.0, dist));
-  }
+  env = env * (1.0 - R.ssr.a) + R.ssr.rgb;
   // Glass deep in a window recess sees less sky.
   // A water film on wet glass makes it more of a mirror.
   if (cls == CLASS_GLASS) { env *= mix(0.5, 1.0, a.a) * (1.0 + 0.5 * frame.weather.z) * 1.3; }
