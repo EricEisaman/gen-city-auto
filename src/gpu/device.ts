@@ -2,6 +2,7 @@
 // project carries a label so the messages printed here identify the culprit.
 
 import {begin, timed} from '../ui/timeline.ts';
+import {trackGpuMemory} from './memtrack.ts';
 
 export interface Gpu {
   adapter: GPUAdapter;
@@ -81,6 +82,7 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
   });
 
   endDevice();
+  trackGpuMemory(device);
   device.addEventListener('uncapturederror', e => {
     const err = (e as GPUUncapturedErrorEvent).error;
     reportError(`[WebGPU] ${err.constructor.name}: ${err.message}`);
