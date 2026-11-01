@@ -49,6 +49,8 @@ const OFF_LIT = 524288u;
 const OFF_STREAK = 1u << 26u;
 const OFF_REACH = 1u << 27u;
 const OFF_GNDREFL = 1u << 28u;
+// frame.off.z (bits 32+).
+const OFF_CTILE = 8u;
 
 // Screen-space contact shadow toward the sun: a short march through the
 // depth buffer for the small casters (sign brackets, AC units, sills,
@@ -186,8 +188,9 @@ fn skyIrradiance(n: vec3f) -> vec3f {
 fn contactOcclusion(world: vec3f) -> f32 {
   if ((frame.off.x & OFF_CONTACT) != 0u) { return 0.0; }
   var occ = 0.0;
-  for (var i = 0u; i < contacts.count; i++) {
-    let C = contacts.items[i];
+  let cnt = min(atomicLoad(&tileContactCount), MAX_TILE_CONTACTS);
+  for (var k = 0u; k < cnt; k++) {
+    let C = contacts.items[tileContacts[k]];
     let d = world - C.a.xyz;
     if (abs(d.x) > 8.0 || abs(d.z) > 8.0) { continue; }
     let q = vec3f(dot(d.xz, C.b.xy), d.y, dot(d.xz, C.b.zw));
@@ -218,6 +221,11 @@ var<workgroup> tileLights: array<u32, 256>;
 // to STREAK_REACH radii) may reach it: only wet-ground pixels loop these.
 var<workgroup> tileStreakCount: atomic<u32>;
 var<workgroup> tileStreak: array<u32, 256>;
+// Vehicles whose contact occlusion (8 m around, up to 1 m above) can reach
+// the tile's bounds (?off=ctile: every pixel walks all of them).
+const MAX_TILE_CONTACTS = 128u;
+var<workgroup> tileContactCount: atomic<u32>;
+var<workgroup> tileContacts: array<u32, 128>;
 
 fn worldFromDepth(px: vec2f, depth: f32) -> vec3f {
   let uv = px * frame.resolution.zw;
@@ -803,6 +811,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   if (li == 0u) {
     atomicStore(&tileCount, 0u);
     atomicStore(&tileStreakCount, 0u);
+    atomicStore(&tileContactCount, 0u);
   }
   let pxf = vec2f(px) + 0.5;
   let uv = pxf * frame.resolution.zw;
@@ -870,6 +879,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
         let slot = atomicAdd(&tileStreakCount, 1u);
         if (slot < MAX_TILE_LIGHTS) { tileStreak[slot] = i; }
       }
+    }
+  }
+  let ctile = (frame.off.z & OFF_CTILE) == 0u;
+  for (var i = li; i < min(contacts.count, MAX_TILE_CONTACTS); i += 256u) {
+    let c = contacts.items[i].a.xyz;
+    let reach = all(c.xz + 8.0 >= bLo.xz) && all(c.xz - 8.0 <= bHi.xz) && c.y + 1.0 >= bLo.y;
+    if (reach || !ctile) {
+      let slot = atomicAdd(&tileContactCount, 1u);
+      tileContacts[slot] = i;
     }
   }
   workgroupBarrier();
