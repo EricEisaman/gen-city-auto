@@ -1,3 +1,6 @@
+:root {
+  color-scheme: dark;
+}
 html,
 body {
   margin: 0;
@@ -26,41 +29,58 @@ canvas {
   background-repeat: no-repeat;
   color: #eee;
   gap: 14px;
-}
 
-#loading .title {
-  font-size: 6em;
-  font-weight: 800;
-  letter-spacing: 0;
-  line-height: 0.65;
-  color: white;
-  text-align: center;
-  -webkit-text-stroke: 8px black;
-  paint-order: stroke fill;
-}
 
-#loading .load-main {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 56px;
-}
+  .title {
+    font-size: 6em;
+    font-weight: 800;
+    letter-spacing: 0;
+    line-height: 0.65;
+    color: white;
+    text-align: center;
+    -webkit-text-stroke: 8px black;
+    paint-order: stroke fill;
+  }
 
-#loading .load-info {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-}
+  .load-main {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 56px;
+  }
 
-#loading .bar {
-  position: relative;
-  width: 340px;
-  max-width: 80vw;
-  height: 4px;
-  background: #333;
-  border-radius: 2px;
-  overflow: hidden;
+  .load-info {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .bar {
+    position: relative;
+    width: 340px;
+    max-width: 80vw;
+    height: 4px;
+    background: #333;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .load-map {
+    display: none;
+    position: relative;
+    width: min(58vh, 40vw);
+    aspect-ratio: 1;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+    overflow: hidden;
+    background: #0a0f1c;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  }
+
+  &.active .load-map {
+    display: block;
+  }
 }
 
 #loadbar {
@@ -69,18 +89,19 @@ canvas {
   width: 0;
   background: #ffd36e;
   overflow: hidden;
+
+  /* A highlight sweeping along the filled part: a compositor animation, so it
+     keeps moving even while the main thread is busy. */
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    width: 60px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+    animation: loadsweep 1.4s linear infinite;
+  }
 }
 
-/* A highlight sweeping along the filled part: a compositor animation, so it
-   keeps moving even while the main thread is busy. */
-#loadbar::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  width: 60px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
-  animation: loadsweep 1.4s linear infinite;
-}
 
 @keyframes loadsweep {
   from {
@@ -109,22 +130,6 @@ canvas {
   color: #9aa6c0;
   min-height: 1.2em;
   text-shadow: 0 1px 3px #000;
-}
-
-#loading .load-map {
-  display: none;
-  position: relative;
-  width: min(58vh, 40vw);
-  aspect-ratio: 1;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
-  overflow: hidden;
-  background: #0a0f1c;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
-}
-
-#loading.active .load-map {
-  display: block;
 }
 
 #loadmap {
@@ -165,27 +170,30 @@ canvas {
   text-shadow: 0 1px 3px #000;
   opacity: 0;
   transition: opacity 0.4s;
+
+  &.show {
+    opacity: 1;
+  }
+
+  b {
+    color: #ffd36e;
+  }
 }
 
-#loadtip.show {
-  opacity: 1;
-}
-
-#loadtip b {
-  color: #ffd36e;
-}
 
 /* Portrait (phones): map under the title. */
 @media (max-aspect-ratio: 1/1) {
-  #loading .load-main {
-    flex-direction: column;
-    gap: 24px;
-  }
-  #loading .load-map {
-    width: min(84vw, 40vh);
-  }
-  #loading .title {
-    font-size: 4.5em;
+  #loading {
+    .load-main {
+      flex-direction: column;
+      gap: 24px;
+    }
+    .load-map {
+      width: min(84vw, 40vh);
+    }
+    .title {
+      font-size: 4.5em;
+    }
   }
 }
 
@@ -197,23 +205,23 @@ canvas {
   text-align: right;
   text-shadow: 0 1px 4px #000;
   pointer-events: none;
-}
 
-#hud .speed {
-  font-size: 44px;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-}
+  .speed {
+    font-size: 44px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
 
-#hud .unit {
-  font-size: 14px;
-  opacity: 0.8;
-}
+  .unit {
+    font-size: 14px;
+    opacity: 0.8;
+  }
 
-#hud .info {
-  font-size: 13px;
-  opacity: 0.85;
-  margin-top: 4px;
+  .info {
+    font-size: 13px;
+    opacity: 0.85;
+    margin-top: 4px;
+  }
 }
 
 #stats {
@@ -265,32 +273,32 @@ canvas {
   border-radius: 8px;
   color: #eee;
   font-size: 12px;
-}
 
-#menu .menu-section {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.15);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  opacity: 0.8;
-}
+  .menu-section {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    opacity: 0.8;
+  }
 
-#menu.hidden {
-  display: none;
-}
+  &.hidden {
+    display: none;
+  }
 
-#menu label {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: center;
-}
+  label {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: center;
+  }
 
-#menu select,
-#menu input,
-#menu button {
-  font-size: 12px;
+  select,
+  input,
+  button {
+    font-size: 12px;
+  }
 }
 
 #errors {
@@ -318,25 +326,25 @@ canvas {
   top: 12px;
   display: flex;
   gap: 6px;
-}
 
-#toolbar button {
-  width: 40px;
-  height: 40px;
-  border: 0;
-  border-radius: 8px;
-  background: rgba(10, 12, 20, 0.6);
-  color: #eee;
-  font-size: 20px;
-  cursor: pointer;
-}
+  button {
+    width: 40px;
+    height: 40px;
+    border: 0;
+    border-radius: 8px;
+    background: rgba(10, 12, 20, 0.6);
+    color: #eee;
+    font-size: 20px;
+    cursor: pointer;
+  }
 
-#toolbar button:hover {
-  background: rgba(40, 44, 60, 0.8);
-}
+  button:hover {
+    background: rgba(40, 44, 60, 0.8);
+  }
 
-#toolbar button.on {
-  background: rgba(255, 211, 110, 0.35);
+  button.on {
+    background: rgba(255, 211, 110, 0.35);
+  }
 }
 
 #camlabel {
