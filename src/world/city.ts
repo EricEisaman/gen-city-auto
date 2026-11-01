@@ -14,6 +14,7 @@ import {nearestFirst} from './nearest.ts';
 import type {PoolHandle} from '../render/cluster-pool.ts';
 import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
+import {addSpan, begin, fromWorker, timed} from '../ui/timeline.ts';
 
 interface TileState {
   lod2: PoolHandle | null;
@@ -97,6 +98,10 @@ export class City {
     });
     let resolveReady!: () => void;
     const allReady = new Promise<void>(res => (resolveReady = res));
+    const endSpawn = begin(`spawn ${n} city workers`);
+    const endBase = begin('city: layout + base mesh (workers)');
+    const tileMs: number[] = new Array(n).fill(0);
+    const tileCount: number[] = new Array(n).fill(0);
     for (let i = 0; i < n; i++) {
       const w = new Worker(new URL('./city-worker.js', import.meta.url), {
         type: 'module',
@@ -109,6 +114,14 @@ export class City {
         switch (m.type) {
           case 'progress':
             progress(m.msg, m.f);
+            break;
+          case 'span':
+            addSpan(
+              m.name,
+              fromWorker(m.start),
+              fromWorker(m.end),
+              `worker ${i}`,
+            );
             break;
           case 'band':
             // The primary's curb band: the others' tile context waits on it
@@ -125,11 +138,17 @@ export class City {
           case 'ready':
             if (++readyCount === n) resolveReady();
             break;
-          case 'tile':
+          case 'tile': {
             this.busy[i]--;
+            tileMs[i] = m.tileMs;
+            tileCount[i] = m.tileCount;
+            const t = performance.now();
             this.onTile(m.tile, m.lod, m.clusters, m.lights);
+            uploadMs += performance.now() - t;
+            uploads++;
             this.pump();
             break;
+          }
           case 'error':
             // (After loading nothing awaits the promise: log it as well.)
             console.error(`[city worker ${i}] ${m.message}`);
@@ -147,8 +166,15 @@ export class City {
       };
       w.postMessage(req);
     }
+    endSpawn();
+    let uploadMs = 0;
+    let uploads = 0;
     await baseDone;
+    endBase();
+    const endReady = begin('city: other workers ready');
     await allReady;
+    endReady();
+    const endTiles = begin('city: tiles (initial set)');
     // Every tile gets its shell (LOD1 near, LOD2 far); tiles near the focus
     // get LOD0 first.
     const total = this.tilesPerSide * this.tilesPerSide;
@@ -168,8 +194,24 @@ export class City {
               ((done1 / total) * 0.6 +
                 (done0 / Math.max(1, near.length)) * 0.4),
         );
-        if (done1 === total && done0 === near.length) res();
-        else setTimeout(check, 100);
+        if (done1 === total && done0 === near.length) {
+          endTiles();
+          const t = performance.now();
+          const sum = tileMs.reduce((a, b) => a + b, 0);
+          const cnt = tileCount.reduce((a, b) => a + b, 0);
+          addSpan(
+            `tile builds: ${cnt} jobs, ${sum.toFixed(0)} worker-ms over ${n} workers`,
+            t,
+            t,
+            'workers',
+          );
+          addSpan(
+            `tile uploads: ${uploads}, ${uploadMs.toFixed(0)} ms main thread`,
+            t,
+            t,
+          );
+          res();
+        } else setTimeout(check, 100);
       };
       check();
     });
@@ -198,18 +240,23 @@ export class City {
       pending1: false,
       pending2: false,
     }));
-    this.renderer.setTerrain(
-      L.heights,
-      L.heightN,
-      L.cell,
-      L.params.size,
-      landUse,
+    timed('setTerrain', () =>
+      this.renderer.setTerrain(
+        L.heights,
+        L.heightN,
+        L.cell,
+        L.params.size,
+        landUse,
+      ),
     );
-    this.renderer.setSkyline(this.buildSkyline(), SKYLINE_N);
-    for (const c of [base, piers]) {
-      const h = this.renderer.uploadClusters(c);
-      if (h) this.baseHandles.push(h);
-    }
+    const sky = timed('buildSkyline', () => this.buildSkyline());
+    this.renderer.setSkyline(sky, SKYLINE_N);
+    timed('upload base mesh', () => {
+      for (const c of [base, piers]) {
+        const h = this.renderer.uploadClusters(c);
+        if (h) this.baseHandles.push(h);
+      }
+    });
     this.baseLights = lights;
     this.baseLightTiles = Array.from({length: total}, () => []);
     for (let i = 0; i < lights.length / LIGHT_FLOATS; i++) {

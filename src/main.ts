@@ -1,3 +1,4 @@
+import {addSpan, begin, mark} from './ui/timeline.ts';
 import type {CityType} from './city/config.ts';
 import {isBuildingKind, isLabAsset, type LabSpec} from './city/lab.ts';
 import type {CameraMode} from './game/camera.ts';
@@ -11,7 +12,21 @@ const params = new URLSearchParams(location.search);
 const num = (k: string, d: number) =>
   params.has(k) ? Number(params.get(k)) : d;
 
+/** Page and script fetch phases from the navigation and resource timings. */
+function loadSpans() {
+  const nav = performance.getEntriesByType('navigation')[0] as
+    PerformanceNavigationTiming | undefined;
+  if (nav) addSpan('index.html', nav.startTime, nav.responseEnd);
+  for (const r of performance.getEntriesByType(
+    'resource',
+  ) as PerformanceResourceTiming[])
+    if (/main\.js$/.test(r.name))
+      addSpan('fetch main.js', r.startTime, r.responseEnd);
+  mark('main.js evaluated');
+}
+
 async function main() {
+  loadSpans();
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   // size=WIDTHxHEIGHT fixes the canvas size in CSS pixels (e.g. for videos).
   const size = params.get('size')?.match(/^(\d+)x(\d+)$/);
@@ -24,7 +39,9 @@ async function main() {
     for (const id of ['hud', 'stats', 'perf', 'help', 'toolbar'])
       document.getElementById(id)!.style.visibility = 'hidden';
   resizeToCss(canvas);
+  const endGpu = begin('initGpu');
   const gpu = await initGpu(canvas);
+  endGpu();
   // lab=building|road|rail shows one asset alone (see city/lab.ts).
   const asset = params.get('lab');
   const kind = params.get('kind');

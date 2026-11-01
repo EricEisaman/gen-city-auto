@@ -15,6 +15,7 @@ import {VehicleRenderer} from '../render/vehicles.ts';
 import {CpuProfiler} from '../render/profiler.ts';
 import {OFF_BITS, parseOff} from '../render/ablation.ts';
 import {UI} from '../ui/ui.ts';
+import {begin, finish, mark, timed, timedAsync} from '../ui/timeline.ts';
 import {
   DEFAULTS,
   DynamicScale,
@@ -246,25 +247,36 @@ export class Game {
       this.renderer.frameBuffer,
       this.renderer.shadowViewBuffers,
     );
-    this.rain = new RainRenderer(
-      this.renderer.device,
-      this.renderer.frameBuffer,
-      'rgba16float',
+    this.rain = timed(
+      'rain pipeline (sync)',
+      () =>
+        new RainRenderer(
+          this.renderer.device,
+          this.renderer.frameBuffer,
+          'rgba16float',
+        ),
     );
-    this.sprites = new LightSprites(
-      this.renderer.device,
-      this.renderer.frameBuffer,
-      'rgba16float',
+    this.sprites = timed(
+      'sprite pipelines (sync)',
+      () =>
+        new LightSprites(
+          this.renderer.device,
+          this.renderer.frameBuffer,
+          'rgba16float',
+        ),
     );
     this.renderer.hooks.push(this.vehicles, this.rain, this.sprites);
     this.rain.density = this.settings.rain;
     const progress = this.progress.bind(this);
     progress('Building vehicles from NURBS', 0.02);
     await Promise.all([
-      this.vehicles.init(GBUFFER_FORMATS, 'rgba16float'),
-      this.loadCity(this.cityType, this.seed),
+      timedAsync(
+        'vehicles init',
+        this.vehicles.init(GBUFFER_FORMATS, 'rgba16float'),
+      ),
+      timedAsync('city load', this.loadCity(this.cityType, this.seed)),
     ]);
-    this.setupWorld();
+    timed('setupWorld', () => this.setupWorld());
     this.ui = new UI(this);
     if (this.opts.camera) {
       this.camera.mode = this.opts.camera;
@@ -762,6 +774,7 @@ export class Game {
 
   frame(dt: number) {
     if (this.loading || !this.city || !this.traffic) return;
+    const endFirst = this.frames === 0 ? begin('first frame()') : null;
     const prof = this.cpuProf;
     const t0 = prof ? performance.now() : 0;
     prof?.start();
@@ -910,7 +923,19 @@ export class Game {
       window.__stats.cpu = prof.averages;
       window.__stats.gpu = this.renderer.prof?.averages ?? {};
     }
-    if (this.frames === 20) window.__ready = true;
+    if (endFirst) {
+      endFirst();
+      void timedAsync(
+        'first frame GPU work',
+        this.renderer.device.queue.onSubmittedWorkDone(),
+        'gpu',
+      );
+    }
+    if (this.frames === 20) {
+      mark('frame 20 (ready)');
+      finish();
+      window.__ready = true;
+    }
   }
 
   get rngSeed() {

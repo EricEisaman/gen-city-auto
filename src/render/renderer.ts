@@ -2,6 +2,7 @@
 // Hi-Z, clouds, tiled lighting, TAA, bloom, exposure and tonemapping.
 
 import {createShader, type Gpu} from '../gpu/device.ts';
+import {begin, timed, timedAsync} from '../ui/timeline.ts';
 import {frustumPlanes, mat4, type Mat4} from '../math/mat4.ts';
 import {cross3, norm3, sub3, type Vec3} from '../math/vec.ts';
 import atmosphereWgsl from '../shaders/atmosphere.wgsl';
@@ -502,8 +503,8 @@ export class Renderer {
   }
 
   static async create(gpu: Gpu): Promise<Renderer> {
-    const r = new Renderer(gpu);
-    await r.createPipelines();
+    const r = timed('renderer resources', () => new Renderer(gpu));
+    await timedAsync('renderer pipelines (all)', r.createPipelines());
     return r;
   }
 
@@ -557,6 +558,7 @@ export class Renderer {
         layout: 'auto',
         compute: {module, entryPoint, constants},
       });
+    const endCalls = begin('create*PipelineAsync calls');
     const entries: [string, Promise<GPURenderPipeline | GPUComputePipeline>][] =
       [
         [
@@ -711,7 +713,10 @@ export class Renderer {
         ['clouds', compute('pipeline/clouds', cloudMod, 'march')],
         ['ao', compute('pipeline/ssao', aoMod, 'main')],
       ];
-    const done = await Promise.all(entries.map(([, p]) => p));
+    endCalls();
+    const done = await Promise.all(
+      entries.map(([k, p]) => timedAsync(`pipeline ${k}`, p, 'gpu')),
+    );
     this.p = Object.fromEntries(entries.map(([k], i) => [k, done[i]]));
   }
 

@@ -2,6 +2,7 @@
 // wheel per instance, three LODs, G-buffer + shadow + forward glass passes.
 
 import {createShader} from '../gpu/device.ts';
+import {begin} from '../ui/timeline.ts';
 import {mat4, type Mat4} from '../math/mat4.ts';
 import type {Vec3} from '../math/vec.ts';
 import commonWgsl from '../shaders/common.wgsl';
@@ -192,6 +193,7 @@ export class VehicleRenderer implements DrawHook {
       depthWriteEnabled: write,
       depthCompare: cmp,
     });
+    const endPipes = begin('vehicle pipelines', 'gpu');
     [this.gbufferPipe, this.glassPipe, this.shadowPipe] = await Promise.all([
       d.createRenderPipelineAsync({
         label: 'pipeline/vehicle gbuffer',
@@ -242,7 +244,9 @@ export class VehicleRenderer implements DrawHook {
         },
       }),
     ]);
+    endPipes();
     // Tessellate designs in parallel across several workers.
+    const endTess = begin('vehicle tessellation (workers)', 'vehicles');
     const names = [...Object.keys(designs), 'person'];
     const nWorkers = Math.max(
       2,
@@ -273,6 +277,8 @@ export class VehicleRenderer implements DrawHook {
           ),
       ),
     );
+    endTess();
+    const endUpload = begin('vehicle mesh upload');
     // Keep a stable order (registry order) regardless of worker grouping.
     const variants = results
       .flatMap(r => r.variants)
@@ -330,6 +336,7 @@ export class VehicleRenderer implements DrawHook {
         steering: put(l.steering),
       })),
     }));
+    endUpload();
     this.ready = true;
   }
 

@@ -1,6 +1,8 @@
 // WebGPU device creation with loud error reporting. Every WebGPU object in the
 // project carries a label so the messages printed here identify the culprit.
 
+import {begin, timed} from '../ui/timeline.ts';
+
 export interface Gpu {
   adapter: GPUAdapter;
   device: GPUDevice;
@@ -40,9 +42,11 @@ export function reportError(msg: string) {
 export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
   if (!navigator.gpu)
     throw new Error('WebGPU is not supported in this browser');
+  const endAdapter = begin('requestAdapter');
   const adapter = await navigator.gpu.requestAdapter({
     powerPreference: 'high-performance',
   });
+  endAdapter();
   if (!adapter) throw new Error('No WebGPU adapter available');
 
   const wanted: GPUFeatureName[] = [
@@ -54,6 +58,7 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
   ];
   const requiredFeatures = wanted.filter(f => adapter.features.has(f));
   const L = adapter.limits;
+  const endDevice = begin('requestDevice');
   const device = await adapter.requestDevice({
     label: 'gen-city-auto device',
     requiredFeatures,
@@ -75,6 +80,7 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
     },
   });
 
+  endDevice();
   device.addEventListener('uncapturederror', e => {
     const err = (e as GPUUncapturedErrorEvent).error;
     reportError(`[WebGPU] ${err.constructor.name}: ${err.message}`);
@@ -86,7 +92,9 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
   const context = canvas.getContext('webgpu');
   if (!context) throw new Error('Could not get a webgpu canvas context');
   const format = navigator.gpu.getPreferredCanvasFormat();
-  context.configure({device, format, alphaMode: 'opaque'});
+  timed('context.configure', () =>
+    context.configure({device, format, alphaMode: 'opaque'}),
+  );
 
   return {
     adapter,
@@ -109,8 +117,12 @@ export function createShader(
   label: string,
   code: string,
 ): GPUShaderModule {
-  const module = device.createShaderModule({label, code});
+  const module = timed(`createShaderModule ${label}`, () =>
+    device.createShaderModule({label, code}),
+  );
+  const endInfo = begin(`shader info ${label}`, 'gpu');
   void module.getCompilationInfo().then(info => {
+    endInfo();
     for (const m of info.messages) {
       const line = code.split('\n')[m.lineNum - 1] ?? '';
       const msg = `[WGSL ${m.type}] ${label}:${m.lineNum}:${m.linePos} ${m.message}\n    ${line.trim()}`;
