@@ -33,7 +33,7 @@ import {createLeafTexture, uploadSignAtlas, vinylWgsl} from './sign-atlas.ts';
 import {signWaysWgsl} from '../city/signs.ts';
 import {uploadDetailTexture} from './detail-tex.ts';
 import type {TextureResult} from '../workers/texture-worker.ts';
-import type {ClusterData} from '../city/cmesh.ts';
+import {MAT_GROUPS, groupMatMask, type ClusterData} from '../city/cmesh.ts';
 
 export interface Weather {
   cloud: number;
@@ -85,6 +85,8 @@ export const GBUFFER_FORMATS: GPUTextureFormat[] = [
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 /** city-materials.wgsl FAR_FOOT (m per pixel where far shading starts). */
 const FAR_FOOT = 0.8;
+/** Opaque draw lists of the main view: material group x near / far. */
+const LISTS = 2 * MAT_GROUPS;
 const CASCADES = 4;
 const VIEWS = 1 + CASCADES;
 const MAX_LIGHTS = 1024;
@@ -216,8 +218,6 @@ export class Renderer {
   private argsBuffers: GPUBuffer[] = [];
   /** Alpha-tested clusters (cmesh CLUSTER_ALPHA): their own list and draw. */
   private visibleAlphaBuffers: GPUBuffer[] = [];
-  /** Far opaque clusters (cull.wgsl argsFar): drawn with cityFar. */
-  private argsFarBuffers: GPUBuffer[] = [];
   private argsAlphaBuffers: GPUBuffer[] = [];
   readonly shadowViewBuffers: GPUBuffer[] = [];
 
@@ -424,17 +424,19 @@ export class Renderer {
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         }),
       );
+      // The main view's opaque clusters in LISTS lists (cull.wgsl args).
+      const lists = v === 0 ? LISTS : 1;
       this.visibleBuffers.push(
         device.createBuffer({
           label: `cull/${name}/visible clusters`,
-          size: this.pool.maxClusters * 4,
+          size: this.pool.maxClusters * 4 * lists,
           usage: GPUBufferUsage.STORAGE,
         }),
       );
       this.argsBuffers.push(
         device.createBuffer({
           label: `cull/${name}/indirect args`,
-          size: 32,
+          size: 32 * lists,
           usage:
             GPUBufferUsage.STORAGE |
             GPUBufferUsage.INDIRECT |
@@ -452,17 +454,6 @@ export class Renderer {
       this.argsAlphaBuffers.push(
         device.createBuffer({
           label: `cull/${name}/indirect args alpha-tested`,
-          size: 32,
-          usage:
-            GPUBufferUsage.STORAGE |
-            GPUBufferUsage.INDIRECT |
-            GPUBufferUsage.COPY_DST |
-            GPUBufferUsage.COPY_SRC,
-        }),
-      );
-      this.argsFarBuffers.push(
-        device.createBuffer({
-          label: `cull/${name}/indirect args far`,
           size: 32,
           usage:
             GPUBufferUsage.STORAGE |
@@ -614,41 +605,35 @@ export class Renderer {
             depthStencil: gDepth,
           }),
         ],
-        [
-          'cityOpaque',
-          d.createRenderPipelineAsync({
-            label: 'pipeline/city gbuffer opaque',
-            layout: 'auto',
-            vertex: {module: cityMod, entryPoint: 'vs'},
-            fragment: {
-              module: cityMod,
-              entryPoint: 'fsOpaque',
-              targets: gTargets,
-            },
-            primitive: {cullMode: 'back'},
-            depthStencil: gDepth,
-          }),
-        ],
-        [
-          'cityFar',
-          d.createRenderPipelineAsync({
-            label: 'pipeline/city gbuffer far',
-            layout: 'auto',
-            vertex: {
-              module: cityMod,
-              entryPoint: 'vs',
-              constants: {FAR_LIST: 1},
-            },
-            fragment: {
-              module: cityMod,
-              entryPoint: 'fsOpaque',
-              targets: gTargets,
-              constants: {FAR_SHADE: 1},
-            },
-            primitive: {cullMode: 'back'},
-            depthStencil: gDepth,
-          }),
-        ],
+        // The main view's opaque lists (cull.wgsl args): material group g
+        // near (list g) and far (MAT_GROUPS + g), each compiled with only
+        // its group's material code and the far ones with far shading.
+        ...Array.from(
+          {length: LISTS},
+          (_, k): [string, Promise<GPURenderPipeline>] => [
+            `cityList${k}`,
+            d.createRenderPipelineAsync({
+              label: `pipeline/city gbuffer ${k < MAT_GROUPS ? 'near' : 'far'} group ${k % MAT_GROUPS}`,
+              layout: 'auto',
+              vertex: {
+                module: cityMod,
+                entryPoint: 'vs',
+                constants: {LIST: k, LISTS},
+              },
+              fragment: {
+                module: cityMod,
+                entryPoint: 'fsOpaque',
+                targets: gTargets,
+                constants: {
+                  FAR_SHADE: k < MAT_GROUPS ? 0 : 1,
+                  MAT_ON: groupMatMask(k % MAT_GROUPS),
+                },
+              },
+              primitive: {cullMode: 'back'},
+              depthStencil: gDepth,
+            }),
+          ],
+        ),
         [
           'cityShadowOpaque',
           d.createRenderPipelineAsync({
@@ -708,7 +693,7 @@ export class Renderer {
             depthStencil: gDepth,
           }),
         ],
-        ['cull', compute('pipeline/cull', cullMod, 'main')],
+        ['cull', compute('pipeline/cull', cullMod, 'main', {MAT_GROUPS})],
         [
           'transmittance',
           compute('pipeline/sky transmittance', atmoMod, 'transmittanceLut'),
@@ -1325,13 +1310,15 @@ export class Renderer {
       68,
     );
     f.set([w, h, mips, this.off('farcull') ? 0 : this.farCullScale], 72);
-    f[76] = farDepth;
+    const lists = v === 0 ? LISTS : 1;
+    f.set([farDepth, v === 0 && !this.off('matgroup') ? 1 : 0, lists], 76);
     this.device.queue.writeBuffer(this.cullViewBuffers[v], 0, data);
-    // Reset the indirect draw: 128 triangles * 3 vertices per instance (cluster).
-    const reset = new Uint32Array([128 * 3, 0, 0, 0, 0]);
+    // Reset the indirect draws: 128 triangles * 3 vertices per instance
+    // (cluster).
+    const reset = new Uint32Array(8 * lists);
+    for (let k = 0; k < lists; k++) reset[k * 8] = 128 * 3;
     this.device.queue.writeBuffer(this.argsBuffers[v], 0, reset);
-    this.device.queue.writeBuffer(this.argsAlphaBuffers[v], 0, reset);
-    this.device.queue.writeBuffer(this.argsFarBuffers[v], 0, reset);
+    this.device.queue.writeBuffer(this.argsAlphaBuffers[v], 0, reset, 0, 8);
   }
 
   private updateTerrainPatches(eye: Vec3) {
@@ -1729,7 +1716,6 @@ export class Renderer {
               hizView,
               this.ubuf(this.visibleAlphaBuffers[vi]),
               this.ubuf(this.argsAlphaBuffers[vi]),
-              this.ubuf(this.argsFarBuffers[vi]),
             ],
             `bg/cull/view${vi}`,
           ),
@@ -1889,6 +1875,7 @@ export class Renderer {
         list: GPUBuffer,
         args: GPUBuffer,
         label: string,
+        offset = 0,
       ) => {
         pass.setPipeline(this.p[pipe] as GPURenderPipeline);
         pass.setBindGroup(0, frameG0(pipe));
@@ -1908,21 +1895,17 @@ export class Renderer {
             `bg/${label}/textures`,
           ),
         );
-        pass.drawIndirect(args, 0);
+        pass.drawIndirect(args, offset);
       };
       if (!this.off('city')) {
-        cityDraw(
-          'cityOpaque',
-          this.visibleBuffers[0],
-          this.argsBuffers[0],
-          'city opaque',
-        );
-        cityDraw(
-          'cityFar',
-          this.visibleBuffers[0],
-          this.argsFarBuffers[0],
-          'city far',
-        );
+        for (let k = 0; k < LISTS; k++)
+          cityDraw(
+            `cityList${k}`,
+            this.visibleBuffers[0],
+            this.argsBuffers[0],
+            `city opaque ${k}`,
+            k * 32,
+          );
         cityDraw(
           'city',
           this.visibleAlphaBuffers[0],
@@ -2427,15 +2410,19 @@ export class Renderer {
     const d = this.device;
     this.cullStatsBuf ??= d.createBuffer({
       label: 'cull/stats readback',
-      size: VIEWS * 3 * 32,
+      size: (VIEWS + LISTS) * 32,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
     const buf = this.cullStatsBuf;
     const enc = d.createCommandEncoder({label: 'cull stats'});
+    // Per view: the alpha-tested list, then the opaque lists (LISTS for the
+    // main view, one per shadow view).
+    let o = 0;
     for (let v = 0; v < VIEWS; v++) {
-      enc.copyBufferToBuffer(this.argsBuffers[v], 0, buf, v * 96, 32);
-      enc.copyBufferToBuffer(this.argsAlphaBuffers[v], 0, buf, v * 96 + 32, 32);
-      enc.copyBufferToBuffer(this.argsFarBuffers[v], 0, buf, v * 96 + 64, 32);
+      const lists = v === 0 ? LISTS : 1;
+      enc.copyBufferToBuffer(this.argsAlphaBuffers[v], 0, buf, o, 32);
+      enc.copyBufferToBuffer(this.argsBuffers[v], 0, buf, o + 32, 32 * lists);
+      o += 32 * (1 + lists);
     }
     d.queue.submit([enc.finish()]);
     this.cullStatsBusy = true;
@@ -2447,12 +2434,18 @@ export class Renderer {
         const name = (v: number) => (v === 0 ? 'main' : `shadow${v - 1}`);
         let sc = 0;
         let st = 0;
+        let o = 0;
         for (let v = 0; v < VIEWS; v++) {
-          const o = v * 24;
-          const clusters = u[o + 1] + u[o + 9] + u[o + 17];
-          const tris = u[o + 4] + u[o + 12] + u[o + 20];
+          const lists = v === 0 ? LISTS : 1;
+          let clusters = 0;
+          let tris = 0;
+          for (let k = 0; k <= lists; k++) {
+            clusters += u[o + k * 8 + 1];
+            tris += u[o + k * 8 + 4];
+          }
+          this.stats[`${name(v)}AlphaClusters`] = u[o + 1];
+          o += 8 * (1 + lists);
           this.stats[`${name(v)}Clusters`] = clusters;
-          this.stats[`${name(v)}AlphaClusters`] = u[o + 9];
           this.stats[`${name(v)}Tris`] = tris;
           if (v > 0) {
             sc += clusters;

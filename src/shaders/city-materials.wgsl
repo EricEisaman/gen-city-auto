@@ -7983,6 +7983,16 @@ fn insulatorMat(n: vec3f, uv: vec2f) -> Surf {
   return s;
 }
 
+// Material-group pipelines (renderer.ts cityList*, cmesh.ts
+// CLUSTER_GROUP_SHIFT): bit `id` set = that material's code is compiled in.
+// The uber-shader's register allocation is that of its heaviest path (the
+// facade), and every pixel paid for it: a road or facade pixel drawn by a
+// pipeline holding only its own group's code runs 2-5 ms faster per 1440p
+// frame. A cleared bit draws the material flat (never reached: clusterize
+// keeps each group's triangles in clusters of their own).
+override MAT_ON: u32 = 0xffffffffu;
+fn matOn(id: u32) -> bool { return ((MAT_ON >> id) & 1u) != 0u; }
+fn flatMat(id: u32) -> vec3f { return vec3f(0.3) + 0.4 * vec3f(hash11(f32(id)), hash11(f32(id) + 7.0), hash11(f32(id) + 13.0)); }
 fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> Surf {
   let id = matWord & 0xffu;
   let param = matWord >> 8u;
@@ -7990,18 +8000,18 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
   var s = defaultSurf(n);
   // Ablation (?off=matcheap): a flat per-material colour, no procedural layers.
   if ((frame.off.x & 32768u) != 0u || (id < 32u && ((frame.off.y >> id) & 1u) != 0u)) {
-    s.albedo = vec3f(0.3) + 0.4 * vec3f(hash11(f32(id)), hash11(f32(id) + 7.0), hash11(f32(id) + 13.0));
+    s.albedo = flatMat(id);
     return s;
   }
   let night = nightLight();
   switch (id) {
-    case M_ROAD: { s = roadMat(world, n, uv, param, aux); }
-    case M_ASPHALT: { s = junctionMat(world, n, param, aux); }
-    case M_SIDEWALK: { s = sidewalkMat(world, n, uv, param, aux); }
-    case M_CURB: { s = curbMat(world, n, uv); }
-    case M_ROADSIGN: { s = roadSignMat(world, n, uv, param); }
-    case M_HEDGE: { s = hedgeMat(world, n, uv, param, aux); }
-    case M_FACADE: {
+    case M_ROAD: { if (!matOn(M_ROAD)) { s.albedo = flatMat(M_ROAD); break; } s = roadMat(world, n, uv, param, aux); }
+    case M_ASPHALT: { if (!matOn(M_ASPHALT)) { s.albedo = flatMat(M_ASPHALT); break; } s = junctionMat(world, n, param, aux); }
+    case M_SIDEWALK: { if (!matOn(M_SIDEWALK)) { s.albedo = flatMat(M_SIDEWALK); break; } s = sidewalkMat(world, n, uv, param, aux); }
+    case M_CURB: { if (!matOn(M_CURB)) { s.albedo = flatMat(M_CURB); break; } s = curbMat(world, n, uv); }
+    case M_ROADSIGN: { if (!matOn(M_ROADSIGN)) { s.albedo = flatMat(M_ROADSIGN); break; } s = roadSignMat(world, n, uv, param); }
+    case M_HEDGE: { if (!matOn(M_HEDGE)) { s.albedo = flatMat(M_HEDGE); break; } s = hedgeMat(world, n, uv, param, aux); }
+    case M_FACADE: { if (!matOn(M_FACADE)) { s.albedo = flatMat(M_FACADE); break; }
       s = facadeMat(world, n, uv, param, aux);
       // Rain soaks the wall: porous render and granite darken more than
       // glazed tile; metal sashes and glass only get the water film.
@@ -8014,10 +8024,10 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s.rough = r0;
       }
     }
-    case M_GLASS: { s = curtainWall(world, n, uv, param, aux); }
-    case M_ROOF: { s = roofMat(world, n, uv, param); }
-    case M_CARPARK: { s = carParkMat(world, n, uv); }
-    case M_METAL: {
+    case M_GLASS: { if (!matOn(M_GLASS)) { s.albedo = flatMat(M_GLASS); break; } s = curtainWall(world, n, uv, param, aux); }
+    case M_ROOF: { if (!matOn(M_ROOF)) { s.albedo = flatMat(M_ROOF); break; } s = roofMat(world, n, uv, param); }
+    case M_CARPARK: { if (!matOn(M_CARPARK)) { s.albedo = flatMat(M_CARPARK); break; } s = carParkMat(world, n, uv); }
+    case M_METAL: { if (!matOn(M_METAL)) { s.albedo = flatMat(M_METAL); break; }
       s.albedo = vec3f(0.42, 0.43, 0.45);
       s.metal = 0.8;
       s.rough = 0.45;
@@ -8070,8 +8080,8 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         applyWetness(&s, world, 0.0, 0.0);
       }
     }
-    case M_SIGN: { s = signMat(world, n, uv, param); }
-    case M_FOLIAGE: {
+    case M_SIGN: { if (!matOn(M_SIGN)) { s.albedo = flatMat(M_SIGN); break; } s = signMat(world, n, uv, param); }
+    case M_FOLIAGE: { if (!matOn(M_FOLIAGE)) { s.albedo = flatMat(M_FOLIAGE); break; }
       s.albedo = leafTint(param, hashuf(aux)) * (0.7 + 0.5 * valueNoise(world.xz * 2.0 + world.y));
       s.rough = 0.85;
       // The inner crown core sits in the shade of the leaf cards around it.
@@ -8079,7 +8089,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.albedo *= 0.6;
       s.cls = CLASS_FOLIAGE;
     }
-    case M_LEAVES: {
+    case M_LEAVES: { if (!matOn(M_LEAVES)) { s.albedo = flatMat(M_LEAVES); break; }
       // Filtered at the same mip as the alpha test so leaf shading does not
       // sparkle at range.
       let dx = dUvX * 256.0;
@@ -8110,8 +8120,8 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.ao = clamp(0.6 + 0.4 * n.y, 0.4, 1.0) * (1.0 - 0.45 * inner) * (1.0 - 0.45 * deep);
       s.cls = CLASS_FOLIAGE;
     }
-    case M_BARK: { s = barkMat(world, n, uv); }
-    case M_GRASS: {
+    case M_BARK: { if (!matOn(M_BARK)) { s.albedo = flatMat(M_BARK); break; } s = barkMat(world, n, uv); }
+    case M_GRASS: { if (!matOn(M_GRASS)) { s.albedo = flatMat(M_GRASS); break; }
       s.albedo = mix(vec3f(0.1, 0.17, 0.045), vec3f(0.17, 0.22, 0.07), fbm2(world.xz * 0.2)) * 0.85;
       s.albedo *= 0.8 + 0.2 * valueNoise(world.xz * 3.0) + 0.1 * (hash21(floor(world.xz * 12.0)) - 0.5);
       // Worn, drier patches.
@@ -8123,7 +8133,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.albedo *= 1.0 - frame.weather.z * 0.35;
       s.rough = max(s.rough - frame.weather.z * 0.2, 0.6);
     }
-    case M_LAMP: {
+    case M_LAMP: { if (!matOn(M_LAMP)) { s.albedo = flatMat(M_LAMP); break; }
       let sodium = param == 0u;
       let col = select(vec3f(0.9, 0.95, 1.0), vec3f(1.0, 0.6, 0.25), sodium);
       s.albedo = vec3f(0.8);
@@ -8198,7 +8208,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         }
       }
     }
-    case M_CONCRETE: {
+    case M_CONCRETE: { if (!matOn(M_CONCRETE)) { s.albedo = flatMat(M_CONCRETE); break; }
       if ((param & 0xfu) != 0u) {
         s = railConcrete(world, n, uv, param, aux);
         break;
@@ -8252,8 +8262,8 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       s.rough = 0.85;
       applyWetness(&s, world, 0.0, 0.5);
     }
-    case M_RAIL: { s = railBed(world, n, uv); }
-    case M_SIGNAL: {
+    case M_RAIL: { if (!matOn(M_RAIL)) { s.albedo = flatMat(M_RAIL); break; } s = railBed(world, n, uv); }
+    case M_SIGNAL: { if (!matOn(M_SIGNAL)) { s.albedo = flatMat(M_SIGNAL); break; }
       let lamp = param & 3u;
       let group = (param >> 2u) & 1u;
       let phase = f32((param >> 3u) & 0xffu);
@@ -8271,8 +8281,8 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s.emissive = c * mix(0.03, mix(5.0, 12.0, night), on);
       } else if (state == lamp) { s.emissive = cols[lamp] * mix(6.0, 14.0, night); } else { s.emissive = cols[lamp] * 0.03; }
     }
-    case M_FRAME: { s.albedo = vec3f(0.08); s.metal = 0.6; s.rough = 0.4; }
-    case M_PAINT: {
+    case M_FRAME: { if (!matOn(M_FRAME)) { s.albedo = flatMat(M_FRAME); break; } s.albedo = vec3f(0.08); s.metal = 0.6; s.rough = 0.4; }
+    case M_PAINT: { if (!matOn(M_PAINT)) { s.albedo = flatMat(M_PAINT); break; }
       s.albedo = paintColor(param);
       s.rough = 0.5;
       s.metal = 0.1;
@@ -8508,15 +8518,15 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       // Painted fixtures under a water film: a shade darker (and glossy).
       s.albedo *= 1.0 - 0.18 * frame.weather.z;
     }
-    case M_SCREEN: { s = screenMat(n, uv, param); }
-    case M_TILE: {
+    case M_SCREEN: { if (!matOn(M_SCREEN)) { s.albedo = flatMat(M_SCREEN); break; } s = screenMat(n, uv, param); }
+    case M_TILE: { if (!matOn(M_TILE)) { s.albedo = flatMat(M_TILE); break; }
       let h = hashu(param * 13u + 1u);
       let cols = array<vec3f, 4>(vec3f(0.12, 0.13, 0.16), vec3f(0.35, 0.18, 0.12), vec3f(0.18, 0.22, 0.3), vec3f(0.3, 0.3, 0.3));
       s.albedo = cols[h % 4u] * (0.8 + 0.2 * step(0.5, fract(uv.y * 4.0)));
       s.rough = 0.55;
       applyWetness(&s, world, 0.0, 0.0);
     }
-    case M_WIRE: {
+    case M_WIRE: { if (!matOn(M_WIRE)) { s.albedo = flatMat(M_WIRE); break; }
       s.albedo = vec3f(0.02);
       s.rough = 0.6;
       // Overhead line: aged copper contact wire (glints at golden hour) and
@@ -8531,7 +8541,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s.rough = mix(0.45, 0.25, frame.weather.z);
       }
     }
-    case M_VENDING: {
+    case M_VENDING: { if (!matOn(M_VENDING)) { s.albedo = flatMat(M_VENDING); break; }
       let body = array<vec3f, 3>(vec3f(0.75, 0.08, 0.06), vec3f(0.08, 0.2, 0.6), vec3f(0.85));
       let bc = body[(param & 0xffu) % 3u];
       s.albedo = bc;
@@ -8626,7 +8636,7 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s.emissive = c * mix(0.8, 3.0, gloomLight());
       }
     }
-    case M_LED: {
+    case M_LED: { if (!matOn(M_LED)) { s.albedo = flatMat(M_LED); break; }
       let cols = array<vec3f, 4>(vec3f(1.0), vec3f(0.3, 0.6, 1.0), vec3f(0.8, 0.3, 1.0), vec3f(1.0, 0.7, 0.3));
       s.albedo = vec3f(0.3);
       s.emissive = cols[param % 4u] * night * 20.0;

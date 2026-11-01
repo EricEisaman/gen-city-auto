@@ -47,7 +47,8 @@ export const OFF_BITS = {
   hrefl: HI * (1 << 1), // lighting: SSR + skyline reflections traced at full res in the lighting kernel
   ctile: HI * (1 << 3), // lighting: vehicle contact occlusion not culled per tile (every pixel walks every car)
   hskyvis: HI * (1 << 4), // sky visibility traced at full res in lighting (not at half res in the GTAO pass)
-  farshade: HI * (1 << 5), // city: no far-specialised material pipeline (every opaque cluster through cityOpaque)
+  farshade: HI * (1 << 5), // city: no far-specialised material pipelines (far opaque clusters drawn as near ones)
+  matgroup: HI * (1 << 6), // city: no material-group pipelines (every opaque cluster through the full material shader)
 } as const;
 
 export type OffName = keyof typeof OFF_BITS;

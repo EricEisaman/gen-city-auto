@@ -19,7 +19,9 @@ struct CullView {
   camPos: vec4f,       // xyz, detail cull factor (min radius/distance)
   params: vec4u,       // cluster count, use occlusion, plane count, count triangles
   hiz: vec4f,          // hiz width, height, mip count, fine-detail distance scale (0 = off)
-  far: vec4f,          // far-shading view depth (0 = off), -, -, -
+  // far-shading view depth (0 = off), material-group binning (0 = off),
+  // lists in `visible` (segments of equal size), -
+  far: vec4f,
 };
 
 struct DrawArgs {
@@ -29,21 +31,26 @@ struct DrawArgs {
   firstInstance: u32,
   // Stats only (params.w != 0): triangles in the visible clusters.
   tris: atomic<u32>,
+  pad0: u32, pad1: u32, pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> view: CullView;
 @group(0) @binding(1) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(2) var<storage, read> tileLod: array<u32>;
 @group(0) @binding(3) var<storage, read_write> visible: array<u32>;
-@group(0) @binding(4) var<storage, read_write> args: DrawArgs;
+// Opaque lists (one for a shadow view). The main view's: material group g
+// (cmesh.ts CLUSTER_GROUP_SHIFT) near in list g, far in MAT_GROUPS + g, each
+// drawn by a pipeline compiled for that group (and for far shading); list
+// k fills segment k of `visible`.
+@group(0) @binding(4) var<storage, read_write> args: array<DrawArgs>;
 @group(0) @binding(5) var hizTex: texture_2d<f32>;
 // Alpha-tested clusters (flags bit 1) go to their own list and draw.
 @group(0) @binding(6) var<storage, read_write> visibleAlpha: array<u32>;
 @group(0) @binding(7) var<storage, read_write> argsAlpha: DrawArgs;
 // Opaque clusters wholly past far.x view depth (every pixel's footprint
-// over FAR_FOOT, city-materials.wgsl) go to their own draw with the
-// far-specialised material pipeline; they fill `visible` from its end.
-@group(0) @binding(8) var<storage, read_write> argsFar: DrawArgs;
+// over FAR_FOOT, city-materials.wgsl) go to the far lists, drawn with the
+// far-specialised material pipelines.
+override MAT_GROUPS: u32; // cmesh.ts
 
 fn hizTest(center: vec3f, radius: f32) -> bool {
   // Project the bounding box corners; reverse-Z so larger depth = closer.
@@ -97,7 +104,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if ((flags & 1u) != 0u && c.radius < dist * view.camPos.w) { return; }
   // Fine detail with a cull distance (cmesh.ts CLUSTER_FAR_SHIFT), jittered
   // per cluster (+-20 %, hashed from its centre) so it thins out over a band.
-  let farD = f32(c.packed >> 16u) * view.hiz.w;
+  let farD = f32(c.packed >> 20u) * view.hiz.w;
   if (farD > 0.0) {
     var k = (bitcast<u32>(c.cx) * 747796405u) ^ (bitcast<u32>(c.cz) * 2891336453u);
     k = (k ^ (k >> 16u)) * 2246822519u;
@@ -109,13 +116,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let slot = atomicAdd(&argsAlpha.instanceCount, 1u);
     visibleAlpha[slot] = i;
     if (view.params.w != 0u) { atomicAdd(&argsAlpha.tris, triCount); }
-  } else if (view.far.x > 0.0 && (view.viewProj * vec4f(center, 1.0)).w - c.radius > view.far.x) {
-    let slot = atomicAdd(&argsFar.instanceCount, 1u);
-    visible[arrayLength(&visible) - 1u - slot] = i;
-    if (view.params.w != 0u) { atomicAdd(&argsFar.tris, triCount); }
   } else {
-    let slot = atomicAdd(&args.instanceCount, 1u);
-    visible[slot] = i;
-    if (view.params.w != 0u) { atomicAdd(&args.tris, triCount); }
+    var k = select(0u, (c.packed >> 16u) & 0xfu, view.far.y != 0.0);
+    if (view.far.x > 0.0 && (view.viewProj * vec4f(center, 1.0)).w - c.radius > view.far.x) { k += MAT_GROUPS; }
+    let slot = atomicAdd(&args[k].instanceCount, 1u);
+    visible[k * (arrayLength(&visible) / u32(max(view.far.z, 1.0))) + slot] = i;
+    if (view.params.w != 0u) { atomicAdd(&args[k].tris, triCount); }
   }
 }

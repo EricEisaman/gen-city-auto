@@ -2,9 +2,17 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {PRESETS} from '../../src/city/config.ts';
 import {bandTrisData, buildBase, tileGeom} from '../../src/city/gen-base.ts';
-import {CLUSTER_ALPHA, CM, clusterize} from '../../src/city/cmesh.ts';
+import {
+  CLUSTER_ALPHA,
+  CLUSTER_GROUP_SHIFT,
+  CM,
+  clusterize,
+  groupMatMask,
+  MAT_GROUPS,
+  type ClusterData,
+} from '../../src/city/cmesh.ts';
 import {buildTile, makeTileContext} from '../../src/city/gen-tile.ts';
-import {LEAF_SOLID} from '../../src/city/lod.ts';
+import {baseFarOf, LEAF_SOLID} from '../../src/city/lod.ts';
 import {
   generateLayout,
   inTunnel,
@@ -91,6 +99,49 @@ void test('LOD2 tiles thin the LOD1 shell', () => {
     }
   }
   assert.ok(t2 < t1 * 0.7, `LOD2 ${t2 / 3} vs LOD1 ${t1 / 3} triangles`);
+});
+
+// Each opaque cluster's triangles all shade with a material its group's
+// pipeline compiles in (renderer.ts cityList*): anything else would draw
+// as a flat colour.
+void test('opaque clusters hold one material group', () => {
+  const p = {...PRESETS.neon, size: 1024};
+  const L = generateLayout(p, 3);
+  const base = buildBase(L);
+  const ctx = makeTileContext(L, base.geom, base.roadMask);
+  const check = (c: ClusterData, what: string) => {
+    const seen = new Set<number>();
+    for (let i = 0; i < c.clusterCount; i++) {
+      const packed = c.clusters[i * 8 + 6];
+      const g = (packed >>> CLUSTER_GROUP_SHIFT) & 0xf;
+      if ((packed >>> 12) & CLUSTER_ALPHA) {
+        assert.equal(g, 0, `${what}: alpha-tested cluster in group ${g}`);
+        continue;
+      }
+      seen.add(g);
+      const mask = groupMatMask(g);
+      const v0 = c.clusters[i * 8 + 4];
+      const t0 = c.clusters[i * 8 + 5];
+      for (let t = 0; t < (packed & 0xff); t++) {
+        const pv = v0 + (c.tris[t0 + t] & 0xff);
+        const id = c.vertices[pv * 8 + 6] & 0xff;
+        assert.ok((mask >>> id) & 1, `${what}: material ${id} in group ${g}`);
+      }
+    }
+    return seen;
+  };
+  const groups = check(
+    clusterize(base.mesh, 0, 0xffffffff, 1, baseFarOf(base.mesh)),
+    'base',
+  );
+  for (let tile = 0; tile < 16; tile++)
+    for (const lod of [0, 1, 2])
+      for (const g of check(
+        clusterize(buildTile(ctx, tile, lod).mesh, lod, tile, 1),
+        `tile ${tile} lod ${lod}`,
+      ))
+        groups.add(g);
+  assert.equal(groups.size, MAT_GROUPS);
 });
 
 // Full-size layouts shared by the tests below (each takes a few seconds).
