@@ -37,6 +37,8 @@ export interface Settings {
   fov: number;
   /** FPS / frame ms / GPU ms readout. */
   readout: boolean;
+  /** Controls help overlay (H toggles it). */
+  help: boolean;
 }
 
 export const DEFAULTS: Settings = {
@@ -60,6 +62,7 @@ export const DEFAULTS: Settings = {
   traffic: 1,
   fov: 1,
   readout: false,
+  help: false,
 };
 
 /**
@@ -324,6 +327,14 @@ export const FIELDS: Field[] = [
   {
     key: 'readout',
     label: 'FPS / GPU readout',
+    options: [
+      ['Off', false],
+      ['On', true],
+    ],
+  },
+  {
+    key: 'help',
+    label: 'Controls help (H)',
     options: [
       ['Off', false],
       ['On', true],

@@ -191,7 +191,8 @@ export class UI {
   }
 
   toggleHelp() {
-    this.help.style.display = this.help.style.display === 'none' ? '' : 'none';
+    this.game.setSetting('help', !this.game.settings.help);
+    this.syncGraphics();
   }
 
   update(fps: number) {
@@ -215,6 +216,7 @@ export class UI {
     if (document.activeElement !== this.camSel)
       this.camSel.value = g.freeMode ? 'free' : g.camera.mode;
     this.stats.style.display = this.showStats ? '' : 'none';
+    this.help.style.display = g.settings.help ? '' : 'none';
     this.perf.style.display = g.settings.readout ? '' : 'none';
     if (g.settings.readout) {
       const r = g.renderer;
