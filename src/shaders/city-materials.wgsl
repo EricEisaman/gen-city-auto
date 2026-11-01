@@ -1374,6 +1374,12 @@ fn facadeRain(s: ptr<function, Surf>, uv: vec2f, n: vec3f, T: vec3f, washAmt: f3
 // opening, lxg the bay-local x. Returns (colour, coverage); coverage fades
 // to the glyph's mean ink once the glyph is a few pixels tall, so at
 // 100-300 m lettered windows read as pale blocks in the dark glass rows.
+// Panes of vinyl word `word` in the city's sign locale (VINYL_LEN holds
+// every locale's table, VINYL_WORDS entries each).
+fn vinylLen(word: u32) -> f32 {
+  return f32(VINYL_LEN[min(signLocale(), 1u) * VINYL_WORDS + word]);
+}
+
 fn vinyl(p: vec2f, size: vec2f, lxg: f32, bayIdx: f32, floorIdx: f32, bay: f32, aux: u32, kind: u32) -> vec4f {
   let fh = hashu(aux ^ (u32(floorIdx + 500.0) * 0x2c1b3c6du));
   let runLen = 2.0 + f32(fh % 3u);
@@ -1385,9 +1391,9 @@ fn vinyl(p: vec2f, size: vec2f, lxg: f32, bayIdx: f32, floorIdx: f32, bay: f32, 
   let nSlot = select(1.0, 2.0, size.x > 1.2);
   let slots = runLen * nSlot;
   var word = (rs >> 4u) % VINYL_WORDS;
-  if (f32(VINYL_LEN[word]) > slots) { word = (rs >> 12u) % VINYL_WORDS; }
-  if (f32(VINYL_LEN[word]) > slots) { word = 1u; }
-  let len = f32(VINYL_LEN[word]);
+  if (vinylLen(word) > slots) { word = (rs >> 12u) % VINYL_WORDS; }
+  if (vinylLen(word) > slots) { word = 1u; }
+  let len = vinylLen(word);
   // White most often, then yellow, red, and the odd blue or green.
   let ch = hashuf(rs ^ 0xc01u);
   var col = vec3f(0.85, 0.85, 0.82);
@@ -1449,9 +1455,9 @@ fn vinylMean(size: vec2f, bayIdx: f32, floorIdx: f32, bay: f32, aux: u32, kind: 
   let nSlot = select(1.0, 2.0, size.x > 1.2);
   let slots = runLen * nSlot;
   var word = (rs >> 4u) % VINYL_WORDS;
-  if (f32(VINYL_LEN[word]) > slots) { word = (rs >> 12u) % VINYL_WORDS; }
-  if (f32(VINYL_LEN[word]) > slots) { word = 1u; }
-  let len = f32(VINYL_LEN[word]);
+  if (vinylLen(word) > slots) { word = (rs >> 12u) % VINYL_WORDS; }
+  if (vinylLen(word) > slots) { word = 1u; }
+  let len = vinylLen(word);
   let ch = hashuf(rs ^ 0xc01u);
   var col = vec3f(0.85, 0.85, 0.82);
   if (ch > 0.45) { col = vec3f(0.9, 0.72, 0.08); }
@@ -2528,7 +2534,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         let ql = vec2f(lx, ly) + vP * 1.8;
         let lp = vec2f(fract(ql.x / 1.2) - 0.5, ql.y - 2.15);
         if (length(lp * vec2f(1.0, 1.6)) < 0.14) { inside = vec3f(1.0, 0.7, 0.4) * mix(1.5, 5.0, night); }
-        if (ly > st.floorH * 0.5 && ly < st.floorH * 0.7 && fract(lx * 2.2) > 0.06) {
+        if (ly > st.floorH * 0.5 && ly < st.floorH * 0.7 && fract(lx * 2.2) > 0.06 && signLocale() == 0u) {
           let norenC = array<vec3f, 3>(vec3f(0.08, 0.1, 0.25), vec3f(0.5, 0.08, 0.06), vec3f(0.85, 0.8, 0.7))[shopSeed % 3u];
           s.albedo = norenC;
           s.rough = 0.9;
@@ -4972,6 +4978,7 @@ fn roadSignMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
   let foot = max(length(dUvX), length(dUvY));
   let white = vec3f(0.8, 0.8, 0.78);
   let blue = vec3f(0.03, 0.15, 0.48);
+  let usGreen = vec3f(0.01, 0.2, 0.08);
   let red = vec3f(0.62, 0.06, 0.05);
   let p = (uv - 0.5) * vec2f(1.0, -1.0);
   let r = length(p);
@@ -5014,9 +5021,10 @@ fn roadSignMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     col = mix(col, blue, 1.0 - smoothstep(-aa, aa, man));
     col = mix(col, white, paintLine(abs(rdBox(p, vec2f(0.46))), 0.03, aa));
   } else if (k >= 16u && k < 24u) {
-    // Overhead guide sign: blue, white border, arrow diagram, text blocks.
+    // Overhead guide sign: blue (green in New York), white border, arrow
+    // diagram, text blocks.
     let v = k - 16u;
-    col = blue;
+    col = select(blue, usGreen, signLocale() == 1u);
     let q = p * vec2f(2.0, 1.0);
     col = mix(col, white, paintLine(abs(rdBox(q, vec2f(0.97, 0.47))), 0.025, aa));
     var ad = rdSeg(q, vec2f(0.0, -0.4), vec2f(0.0, 0.25)) - 0.04;
@@ -5059,6 +5067,17 @@ fn roadSignMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     col = mix(col, vec3f(0.05), 1.0 - smoothstep(-aa, aa, min(jp, en)));
     // Line-colour band along the bottom edge.
     col = mix(col, vec3f(0.1, 0.55, 0.2), step(p.y, -0.4));
+  } else if (k >= 24u && k < 32u && signLocale() == 1u) {
+    // New York street name sign: green, a thin white rim, the name in
+    // white (faux) capitals.
+    col = usGreen;
+    let q = p * vec2f(3.6, 1.0);
+    let rim = paintLine(abs(rdBox(q, vec2f(1.72, 0.44))), 0.035, aa * 3.6);
+    // (The plate's u runs right to left as the reader sees it.)
+    let ch = -q.x / 0.42 + 0.5 + f32(k) * 0.37;
+    let g = fauxLatin(vec2f((fract(ch) - 0.5) * 1.1, q.y * 1.25 - 0.02), hashu(u32(floor(ch)) * 0x9e37u + k));
+    let line = select(0.0, g, abs(q.x) < 1.35);
+    col = mix(col, white, max(line, rim));
   } else if (k >= 24u && k < 32u) {
     // Intersection-name plate: blue with a white name line.
     col = blue;
@@ -5347,6 +5366,15 @@ fn railNameBoard(world: vec3f, n: vec3f, uv: vec2f, id: u32) -> Surf {
   let inset = vec2f(min(2.0 * exp2(clamp(lod, 0.0, 3.0)), 12.0), 1.0);
   let px = rect.xy + mix(inset, rect.zw - inset, f);
   let t = atlasGrad(px, dx, dy, lod).rgb;
+  if (signLocale() == 1u) {
+    // New York: the atlas cell is the whole MTA board (black band, white
+    // name, coloured line bullets; sign-atlas.ts paintMtaBoard), lit by
+    // the station lamps rather than from inside: a faint glow at night.
+    s.albedo = t * 0.85;
+    s.rough = 0.35;
+    s.emissive = t * t * mix(0.1, 1.6, gloomLight());
+    return s;
+  }
   let lum = dot(t, vec3f(0.2126, 0.7152, 0.0722));
   let inBand = bandF(y, 0.04, 0.17, fu.y);
   var c = vec3f(0.88, 0.88, 0.86);
@@ -5464,10 +5492,37 @@ fn signPalette(id: u32) -> vec3f {
   }
 }
 
+// City sign locale (frame.off.w; src/city/signs.ts SIGN_LOCALES): 0 Tokyo,
+// 1 New York.
+fn signLocale() -> u32 { return frame.off.w; }
+
+// A Latin capital (p in -0.5..0.5, 1 = stroke), one of 16 picked by h,
+// built from 14 segments (sides, halves of the middle bar, centre
+// verticals, diagonals) in a 0.6 x 0.8 box.
+fn fauxLatin(p: vec2f, h: u32) -> f32 {
+  // Segment masks of A E H I L N O R S T C U P M K Y.
+  let letters = array<u32, 16>(247u, 121u, 246u, 777u, 56u, 9270u, 63u, 8435u, 237u, 769u, 57u, 62u, 243u, 3126u, 10352u, 3584u);
+  let m = letters[h % 16u];
+  let W = 0.26;
+  let H = 0.36;
+  var d = 1e3;
+  let pts = array<vec4f, 14>(
+    vec4f(-W, H, W, H), vec4f(W, H, W, 0.0), vec4f(W, 0.0, W, -H), vec4f(-W, -H, W, -H),
+    vec4f(-W, -H, -W, 0.0), vec4f(-W, 0.0, -W, H), vec4f(-W, 0.0, 0.0, 0.0), vec4f(0.0, 0.0, W, 0.0),
+    vec4f(0.0, H, 0.0, 0.0), vec4f(0.0, 0.0, 0.0, -H), vec4f(-W, H, 0.0, 0.0), vec4f(W, H, 0.0, 0.0),
+    vec4f(0.0, 0.0, -W, -H), vec4f(0.0, 0.0, W, -H));
+  for (var k = 0u; k < 14u; k++) {
+    if (((m >> k) & 1u) != 0u) { d = min(d, rdSeg(p, pts[k].xy, pts[k].zw)); }
+  }
+  return step(d, 0.065);
+}
+
 // A kanji-like glyph (p in -0.5..0.5, 1 = stroke): 1-4 horizontal and 1-3
-// vertical strokes picked by h, a dot for some.
+// vertical strokes picked by h, a dot for some. Latin capitals instead in
+// the New York locale (the faux lettering on boards, machines and plates).
 fn fauxKanji(p: vec2f, h: u32) -> f32 {
   if (abs(p.x) > 0.5 || abs(p.y) > 0.5) { return 0.0; }
+  if (signLocale() == 1u) { return fauxLatin(p, h); }
   let w = 0.07;
   var g = 0.0;
   for (var k = 0u; k < 4u; k++) {
@@ -5538,7 +5593,8 @@ fn depGlyph(dc: vec2f, si: u32, t: f32) -> vec4f {
         let a = vec2f(1.2 + (ax - 0.5) * 1.0, 0.385 - ly * 0.24);
         let px = vec2f(f32(cell) * 512.0 + a.x / 2.4 * 512.0, 1408.0 + (1.0 - a.y / 0.6) * 128.0);
         let tx = textureSampleLevel(signAtlas, linearSampler, px / vec2f(2048.0, 2560.0), 0.0).rgb;
-        on = 1.0 - smoothstep(0.25, 0.55, dot(tx, vec3f(0.2126, 0.7152, 0.0722)));
+        let lum = dot(tx, vec3f(0.2126, 0.7152, 0.0722));
+        on = select(1.0 - smoothstep(0.25, 0.55, lum), smoothstep(0.35, 0.7, lum), signLocale() == 1u);
       }
       let vx = x - 1.25;
       if (vx > 0.0) {

@@ -1,23 +1,43 @@
-// Paints the business sign atlas (Japanese shop signs, station boards and
-// billboards) with Canvas 2D text, then uploads it as a texture.
+// Paints the business sign atlas (shop signs, station boards, billboards and
+// road guide signs in one city's sign locale: Japanese for Tokyo, English
+// for New York) with Canvas 2D text, then uploads it as a texture.
 
 import {Rng} from '../math/random.ts';
 import {
   ATLAS_H,
   ATLAS_W,
-  BRAND_WORDS,
-  GUIDE_FACES,
   SIGN,
+  SIGN_LOCALES,
+  SIGN_SETS,
   type GuideFace,
-  HORIZONTAL_WORDS,
-  STATION_NAMES,
+  type SignLocale,
+  type SignSet,
+  type UsGuideFace,
+  type UsShield,
   signColor,
   signRect,
-  verticalWord,
 } from '../city/signs.ts';
 
-const FONT =
-  '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", "Meiryo", sans-serif';
+/**
+ * Font stacks of the locale being painted (paintSignAtlas / paintVinylMask
+ * set them; painting is synchronous, in the texture worker).
+ */
+let FONT = SIGN_SETS.tokyo.font;
+let GUIDE_FONT = SIGN_SETS.tokyo.guideFont;
+
+/** Size (px, at most `max`) at which `text` fits in `maxW` px. */
+function fitSize(
+  g: OffscreenCanvasRenderingContext2D,
+  text: string,
+  max: number,
+  maxW: number,
+  weight = 'bold',
+  font = FONT,
+) {
+  g.font = `${weight} ${max}px ${font}`;
+  const tw = g.measureText(text).width;
+  return tw > maxW ? (max * maxW) / tw : max;
+}
 
 /** Romaji for the station board's sub-line (STATION_NAMES). */
 const STATION_ROMAJI: Record<string, string> = {
@@ -127,22 +147,41 @@ function verticalGlyph(
 }
 
 // Billboard poster k (0..7) in the cell (x, y, w, h): four layouts (product
-// on a sun disc, diagonal split, giant kanji, travel poster) in flat colours
-// with heavy outlined type, all hard edges.
-const POSTER_TAGS = [
-  '新発売',
-  '期間限定',
-  '本日オープン',
-  '全国ツアー',
-  '冬のごちそう',
-  '今だけ半額',
-  'ゼロカロリー',
-  '絶景の旅へ',
-];
-const POSTER_KANJI = ['旨', '夏', '光', '速', '冷', '祭', '新', '空'];
+// on a sun disc, diagonal split, giant kanji / word, travel poster) in flat
+// colours with heavy outlined type, all hard edges. Taglines and the giant
+// glyph per locale.
+const POSTERS: Record<SignLocale, {tags: string[]; big: string[]}> = {
+  tokyo: {
+    tags: [
+      '新発売',
+      '期間限定',
+      '本日オープン',
+      '全国ツアー',
+      '冬のごちそう',
+      '今だけ半額',
+      'ゼロカロリー',
+      '絶景の旅へ',
+    ],
+    big: ['旨', '夏', '光', '速', '冷', '祭', '新', '空'],
+  },
+  nyc: {
+    tags: [
+      'NEW FLAVOR',
+      'LIMITED TIME',
+      'NOW PLAYING',
+      'WORLD TOUR',
+      'ON BROADWAY',
+      '50% OFF',
+      'ZERO SUGAR',
+      'FLY NONSTOP',
+    ],
+    big: ['NEW', 'HOT', 'LIVE', 'FAST', 'COLD', 'WOW', 'NEW', 'FLY'],
+  },
+};
 
 function paintBillboard(
   g: OffscreenCanvasRenderingContext2D,
+  set: SignSet,
   k: number,
   x: number,
   y: number,
@@ -157,8 +196,11 @@ function paintBillboard(
   g.beginPath();
   g.rect(x, y, w, h);
   g.clip();
-  const brand = BRAND_WORDS[k % BRAND_WORDS.length];
-  const tag = POSTER_TAGS[k];
+  const brand = set.brands[k % set.brands.length];
+  const poster = POSTERS[set.locale];
+  const tag = poster.tags[k];
+  // Latin brand names run longer than the Tokyo ones: squeeze them to fit.
+  const latin = set.locale !== 'tokyo';
   const outlined = (
     text: string,
     tx: number,
@@ -166,14 +208,15 @@ function paintBillboard(
     size: number,
     fill: string,
     stroke: string,
+    maxW?: number,
   ) => {
     g.font = `900 ${size}px ${FONT}`;
     g.lineJoin = 'round';
     g.lineWidth = Math.max(4, size * 0.12);
     g.strokeStyle = stroke;
-    g.strokeText(text, tx, ty);
+    g.strokeText(text, tx, ty, maxW);
     g.fillStyle = fill;
-    g.fillText(text, tx, ty);
+    g.fillText(text, tx, ty, maxW);
   };
   const layout = k % 4;
   if (layout === 0) {
@@ -195,7 +238,15 @@ function paintBillboard(
     g.fillRect(cx - cw / 2, y + h * 0.13, cw, h * 0.05);
     g.textAlign = 'left';
     g.textBaseline = 'alphabetic';
-    outlined(brand, x + w * 0.05, y + h * 0.52, h * 0.34, '#ffffff', ink);
+    outlined(
+      brand,
+      x + w * 0.05,
+      y + h * 0.52,
+      h * 0.34,
+      '#ffffff',
+      ink,
+      latin ? w * 0.5 : undefined,
+    );
   } else if (layout === 1) {
     // Diagonal split, the tagline in tall white type on the dark side.
     g.fillStyle = css(c1);
@@ -212,28 +263,45 @@ function paintBillboard(
     g.fillRect(x + w * 0.5, y, w * 0.03, h);
     g.textAlign = 'left';
     g.textBaseline = 'alphabetic';
-    outlined(brand, x + w * 0.05, y + h * 0.46, h * 0.3, ink, '#ffffff');
+    outlined(
+      brand,
+      x + w * 0.05,
+      y + h * 0.46,
+      h * 0.3,
+      ink,
+      '#ffffff',
+      latin ? w * 0.42 : undefined,
+    );
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     g.font = `900 ${h * 0.2}px ${FONT}`;
     g.fillStyle = '#ffffff';
     g.fillText(tag, x + w * 0.76, y + h * 0.5, w * 0.36);
   } else if (layout === 2) {
-    // One giant kanji in the brand colour, outlined white, on navy.
+    // One giant kanji (or word) in the brand colour, outlined white, on navy.
     g.fillStyle = '#101a3a';
     g.fillRect(x, y, w, h);
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     outlined(
-      POSTER_KANJI[k],
+      poster.big[k],
       x + w * 0.27,
       y + h * 0.5,
-      h * 0.82,
+      latin ? h * 0.5 : h * 0.82,
       css(c1),
       '#ffffff',
+      latin ? w * 0.46 : undefined,
     );
     g.textAlign = 'left';
-    outlined(brand, x + w * 0.52, y + h * 0.4, h * 0.24, '#ffffff', '#101a3a');
+    outlined(
+      brand,
+      x + w * 0.52,
+      y + h * 0.4,
+      h * 0.24,
+      '#ffffff',
+      '#101a3a',
+      latin ? w * 0.44 : undefined,
+    );
   } else {
     // Travel poster: flat sky bands, a white peak and a red sun.
     const bands = [css(c1, 0.95), css(c1, 0.75), css(c1, 0.55)];
@@ -263,7 +331,15 @@ function paintBillboard(
     g.fill();
     g.textAlign = 'left';
     g.textBaseline = 'alphabetic';
-    outlined(brand, x + w * 0.05, y + h * 0.42, h * 0.28, '#ffffff', ink);
+    outlined(
+      brand,
+      x + w * 0.05,
+      y + h * 0.42,
+      h * 0.28,
+      '#ffffff',
+      ink,
+      latin ? w * 0.5 : undefined,
+    );
   }
   // Tagline bar along the bottom (layout 1 carries its tagline already).
   if (layout !== 1) {
@@ -300,7 +376,7 @@ const GUIDE_WHITE = 'rgb(246, 246, 242)';
  */
 function paintGuideSign(
   g: OffscreenCanvasRenderingContext2D,
-  f: GuideFace,
+  f: Exclude<GuideFace, UsGuideFace>,
   x: number,
   y: number,
   w: number,
@@ -428,7 +504,291 @@ function paintGuideSign(
   g.restore();
 }
 
-export function paintSignAtlas(): OffscreenCanvas {
+// US guide sign colours (sRGB): MUTCD green (painted a little lighter, as
+// the Tokyo blue is), white legend; Interstate blue and red.
+const US_GREEN = 'rgb(18, 116, 74)';
+const US_WHITE = 'rgb(246, 246, 240)';
+
+/** Route shield centred at (cx, cy), `s` px tall. */
+function usShield(
+  g: OffscreenCanvasRenderingContext2D,
+  sh: UsShield,
+  cx: number,
+  cy: number,
+  s: number,
+) {
+  const hw = s * 0.48;
+  const top = cy - s / 2;
+  const shieldPath = () => {
+    g.beginPath();
+    g.moveTo(cx - hw, top + s * 0.06);
+    g.quadraticCurveTo(cx - hw * 0.5, top - s * 0.02, cx, top + s * 0.06);
+    g.quadraticCurveTo(cx + hw * 0.5, top - s * 0.02, cx + hw, top + s * 0.06);
+    g.bezierCurveTo(
+      cx + hw * 1.08,
+      top + s * 0.55,
+      cx + hw * 0.6,
+      top + s * 0.86,
+      cx,
+      top + s,
+    );
+    g.bezierCurveTo(
+      cx - hw * 0.6,
+      top + s * 0.86,
+      cx - hw * 1.08,
+      top + s * 0.55,
+      cx - hw,
+      top + s * 0.06,
+    );
+    g.closePath();
+  };
+  let ink = '#000';
+  if (sh.kind === 'interstate') {
+    // Blue shield, red crest band, white outline and numerals.
+    shieldPath();
+    g.fillStyle = '#1b4f9c';
+    g.fill();
+    g.save();
+    g.clip();
+    g.fillStyle = '#c8102e';
+    g.fillRect(cx - hw * 1.2, top - 2, hw * 2.4, s * 0.27);
+    g.restore();
+    shieldPath();
+    g.strokeStyle = US_WHITE;
+    g.lineWidth = Math.max(1.5, s * 0.06);
+    g.stroke();
+    ink = US_WHITE;
+  } else if (sh.kind === 'us') {
+    // US route: white shield on a black square.
+    g.fillStyle = '#000';
+    g.fillRect(cx - s * 0.52, cy - s * 0.52, s * 1.04, s * 1.04);
+    shieldPath();
+    g.fillStyle = US_WHITE;
+    g.fill();
+  } else {
+    // State route (New York): a white rounded box with a black rim.
+    g.fillStyle = US_WHITE;
+    g.beginPath();
+    g.roundRect(cx - s * 0.52, cy - s * 0.42, s * 1.04, s * 0.84, s * 0.12);
+    g.fill();
+    g.strokeStyle = '#000';
+    g.lineWidth = Math.max(1.2, s * 0.05);
+    g.beginPath();
+    g.roundRect(cx - s * 0.45, cy - s * 0.35, s * 0.9, s * 0.7, s * 0.08);
+    g.stroke();
+  }
+  g.fillStyle = ink;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const ny = sh.kind === 'interstate' ? cy + s * 0.1 : cy + s * 0.02;
+  const size = fitSize(g, sh.num, s * 0.5, s * 0.78, 'bold', GUIDE_FONT);
+  g.font = `bold ${size}px ${GUIDE_FONT}`;
+  g.fillText(sh.num, cx, ny);
+}
+
+/**
+ * One US guide sign face in (x, y, w, h): green field, rounded white
+ * border. 'us': shields under a cardinal direction at the left, the
+ * destinations centred to their right, an exit tab or a distance line, and
+ * an arrow. 'usDist': destination names left, miles right.
+ */
+function paintUsGuide(
+  g: OffscreenCanvasRenderingContext2D,
+  f: UsGuideFace,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+) {
+  g.save();
+  g.beginPath();
+  g.rect(x, y, w, h);
+  g.clip();
+  g.fillStyle = US_GREEN;
+  g.fillRect(x, y, w, h);
+  g.strokeStyle = US_WHITE;
+  g.lineWidth = 2.5;
+  g.beginPath();
+  g.roundRect(x + 5, y + 5, w - 10, h - 10, 8);
+  g.stroke();
+  g.fillStyle = US_WHITE;
+  g.textBaseline = 'middle';
+  const text = (
+    s: string,
+    tx: number,
+    ty: number,
+    size: number,
+    align: CanvasTextAlign,
+    maxW: number,
+  ) => {
+    g.textAlign = align;
+    g.font = `bold ${fitSize(g, s, size, maxW, 'bold', GUIDE_FONT)}px ${GUIDE_FONT}`;
+    g.fillText(s, tx, ty);
+  };
+  if (f.kind === 'usDist') {
+    f.rows.forEach(([name, mi], i) => {
+      const ry = y + 28 + i * 36;
+      text(name, x + 16, ry, 24, 'left', w * 0.62);
+      text(mi, x + w - 16, ry, 24, 'right', w * 0.22);
+    });
+    g.restore();
+    return;
+  }
+  // Shields and cardinal direction in the left column.
+  const hasCol = f.shields.length > 0;
+  const colW = hasCol ? w * 0.32 : 0;
+  if (hasCol) {
+    const cx = x + 10 + colW / 2;
+    text(f.cardinal, cx, y + 20, 13, 'center', colW - 6);
+    const n = f.shields.length;
+    const s = n > 1 ? 30 : 38;
+    f.shields.forEach((sh, i) =>
+      usShield(g, sh, cx + (i - (n - 1) / 2) * (s + 4), y + 52, s),
+    );
+    g.fillStyle = US_WHITE;
+  }
+  // Legend area to the right of the column; an exit tab over its top right.
+  const lx0 = x + 12 + colW;
+  const lx1 = x + w - 12;
+  const lc = (lx0 + lx1) / 2;
+  let ly = y + 26;
+  if (f.exit) {
+    const tw = 66;
+    g.strokeStyle = US_WHITE;
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.roundRect(lx1 - tw, y + 9, tw, 20, 4);
+    g.stroke();
+    text(f.exit, lx1 - tw / 2, y + 19.5, 13, 'center', tw - 8);
+    ly = y + 42;
+  }
+  // Cardinal over the legend when there is no shield column ("NORTH" FDR Dr).
+  if (!hasCol && f.cardinal) {
+    text(f.cardinal, lc, ly - (f.exit ? 4 : 6), 12, 'center', lx1 - lx0);
+    ly += f.exit ? 14 : 8;
+  }
+  f.lines.forEach((s, i) => text(s, lc, ly + i * 23, 21, 'center', lx1 - lx0));
+  // Bottom: the distance line, or an arrow.
+  const by = y + h - 20;
+  if (f.dist) {
+    text(f.dist, lc, by, 14, 'center', lx1 - lx0);
+  } else {
+    g.save();
+    const ax =
+      f.arrow === 'left' ? lx0 + 18 : f.arrow === 'right' ? lx1 - 18 : lc;
+    g.translate(ax, by);
+    g.rotate(
+      f.arrow === 'left'
+        ? -Math.PI / 4
+        : f.arrow === 'right'
+          ? Math.PI / 4
+          : f.arrow === 'down'
+            ? Math.PI
+            : 0,
+    );
+    g.beginPath();
+    g.moveTo(0, -12);
+    g.lineTo(9, -2);
+    g.lineTo(3, -2);
+    g.lineTo(3, 11);
+    g.lineTo(-3, 11);
+    g.lineTo(-3, -2);
+    g.lineTo(-9, -2);
+    g.closePath();
+    g.fill();
+    g.restore();
+  }
+  g.restore();
+}
+
+// MTA subway line bullet colours (sRGB) and the lines serving each station
+// board (SIGNS_NYC.stations).
+const MTA_LINE: Record<string, string> = {
+  '1': '#ee352e',
+  '2': '#ee352e',
+  '3': '#ee352e',
+  '4': '#00933c',
+  '5': '#00933c',
+  '6': '#00933c',
+  '7': '#b933ad',
+  A: '#0039a6',
+  C: '#0039a6',
+  E: '#0039a6',
+  B: '#ff6319',
+  D: '#ff6319',
+  F: '#ff6319',
+  M: '#ff6319',
+  G: '#6cbe45',
+  J: '#996633',
+  Z: '#996633',
+  L: '#a7a9ac',
+  N: '#fccc0a',
+  Q: '#fccc0a',
+  R: '#fccc0a',
+  W: '#fccc0a',
+  S: '#808183',
+};
+const MTA_LINES: Record<string, string> = {
+  'Times Sq-42 St': '1237NQRS',
+  'Union Sq': '456LNQRW',
+  'Canal St': '6JZNQRW',
+  'Grand Central': '4567S',
+  '14 St': 'ACEL',
+  'Fulton St': '2345ACJZ',
+  'Columbus Circle': '1ABCD',
+  'Delancey St': 'FJMZ',
+};
+
+/**
+ * MTA-style station name board, one 2.4 x 0.6 m board unit per cell (213
+ * px/m; railNameBoard in city-materials.wgsl shows it in its own colours on
+ * the 'nyc' locale): a black band with a thin white rule along the top, the
+ * station name in white Helvetica centred (the departure boards sample it
+ * at 0.385 m), and the coloured round line bullets under it.
+ */
+function paintMtaBoard(
+  g: OffscreenCanvasRenderingContext2D,
+  set: SignSet,
+  k: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+) {
+  const ppm = w / 2.4;
+  const Y = (m: number) => y + h - m * ppm;
+  const name = set.stations[k % set.stations.length];
+  g.fillStyle = '#0c0c0d';
+  g.fillRect(x, y, w, h);
+  g.fillStyle = '#f2f2f0';
+  g.fillRect(x, Y(0.56), w, 0.02 * ppm);
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const size = fitSize(g, name, 0.2 * ppm, w * 0.9);
+  g.font = `bold ${size}px ${FONT}`;
+  g.fillText(name, x + w / 2, Y(0.385));
+  const lines = [...(MTA_LINES[name] ?? '')];
+  const r = 0.058 * ppm;
+  const pitch = 0.15 * ppm;
+  const by = Y(0.13);
+  lines.forEach((ln, i) => {
+    const bx = x + w / 2 + (i - (lines.length - 1) / 2) * pitch;
+    g.fillStyle = MTA_LINE[ln] ?? '#808183';
+    g.beginPath();
+    g.arc(bx, by, r, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = MTA_LINE[ln] === '#fccc0a' ? '#000' : '#fff';
+    g.font = `bold ${r * 1.45}px ${FONT}`;
+    g.fillText(ln, bx, by + r * 0.06);
+  });
+}
+
+export function paintSignAtlas(
+  set: SignSet = SIGN_SETS.tokyo,
+): OffscreenCanvas {
+  FONT = set.font;
+  GUIDE_FONT = set.guideFont;
+  const tokyo = set.locale === 'tokyo';
   const canvas = new OffscreenCanvas(ATLAS_W, ATLAS_H);
   const g = canvas.getContext('2d', {willReadFrequently: true})!;
   g.fillStyle = '#000';
@@ -443,8 +803,28 @@ export function paintSignAtlas(): OffscreenCanvas {
   const L: MaskLayers = {text: layer(), edge: layer()};
   // Vertical shop signs: characters stacked top to bottom.
   for (let id = 0; id < 32; id++) {
+    if (!tokyo) {
+      // Latin capitals stacked one per line, as on a Manhattan blade sign.
+      const {x, y, w, h} = maskCell(L, id);
+      const chars = [...set.vertical[id]].slice(0, 9);
+      const size = Math.min(w * 0.68, (h * 0.86) / (chars.length * 0.94));
+      const step = size * 0.94;
+      const top = y + h / 2 - (step * chars.length) / 2;
+      chars.forEach((ch, i) =>
+        letter(
+          L,
+          id,
+          ch,
+          x + w / 2,
+          top + step * (i + 0.5) + size * 0.05,
+          size,
+        ),
+      );
+      endCell(L);
+      continue;
+    }
     const {x, y, w, h} = maskCell(L, id);
-    const chars = [...verticalWord(id)].slice(0, 6);
+    const chars = [...set.vertical[id]].slice(0, 6);
     const size = Math.min(w * 0.66, (h * 0.84) / chars.length);
     chars.forEach((ch, i) => {
       verticalGlyph(
@@ -464,9 +844,11 @@ export function paintSignAtlas(): OffscreenCanvas {
   // Horizontal shop signs.
   for (let id = 32; id < 44; id++) {
     const {x, y, w, h} = maskCell(L, id);
-    const word = HORIZONTAL_WORDS[id - 32];
-    const size = Math.min(h * 0.56, (w * 0.82) / Math.max(2, [...word].length));
-    letter(L, id, word, x + w / 2, y + h / 2, size);
+    const word = set.horizontal[id - 32];
+    const size = tokyo
+      ? Math.min(h * 0.56, (w * 0.82) / Math.max(2, [...word].length))
+      : fitSize(L.text, word, h * 0.52, w * 0.84);
+    letter(L, id, word, x + w / 2, y + h / 2 + (tokyo ? 0 : size * 0.04), size);
     endCell(L);
   }
   // Station name boards (JR style), one 2.4 x 0.6 m board unit per cell
@@ -477,13 +859,17 @@ export function paintSignAtlas(): OffscreenCanvas {
   // with arrows: "◀ prev" at the left, "next ▶" at the right.
   for (let k = 0; k < 4; k++) {
     const [x, y, w, h] = signRect(44 + k);
+    if (!tokyo) {
+      paintMtaBoard(g, set, k, x, y, w, h);
+      continue;
+    }
     const ppm = w / 2.4;
     // Board metres (from the bottom edge) to cell pixels.
     const Y = (m: number) => y + h - m * ppm;
-    const N = STATION_NAMES.length;
-    const name = STATION_NAMES[k % N];
-    const prev = STATION_NAMES[(k + 5) % N];
-    const next = STATION_NAMES[(k + 6) % N];
+    const N = set.stations.length;
+    const name = set.stations[k % N];
+    const prev = set.stations[(k + 5) % N];
+    const next = set.stations[(k + 6) % N];
     g.fillStyle = '#fff';
     g.fillRect(x, y, w, h);
     g.fillStyle = '#808080';
@@ -521,42 +907,35 @@ export function paintSignAtlas(): OffscreenCanvas {
   // outlined type and a tagline bar.
   for (let k = 0; k < SIGN.billboard.count; k++) {
     const [x, y, w, h] = signRect(48 + k);
-    paintBillboard(g, k, x, y, w, h);
+    paintBillboard(g, set, k, x, y, w, h);
   }
   // Road guide signs, four 256x128 faces per guide cell.
-  GUIDE_FACES.forEach((f, k) => {
+  set.guide.forEach((f, k) => {
     const [x, y, w, h] = signRect(SIGN.guide.first + (k >> 2));
     const sw = w / 2;
     const sh = h / 2;
-    paintGuideSign(g, f, x + (k & 1) * sw, y + ((k >> 1) & 1) * sh, sw, sh);
+    const fx = x + (k & 1) * sw;
+    const fy = y + ((k >> 1) & 1) * sh;
+    if (f.kind === 'us' || f.kind === 'usDist')
+      paintUsGuide(g, f, fx, fy, sw, sh);
+    else paintGuideSign(g, f, fx, fy, sw, sh);
   });
   // Square cube signs (projecting light boxes): one or two big glyphs, in a
   // circle or a plain square, or a short Latin word.
-  const SQUARE_TEXT = [
-    'P',
-    '24H',
-    'BAR',
-    '酒',
-    '湯',
-    '薬',
-    '寿司',
-    '質',
-    '茶',
-    'ATM',
-    '肉',
-    '鮨',
-    'NEW',
-    '麺',
-    '占',
-    'OPEN',
-  ];
   for (let k = 0; k < 16; k++) {
     const id = 72 + k;
     const {x, y, w, h} = maskCell(L, id);
-    const text = SQUARE_TEXT[k];
+    const text = set.square[k];
     const n = [...text].length;
-    const size =
-      n === 1 ? h * 0.58 : n === 2 ? h * 0.38 : (w * 0.76) / (n * 0.62);
+    const size = tokyo
+      ? n === 1
+        ? h * 0.58
+        : n === 2
+          ? h * 0.38
+          : (w * 0.76) / (n * 0.62)
+      : n === 1
+        ? h * 0.58
+        : fitSize(L.text, text, h * 0.4, k % 3 === 0 ? w * 0.54 : w * 0.74);
     if (k % 3 === 0) {
       // Disc logo in the frame colour, its glyph knocked out of it so the
       // background shows through.
@@ -616,63 +995,112 @@ const MASK_ROWS: [number, number][] = [
 ];
 
 // Tenant lettering: the cut-vinyl names office and zakkyo tenants stick on
-// their upper-floor windows, one big character per pane (カ|ラ|オ|ケ across
-// four windows), with a phone-number strip below. Painted as a white-on-black
-// mask into the sign atlas's alpha channel (unused by the colour signs):
-//   rows    0..2047  glyph cells 128x128, 16 x 16: word w (of VINYL_WORDS)
-//                    has its k-th character in cell w * 8 + k
+// their upper-floor windows, one pane of lettering per window slot: in
+// Tokyo one big character per pane (カ|ラ|オ|ケ across four windows), in
+// New York a word per pane (TAX | PREP). A phone-number strip may go below.
+// Painted as a white-on-black mask into the sign atlas's alpha channel
+// (unused by the colour signs):
+//   rows    0..2047  pane cells 128x128, 16 x 16: word w (of VINYL_WORDS)
+//                    has its k-th pane in cell w * 8 + k
 //   rows 2048..2559  strips 512x64, 4 x 8 = 32: phone numbers, notices
-// city-materials.wgsl vinyl() reads it; VINYL_LEN is generated from here.
-export const VINYL_WORDS = [
-  'カラオケ',
-  '歯科',
-  '麻雀',
-  '英会話',
-  '整骨院',
-  '不動産',
-  '学習塾',
-  '美容室',
-  '内科',
-  '眼科',
-  '皮膚科',
-  '鍼灸院',
-  '囲碁',
-  '雀荘',
-  '居酒屋',
-  '司法書士',
-  '税理士',
-  '事務所',
-  '空室',
-  'テナント',
-  'ネイル',
-  'エステ',
-  'ヨガ',
-  '整体',
-  '塾',
-  '写真館',
-  'ダンス',
-  '中国語',
-  '個別指導',
-  '金券',
-  '質',
-  '占い',
-];
+// city-materials.wgsl vinyl() reads it; VINYL_LEN is generated from here,
+// for every locale (the shader indexes it by frame.off.w).
+export const VINYL_WORDS: Record<SignLocale, string[][]> = {
+  tokyo: [
+    'カラオケ',
+    '歯科',
+    '麻雀',
+    '英会話',
+    '整骨院',
+    '不動産',
+    '学習塾',
+    '美容室',
+    '内科',
+    '眼科',
+    '皮膚科',
+    '鍼灸院',
+    '囲碁',
+    '雀荘',
+    '居酒屋',
+    '司法書士',
+    '税理士',
+    '事務所',
+    '空室',
+    'テナント',
+    'ネイル',
+    'エステ',
+    'ヨガ',
+    '整体',
+    '塾',
+    '写真館',
+    'ダンス',
+    '中国語',
+    '個別指導',
+    '金券',
+    '質',
+    '占い',
+  ].map(w => [...w]),
+  // (Word 1 is the shader's fallback for short runs: at most 2 panes.)
+  nyc: [
+    ['KARATE'],
+    ['TAX', 'PREP'],
+    ['LAW', 'OFFICES'],
+    ['DENTIST'],
+    ['NAILS'],
+    ['DANCE', 'STUDIO'],
+    ['DAY', 'SPA'],
+    ['PSYCHIC'],
+    ['YOGA'],
+    ['TATTOO'],
+    ['FOR', 'RENT'],
+    ['OFFICE', 'SPACE'],
+    ['DR. KIM', 'DENTIST'],
+    ['ACUPUNC-', 'TURE'],
+    ['BARBER'],
+    ['HAIR', 'SALON'],
+    ['LASER', 'HAIR'],
+    ['TAILOR'],
+    ['WAXING'],
+    ['MASSAGE'],
+    ['GYM'],
+    ['PILATES'],
+    ['INSUR-', 'ANCE'],
+    ['NOTARY'],
+    ['TAX'],
+    ['PHOTO', 'STUDIO'],
+    ['TUTOR-', 'ING'],
+    ['IMMIGR.', 'LAWYER'],
+    ['EYE', 'EXAMS'],
+    ['REAL', 'ESTATE'],
+    ['CHIRO-', 'PRACTOR'],
+    ['FOR', 'LEASE'],
+  ],
+};
 const VINYL_GLYPH = 128;
 const VINYL_STRIP_W = 512;
 const VINYL_STRIP_H = 64;
 
 /** WGSL constants matching the vinyl mask layout (prepended to the city shader). */
 export function vinylWgsl(): string {
-  const lens = VINYL_WORDS.map(w => `${[...w].length}u`).join(', ');
-  const n = VINYL_WORDS.length;
+  const n = VINYL_WORDS.tokyo.length;
+  for (const l of SIGN_LOCALES)
+    if (VINYL_WORDS[l].length !== n || VINYL_WORDS[l][1].length > 2)
+      throw new Error(`VINYL_WORDS.${l}: ${n} words, word 1 of 1-2 panes`);
+  const lens = SIGN_LOCALES.flatMap(l =>
+    VINYL_WORDS[l].map(w => `${Math.min(8, w.length)}u`),
+  );
   return [
     `const VINYL_WORDS = ${n}u;`,
-    `const VINYL_LEN = array<u32, ${n}>(${lens});`,
+    `const VINYL_LEN = array<u32, ${lens.length}>(${lens.join(', ')});`,
   ].join('\n');
 }
 
 /** The vinyl lettering mask (white on black), laid out as described above. */
-export function paintVinylMask(seed = 7): OffscreenCanvas {
+export function paintVinylMask(
+  locale: SignLocale = 'tokyo',
+  seed = 7,
+): OffscreenCanvas {
+  FONT = SIGN_SETS[locale].font;
   const canvas = new OffscreenCanvas(ATLAS_W, ATLAS_H);
   const g = canvas.getContext('2d')!;
   g.fillStyle = '#000';
@@ -682,38 +1110,67 @@ export function paintVinylMask(seed = 7): OffscreenCanvas {
   g.textBaseline = 'middle';
   const G = VINYL_GLYPH;
   const cols = ATLAS_W / G;
+  const tokyo = locale === 'tokyo';
   g.font = `bold ${G * 0.78}px ${FONT}`;
-  VINYL_WORDS.forEach((word, w) => {
-    [...word].slice(0, 8).forEach((ch, k) => {
+  VINYL_WORDS[locale].forEach((word, w) => {
+    word.slice(0, 8).forEach((pane, k) => {
       const cell = w * 8 + k;
       const x = (cell % cols) * G;
       const y = Math.floor(cell / cols) * G;
-      g.fillText(ch, x + G / 2, y + G / 2 + G * 0.03);
+      if (tokyo) {
+        g.fillText(pane, x + G / 2, y + G / 2 + G * 0.03);
+        return;
+      }
+      // One word across the pane, as large as fits.
+      const size = fitSize(g, pane, G * 0.42, G * 0.9);
+      g.font = `bold ${size}px ${FONT}`;
+      g.fillText(pane, x + G / 2, y + G / 2 + size * 0.05);
     });
   });
   const rng = new Rng(seed);
   const digits = (n: number) =>
     Array.from({length: n}, () => rng.int(0, 10)).join('');
-  const notes = [
-    '空室あり',
-    'テナント募集',
-    '受付中',
-    '予約制',
-    'OPEN 10:00-22:00',
-    '営業中',
-    'WiFi完備',
-    '初回無料',
-  ];
+  const notes = tokyo
+    ? [
+        '空室あり',
+        'テナント募集',
+        '受付中',
+        '予約制',
+        'OPEN 10:00-22:00',
+        '営業中',
+        'WiFi完備',
+        '初回無料',
+      ]
+    : [
+        'FOR RENT',
+        'NOW LEASING',
+        'WALK-INS WELCOME',
+        'BY APPOINTMENT',
+        'OPEN 7 DAYS',
+        'OPEN 9AM-7PM',
+        'FREE WIFI',
+        'GRAND OPENING',
+      ];
   const sw = VINYL_STRIP_W;
   const sh = VINYL_STRIP_H;
   for (let k = 0; k < 32; k++) {
     const x = (k % 4) * sw;
     const y = 2048 + Math.floor(k / 4) * sh;
-    const prefix = ['TEL ', '☎ ', ''][k % 3];
-    const text =
-      k < 24
-        ? `${prefix}0${rng.int(3, 4)}-${digits(4)}-${digits(4)}`
-        : notes[k - 24];
+    let text: string;
+    if (tokyo) {
+      const prefix = ['TEL ', '☎ ', ''][k % 3];
+      text =
+        k < 24
+          ? `${prefix}0${rng.int(3, 4)}-${digits(4)}-${digits(4)}`
+          : notes[k - 24];
+    } else {
+      const area = ['212', '646', '917'][rng.int(0, 3)];
+      const num = `${digits(3)}-${digits(4)}`;
+      text =
+        k < 24
+          ? [`(${area}) ${num}`, `CALL ${area}-${num}`, `${area}-${num}`][k % 3]
+          : notes[k - 24];
+    }
     const size = Math.min(
       sh * 0.72,
       (sw * 0.92) / Math.max(4, [...text].length * 0.62),
@@ -739,9 +1196,11 @@ export const SIGN_ATLAS_LEVELS = 5;
  * from the atlas, alpha from the vinyl mask. CPU / 2D canvas work only (runs
  * in the texture worker).
  */
-export function signAtlasLevels(): Uint8ClampedArray[] {
-  const canvas = paintSignAtlas();
-  const mask = paintVinylMask();
+export function signAtlasLevels(
+  locale: SignLocale = 'tokyo',
+): Uint8ClampedArray[] {
+  const canvas = paintSignAtlas(SIGN_SETS[locale]);
+  const mask = paintVinylMask(locale);
   const scale = (from: OffscreenCanvas, w: number, h: number) => {
     const c = new OffscreenCanvas(w, h);
     const cg = c.getContext('2d')!;

@@ -46,11 +46,16 @@ import {
   SHOP_TYPE,
   SIGN,
   SIGN_FABRIC,
+  SIGN_OPEN,
+  SIGN_SETS,
   SIGN_STRIPES,
+  SIGN_STYLE,
+  SIGN_WAYS,
+  SIGNS_TOKYO,
   TENANT_NOBORI,
-  TENANT_SIGNS,
-  TENANT_SQUARES,
   SIGN_WAY_SHIFT,
+  type SignSet,
+  signLocaleOf,
   GUIDE_DIR,
   GUIDE_FACES,
   guideFace,
@@ -219,6 +224,26 @@ function parapet(m: CMesh, poly: Vec2[], y: number, h: number, mat: number) {
  * paints the shared sign words in its own mix of colour schemes.
  */
 let signVariant = 0;
+
+/**
+ * Sign locale of the city being generated (signs.ts SIGN_SETS): set from
+ * the preset at the top of buildTile(). Its street style decides the shop
+ * dressing; the atlas ids and per-tenant id lists keep the same lengths in
+ * every locale, and every swap below keeps the random draws of the Tokyo
+ * code (or uses hashes), so buildings come out the same in every city.
+ */
+let S: SignSet = SIGNS_TOKYO;
+
+/** New York street style (fascia signs and awnings, few blades). */
+function nyc() {
+  return S.street === 'nyc';
+}
+
+/** Colourway offset that paints shop sign `id` in the first SIGN_WAYS scheme of `style`. */
+function wayBits(id: number, style: number) {
+  const way = SIGN_WAYS.findIndex(w => w[3] === style);
+  return (way - id * 5) & 15;
+}
 
 /** Sign material param for atlas id `id` (plus flags) on the current building. */
 function shopSignParam(id: number) {
@@ -498,6 +523,19 @@ function facadeWindows(style: number, kind: number) {
  */
 function shopTypeAt(aux: number, bayIdx: number) {
   return hashu((aux ^ (Math.floor(bayIdx / 2) + 3000)) >>> 0) % 4;
+}
+
+/** Whether ground-floor bay `bayIdx` is shuttered (city-materials.wgsl shopfront). */
+function shopfrontShutter(aux: number, bayIdx: number) {
+  const shopSeed = hashu((aux ^ (Math.floor(bayIdx / 2) + 3000)) >>> 0);
+  const cellSeed = hashu(
+    (aux ^
+      hashu(
+        (Math.imul(bayIdx + 1000, 73856093) ^ Math.imul(1000, 19349663)) >>> 0,
+      )) >>>
+      0,
+  );
+  return hashuf(cellSeed ^ 77) < 0.12 || hashuf(shopSeed ^ 0x5a5) < 0.2;
 }
 
 /** Facade role of each footprint edge (the longest edge fronts if none does). */
@@ -1292,6 +1330,8 @@ function guardRail(m: CMesh, ring: Vec2[], y: number, mat: number) {
 
  */
 function vendingMachine(m: CMesh, p: Vec3, n: Vec3, col: number) {
+  // (Tokyo street furniture; none on a New York street.)
+  if (nyc()) return;
   const r: Vec3 = [n[2], 0, -n[0]];
   const D = 0.35;
   const P = (x: number, y: number, z: number): Vec3 => [
@@ -2388,8 +2428,12 @@ function tenantKit(
         0,
         e.n[2] * Math.cos(0.3) + e.along[2] * Math.sin(0.3) * (j ? -1 : 1),
       ];
+      // (Tokyo's id lists, so the draws match in every locale.)
       const ids = TENANT_NOBORI[t.type];
-      if (ids.length) nobori(m, P(s, 1.5, gy), tn, ids[rng.int(0, ids.length)]);
+      if (!ids.length) continue;
+      const i = rng.int(0, ids.length);
+      const own = S.tenantNobori[t.type];
+      if (own.length) nobori(m, P(s, 1.5, gy), tn, own[i % own.length]);
     }
   };
   const bikes = (n: number) => {
@@ -2425,14 +2469,17 @@ function tenantKit(
     const sc = t.s0 + w * rng.range(0.35, 0.65);
     const top = Math.min(head - 0.05, gy + 2.3);
     const drop = rng.range(0.55, 0.9);
-    m.tube(
-      [P(sc - nw / 2 - 0.08, 0.2, top), P(sc + nw / 2 + 0.08, 0.2, top)],
-      0.015,
-      packMat(CM.metal),
-    );
+    // Noren over the door (Tokyo street style).
+    const noren = !nyc();
+    if (noren)
+      m.tube(
+        [P(sc - nw / 2 - 0.08, 0.2, top), P(sc + nw / 2 + 0.08, 0.2, top)],
+        0.015,
+        packMat(CM.metal),
+      );
     const mat = packMat(CM.sign, shopSignParam(t.id | SIGN_FABRIC));
     const pw = nw / 3;
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < 3 && noren; k++) {
       const a = sc - nw / 2 + k * pw + 0.01,
         c = a + pw - 0.02;
       m.quad(
@@ -2462,7 +2509,8 @@ function tenantKit(
       ds >= t.s0 + 0.5 &&
       ds <= t.s1 - 0.5 &&
       rng.chance(0.75) &&
-      take(pv, 'wall', ds, 0.5)
+      take(pv, 'wall', ds, 0.5) &&
+      !nyc()
     ) {
       m.box(P(ds, 0.3, gy + 0.4), [0.45, 0.4, 0.22], dark, yaw);
       m.box(P(ds, 0.3, gy + 1.07), [0.45, 0.27, 0.22], packMat(CM.metal), yaw);
@@ -3379,18 +3427,19 @@ export function building(
     if (lod === 0) coping(m, rect, top, lod);
     // Building name on the penthouse front.
     const nid = SIGN.horizontal.first + fr.int(0, SIGN.horizontal.count);
-    signPanel(
-      m,
-      edgeAt(e, e.core + CORE_W / 2, CORE_OUT + 0.06, top - 0.75),
-      e.along,
-      1.05,
-      0.28,
-      0.05,
-      nid,
-      -1,
-      lod,
-      false,
-    );
+    if (!nyc())
+      signPanel(
+        m,
+        edgeAt(e, e.core + CORE_W / 2, CORE_OUT + 0.06, top - 0.75),
+        e.along,
+        1.05,
+        0.28,
+        0.05,
+        nid,
+        -1,
+        lod,
+        false,
+      );
     if (lod === 0) {
       roofHouse(m, rect, upperTop, top, 2);
       // Elevator overrun: the lift machine room stepping up at the back.
@@ -3864,18 +3913,19 @@ export function building(
       const h2 = span * H * 0.9;
       const y0 = base + GROUND_H + 0.4;
       const id = SIGN.vertical.first + fr.int(0, SIGN.vertical.count);
-      signPanel(
-        m,
-        edgeAt(e, bs, 0.95, y0 + h2 / 2),
-        e.n,
-        0.45,
-        h2 / 2,
-        0.12,
-        id,
-        -1,
-        lod,
-      );
-      if (lod === 0)
+      if (!nyc())
+        signPanel(
+          m,
+          edgeAt(e, bs, 0.95, y0 + h2 / 2),
+          e.n,
+          0.45,
+          h2 / 2,
+          0.12,
+          id,
+          -1,
+          lod,
+        );
+      if (lod === 0 && !nyc())
         for (const t of [0.1, 0.9])
           m.beam(
             edgeAt(e, bs, 0, y0 + t * h2),
@@ -3934,7 +3984,7 @@ export function building(
       const hgt = span * b.floorH * 0.9;
       // Mostly blades, but not exclusively.
       const roll = sr.next();
-      const style =
+      let style: string =
         k < 2
           ? roll < 0.72
             ? 'blade'
@@ -3948,6 +3998,30 @@ export function building(
                 : roll < 0.92
                   ? 'led'
                   : 'banner';
+      if (nyc()) {
+        // New York: one blade (HOTEL, BAR, THEATER), a cube or a box sign
+        // at most, and now and then a second-floor box sign or LED screen;
+        // the rest of the stack is left off. (Hashed: the building stream
+        // above is drawn as in Tokyo.)
+        const h = hash2(b.seed, 0x6e79 + k) % 100;
+        style =
+          k === 0
+            ? h < 40
+              ? 'blade'
+              : h < 55
+                ? 'cube'
+                : h < 75 && len > 6
+                  ? 'box'
+                  : 'none'
+            : k === 1
+              ? h < 25 && len > 6
+                ? 'box'
+                : h < 33
+                  ? 'led'
+                  : 'none'
+              : 'none';
+        if (style === 'none') continue;
+      }
       let lightY = y0 + 1;
       if (style === 'blade') {
         // Blades vary in depth off the wall, width, thickness and length.
@@ -4090,6 +4164,7 @@ export function building(
     // corner (or the end away from the core).
     const zr = new Rng(hash2(b.seed, 0x2a6c));
     if (
+      !nyc() &&
       vertical < 2 &&
       (b.kind === 'pencil' || b.kind === 'midrise') &&
       bodyN >= 2 &&
@@ -4181,6 +4256,9 @@ export function building(
             sq,
             lod,
           );
+        } else if (nyc()) {
+          sr.range(0.4, 0.65);
+          sr.range(0.7, 1);
         } else {
           const halfW = sr.range(0.4, 0.65);
           const h2 = hgt * sr.range(0.7, 1);
@@ -4229,16 +4307,32 @@ export function building(
       // so each run of same-type bays is one business, and its fascia sign
       // names that kind of business.
       const fe = edges[i];
-      const tenants: {type: number; s0: number; s1: number; id: number}[] = [];
+      // (`bays`: each shopfront bay's facade index and start along the edge.)
+      const tenants: {
+        type: number;
+        s0: number;
+        s1: number;
+        id: number;
+        bays: [number, number][];
+      }[] = [];
+      const bw = bay / fe.k;
       {
-        const bw = bay / fe.k;
         const col0 = Math.round(fe.u0 / bay);
         for (let j = 0; j < fe.count; j++) {
           const type = shopTypeAt(aux, col0 + j);
           const s0 = fe.f0 + j * bw;
           const last = tenants[tenants.length - 1];
-          if (last?.type === type) last.s1 = s0 + bw;
-          else tenants.push({type, s0, s1: s0 + bw, id: 0});
+          if (last?.type === type) {
+            last.s1 = s0 + bw;
+            last.bays.push([col0 + j, s0]);
+          } else
+            tenants.push({
+              type,
+              s0,
+              s1: s0 + bw,
+              id: 0,
+              bays: [[col0 + j, s0]],
+            });
         }
         if (!tenants.length)
           tenants.push({
@@ -4246,6 +4340,7 @@ export function building(
             s0: ft0 * len,
             s1: ft1 * len,
             id: 0,
+            bays: [],
           });
         // The end tenants take the shopfront out to the piers.
         tenants[0].s0 = Math.min(tenants[0].s0, ft0 * len + 0.3);
@@ -4254,7 +4349,7 @@ export function building(
           ft1 * len - 0.3,
         );
         for (const t of tenants) {
-          const ids = TENANT_SIGNS[t.type];
+          const ids = S.tenantSigns[t.type];
           t.id = ids[sr.int(0, ids.length)];
         }
       }
@@ -4349,7 +4444,7 @@ export function building(
           const k = st.int(0, SIGN.square.count);
           const tn =
             tenants.find(x => t * len >= x.s0 && t * len <= x.s1) ?? main;
-          const sq = TENANT_SQUARES[tn.type];
+          const sq = S.tenantSquares[tn.type];
           const out = st.range(1.1, 1.6);
           if (take(pv, 'kerb', t * len, 0.4, out))
             aFrameSign(m, wallAt(t, out, gy), n, sq[k % sq.length]);
@@ -4359,6 +4454,33 @@ export function building(
             pottedPlant(m, wallAt(ftAt(t), 0.45, gy), st);
         const kr = new Rng(hash2(b.seed, 0x7e4a));
         for (const t of tenants) tenantKit(m, fe, t, gy, hy - 0.13, kr, pv);
+        if (nyc()) {
+          // Neon OPEN signs hung in the shop windows (not the lobbies), in a
+          // bay the shader glazes (shopfrontShutter), clear of its mullion.
+          const keep = signVariant;
+          for (const t of tenants) {
+            const h = hash2(b.seed, 0x09e7 + Math.round(t.s0 * 8));
+            if (t.type === SHOP_TYPE.office || h % 100 >= 60) continue;
+            const open = t.bays.filter(([bi]) => !shopfrontShutter(aux, bi));
+            if (!open.length || bw < 1.4) continue;
+            const [, bs] = open[(h >>> 10) % open.length];
+            signVariant = wayBits(SIGN_OPEN, SIGN_STYLE.neon) + ((h >> 8) & 1);
+            const s = bs + bw * (((h >> 9) & 1) === 0 ? 0.28 : 0.72);
+            signPanel(
+              m,
+              wallAt(s / len, 0.03, base + 1.8),
+              along,
+              0.32,
+              0.22,
+              0.015,
+              SIGN_OPEN,
+              -1,
+              lod,
+              false,
+            );
+          }
+          signVariant = keep;
+        }
       }
       // A konbini always has the flat canopy, and the brightest light on
       // the block: a cold white pool on the pavement in front (at every
@@ -4388,10 +4510,12 @@ export function building(
             W(t0, reach, ay - drop),
           ];
           const span = (t1 - t0) * len * 2;
+          // (New York: mostly plain canvas, the stripes' shop colour.)
+          const su = nyc() && hash2(b.seed, 0xa3c1) % 10 < 7 ? 0 : span;
           const uv: Vec2[] = [
             [0, 0],
-            [span, 0],
-            [span, 1],
+            [su, 0],
+            [su, 1],
             [0, 1],
           ];
           const nl = Math.hypot(drop, reach - 0.15);
@@ -4403,18 +4527,50 @@ export function building(
           const mat = packMat(CM.sign, ((id * 3 + 1) & 0xff) | SIGN_STRIPES);
           m.quad(q, up, uv, mat);
           m.quad(q, [-up[0], -up[1], -up[2]], uv, mat);
-          const vid =
-            SIGN.horizontal.first + ((id + 3) % SIGN.horizontal.count);
+          // The valance: a shop word in Tokyo, the shop's own name in New York.
+          const vid = nyc()
+            ? id
+            : SIGN.horizontal.first + ((id + 3) % SIGN.horizontal.count);
           const vm = (t0 + t1) / 2;
-          signPanel(
-            m,
-            wallAt(vm, reach, ay - drop - 0.14),
-            along,
-            ((t1 - t0) * len) / 2,
-            0.14,
-            0.01,
-            vid | SIGN_FABRIC,
-          );
+          const hw = ((t1 - t0) * len) / 2;
+          if (nyc()) {
+            // Plain canvas valance in the awning's colour, the shop's name
+            // printed across its middle (at most 1.5 x the cell's 4:1, so
+            // the lettering is not smeared along a long awning).
+            const cm = packMat(CM.sign, ((id * 3 + 1) & 0xff) | SIGN_STRIPES);
+            const V = (ds: number, dy: number) =>
+              wallAt(vm + ds / len, reach, ay - drop + dy);
+            const vq = [V(-hw, -0.28), V(hw, -0.28), V(hw, 0), V(-hw, 0)];
+            const flat: Vec2[] = [
+              [0, 0],
+              [0, 0],
+              [0, 1],
+              [0, 1],
+            ];
+            m.quad(vq, n, flat, cm);
+            m.quad(vq, [-n[0], 0, -n[2]], flat, cm);
+            signPanel(
+              m,
+              wallAt(vm, reach + 0.008, ay - drop - 0.14),
+              along,
+              Math.min(hw * 0.92, 0.84),
+              0.12,
+              0.003,
+              vid | SIGN_FABRIC,
+              -1,
+              0,
+              false,
+            );
+          } else
+            signPanel(
+              m,
+              wallAt(vm, reach, ay - drop - 0.14),
+              along,
+              hw,
+              0.14,
+              0.01,
+              vid | SIGN_FABRIC,
+            );
         } else if (aStyle < 0.85) {
           // Flat canopy: a deck with a fascia band across its front (striped
           // in the konbini's colours over a konbini, else aluminium) and a
@@ -4518,6 +4674,7 @@ export function building(
           for (let f = 0; f < count; f++) {
             const t = ftAt(0.15 + (0.7 * (f + 0.5)) / count);
             const g = wallAt(t, sr.range(1.0, 1.3), base);
+            if (nyc()) continue;
             m.cylinder(
               [g[0], g[1] - SINK, g[2]],
               0.02,
@@ -4552,7 +4709,8 @@ export function building(
             t1 = ftAt(1 - cr2.range(0.06, 0.2));
           const reach = cr2.range(1.0, 1.5);
           const drop = reach * cr2.range(0.35, 0.55);
-          const span = (t1 - t0) * len * 2;
+          const span =
+            nyc() && hash2(b.seed, 0xa3c1) % 10 < 7 ? 0 : (t1 - t0) * len * 2;
           const nl = Math.hypot(drop, reach - 0.15);
           m.quad(
             [
@@ -9323,6 +9481,7 @@ export function buildTile(
     return {mesh, lights: r.lights};
   }
   const L = ctx.layout;
+  S = SIGN_SETS[signLocaleOf(L.params.type)];
   const m = new CMesh(1 << 14, 1 << 15);
   const lights = new LightList();
   const hf: Heightfield = L.terrain.heights;
