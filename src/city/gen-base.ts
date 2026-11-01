@@ -5857,7 +5857,15 @@ export function assembleBase(
   mask: Uint8Array | undefined,
   parts: BasePart[],
 ): BaseGeometry {
-  const m = new CMesh(1 << 18, 1 << 19);
+  // Sized for the parts plus the outskirts (up to ~330k vertices), so the
+  // largest buffer of the load is not grown by doubling (and copying).
+  let nv = 1 << 19;
+  let ni = 1 << 20;
+  for (const p of parts) {
+    nv += p.words.length / VERTEX_WORDS;
+    ni += p.idx.length;
+  }
+  const m = new CMesh(nv, ni);
   const piers = new CMesh(1 << 12, 1 << 13);
   const lights = new LightList();
   const solids: number[] = [];

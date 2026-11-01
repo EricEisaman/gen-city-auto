@@ -281,6 +281,8 @@ function finishCity(
   const base = timed('assembleBase', () =>
     assembleBase(lay, geom, undefined, parts),
   );
+  // (Let the parts' copies go before clusterize allocates.)
+  parts.length = 0;
   ctx = timed('makeTileContext', () =>
     makeTileContext(lay, base.geom, base.roadMask),
   );
