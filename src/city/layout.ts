@@ -11,6 +11,7 @@ import {
   pointInPolygon,
   pointSegment,
   polygonArea,
+  rowCrossings,
   segmentIntersect,
   smoothstep,
   sub2,
@@ -1791,6 +1792,7 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
   const data = hf.data;
   let inside = new Int32Array(4096);
   let rowAt = new Int32Array(256);
+  const xs: number[] = [];
   for (const b of blocks) {
     const poly = b.curb;
     // Least-squares plane h = a x + c z + d through curb samples.
@@ -1862,10 +1864,15 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
     let ni = 0;
     for (let gz = gz0; gz <= gz1; gz++) {
       rowAt[gz - gz0] = ni;
+      const z = gz * cell - S;
+      // pointInPolygon([x, z], poly) for the row: inside where an odd
+      // number of the edge crossings lie right of x.
+      const nx = rowCrossings(poly, z, xs);
+      let c = 0;
       for (let gx = gx0; gx <= gx1; gx++) {
         const x = gx * cell - S;
-        const z = gz * cell - S;
-        if (pointInPolygon([x, z], poly)) {
+        while (c < nx && xs[c] <= x) c++;
+        if ((nx - c) & 1) {
           const k = gz * n + gx;
           data[k] = plane(x, z);
           inside[ni++] = k;

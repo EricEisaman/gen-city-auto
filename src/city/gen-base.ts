@@ -9,6 +9,7 @@ import {
   pointInPolygon,
   pointSegment,
   polygonArea,
+  rowCrossings,
   type Vec2,
   type Vec3,
 } from '../math/vec.ts';
@@ -149,6 +150,7 @@ export function landUse(
   // In the asset lab everything outside the shown asset is bare urban
   // ground (a neutral backdrop rather than patches of grass).
   const out = new Uint8Array(n * n).fill(visible ? 1 : 0);
+  const xs: number[] = [];
   for (const [bi, b] of L.blocks.entries()) {
     const use = L.hidden?.blocks[bi] ? 1 : b.park ? 2 : 1;
     let x0 = Infinity,
@@ -166,13 +168,17 @@ export function landUse(
       gz <= Math.min(n - 1, Math.ceil((z1 + S) / hf.cell));
       gz++
     ) {
+      // pointInPolygon along the row (see rowCrossings).
+      const nx = rowCrossings(b.curb, gz * hf.cell - S, xs);
+      let c = 0;
       for (
         let gx = Math.max(0, Math.floor((x0 + S) / hf.cell));
         gx <= Math.min(n - 1, Math.ceil((x1 + S) / hf.cell));
         gx++
       ) {
-        if (pointInPolygon([gx * hf.cell - S, gz * hf.cell - S], b.curb))
-          out[gz * n + gx] = use;
+        const x = gx * hf.cell - S;
+        while (c < nx && xs[c] <= x) c++;
+        if ((nx - c) & 1) out[gz * n + gx] = use;
       }
     }
   }
