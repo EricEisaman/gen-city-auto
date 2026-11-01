@@ -51,6 +51,7 @@ const OFF_REACH = 1u << 27u;
 const OFF_GNDREFL = 1u << 28u;
 // frame.off.z (bits 32+).
 const OFF_CTILE = 8u;
+const OFF_LSPLIT = 1u << 7u;
 
 // Screen-space contact shadow toward the sun: a short march through the
 // depth buffer for the small casters (sign brackets, AC units, sills,
@@ -212,15 +213,23 @@ const SUN_ILLUMINANCE = 12.0;
 const TILE = 16u;
 const MAX_TILE_LIGHTS = 256u;
 
-// Tile bounds in world space (sortKey'd): min xyz, max xyz.
-var<workgroup> tileBox: array<atomic<u32>, 6>;
-var<workgroup> tileWetBox: array<atomic<u32>, 6>;
-var<workgroup> tileCount: atomic<u32>;
-var<workgroup> tileLights: array<u32, 256>;
-// Street lights whose pool misses the tile but whose wet-film streak (out
+// Each tile is split in two at the middle of its view-depth range (a
+// facade in front of the far street, a kerb against the road beyond): the
+// pixels of each half get their own world-space bounds and light lists,
+// so a pixel walks only the lights that reach its half (?off=lsplit: one
+// list for the whole tile).
+// View-depth range of the tile's surface pixels (f32 bits; positive, so
+// they order as u32).
+var<workgroup> tileDepth: array<atomic<u32>, 2>;
+// Tile bounds in world space (sortKey'd), per half: min xyz, max xyz.
+var<workgroup> tileBox: array<atomic<u32>, 12>;
+var<workgroup> tileWetBox: array<atomic<u32>, 12>;
+var<workgroup> tileCount: array<atomic<u32>, 2>;
+var<workgroup> tileLights: array<array<u32, 256>, 2>;
+// Street lights whose pool misses the half but whose wet-film streak (out
 // to STREAK_REACH radii) may reach it: only wet-ground pixels loop these.
-var<workgroup> tileStreakCount: atomic<u32>;
-var<workgroup> tileStreak: array<u32, 256>;
+var<workgroup> tileStreakCount: array<atomic<u32>, 2>;
+var<workgroup> tileStreak: array<array<u32, 256>, 2>;
 // Vehicles whose contact occlusion (8 m around, up to 1 m above) can reach
 // the tile's bounds (?off=ctile: every pixel walks all of them).
 const MAX_TILE_CONTACTS = 128u;
@@ -464,8 +473,14 @@ fn V_SmithJoint(nv: f32, nl: f32, a: f32) -> f32 {
   return 0.5 / max(gv + gl, 1e-5);
 }
 
+// x^5 by multiplies (pow is exp2(5 log2 x): two transcendentals).
+fn pow5(x: f32) -> f32 {
+  let x2 = x * x;
+  return x2 * x2 * x;
+}
+
 fn F_Schlick(f0: vec3f, vh: f32) -> vec3f {
-  return f0 + (1.0 - f0) * pow(1.0 - vh, 5.0);
+  return f0 + (1.0 - f0) * pow5(1.0 - vh);
 }
 
 fn brdf(n: vec3f, v: vec3f, l: vec3f, albedo: vec3f, f0: vec3f, rough: f32, metal: f32) -> vec3f {
@@ -494,7 +509,7 @@ fn wetStreak(nF: vec3f, v: vec3f, l: vec3f, fwdV: vec3f) -> f32 {
   let nlF = max(dot(nF, l), 0.0);
   let nvF = max(dot(nF, v), 0.05);
   let aF = 0.022;
-  let Fw = 0.02 + 0.98 * pow(1.0 - max(dot(v, hv), 0.0), 5.0);
+  let Fw = 0.02 + 0.98 * pow5(1.0 - max(dot(v, hv), 0.0));
   let sp = D_GGX(max(dot(nF, hs), 0.0), aF) * V_SmithJoint(nvF, nlF, aF) * Fw * nlF;
   return min(sp, 60.0) * 0.2;
 }
@@ -803,14 +818,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let px = min(gid.xy, size - 1u);
   let depth = textureLoad(gDepth, vec2i(px), 0);
   let vd = viewDepth(depth);
-  if (li < 6u) {
+  if (li < 12u) {
     // Boxes start empty (min = +max key, max = 0).
-    atomicStore(&tileBox[li], select(0u, 0xffffffffu, li < 3u));
-    atomicStore(&tileWetBox[li], select(0u, 0xffffffffu, li < 3u));
+    atomicStore(&tileBox[li], select(0u, 0xffffffffu, li % 6u < 3u));
+    atomicStore(&tileWetBox[li], select(0u, 0xffffffffu, li % 6u < 3u));
+  }
+  if (li < 2u) {
+    atomicStore(&tileCount[li], 0u);
+    atomicStore(&tileStreakCount[li], 0u);
+    atomicStore(&tileDepth[li], select(0u, 0x7f7fffffu, li == 0u));
   }
   if (li == 0u) {
-    atomicStore(&tileCount, 0u);
-    atomicStore(&tileStreakCount, 0u);
     atomicStore(&tileContactCount, 0u);
   }
   let pxf = vec2f(px) + 0.5;
@@ -828,56 +846,73 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   let wetGround = select(0.0, frame.weather.z, cls == CLASS_GROUND) * smoothstep(0.8, 0.95, n.y)
     * (1.0 - smoothstep(0.1, 0.22, rough)) * select(1.0, 0.0, (frame.off.x & OFF_STREAK) != 0u);
   workgroupBarrier();
-  // The tile's world-space bounds: of all its surface pixels, and of those
+  if (depth > 0.0) {
+    atomicMin(&tileDepth[0], bitcast<u32>(vd));
+    atomicMax(&tileDepth[1], bitcast<u32>(vd));
+  }
+  workgroupBarrier();
+  // The split: the middle of the tile's depth range.
+  let split = select(0.5 * (bitcast<f32>(atomicLoad(&tileDepth[0])) + bitcast<f32>(atomicLoad(&tileDepth[1]))), 3e38,
+    (frame.off.z & OFF_LSPLIT) != 0u);
+  let half = select(0u, 1u, vd >= split);
+  // Each half's world-space bounds: of all its surface pixels, and of those
   // on wet ground (the only ones that see the streak-only lights).
   if (depth > 0.0) {
     let kw = vec3u(sortKey(world.x), sortKey(world.y), sortKey(world.z));
+    let o = half * 6u;
     for (var c = 0u; c < 3u; c++) {
-      atomicMin(&tileBox[c], kw[c]);
-      atomicMax(&tileBox[c + 3u], kw[c]);
+      atomicMin(&tileBox[o + c], kw[c]);
+      atomicMax(&tileBox[o + c + 3u], kw[c]);
     }
     if (wetGround > 0.0) {
       for (var c = 0u; c < 3u; c++) {
-        atomicMin(&tileWetBox[c], kw[c]);
-        atomicMax(&tileWetBox[c + 3u], kw[c]);
+        atomicMin(&tileWetBox[o + c], kw[c]);
+        atomicMax(&tileWetBox[o + c + 3u], kw[c]);
       }
     }
   }
   workgroupBarrier();
-  var bLo: vec3f;
-  var bHi: vec3f;
-  var wLo: vec3f;
-  var wHi: vec3f;
-  for (var c = 0u; c < 3u; c++) {
-    let a0 = atomicLoad(&tileBox[c]);
-    let a1 = atomicLoad(&tileBox[c + 3u]);
-    let w0 = atomicLoad(&tileWetBox[c]);
-    let w1 = atomicLoad(&tileWetBox[c + 3u]);
-    // (An empty box keeps lo > hi.)
-    bLo[c] = select(unsortKey(a0), 1e30, a0 > a1);
-    bHi[c] = select(unsortKey(a1), -1e30, a0 > a1);
-    wLo[c] = select(unsortKey(w0), 1e30, w0 > w1);
-    wHi[c] = select(unsortKey(w1), -1e30, w0 > w1);
+  var hLo: array<vec3f, 2>;
+  var hHi: array<vec3f, 2>;
+  var wLo: array<vec3f, 2>;
+  var wHi: array<vec3f, 2>;
+  for (var h = 0u; h < 2u; h++) {
+    for (var c = 0u; c < 3u; c++) {
+      let a0 = atomicLoad(&tileBox[h * 6u + c]);
+      let a1 = atomicLoad(&tileBox[h * 6u + c + 3u]);
+      let w0 = atomicLoad(&tileWetBox[h * 6u + c]);
+      let w1 = atomicLoad(&tileWetBox[h * 6u + c + 3u]);
+      // (An empty box keeps lo > hi.)
+      hLo[h][c] = select(unsortKey(a0), 1e30, a0 > a1);
+      hHi[h][c] = select(unsortKey(a1), -1e30, a0 > a1);
+      wLo[h][c] = select(unsortKey(w0), 1e30, w0 > w1);
+      wHi[h][c] = select(unsortKey(w1), -1e30, w0 > w1);
+    }
   }
-  // Cull lights against the tile's bounds, 256 threads in parallel. A light
-  // is listed if its sphere reaches the box (every pixel farther away than
-  // the radius skips it anyway; a small margin covers rounding).
+  // The whole tile's bounds (vehicle contacts).
+  let bLo = min(hLo[0], hLo[1]);
+  let bHi = max(hHi[0], hHi[1]);
+  // Cull lights against each half's bounds, 256 threads in parallel. A
+  // light is listed if its sphere reaches the box (every pixel farther away
+  // than the radius skips it anyway; a small margin covers rounding).
   let streaky = frame.weather.z > 0.3 && (frame.off.x & OFF_REACH) == 0u;
   for (var i = li; i < lightBuf.count; i += 256u) {
     let L = lightBuf.lights[i];
     let r0 = L.radius * 1.001 + 0.01;
-    if (boxDist2(L.pos, bLo, bHi) <= r0 * r0) {
-      let slot = atomicAdd(&tileCount, 1u);
-      if (slot < MAX_TILE_LIGHTS) { tileLights[slot] = i; }
-    } else if (streaky && L.kind < 0.5) {
-      // In the wet, street lights reach 2.5x further: their streaks on the
-      // film (and only those) carry well beyond the pool. A light whose
-      // pool misses the tile but whose streak reach meets its wet ground
-      // goes to the streak list, which only wet-ground pixels walk.
-      let r1 = r0 * STREAK_REACH;
-      if (boxDist2(L.pos, wLo, wHi) <= r1 * r1) {
-        let slot = atomicAdd(&tileStreakCount, 1u);
-        if (slot < MAX_TILE_LIGHTS) { tileStreak[slot] = i; }
+    for (var h = 0u; h < 2u; h++) {
+      if (boxDist2(L.pos, hLo[h], hHi[h]) <= r0 * r0) {
+        let slot = atomicAdd(&tileCount[h], 1u);
+        if (slot < MAX_TILE_LIGHTS) { tileLights[h][slot] = i; }
+      } else if (streaky && L.kind < 0.5) {
+        // In the wet, street lights reach 2.5x further: their streaks on
+        // the film (and only those) carry well beyond the pool. A light
+        // whose pool misses the half but whose streak reach meets its wet
+        // ground goes to the streak list, which only wet-ground pixels walk.
+        let r1 = r0 * STREAK_REACH;
+        if (boxDist2(L.pos, wLo[h], wHi[h]) <= r1 * r1) {
+          let slot = atomicAdd(&tileStreakCount[h], 1u);
+          if (slot < MAX_TILE_LIGHTS) { tileStreak[h][slot] = i; }
+        }
       }
     }
   }
@@ -975,13 +1010,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
   // The film's normal: the aggregate's bump drowned (a streak, not glitter).
   let nFilm = normalize(n + vec3f(0.0, 3.0, 0.0));
   let fwdV = normalize(vec3f(v.x, 0.0, v.z) + vec3f(1e-5, 0.0, 0.0));
-  let count = min(atomicLoad(&tileCount), MAX_TILE_LIGHTS);
+  let count = min(atomicLoad(&tileCount[half]), MAX_TILE_LIGHTS);
   // Wet ground also walks the streak-only lights (all beyond their pool
   // radius here, so they take the streak branch below).
-  let total = count + select(0u, min(atomicLoad(&tileStreakCount), MAX_TILE_LIGHTS), wetGround > 0.0);
+  let total = count + select(0u, min(atomicLoad(&tileStreakCount[half]), MAX_TILE_LIGHTS), wetGround > 0.0);
   for (var k = 0u; k < total; k++) {
     var idx: u32;
-    if (k < count) { idx = tileLights[k]; } else { idx = tileStreak[k - count]; }
+    if (k < count) { idx = tileLights[half][k]; } else { idx = tileStreak[half][k - count]; }
     let L = lightBuf.lights[idx];
     let dl = L.pos - world;
     let d2 = dot(dl, dl);
@@ -998,7 +1033,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       let fade = 1.0 - smoothstep(L.radius * (STREAK_REACH - 0.6), L.radius * STREAK_REACH, d);
       streakC = L.color * 0.4 * select(1.0, 2.0, abs(L.kind) <= 0.01 && L.radius >= 19.0) * fade / (d2 + 1.0);
     } else {
-      let win = pow(clamp(1.0 - pow(d / L.radius, 4.0), 0.0, 1.0), 2.0);
+      // (1 - (d / R)^4)^2 by multiplies.
+      let x2 = d2 / (L.radius * L.radius);
+      let w0 = clamp(1.0 - x2 * x2, 0.0, 1.0);
+      let win = w0 * w0;
       let atten = win / (d2 + 1.0);
       var lc = L.color;
       // What the film mirrors: the luminaire as seen from the reflection
@@ -1107,7 +1145,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
       }
       let foliageK = select(1.0, 0.4, cls == CLASS_FOLIAGE);
       // Point lights cast no shadows: the vehicle contact term stands in under cars.
-      color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
+      // (A light behind the surface adds nothing: N.L = 0.)
+      if (dot(n, l) > 0.0) {
+        color += brdf(n, v, l, albedo, f0, max(rough, 0.08), metal) * lc * atten * 60.0 * foliageK * (1.0 - contactOcc * 0.85);
+      }
+      streakC = select(lc, lcS, lcS.x >= 0.0) * atten;
       if (wetGround > 0.0 && L.kind < 0.5) {
         // The water film scatters a street light's pool (rain-roughened
         // surface, drops): the pool stays on the soaked road as a diffuse
@@ -1115,7 +1157,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_ind
         // dark in night rain though it was the best-lit place at night).
         color += albedo * (1.0 - metal) * max(dot(n, l), 0.0) / PI * lc * atten * 60.0 * 0.8 * wetGround;
       }
-      streakC = select(lc, lcS, lcS.x >= 0.0) * atten;
       if (L.kind > 0.5 && L.kind < 1.5 && wetWall > 0.0) {
         // Neon on a soaked wall: the water film spreads each sign's colour
         // over the wall around it (a soft, view-independent sheen; the GGX

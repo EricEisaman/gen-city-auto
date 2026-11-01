@@ -240,6 +240,10 @@ export class Renderer {
   private lastSkyKey = '';
   private cullCount = 0;
   private lightCount = 0;
+  // This frame's lights (setLights), culled to the view in render().
+  private lightSrc = new Float32Array(MAX_LIGHTS * 8);
+  private lightSrcCount = 0;
+  private lightUpload = new Float32Array(4 + MAX_LIGHTS * 8);
   private patchCount = 0;
   private useOcclusion = false;
   private lastViewDir: Vec3 = [0, 0, -1];
@@ -994,13 +998,50 @@ export class Renderer {
     }
   }
 
-  /** lights: packed x,y,z,radius,r,g,b,kind (already selected & scaled). */
+  /**
+   * lights: packed x,y,z,radius,r,g,b,kind (already selected & scaled).
+   * Uploaded by render(), culled to the view frustum.
+   */
   setLights(lights: Float32Array, count: number) {
     const n = this.off('lights') ? 0 : Math.min(count, MAX_LIGHTS);
-    const head = new Uint32Array([n, 0, 0, 0]);
-    this.device.queue.writeBuffer(this.lightBuffer, 0, head);
-    if (n > 0)
-      this.device.queue.writeBuffer(this.lightBuffer, 16, lights, 0, n * 8);
+    this.lightSrc.set(lights.subarray(0, n * 8));
+    this.lightSrcCount = n;
+  }
+
+  /**
+   * Uploads the lights whose reach meets the view frustum (side planes of
+   * `planes`, frustumPlanes() order): every lighting tile tests every
+   * uploaded light, and of the ~1000 nearest, most are behind or beside the
+   * camera (?off=lfrust: all of them). A street light reaches STREAK_REACH
+   * (lighting.wgsl) times its radius on wet ground.
+   */
+  private uploadLights(planes: Float32Array) {
+    const src = this.lightSrc;
+    const out = this.lightUpload;
+    const all = this.off('lfrust');
+    let n = 0;
+    for (let i = 0; i < this.lightSrcCount; i++) {
+      const o = i * 8;
+      const x = src[o],
+        y = src[o + 1],
+        z = src[o + 2];
+      // (Margin: the TAA jitter and rounding.)
+      const r = src[o + 3] * (src[o + 7] < 0.5 ? 2.5 : 1) * 1.01 + 0.5;
+      let inside = true;
+      for (let p = 0; p < 16 && !all; p += 4) {
+        const dist =
+          planes[p] * x + planes[p + 1] * y + planes[p + 2] * z + planes[p + 3];
+        if (dist < -r) {
+          inside = false;
+          break;
+        }
+      }
+      if (!inside) continue;
+      out.set(src.subarray(o, o + 8), 4 + n * 8);
+      n++;
+    }
+    new Uint32Array(out.buffer, 0, 4).set([n, 0, 0, 0]);
+    this.device.queue.writeBuffer(this.lightBuffer, 0, out, 0, 4 + n * 8);
     this.lightCount = n;
   }
 
@@ -1548,6 +1589,7 @@ export class Renderer {
       this.off('farshade') ? 0 : (FAR_FOOT * h) / (2 * Math.tan(v.fov / 2)),
     );
     const camPlanes = frustumPlanes(viewProjNoJ);
+    this.uploadLights(camPlanes);
     // A point of a slice is at most diag x its far depth from the eye.
     const th = Math.tan(v.fov / 2);
     const diag = Math.hypot(1, th * aspect, th);

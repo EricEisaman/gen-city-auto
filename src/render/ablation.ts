@@ -49,6 +49,9 @@ export const OFF_BITS = {
   hskyvis: HI * (1 << 4), // sky visibility traced at full res in lighting (not at half res in the GTAO pass)
   farshade: HI * (1 << 5), // city: no far-specialised material pipelines (far opaque clusters drawn as near ones)
   matgroup: HI * (1 << 6), // city: no material-group pipelines (every opaque cluster through the full material shader)
+  lsplit: HI * (1 << 7), // lighting: one light list per tile (not split in two by view depth)
+  lfrust: HI * (1 << 8), // lights: every selected light uploaded (not culled to the view frustum)
+  rdfast: HI * (1 << 9), // city-materials: road layers evaluate every noise everywhere (not only where it can show)
 } as const;
 
 export type OffName = keyof typeof OFF_BITS;

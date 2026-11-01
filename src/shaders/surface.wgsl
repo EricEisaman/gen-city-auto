@@ -78,7 +78,8 @@ fn applyWetness(s: ptr<function, Surf>, world: vec3f, flatness: f32, porous: f32
   let vert = 1.0 - smoothstep(0.3, 0.6, abs((*s).normal.y));
   (*s).rough = mix((*s).rough, 0.25, damp * 0.7 * (1.0 - vert));
   (*s).rough = mix((*s).rough, (*s).rough * 0.5, wet * vert);
-  {
+  // (Ground and roofs, vert 0, carry no run-off: skip its noise.)
+  if (vert > 0.0) {
     let hx = world.x + world.z * 0.73;
     let streak = smoothstep(0.5, 0.75, valueNoise(vec2f(hx * 1.7, world.y * 0.08)))
       * (0.6 + 0.4 * valueNoise(vec2f(hx * 0.6, world.y * 0.3))) * wet * vert;

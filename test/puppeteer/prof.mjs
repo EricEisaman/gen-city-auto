@@ -60,7 +60,10 @@ for (const a of ablate) bitsOf(a);
 export const SCENARIOS = [
   {name: 'day chase', hour: 14, weather: 'sunny', shot: 'chase'},
   {name: 'night rain chase', hour: 22, weather: 'rain', shot: 'chase'},
-  {name: 'heli aerial', hour: 16, weather: 'cloudy', heli: true, shot: 'aerial'},
+  // Helicopter height over the city centre, looking across dense blocks to
+  // the towers and the horizon. A fixed pose: the director's aerial shot
+  // framed wherever the helicopter had flown, which varied the frame by ±4 ms.
+  {name: 'heli aerial', hour: 16, weather: 'cloudy', heli: true, freecam: [700, 170, 100, -0.9, -0.4]},
   {name: 'first-person', hour: 15, weather: 'sunny', camera: 'first'},
   // Dense downtown street at eye level, looking along a busy avenue.
   {name: 'downtown street', hour: 13, weather: 'sunny', freecam: [208, 26.7, -349, 2.13, 0.02]},
