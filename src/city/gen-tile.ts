@@ -2693,18 +2693,21 @@ export function building(
         m.box([q[0], top + 0.9, q[1]], [0.22, 0.22, 0.22], packMat(CM.lamp, 2));
       }
     }
-    // LED crown line (lit at night).
+    // LED crown line (lit at night). A tube, so city.wgsl keeps it a solid
+    // line at least ~1 px wide with its light spread over the widened
+    // pixels: a sub-pixel box flickered under the TAA jitter. (No aux: the
+    // seed's bit 31 would read as FINE_TUBE and fade it out.)
     for (let i = 0; i < roof.length; i++) {
       const a = roof[i],
         c = roof[(i + 1) % roof.length];
       const n = edgeNormal(roof, i);
-      m.beam(
-        [a[0] + n[0] * 0.05, top - 0.4, a[1] + n[2] * 0.05],
-        [c[0] + n[0] * 0.05, top - 0.4, c[1] + n[2] * 0.05],
-        0.06,
-        0.12,
+      m.tube(
+        [
+          [a[0] + n[0] * 0.06, top - 0.4, a[1] + n[2] * 0.06],
+          [c[0] + n[0] * 0.06, top - 0.4, c[1] + n[2] * 0.06],
+        ],
+        0.1,
         packMat(CM.ledLine, b.style & 0xff),
-        aux,
       );
     }
     cap(m, roof, roofY, packMat(CM.roof, b.style & 0xffff), aux);
