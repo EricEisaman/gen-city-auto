@@ -114,3 +114,18 @@ export function finish() {
       lines.map(l => `[startup] ${l}`).join('\n'),
   );
 }
+
+/** Work counted for the loading screen (n / N). */
+export const counters = {
+  pipelines: {done: 0, total: 0},
+  vehicles: {done: 0, total: 0},
+};
+
+/** Track a create*PipelineAsync promise: timeline span and counter. */
+export function pipeline<T>(name: string, p: Promise<T>): Promise<T> {
+  counters.pipelines.total++;
+  return timedAsync(`pipeline ${name}`, p, 'gpu').then(r => {
+    counters.pipelines.done++;
+    return r;
+  });
+}

@@ -38,6 +38,7 @@ const options = {
     'city-worker': 'src/workers/city-worker.ts',
     turntable: 'src/tools/turntable.ts',
     'vehicle-worker': 'src/workers/vehicle-worker.ts',
+    'texture-worker': 'src/workers/texture-worker.ts',
   },
   bundle: true,
   format: 'esm',

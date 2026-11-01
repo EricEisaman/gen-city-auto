@@ -2,7 +2,7 @@
 // Hi-Z, clouds, tiled lighting, TAA, bloom, exposure and tonemapping.
 
 import {createShader, type Gpu} from '../gpu/device.ts';
-import {begin, timed, timedAsync} from '../ui/timeline.ts';
+import {addSpan, begin, fromWorker, pipeline, timed} from '../ui/timeline.ts';
 import {frustumPlanes, mat4, type Mat4} from '../math/mat4.ts';
 import {cross3, norm3, sub3, type Vec3} from '../math/vec.ts';
 import atmosphereWgsl from '../shaders/atmosphere.wgsl';
@@ -29,13 +29,10 @@ import {
   cacheValid,
   type CascadeCache,
 } from './shadow-cache.ts';
-import {
-  createLeafTexture,
-  createSignAtlasTexture,
-  vinylWgsl,
-} from './sign-atlas.ts';
+import {createLeafTexture, uploadSignAtlas, vinylWgsl} from './sign-atlas.ts';
 import {signWaysWgsl} from '../city/signs.ts';
-import {createDetailTexture} from './detail-tex.ts';
+import {uploadDetailTexture} from './detail-tex.ts';
+import type {TextureResult} from '../workers/texture-worker.ts';
 import type {ClusterData} from '../city/cmesh.ts';
 
 export interface Weather {
@@ -186,9 +183,9 @@ export class Renderer {
   private linear: GPUSampler;
   private linearRepeat: GPUSampler;
   private shadowSampler: GPUSampler;
-  private signAtlas: GPUTexture;
+  private signAtlas!: GPUTexture;
   private leafTex: GPUTexture;
-  private detailTex: GPUTexture;
+  private detailTex!: GPUTexture;
   private detailSampler: GPUSampler;
   private anisoClamp: GPUSampler;
   private whiteTex: GPUTexture;
@@ -323,9 +320,8 @@ export class Renderer {
       magFilter: 'linear',
       minFilter: 'linear',
     });
-    this.signAtlas = createSignAtlasTexture(device);
-    this.leafTex = createLeafTexture(device);
-    this.detailTex = createDetailTexture(device);
+    // (The sign atlas and detail layers come from the texture worker.)
+    this.leafTex = timed('leaf texture', () => createLeafTexture(device));
     this.detailSampler = device.createSampler({
       label: 'sampler/detail aniso repeat',
       magFilter: 'linear',
@@ -502,10 +498,41 @@ export class Renderer {
     this.shadowCache.fill(null);
   }
 
-  static async create(gpu: Gpu): Promise<Renderer> {
+  /**
+   * Resolves once every pipeline is compiled and the generated textures are
+   * uploaded; render() needs it. create() starts both and returns at once,
+   * so they run while the city generates.
+   */
+  ready!: Promise<void>;
+
+  static create(gpu: Gpu): Renderer {
     const r = timed('renderer resources', () => new Renderer(gpu));
-    await timedAsync('renderer pipelines (all)', r.createPipelines());
+    const endAll = begin('renderer pipelines + textures');
+    r.ready = Promise.all([r.createPipelines(), r.loadTextures()]).then(endAll);
     return r;
+  }
+
+  /** Sign atlas and detail layers, painted in a worker. */
+  private loadTextures() {
+    const w = new Worker(new URL('./texture-worker.js', import.meta.url), {
+      type: 'module',
+      name: 'texture-worker',
+    });
+    return new Promise<void>((resolve, reject) => {
+      w.onmessage = (e: MessageEvent<TextureResult>) => {
+        w.terminate();
+        const m = e.data;
+        for (const [name, t0, t1] of m.spans)
+          addSpan(name, fromWorker(t0), fromWorker(t1), 'textures');
+        timed('upload generated textures', () => {
+          this.signAtlas = uploadSignAtlas(this.device, m.sign);
+          this.detailTex = uploadDetailTexture(this.device, m.detail);
+        });
+        resolve();
+      };
+      w.onerror = e => reject(new Error(`[texture worker] ${e.message}`));
+      w.postMessage(null);
+    });
   }
 
   private async createPipelines() {
@@ -714,9 +741,7 @@ export class Renderer {
         ['ao', compute('pipeline/ssao', aoMod, 'main')],
       ];
     endCalls();
-    const done = await Promise.all(
-      entries.map(([k, p]) => timedAsync(`pipeline ${k}`, p, 'gpu')),
-    );
+    const done = await Promise.all(entries.map(([k, p]) => pipeline(k, p)));
     this.p = Object.fromEntries(entries.map(([k], i) => [k, done[i]]));
   }
 

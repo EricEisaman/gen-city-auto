@@ -335,8 +335,23 @@ function downsample(src: Uint8Array, s: number): Uint8Array {
   return out;
 }
 
-export function createDetailTexture(device: GPUDevice): GPUTexture {
+/** Every layer's mip chain (CPU work; runs in the texture worker). */
+export function detailLevels(): Uint8Array[][] {
   const layers = [asphalt(), pavers(), concrete(), tile(), ballast()];
+  const levels = Math.log2(N) + 1;
+  return layers.map(L => {
+    const out = [encode(L)];
+    for (let l = 1; l < levels; l++)
+      out.push(downsample(out[l - 1], (N >> l) * 2));
+    return out;
+  });
+}
+
+/** Upload detailLevels() output as the 2D-array texture. */
+export function uploadDetailTexture(
+  device: GPUDevice,
+  layers: Uint8Array[][],
+): GPUTexture {
   const levels = Math.log2(N) + 1;
   const tex = device.createTexture({
     label: 'materials/detail layers',
@@ -345,14 +360,12 @@ export function createDetailTexture(device: GPUDevice): GPUTexture {
     mipLevelCount: levels,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  layers.forEach((L, z) => {
-    let data = encode(L);
+  layers.forEach((mips, z) => {
     for (let l = 0; l < levels; l++) {
       const s = N >> l;
-      if (l > 0) data = downsample(data, s * 2);
       device.queue.writeTexture(
         {texture: tex, mipLevel: l, origin: [0, 0, z]},
-        data,
+        mips[l],
         {bytesPerRow: s * 4, rowsPerImage: s},
         [s, s, 1],
       );

@@ -2,7 +2,7 @@
 // wheel per instance, three LODs, G-buffer + shadow + forward glass passes.
 
 import {createShader} from '../gpu/device.ts';
-import {begin} from '../ui/timeline.ts';
+import {begin, counters, pipeline} from '../ui/timeline.ts';
 import {mat4, type Mat4} from '../math/mat4.ts';
 import type {Vec3} from '../math/vec.ts';
 import commonWgsl from '../shaders/common.wgsl';
@@ -193,58 +193,61 @@ export class VehicleRenderer implements DrawHook {
       depthWriteEnabled: write,
       depthCompare: cmp,
     });
-    const endPipes = begin('vehicle pipelines', 'gpu');
-    [this.gbufferPipe, this.glassPipe, this.shadowPipe] = await Promise.all([
-      d.createRenderPipelineAsync({
-        label: 'pipeline/vehicle gbuffer',
-        layout: 'auto',
-        vertex: {module, entryPoint: 'vs', buffers},
-        fragment: {
-          module,
-          entryPoint: 'fs',
-          targets: gbufferFormats.map(format => ({format})),
-        },
-        primitive: {cullMode: 'none'},
-        depthStencil: depth(true, 'greater'),
-      }),
-      d.createRenderPipelineAsync({
-        label: 'pipeline/vehicle glass',
-        layout: 'auto',
-        vertex: {module, entryPoint: 'vs', buffers},
-        fragment: {
-          module,
-          entryPoint: 'fsGlass',
-          targets: [
-            {
-              format: litFormat,
-              blend: {
-                color: {
-                  srcFactor: 'src-alpha',
-                  dstFactor: 'one-minus-src-alpha',
+    // Compiled while the workers tessellate (awaited at the end).
+    const pipes = Promise.all(
+      [
+        d.createRenderPipelineAsync({
+          label: 'pipeline/vehicle gbuffer',
+          layout: 'auto',
+          vertex: {module, entryPoint: 'vs', buffers},
+          fragment: {
+            module,
+            entryPoint: 'fs',
+            targets: gbufferFormats.map(format => ({format})),
+          },
+          primitive: {cullMode: 'none'},
+          depthStencil: depth(true, 'greater'),
+        }),
+        d.createRenderPipelineAsync({
+          label: 'pipeline/vehicle glass',
+          layout: 'auto',
+          vertex: {module, entryPoint: 'vs', buffers},
+          fragment: {
+            module,
+            entryPoint: 'fsGlass',
+            targets: [
+              {
+                format: litFormat,
+                blend: {
+                  color: {
+                    srcFactor: 'src-alpha',
+                    dstFactor: 'one-minus-src-alpha',
+                  },
+                  alpha: {srcFactor: 'zero', dstFactor: 'one'},
                 },
-                alpha: {srcFactor: 'zero', dstFactor: 'one'},
               },
-            },
-          ],
-        },
-        primitive: {cullMode: 'none'},
-        depthStencil: depth(false, 'greater'),
-      }),
-      d.createRenderPipelineAsync({
-        label: 'pipeline/vehicle shadow',
-        layout: 'auto',
-        vertex: {module, entryPoint: 'vsShadow', buffers},
-        primitive: {cullMode: 'none'},
-        depthStencil: {
-          format: 'depth32float',
-          depthWriteEnabled: true,
-          depthCompare: 'less',
-          depthBias: 2,
-          depthBiasSlopeScale: 2,
-        },
-      }),
-    ]);
-    endPipes();
+            ],
+          },
+          primitive: {cullMode: 'none'},
+          depthStencil: depth(false, 'greater'),
+        }),
+        d.createRenderPipelineAsync({
+          label: 'pipeline/vehicle shadow',
+          layout: 'auto',
+          vertex: {module, entryPoint: 'vsShadow', buffers},
+          primitive: {cullMode: 'none'},
+          depthStencil: {
+            format: 'depth32float',
+            depthWriteEnabled: true,
+            depthCompare: 'less',
+            depthBias: 2,
+            depthBiasSlopeScale: 2,
+          },
+        }),
+      ].map((p, i) =>
+        pipeline(`vehicle ${['gbuffer', 'glass', 'shadow'][i]}`, p),
+      ),
+    );
     // Tessellate designs in parallel across several workers.
     const endTess = begin('vehicle tessellation (workers)', 'vehicles');
     const names = [...Object.keys(designs), 'person'];
@@ -253,6 +256,7 @@ export class VehicleRenderer implements DrawHook {
       Math.min(names.length, (navigator.hardwareConcurrency || 4) - 1),
     );
     const groups: string[][] = Array.from({length: nWorkers}, () => []);
+    counters.vehicles.total += nWorkers;
     names.forEach((n, i) => groups[i % nWorkers].push(n));
     const results = await Promise.all(
       groups.map(
@@ -267,6 +271,7 @@ export class VehicleRenderer implements DrawHook {
                 },
               );
               w.onmessage = e => {
+                counters.vehicles.done++;
                 resolve(e.data);
                 w.terminate();
               };
@@ -337,6 +342,7 @@ export class VehicleRenderer implements DrawHook {
       })),
     }));
     endUpload();
+    [this.gbufferPipe, this.glassPipe, this.shadowPipe] = await pipes;
     this.ready = true;
   }
 

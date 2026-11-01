@@ -17,6 +17,8 @@ import {baseFarOf} from '../city/lod.ts';
 import {isolate, labInfo, type LabInfo, type LabSpec} from '../city/lab.ts';
 import {generateLayout, type CityLayout} from '../city/layout.ts';
 import type {RoadGeom} from '../city/roadgeom.ts';
+import {buildSkyline, SKYLINE_N} from '../city/skyline.ts';
+import {Heightfield} from '../city/terrain.ts';
 
 export type WorkerRequest =
   | {
@@ -46,6 +48,8 @@ export interface LayoutSummary {
 
 let layout: CityLayout | null = null;
 let ctx: TileContext | null = null;
+/** Primary: the skyline map, built once the base is on its way. */
+let skyline: (() => Float32Array) | null = null;
 
 const post = (msg: unknown, transfer: Transferable[] = []) =>
   (self as unknown as Worker).postMessage(msg, transfer);
@@ -75,18 +79,24 @@ function clusterTransfer(c: ClusterData): Transferable[] {
 
 function init(req: Extract<WorkerRequest, {type: 'init'}>) {
   const params = PRESETS[req.cityType];
+  // Primary: progress messages, and each layout step as a span.
+  let step = '';
+  let stepT = 0;
+  const progress = (msg: string, f: number) => {
+    if (step) span(`layout: ${step}`, stepT);
+    step = msg;
+    stepT = abs();
+    post({type: 'progress', msg, f});
+  };
   layout = timed('generateLayout', () =>
-    generateLayout(
-      params,
-      req.seed,
-      req.primary ? (msg, f) => post({type: 'progress', msg, f}) : undefined,
-    ),
+    generateLayout(params, req.seed, req.primary ? progress : undefined),
   );
   // The lab filters the finished layout, so generation is unchanged.
   const iso = req.lab ? isolate(layout, req.lab) : null;
   if (iso) layout = iso.layout;
   if (!req.primary) return;
   const lay = layout;
+  post({type: 'progress', msg: 'Building street meshes', f: 0.72});
   const base = timed('buildBase', () => buildBase(lay));
   ctx = timed('makeTileContext', () =>
     makeTileContext(lay, base.geom, base.roadMask),
@@ -134,6 +144,12 @@ function init(req: Extract<WorkerRequest, {type: 'init'}>) {
       base.landUse.buffer,
     ],
   );
+  const hf = new Heightfield(
+    lay.params.size,
+    terrain.heights.cell,
+    base.terrainHeights,
+  );
+  skyline = () => buildSkyline(lay.buildings, hf, lay.params.size);
 }
 
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
@@ -142,6 +158,12 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     if (req.type === 'init') {
       init(req);
       post({type: 'ready'});
+      if (skyline) {
+        // (After 'ready': the other workers start on tiles meanwhile.)
+        const sky = timed('buildSkyline', skyline);
+        skyline = null;
+        post({type: 'skyline', sky, n: SKYLINE_N}, [sky.buffer]);
+      }
     } else if (req.type === 'band') {
       if (!layout) throw new Error('band before init');
       const lay = layout;

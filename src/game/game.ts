@@ -234,7 +234,10 @@ export class Game {
   }
 
   async init() {
-    this.renderer = await Renderer.create(this.gpu);
+    // Everything slow starts here and runs at once: pipeline compiles and
+    // the texture worker (Renderer.create), the city workers (loadCity) and
+    // the vehicle workers. Pipelines are awaited only before the first frame.
+    this.renderer = Renderer.create(this.gpu);
     this.renderer.offBits = this.opts.off ?? 0;
     this.applySettings();
     if (this.opts.prof) {
@@ -247,35 +250,35 @@ export class Game {
       this.renderer.frameBuffer,
       this.renderer.shadowViewBuffers,
     );
-    this.rain = timed(
-      'rain pipeline (sync)',
-      () =>
-        new RainRenderer(
-          this.renderer.device,
-          this.renderer.frameBuffer,
-          'rgba16float',
-        ),
+    this.rain = new RainRenderer(
+      this.renderer.device,
+      this.renderer.frameBuffer,
+      'rgba16float',
     );
-    this.sprites = timed(
-      'sprite pipelines (sync)',
-      () =>
-        new LightSprites(
-          this.renderer.device,
-          this.renderer.frameBuffer,
-          'rgba16float',
-        ),
+    this.sprites = new LightSprites(
+      this.renderer.device,
+      this.renderer.frameBuffer,
+      'rgba16float',
     );
     this.renderer.hooks.push(this.vehicles, this.rain, this.sprites);
     this.rain.density = this.settings.rain;
-    const progress = this.progress.bind(this);
-    progress('Building vehicles from NURBS', 0.02);
-    await Promise.all([
-      timedAsync(
-        'vehicles init',
-        this.vehicles.init(GBUFFER_FORMATS, 'rgba16float'),
-      ),
-      timedAsync('city load', this.loadCity(this.cityType, this.seed)),
+    const gpuReady = Promise.all([
+      this.renderer.ready,
+      this.rain.ready,
+      this.sprites.ready,
     ]);
+    gpuReady.catch(() => {}); // (awaited below; no unhandled rejection meanwhile)
+    const city = timedAsync(
+      'city load',
+      this.loadCity(this.cityType, this.seed),
+    );
+    const vehicles = timedAsync(
+      'vehicles init',
+      this.vehicles.init(GBUFFER_FORMATS, 'rgba16float'),
+    );
+    await Promise.all([city, vehicles]);
+    this.progress('Compiling shaders', 0.99);
+    await timedAsync('wait: pipelines + textures', gpuReady);
     timed('setupWorld', () => this.setupWorld());
     this.ui = new UI(this);
     if (this.opts.camera) {
