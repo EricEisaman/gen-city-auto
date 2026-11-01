@@ -101,12 +101,116 @@ fn taa(@builtin(global_invocation_id) id: vec3u) {
   textureStore(taaOut, id.xy, vec4f(max(outC, vec3f(0.0)), 1.0));
 }
 
+// --- TAAU: temporal upsampling from the internal render resolution -----------
+// (Render scale < 100%.) The current frame and its depth / motion are at the
+// internal resolution, the history and the output at the display resolution.
+// Internal pixel i shaded the scene at uv (i + 0.5) / internalSize shifted by
+// the jitter, so each output pixel reconstructs the current frame from the
+// 3x3 internal samples around that point, and trusts it in proportion to how
+// close the nearest sample landed: over the jitter sequence every output pixel
+// gets samples near its centre and the history converges to output-res detail.
+
+@compute @workgroup_size(8, 8)
+fn taau(@builtin(global_invocation_id) id: vec3u) {
+  let osize = vec2u(textureDimensions(taaOut));
+  if (any(id.xy >= osize)) { return; }
+  let isize = vec2i(textureDimensions(taaCurrent));
+  let isf = vec2f(isize);
+  // Output pixels per internal pixel (1 / render scale).
+  let ratio = vec2f(osize) / isf;
+  let uv = (vec2f(id.xy) + 0.5) / vec2f(osize);
+  // The jitter is in NDC (y up): geometry moved by +jitter, so the sample of
+  // internal pixel i sits at (i + 0.5) / isize - jUv.
+  let jUv = vec2f(frame.jitter.x, -frame.jitter.y) * 0.5;
+  let q = (uv + jUv) * isf - 0.5;
+  let base = vec2i(floor(q + 0.5));
+  var m1 = vec3f(0.0);
+  var m2 = vec3f(0.0);
+  var closest = 0.0;
+  var closestP = clamp(base, vec2i(0), isize - 1);
+  // Two reconstructions of the current frame: `wide` (a Gaussian over internal
+  // pixels: smooth, for pixels without history) and `sharp` (a Gaussian over
+  // display pixels: only samples that landed near this pixel count).
+  var wideSum = vec3f(0.0);
+  var wideW = 0.0;
+  var sharpSum = vec3f(0.0);
+  var sharpW = 0.0;
+  for (var y = -1; y <= 1; y++) {
+    for (var x = -1; x <= 1; x++) {
+      let k = base + vec2i(x, y);
+      let kc = clamp(k, vec2i(0), isize - 1);
+      let tw = tonemapWeight(textureLoad(taaCurrent, kc, 0).rgb);
+      let c = rgb2ycocg(tw);
+      m1 += c;
+      m2 += c * c;
+      let d = textureLoad(taaDepth, kc, 0);
+      if (d > closest) {
+        closest = d;
+        closestP = kc;
+      }
+      // Blackman-Harris-like Gaussians.
+      let di = vec2f(k) - q;
+      let w = exp(-2.29 * dot(di, di));
+      wideSum += tw * w;
+      wideW += w;
+      let dd = di * ratio;
+      let ws = exp(-2.29 * dot(dd, dd));
+      sharpSum += tw * ws;
+      sharpW += ws;
+    }
+  }
+  let wideT = wideSum / max(wideW, 1e-5);
+  let wide = wideT / max(1.0 - luminance(wideT), 1e-4);
+  let sharpT = select(wideT, sharpSum / max(sharpW, 1e-5), sharpW > 1e-3);
+  let sharp = sharpT / max(1.0 - luminance(sharpT), 1e-4);
+  // Confidence: the sample weight that landed near this display pixel.
+  let conf = clamp(sharpW, 0.0, 1.0);
+  let mean = m1 / 9.0;
+  let sd = sqrt(max(m2 / 9.0 - mean * mean, vec3f(0.0)));
+  let motion = textureLoad(taaMotion, closestP, 0).xy;
+  let prevUv = uv - motion;
+  var outC = wide;
+  if (frame.time.z > 1.0 && all(prevUv > vec2f(0.0)) && all(prevUv < vec2f(1.0))) {
+    let hist = sampleHistoryCatmull(prevUv);
+    let hy = rgb2ycocg(tonemapWeight(hist));
+    let speed = length(motion * vec2f(osize));
+    // Moving pixels lean on the smooth reconstruction (the history is
+    // resampled and clipped there anyway).
+    let mv = clamp(speed / 6.0, 0.0, 1.0);
+    let cur = mix(sharp, wide, mv * (1.0 - conf));
+    let gamma = mix(1.25, 0.75, clamp(speed / 8.0, 0.0, 1.0));
+    let lo = mean - sd * gamma;
+    let hi = mean + sd * gamma;
+    let center = (hi + lo) * 0.5;
+    let ext = max((hi - lo) * 0.5, vec3f(1e-4));
+    let off = hy - center;
+    let unit = abs(off / ext);
+    let mx = max(unit.x, max(unit.y, unit.z));
+    var clipped = hy;
+    if (mx > 1.0) { clipped = center + off / mx; }
+    let hc = ycocg2rgb(clipped);
+    let histRgb = hc / max(1.0 - luminance(hc), 1e-4);
+    // The current frame's weight: the usual TAA rate scaled by the sample's
+    // confidence (a floor keeps moving content from going stale).
+    let a = (1.0 - mix(0.92, 0.8, clamp(speed / 20.0, 0.0, 1.0))) * max(conf, mix(0.08, 0.5, mv));
+    let wc = 1.0 / (1.0 + luminance(cur));
+    let wh = 1.0 / (1.0 + luminance(histRgb));
+    outC = (cur * a * wc + histRgb * (1.0 - a) * wh) / (a * wc + (1.0 - a) * wh);
+  }
+  textureStore(taaOut, id.xy, vec4f(max(outC, vec3f(0.0)), 1.0));
+}
+
 // --- Motion blur + depth of field (cinematic cameras) -------------------------
 
 @group(1) @binding(0) var mbSrc: texture_2d<f32>;
 @group(1) @binding(1) var mbMotion: texture_2d<f32>;
 @group(1) @binding(2) var mbDepth: texture_depth_2d;
 @group(1) @binding(3) var mbOut: texture_storage_2d<rgba16float, write>;
+
+// An image pixel's depth / motion pixel (the same pixel at 100% render scale).
+fn mbI(p: vec2i, toI: vec2f, isize: vec2i) -> vec2i {
+  return min(vec2i((vec2f(p) + 0.5) * toI), isize - 1);
+}
 
 @compute @workgroup_size(8, 8)
 fn motionDof(@builtin(global_invocation_id) id: vec3u) {
@@ -115,8 +219,11 @@ fn motionDof(@builtin(global_invocation_id) id: vec3u) {
   if (any(id.xy >= size)) { return; }
   let p = vec2i(id.xy);
   let uv = (vec2f(id.xy) + 0.5) / vec2f(size);
+  // Depth and motion may be at a lower (internal) resolution than the image.
+  let isize = vec2i(textureDimensions(mbDepth));
+  let toI = vec2f(isize) / vec2f(size);
   var c = textureLoad(mbSrc, p, 0).rgb;
-  let d = textureLoad(mbDepth, p, 0);
+  let d = textureLoad(mbDepth, mbI(p, toI, isize), 0);
   let z = frame.camPos.w / max(d, 1e-7);
   // Depth of field: gather on a golden-angle disc, radius from circle of confusion.
   let aperture = frame.wind.z;
@@ -130,7 +237,7 @@ fn motionDof(@builtin(global_invocation_id) id: vec3u) {
         let r = sqrt(f32(k) / 20.0) * coc;
         let a = f32(k) * 2.39996;
         let q = clamp(p + vec2i(vec2f(cos(a), sin(a)) * r), vec2i(0), vec2i(size) - 1);
-        let qd = textureLoad(mbDepth, q, 0);
+        let qd = textureLoad(mbDepth, mbI(q, toI, isize), 0);
         let qz = frame.camPos.w / max(qd, 1e-7);
         let qcoc = clamp(aperture * abs(qz - focus) / max(qz, 0.1) * 10.0, 0.0, 5.0);
         // Sharp foreground must not bleed onto a blurred background.
@@ -144,7 +251,7 @@ fn motionDof(@builtin(global_invocation_id) id: vec3u) {
   // Motion blur along this pixel's velocity (180-degree shutter).
   let amount = frame.exposure.x;
   if (amount > 0.0) {
-    var v = textureLoad(mbMotion, p, 0).xy * vec2f(size) * 0.5 * amount;
+    var v = textureLoad(mbMotion, mbI(p, toI, isize), 0).xy * vec2f(size) * 0.5 * amount;
     let l = length(v);
     if (l > 1.0) {
       v = v * min(l, 8.0) / l;
@@ -153,7 +260,7 @@ fn motionDof(@builtin(global_invocation_id) id: vec3u) {
       for (var k = 1; k <= 10; k++) {
         let t = f32(k) / 10.0 - 0.55;
         let q = clamp(vec2i(vec2f(p) + v * t), vec2i(0), vec2i(size) - 1);
-        let qd = textureLoad(mbDepth, q, 0);
+        let qd = textureLoad(mbDepth, mbI(q, toI, isize), 0);
         // Don't smear a static background over a sharp foreground object.
         let w = select(1.0, 0.2, qd > d * 1.05);
         sum += textureLoad(mbSrc, q, 0).rgb * w;
@@ -448,7 +555,7 @@ fn lensDrops(uv: vec2f) -> vec2f {
   // Contrast-adaptive sharpening: restores the detail TAA softens, limited to
   // the local min/max so edges don't ring. Weaker on bright highlights.
   {
-    let px = frame.resolution.zw;
+    let px = 1.0 / vec2f(textureDimensions(tmColor));
     let n = textureSampleLevel(tmColor, linearSampler, uv + vec2f(0.0, -px.y), 0.0).rgb;
     let s = textureSampleLevel(tmColor, linearSampler, uv + vec2f(0.0, px.y), 0.0).rgb;
     let e = textureSampleLevel(tmColor, linearSampler, uv + vec2f(px.x, 0.0), 0.0).rgb;
@@ -459,13 +566,13 @@ fn lensDrops(uv: vec2f) -> vec2f {
     let cmn = mn / (1.0 + mn);
     let cmx = mx / (1.0 + mx);
     let amp = sqrt(clamp(min(cmn, 1.0 - cmx) / max(cmx, vec3f(1e-4)), vec3f(0.0), vec3f(1.0)));
-    let k = amp * 0.22 * (1.0 - frame.exposure.x * 0.5);
+    let k = amp * frame.upscale.z * (1.0 - frame.exposure.x * 0.5);
     c = clamp(c + (4.0 * c - (n + s + e + w)) * k / (1.0 + 4.0 * k), mn, mx);
   }
   let bloom = textureSampleLevel(tmBloom, linearSampler, uv, 0.0).rgb;
   let night = frame.time.w;
   // Six levels weighted 0.6^k sum to ~2.4.
-  c = mix(c, bloom / 2.4, mix(0.05, 0.12, night) + frame.weather.y * 0.06);
+  c = mix(c, bloom / 2.4, (mix(0.05, 0.12, night) + frame.weather.y * 0.06) * frame.extra.w);
   c += textureSampleLevel(tmRays, linearSampler, uv, 0.0).rgb;
   c *= tmExpo.value;
   // White balance + split tone by time of day and weather (before tonemapping).

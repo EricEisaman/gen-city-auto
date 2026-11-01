@@ -19,8 +19,8 @@ import terrainWgsl from '../shaders/terrain.wgsl';
 import {computeSky, type SkyState} from '../world/sky.ts';
 import {ClusterPool, type PoolHandle} from './cluster-pool.ts';
 import {F, FrameData} from './frame.ts';
-import {CpuProfiler, GpuProfiler} from './profiler.ts';
-import {OFF_BITS, hasOff, offWords, type OffName} from './ablation.ts';
+import {CpuProfiler, FrameTimer, GpuProfiler} from './profiler.ts';
+import {OFF_BITS, hasOff, offWords, orOff, type OffName} from './ablation.ts';
 import {receiverPlanes} from './shadow-cull.ts';
 import {
   CACHE_TOL,
@@ -85,7 +85,6 @@ export const GBUFFER_FORMATS: GPUTextureFormat[] = [
   'rg16float',
 ];
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
-const SHADOW_SIZE = 2048;
 const CASCADES = 4;
 const VIEWS = 1 + CASCADES;
 const MAX_LIGHTS = 1024;
@@ -102,23 +101,40 @@ const halton = (i: number, b: number) => {
   return r;
 };
 
+/** Internal-resolution targets (render scale x the canvas). */
 interface Targets {
   w: number;
   h: number;
   gbuf: GPUTexture[];
   depth: GPUTexture;
   lit: GPUTexture;
-  history: GPUTexture[];
   hiz: GPUTexture;
   hizMips: number;
-  bloomDown: GPUTexture[];
-  bloomUp: GPUTexture[];
-  clouds: GPUTexture[];
   ao: GPUTexture;
   /** Half-res reflections (lighting.wgsl reflectHalf): skyline, SSR. */
   refl: GPUTexture[];
   rays: GPUTexture;
 }
+
+/** Display-resolution targets (the canvas size). */
+interface OutTargets {
+  w: number;
+  h: number;
+  history: GPUTexture[];
+  bloomDown: GPUTexture[];
+  bloomUp: GPUTexture[];
+  /** Motion blur / DOF output when upscaling (else it writes `lit`). */
+  post: GPUTexture | null;
+}
+
+/** Cloud march modes (frame.extra) per cloud quality: off .. ultra. */
+export const CLOUD_LEVELS = [
+  {div: 8, mode: 0, steps: 1},
+  {div: 8, mode: 2, steps: 0.6},
+  {div: 4, mode: 2, steps: 1},
+  {div: 4, mode: 1, steps: 1},
+  {div: 2, mode: 2, steps: 1},
+] as const;
 
 export class Renderer {
   readonly gpu: Gpu;
@@ -135,6 +151,32 @@ export class Renderer {
   cullStats = false;
   /** Scales the fine-detail cull distances (cmesh CLUSTER_FAR_SHIFT). */
   farCullScale = 1;
+  /**
+   * Internal render resolution as a fraction of the canvas (per axis). Below
+   * 1 the G-buffer and every screen-space pass run smaller and TAA upsamples
+   * into the display-resolution history (post.wgsl taau).
+   */
+  renderScale = 1;
+  /** Contrast-adaptive sharpening in tonemap (0.22 = the original look). */
+  sharpen = 0.22;
+  /** Bloom strength (0 = off: only the exposure meter's levels are built). */
+  bloom = 1;
+  /** Cloud quality 0..4 (CLOUD_LEVELS): off, low, medium, high, ultra. */
+  cloudQuality = 3;
+  /** Shadow map size per cascade (setShadowSize). */
+  shadowSize = 2048;
+  /** Feature switches from the settings (ablation bits, OR'ed with offBits). */
+  userOff = 0;
+  /**
+   * Whole-frame GPU time (ms, smoothed) when measureGpu is set: timestamps
+   * around the frame if available, else submit -> onSubmittedWorkDone.
+   */
+  gpuMs = 0;
+  measureGpu = false;
+  private frameTimer: FrameTimer | null = null;
+  private gpuPending = false;
+  private gpuSamples = 0;
+  private gpuFallbackMs = 0;
   private cullStatsBuf: GPUBuffer | null = null;
   private cullStatsBusy = false;
 
@@ -179,6 +221,10 @@ export class Renderer {
 
   private p!: Record<string, GPURenderPipeline | GPUComputePipeline>;
   private targets: Targets | null = null;
+  private out: OutTargets | null = null;
+  private clouds: GPUTexture[] = [];
+  /** Frames rendered into the current cloud textures (their history age). */
+  private cloudFrames = 0;
   private frameIndex = 0;
   private prevViewProj = mat4.create();
   private lutsReady = false;
@@ -210,6 +256,8 @@ export class Renderer {
   private splitPasses = false;
   /** Ablation bits (?off=..., see ablation.ts); 0 normally. */
   offBits = 0;
+  /** offBits | userOff for the frame being rendered. */
+  private bits = 0;
   /** Ablation: city material ids (bit per id) drawn as a flat colour. */
   offMats = 0;
 
@@ -298,21 +346,7 @@ export class Renderer {
       {},
       [1, 1],
     );
-    this.shadowMap = device.createTexture({
-      label: 'shadow/cascades',
-      size: [SHADOW_SIZE, SHADOW_SIZE, CASCADES],
-      format: DEPTH_FORMAT,
-      usage:
-        GPUTextureUsage.RENDER_ATTACHMENT |
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_DST,
-    });
-    this.shadowStatic = device.createTexture({
-      label: 'shadow/static cascades',
-      size: [SHADOW_SIZE, SHADOW_SIZE, CASCADES],
-      format: DEPTH_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-    });
+    [this.shadowMap, this.shadowStatic] = this.createShadowMaps();
     const lut = (label: string, w: number, h: number, d = 1) =>
       device.createTexture({
         label,
@@ -434,6 +468,37 @@ export class Renderer {
           }),
         );
     }
+  }
+
+  private createShadowMaps(): [GPUTexture, GPUTexture] {
+    const n = this.shadowSize;
+    return [
+      this.device.createTexture({
+        label: 'shadow/cascades',
+        size: [n, n, CASCADES],
+        format: DEPTH_FORMAT,
+        usage:
+          GPUTextureUsage.RENDER_ATTACHMENT |
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST,
+      }),
+      this.device.createTexture({
+        label: 'shadow/static cascades',
+        size: [n, n, CASCADES],
+        format: DEPTH_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      }),
+    ];
+  }
+
+  /** Change the shadow map resolution (recreates both cascade arrays). */
+  setShadowSize(n: number) {
+    if (n === this.shadowSize) return;
+    this.shadowSize = n;
+    this.shadowMap.destroy();
+    this.shadowStatic.destroy();
+    [this.shadowMap, this.shadowStatic] = this.createShadowMaps();
+    this.shadowCache.fill(null);
   }
 
   static async create(gpu: Gpu): Promise<Renderer> {
@@ -615,6 +680,7 @@ export class Renderer {
           compute('pipeline/reflections half res', lightMod, 'reflectHalf'),
         ],
         ['taa', compute('pipeline/taa', postMod, 'taa')],
+        ['taau', compute('pipeline/taa upsample', postMod, 'taau')],
         [
           'motionDof',
           compute('pipeline/motion blur + dof', postMod, 'motionDof'),
@@ -677,12 +743,12 @@ export class Renderer {
   }
 
   private off(name: OffName) {
-    return hasOff(this.offBits, name);
+    return hasOff(this.bits, name);
   }
 
   /** Hooks minus the ones switched off by ablation flags. */
   private activeHooks() {
-    if (!this.offBits) return this.hooks;
+    if (!this.bits) return this.hooks;
     return this.hooks.filter(
       hk => !(hk.name && hk.name in OFF_BITS && this.off(hk.name as OffName)),
     );
@@ -697,7 +763,9 @@ export class Renderer {
     this.cpass?.end();
     this.cpass = enc.beginComputePass({
       label: `pass/${label}`,
-      timestampWrites: this.prof?.writes(label),
+      timestampWrites:
+        this.prof?.writes(label) ??
+        (label === 'sky luts' ? this.frameTimer?.first() : undefined),
     });
     return this.cpass;
   }
@@ -722,7 +790,9 @@ export class Renderer {
     let pass = enc.beginRenderPass({
       ...desc,
       label: `pass/${label}`,
-      timestampWrites: prof?.writes(label),
+      timestampWrites:
+        prof?.writes(label) ??
+        (label === 'tonemap' ? this.frameTimer?.last() : undefined),
     });
     const cont: GPURenderPassDescriptor = {
       colorAttachments: [...desc.colorAttachments].map(a =>
@@ -898,10 +968,95 @@ export class Renderer {
   // ---------------------------------------------------------------------------
   // Targets
 
-  private ensureTargets() {
+  private tex(
+    label: string,
+    format: GPUTextureFormat,
+    tw: number,
+    th: number,
+    usage: number,
+    mips = 1,
+  ) {
+    return this.device.createTexture({
+      label,
+      size: [Math.max(1, tw), Math.max(1, th)],
+      format,
+      usage,
+      mipLevelCount: mips,
+    });
+  }
+
+  /** Internal render size for a canvas of ow x oh at the current scale. */
+  internalSize(ow: number, oh: number): [number, number] {
+    const s = Math.min(1, Math.max(0.25, this.renderScale));
+    if (s >= 0.999) return [ow, oh];
+    return [Math.max(1, Math.round(ow * s)), Math.max(1, Math.round(oh * s))];
+  }
+
+  /** Display-resolution targets: TAA history, bloom chain, post. */
+  private ensureOut(scaled: boolean) {
     const {canvas} = this.gpu;
     const w = canvas.width;
     const h = canvas.height;
+    let o = this.out;
+    if (!o || o.w !== w || o.h !== h) {
+      if (o)
+        for (const x of [...o.history, ...o.bloomDown, ...o.bloomUp, o.post])
+          x?.destroy();
+      const ST =
+        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
+      const bloomDown: GPUTexture[] = [];
+      const bloomUp: GPUTexture[] = [];
+      for (let i = 0; i < 6; i++) {
+        const bw = Math.ceil(w / 2 ** (i + 1));
+        const bh = Math.ceil(h / 2 ** (i + 1));
+        bloomDown.push(this.tex(`bloom/down${i}`, 'rgba16float', bw, bh, ST));
+        bloomUp.push(this.tex(`bloom/up${i}`, 'rgba16float', bw, bh, ST));
+      }
+      o = this.out = {
+        w,
+        h,
+        history: [0, 1].map(i =>
+          this.tex(`taa/history${i}`, 'rgba16float', w, h, ST),
+        ),
+        bloomDown,
+        bloomUp,
+        post: null,
+      };
+      // The history is gone: start the jitter / reprojection over.
+      this.frameIndex = 0;
+    }
+    if (scaled && !o.post)
+      o.post = this.tex(
+        'post/motion blur + dof',
+        'rgba16float',
+        w,
+        h,
+        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      );
+    // Clouds: a fraction of the display size (their own quality setting,
+    // independent of the render scale, so a scale change keeps their history).
+    const lv = CLOUD_LEVELS[Math.max(0, Math.min(4, this.cloudQuality))];
+    const cw = Math.ceil(w / lv.div);
+    const ch = Math.ceil(h / lv.div);
+    if (this.clouds[0]?.width !== cw || this.clouds[0]?.height !== ch) {
+      for (const x of this.clouds) x.destroy();
+      this.clouds = [0, 1].map(i =>
+        this.tex(
+          `clouds/accum${i}`,
+          'rgba16float',
+          cw,
+          ch,
+          GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        ),
+      );
+      this.cloudFrames = 0;
+    }
+    return o;
+  }
+
+  private ensureTargets() {
+    const {canvas} = this.gpu;
+    const [w, h] = this.internalSize(canvas.width, canvas.height);
     if (this.targets && this.targets.w === w && this.targets.h === h)
       return this.targets;
     const t = this.targets;
@@ -910,32 +1065,14 @@ export class Renderer {
         ...t.gbuf,
         t.depth,
         t.lit,
-        ...t.history,
         t.hiz,
-        ...t.bloomDown,
-        ...t.bloomUp,
-        ...t.clouds,
         t.ao,
+        ...t.refl,
         t.rays,
       ])
         x.destroy();
     }
-    const d = this.device;
-    const tex = (
-      label: string,
-      format: GPUTextureFormat,
-      tw: number,
-      th: number,
-      usage: number,
-      mips = 1,
-    ) =>
-      d.createTexture({
-        label,
-        size: [Math.max(1, tw), Math.max(1, th)],
-        format,
-        usage,
-        mipLevelCount: mips,
-      });
+    const tex = this.tex.bind(this);
     const RT =
       GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
     const ST =
@@ -944,14 +1081,6 @@ export class Renderer {
     const hw = Math.ceil(w / 2);
     const hh = Math.ceil(h / 2);
     const hizMips = Math.floor(Math.log2(Math.max(hw, hh))) + 1;
-    const bloomDown: GPUTexture[] = [];
-    const bloomUp: GPUTexture[] = [];
-    for (let i = 0; i < 6; i++) {
-      const bw = Math.ceil(w / 2 ** (i + 1));
-      const bh = Math.ceil(h / 2 ** (i + 1));
-      bloomDown.push(tex(`bloom/down${i}`, 'rgba16float', bw, bh, ST));
-      bloomUp.push(tex(`bloom/up${i}`, 'rgba16float', bw, bh, ST));
-    }
     this.targets = {
       w,
       h,
@@ -966,20 +1095,8 @@ export class Renderer {
         h,
         ST | GPUTextureUsage.RENDER_ATTACHMENT,
       ),
-      history: [0, 1].map(i => tex(`taa/history${i}`, 'rgba16float', w, h, ST)),
       hiz: tex('hiz/pyramid', 'r32float', hw, hh, ST, hizMips),
       hizMips,
-      bloomDown,
-      bloomUp,
-      clouds: [0, 1].map(i =>
-        tex(
-          `clouds/accum${i}`,
-          'rgba16float',
-          Math.ceil(w / 4),
-          Math.ceil(h / 4),
-          ST,
-        ),
-      ),
       ao: tex('ssao/half res', 'rgba16float', hw, hh, ST),
       refl: [
         tex('reflect/skyline half res', 'rgba16float', hw, hh, ST),
@@ -987,7 +1104,7 @@ export class Renderer {
       ],
       rays: tex('post/god rays', 'rgba16float', hw, hh, ST),
     };
-    this.frameIndex = 0;
+    // (A render-scale change keeps the display-res history: no reset.)
     this.useOcclusion = false;
     return this.targets;
   }
@@ -1064,7 +1181,7 @@ export class Renderer {
         cross3(Math.abs(lz[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0], lz),
       );
       const ly = cross3(lz, lx);
-      const texel = (radius * 2) / SHADOW_SIZE;
+      const texel = (radius * 2) / this.shadowSize;
       const cx =
         Math.round(
           (center[0] * lx[0] + center[1] * lx[1] + center[2] * lx[2]) / texel,
@@ -1184,11 +1301,17 @@ export class Renderer {
 
   render(v: ViewParams) {
     const d = this.device;
+    this.bits = orOff(this.offBits, this.userOff);
     const t = this.ensureTargets();
     const w = t.w;
     const h = t.h;
-    const aspect = w / h;
+    const scaled = w !== this.gpu.canvas.width || h !== this.gpu.canvas.height;
+    const o = this.ensureOut(scaled);
+    const ow = o.w;
+    const oh = o.h;
+    const aspect = ow / oh;
     const fd = this.frame;
+    const cloudLv = CLOUD_LEVELS[Math.max(0, Math.min(4, this.cloudQuality))];
 
     // Camera.
     const fwd = norm3(sub3(v.target, v.eye));
@@ -1196,7 +1319,10 @@ export class Renderer {
     const up = cross3(right, fwd);
     const view = mat4.lookAt(mat4.create(), v.eye, v.target, [0, 1, 0]);
     const proj = mat4.perspectiveReverseZ(mat4.create(), v.fov, aspect, v.near);
-    const jIndex = (this.frameIndex % 8) + 1;
+    // Upsampling needs a longer jitter sequence: each display pixel should
+    // see an internal sample land near its centre.
+    const jn = scaled ? (w / ow < 0.7 ? 32 : 16) : 8;
+    const jIndex = (this.frameIndex % jn) + 1;
     const jx = ((halton(jIndex, 2) - 0.5) * 2) / w;
     const jy = ((halton(jIndex, 3) - 0.5) * 2) / h;
     const prevJ = [fd.f[F.jitter], fd.f[F.jitter + 1]];
@@ -1218,7 +1344,7 @@ export class Renderer {
     const shadowsOn =
       (sky.sunUp > 0 || sky.moonLight > 0) && !this.off('shadows');
     const useCache = shadowsOn && !this.off('shcache');
-    const cacheKey = `${aspect},${this.offBits}`;
+    const cacheKey = `${aspect},${this.bits}`;
     const fresh = this.cascadeMatrices(
       v.eye,
       fwd,
@@ -1233,7 +1359,7 @@ export class Renderer {
     for (let c = 0; c < CASCADES; c++) {
       const k = this.shadowCache[c];
       fresh[c].key = cacheKey;
-      if (useCache && cacheValid(k, c, fresh[c], SHADOW_SIZE)) {
+      if (useCache && cacheValid(k, c, fresh[c], this.shadowSize)) {
         this.cascadeMats[c] = k.mat;
         this.cascadeRadii[c] = k.radius;
         this.shadowRedraw[c] = false;
@@ -1305,7 +1431,20 @@ export class Renderer {
       v.interior ? 2 : v.lensDrops ? 1 : 0,
       sky.moonPhase,
     ]);
-    const [offLo, offHi] = offWords(this.offBits);
+    fd.set(F.upscale, [
+      ow,
+      oh,
+      // Upsampled frames get a little more sharpening.
+      this.sharpen + (scaled ? (1 - w / ow) * 0.25 : 0),
+      w / ow,
+    ]);
+    fd.set(F.extra, [
+      this.off('clouds') ? 0 : cloudLv.mode,
+      cloudLv.steps,
+      this.cloudFrames,
+      this.bloom,
+    ]);
+    const [offLo, offHi] = offWords(this.bits);
     new Uint32Array(fd.f.buffer).set([offLo, this.offMats, offHi], F.off);
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);
     d.queue.writeBuffer(
@@ -1365,7 +1504,7 @@ export class Renderer {
               // 1.5 x split / 1024) plus the 3x3 PCF footprint, doubled.
               2 *
                 (1.5 * (splits[c] / 1024) +
-                  (3 * this.cascadeRadii[c]) / SHADOW_SIZE) +
+                  (3 * this.cascadeRadii[c]) / this.shadowSize) +
                 0.5 +
                 tol,
             ),
@@ -1376,6 +1515,15 @@ export class Renderer {
     this.cpuProf?.mark('render setup');
     const enc = d.createCommandEncoder({label: 'frame'});
     this.prof?.beginFrame();
+    // Whole-frame GPU timing (dynamic render scale / readout), not while the
+    // pass profiler owns the timestamps.
+    if (this.measureGpu && !this.prof && this.gpu.features.timestamp)
+      this.frameTimer ??= new FrameTimer(d);
+    else if (this.frameTimer && (!this.measureGpu || this.prof)) {
+      this.frameTimer.destroy();
+      this.frameTimer = null;
+    }
+    this.frameTimer?.beginFrame();
     const hooks = this.activeHooks();
     for (const hk of hooks) hk.prepare?.(enc);
 
@@ -1487,36 +1635,6 @@ export class Renderer {
         ),
       );
       pass.dispatchWorkgroups(4, 4);
-
-      // Clouds (quarter resolution, temporal).
-      pass = this.compute(enc, 'clouds');
-      const cIn = t.clouds[this.frameIndex % 2];
-      const cOut = t.clouds[(this.frameIndex + 1) % 2];
-      if (!this.off('clouds')) {
-        pass.setPipeline(this.p.clouds as GPUComputePipeline);
-        pass.setBindGroup(
-          0,
-          this.bg(
-            'clouds',
-            0,
-            [this.ubuf(this.frameBuffer), this.linearRepeat],
-            'bg/clouds/frame',
-          ),
-        );
-        pass.setBindGroup(
-          1,
-          this.bg(
-            'clouds',
-            1,
-            [this.cloudNoise.createView(), cIn.createView(), cOut.createView()],
-            'bg/clouds',
-          ),
-        );
-        pass.dispatchWorkgroups(
-          Math.ceil(cOut.width / 8),
-          Math.ceil(cOut.height / 8),
-        );
-      }
 
       // Cluster culling for the main view and each shadow cascade.
       const hizView = t.hiz.createView({label: 'hiz/all mips'});
@@ -1654,7 +1772,7 @@ export class Renderer {
         enc.copyTextureToTexture(
           {texture: this.shadowStatic, origin: [0, 0, c]},
           {texture: this.shadowMap, origin: [0, 0, c]},
-          [SHADOW_SIZE, SHADOW_SIZE, 1],
+          [this.shadowSize, this.shadowSize, 1],
         );
         rp = this.renderPass(
           enc,
@@ -1817,6 +1935,42 @@ export class Renderer {
           Math.ceil(Math.max(1, t.hiz.height >> m) / 8),
         );
       }
+      // Clouds (reduced resolution, temporal; skips texels hidden behind
+      // this frame's geometry, so after the Hi-Z pyramid).
+      pass = this.compute(enc, 'clouds');
+      {
+        const cIn = this.clouds[this.frameIndex % 2];
+        const cOut = this.clouds[(this.frameIndex + 1) % 2];
+        pass.setPipeline(this.p.clouds as GPUComputePipeline);
+        pass.setBindGroup(
+          0,
+          this.bg(
+            'clouds',
+            0,
+            [this.ubuf(this.frameBuffer), this.linearRepeat],
+            'bg/clouds/frame',
+          ),
+        );
+        pass.setBindGroup(
+          1,
+          this.bg(
+            'clouds',
+            1,
+            [
+              this.cloudNoise.createView(),
+              cIn.createView(),
+              cOut.createView(),
+              t.hiz.createView({label: 'hiz/all mips (clouds)'}),
+            ],
+            'bg/clouds',
+          ),
+        );
+        pass.dispatchWorkgroups(
+          Math.ceil(cOut.width / 8),
+          Math.ceil(cOut.height / 8),
+        );
+        this.cloudFrames++;
+      }
       // (Also traces sky visibility: runs with ?off=gtao too, writing AO 1.)
       pass = this.compute(enc, 'gtao');
       {
@@ -1849,8 +2003,8 @@ export class Renderer {
     }
 
     // --- Lighting.
-    const histPrev = t.history[this.frameIndex % 2];
-    const histNext = t.history[(this.frameIndex + 1) % 2];
+    const histPrev = o.history[this.frameIndex % 2];
+    const histNext = o.history[(this.frameIndex + 1) % 2];
     {
       const half = !this.off('hrefl');
       const inputs = (pipe: string, refl: boolean, main: boolean) =>
@@ -1868,7 +2022,7 @@ export class Renderer {
             main ? this.transmittance.createView() : null,
             main ? this.apVolume.createView() : null,
             this.linear,
-            main ? t.clouds[(this.frameIndex + 1) % 2].createView() : null,
+            main ? this.clouds[(this.frameIndex + 1) % 2].createView() : null,
             refl ? histPrev.createView() : null,
             main ? t.lit.createView() : null,
             main ? this.ubuf(this.lightBuffer) : null,
@@ -1957,7 +2111,10 @@ export class Renderer {
       const mdof = taa && !this.off('mdof') && blurOrDof;
       // What bloom reads (the resolved frame) and what tonemap reads.
       const resolved = taa ? histNext : t.lit;
-      post = mdof ? t.lit : resolved;
+      // Motion blur / DOF output: the free lit texture, or a display-size
+      // one when upsampling.
+      const mbOut = scaled ? o.post! : t.lit;
+      post = mdof ? mbOut : resolved;
       let pass = this.compute(enc, 'taa');
       const pg0 = (p: string) =>
         this.bg(
@@ -1967,12 +2124,13 @@ export class Renderer {
           `bg/${p}/frame`,
         );
       if (taa) {
-        pass.setPipeline(this.p.taa as GPUComputePipeline);
-        pass.setBindGroup(0, pg0('taa'));
+        const tp = scaled ? 'taau' : 'taa';
+        pass.setPipeline(this.p[tp] as GPUComputePipeline);
+        pass.setBindGroup(0, pg0(tp));
         pass.setBindGroup(
           1,
           this.bg(
-            'taa',
+            tp,
             1,
             [
               t.lit.createView(),
@@ -1981,10 +2139,10 @@ export class Renderer {
               t.depth.createView(),
               histNext.createView(),
             ],
-            'bg/taa',
+            `bg/${tp}`,
           ),
         );
-        pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
+        pass.dispatchWorkgroups(Math.ceil(ow / 8), Math.ceil(oh / 8));
       }
       pass = this.compute(enc, 'god rays');
       if (!this.off('godrays')) {
@@ -2018,38 +2176,40 @@ export class Renderer {
               histNext.createView(),
               t.gbuf[3].createView(),
               t.depth.createView(),
-              t.lit.createView(),
+              mbOut.createView(),
             ],
             'bg/motion blur + dof',
           ),
         );
-        pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
+        pass.dispatchWorkgroups(Math.ceil(ow / 8), Math.ceil(oh / 8));
       }
       pass = this.compute(enc, 'bloom');
       if (!this.off('bloom')) {
+        // (Bloom off in the settings still builds the down chain the
+        // exposure meter reads.)
         pass.setPipeline(this.p.bloomDown as GPUComputePipeline);
         pass.setBindGroup(0, pg0('bloomDown'));
-        for (let i = 0; i < t.bloomDown.length; i++) {
-          const src = i === 0 ? resolved : t.bloomDown[i - 1];
+        for (let i = 0; i < o.bloomDown.length; i++) {
+          const src = i === 0 ? resolved : o.bloomDown[i - 1];
           pass.setBindGroup(
             1,
             this.bg(
               'bloomDown',
               1,
-              [src.createView(), t.bloomDown[i].createView()],
+              [src.createView(), o.bloomDown[i].createView()],
               `bg/bloom down ${i}`,
             ),
           );
           pass.dispatchWorkgroups(
-            Math.ceil(t.bloomDown[i].width / 8),
-            Math.ceil(t.bloomDown[i].height / 8),
+            Math.ceil(o.bloomDown[i].width / 8),
+            Math.ceil(o.bloomDown[i].height / 8),
           );
         }
         pass.setPipeline(this.p.bloomUp as GPUComputePipeline);
         pass.setBindGroup(0, pg0('bloomUp'));
-        for (let i = t.bloomUp.length - 2; i >= 0; i--) {
+        for (let i = o.bloomUp.length - 2; i >= 0 && this.bloom > 0; i--) {
           const src =
-            i === t.bloomUp.length - 2 ? t.bloomDown[i + 1] : t.bloomUp[i + 1];
+            i === o.bloomUp.length - 2 ? o.bloomDown[i + 1] : o.bloomUp[i + 1];
           pass.setBindGroup(
             1,
             this.bg(
@@ -2057,15 +2217,15 @@ export class Renderer {
               1,
               [
                 src.createView(),
-                t.bloomUp[i].createView(),
-                t.bloomDown[i].createView(),
+                o.bloomUp[i].createView(),
+                o.bloomDown[i].createView(),
               ],
               `bg/bloom up ${i}`,
             ),
           );
           pass.dispatchWorkgroups(
-            Math.ceil(t.bloomUp[i].width / 8),
-            Math.ceil(t.bloomUp[i].height / 8),
+            Math.ceil(o.bloomUp[i].width / 8),
+            Math.ceil(o.bloomUp[i].height / 8),
           );
         }
       }
@@ -2077,7 +2237,7 @@ export class Renderer {
         this.bg(
           'exposure',
           1,
-          [t.bloomDown[3].createView(), this.ubuf(this.exposureBuffer)],
+          [o.bloomDown[3].createView(), this.ubuf(this.exposureBuffer)],
           'bg/exposure',
         ),
       );
@@ -2121,7 +2281,7 @@ export class Renderer {
           1,
           [
             post.createView(),
-            t.bloomUp[0].createView(),
+            o.bloomUp[0].createView(),
             this.ubuf(this.exposureBuffer),
             t.rays.createView(),
           ],
@@ -2133,9 +2293,12 @@ export class Renderer {
     }
 
     this.prof?.endFrame(enc);
+    this.frameTimer?.endFrame(enc);
     this.cpuProf?.mark('render encode');
     d.queue.submit([enc.finish()]);
     this.prof?.afterSubmit();
+    this.frameTimer?.afterSubmit();
+    if (this.measureGpu) this.sampleGpuTime();
     if (this.cullStats && !this.cullStatsBusy && this.frameIndex % 8 === 0)
       this.readCullStats();
     this.prevViewProj = viewProj;
@@ -2150,6 +2313,34 @@ export class Renderer {
       patches: this.patchCount,
       cullGroups: this.cullCount,
     });
+  }
+
+  /** Folds the latest whole-frame GPU time into gpuMs. */
+  private sampleGpuTime() {
+    const ft = this.frameTimer;
+    let ms = 0;
+    if (ft) {
+      if (ft.samples !== this.gpuSamples) {
+        this.gpuSamples = ft.samples;
+        ms = ft.ms;
+      }
+    } else if (this.prof) {
+      ms = this.prof.averages.span ?? 0;
+    } else if (!this.gpuPending) {
+      // No timestamps: submit -> work done (an overestimate when the GPU is
+      // still busy with earlier frames, which only errs toward a lower scale).
+      this.gpuPending = true;
+      const t0 = performance.now();
+      void this.device.queue.onSubmittedWorkDone().then(() => {
+        this.gpuPending = false;
+        this.gpuFallbackMs = performance.now() - t0;
+      });
+    }
+    if (!ft && !this.prof && this.gpuFallbackMs) {
+      ms = this.gpuFallbackMs;
+      this.gpuFallbackMs = 0;
+    }
+    if (ms > 0) this.gpuMs = this.gpuMs ? this.gpuMs * 0.9 + ms * 0.1 : ms;
   }
 
   /** Copies the indirect args out and publishes stats.viewClusters/Tris. */
@@ -2193,6 +2384,11 @@ export class Renderer {
       },
       () => (this.cullStatsBusy = false),
     );
+  }
+
+  /** Internal render size of the last frame. */
+  get renderSize(): [number, number] {
+    return [this.targets?.w ?? 0, this.targets?.h ?? 0];
   }
 
   get viewProj() {

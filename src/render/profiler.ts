@@ -167,3 +167,90 @@ export class CpuProfiler {
     }
   }
 }
+
+/**
+ * Whole-frame GPU time from one timestamp pair: the start of the frame's
+ * first pass and the end of its last (the tonemap, which depends on every
+ * other pass). For the dynamic render scale and the frame-time readout;
+ * results arrive a few frames late.
+ */
+export class FrameTimer {
+  private querySet: GPUQuerySet;
+  private resolve: GPUBuffer;
+  private free: GPUBuffer[] = [];
+  private current: GPUBuffer | null = null;
+  /** Latest frame span in ms (0 until the first readback). */
+  ms = 0;
+  /** Bumped on every readback. */
+  samples = 0;
+
+  constructor(device: GPUDevice) {
+    this.querySet = device.createQuerySet({
+      label: 'frame timer/timestamps',
+      type: 'timestamp',
+      count: 2,
+    });
+    this.resolve = device.createBuffer({
+      label: 'frame timer/resolve',
+      size: 16,
+      usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+    });
+    for (let i = 0; i < 3; i++)
+      this.free.push(
+        device.createBuffer({
+          label: `frame timer/readback${i}`,
+          size: 16,
+          usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+        }),
+      );
+  }
+
+  beginFrame() {
+    this.current = this.free.pop() ?? null;
+  }
+
+  /** Timestamp writes for the frame's first / last pass (when active). */
+  first(): GPUComputePassTimestampWrites | undefined {
+    return this.current
+      ? {querySet: this.querySet, beginningOfPassWriteIndex: 0}
+      : undefined;
+  }
+
+  last(): GPURenderPassTimestampWrites | undefined {
+    return this.current
+      ? {querySet: this.querySet, endOfPassWriteIndex: 1}
+      : undefined;
+  }
+
+  endFrame(enc: GPUCommandEncoder) {
+    if (!this.current) return;
+    enc.resolveQuerySet(this.querySet, 0, 2, this.resolve, 0);
+    enc.copyBufferToBuffer(this.resolve, 0, this.current, 0, 16);
+  }
+
+  afterSubmit() {
+    const buf = this.current;
+    this.current = null;
+    if (!buf) return;
+    buf.mapAsync(GPUMapMode.READ).then(
+      () => {
+        const t = new BigInt64Array(buf.getMappedRange(), 0, 2);
+        const ms = t[1] > t[0] ? Number(t[1] - t[0]) / 1e6 : 0;
+        buf.unmap();
+        this.free.push(buf);
+        // (Ignore implausible spans: a missed write reads as 0 or garbage.)
+        if (ms > 0 && ms < 1000) {
+          this.ms = ms;
+          this.samples++;
+        }
+      },
+      () => this.free.push(buf),
+    );
+  }
+
+  destroy() {
+    this.querySet.destroy();
+    this.resolve.destroy();
+    for (const b of this.free) b.destroy();
+  }
+}

@@ -32,7 +32,8 @@ fn sprite(p: vec3f, vi: u32, px: f32, color: vec3f) -> SOut {
   var o: SOut;
   let c = corner(vi);
   let clip = frame.viewProj * vec4f(p, 1.0);
-  o.pos = clip + vec4f(c * px * frame.resolution.zw * 2.0 * clip.w, 0.0, 0.0);
+  // (Display pixels: the same size on screen at any render scale.)
+  o.pos = clip + vec4f(c * px / frame.upscale.xy * 2.0 * clip.w, 0.0, 0.0);
   o.uv = c;
   o.color = color;
   return o;
