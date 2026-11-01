@@ -23,6 +23,13 @@ export class GpuProfiler {
   private frames = 0;
   /** Per-frame GPU span (first pass start .. last pass end), for medians. */
   spans: number[] = [];
+  /**
+   * The frame number (frames counts beginFrame calls) of each span: readbacks
+   * can land many frames late under uncapped rendering, so a measurement
+   * after a change must select spans by frame, not by arrival.
+   */
+  spanFrames: number[] = [];
+  frameCount = 0;
   /** Each pass's own begin..end interval (overlaps neighbours on TBDR). */
   raw: Record<string, number> = {};
   /** Averaged GPU ms per pass label over the last window, plus `total`. */
@@ -54,6 +61,7 @@ export class GpuProfiler {
 
   /** Start a frame; timestamps are only written when a readback is free. */
   beginFrame() {
+    this.frameCount++;
     this.labels = [];
     this.current = this.free.pop() ?? null;
     this.active = !!this.current;
@@ -86,6 +94,7 @@ export class GpuProfiler {
     this.active = false;
     if (!buf) return;
     const labels = this.labels;
+    const frame = this.frameCount;
     if (!labels.length) {
       this.free.push(buf);
       return;
@@ -119,7 +128,10 @@ export class GpuProfiler {
         add(this.sums, 'sum', sum);
         const span = maxEnd > first ? Number(maxEnd - first) / 1e6 : 0;
         add(this.sums, 'span', span);
-        if (this.spans.length < 4096) this.spans.push(span);
+        if (this.spans.length < 4096) {
+          this.spans.push(span);
+          this.spanFrames.push(frame);
+        }
         if (++this.frames >= this.window) {
           const avg: Record<string, number> = {};
           for (const [k, s] of this.sums) avg[k] = s / this.frames;
