@@ -176,9 +176,9 @@ export class City {
             timed('upload base mesh', () => {
               for (const c of [m.base, m.piers] as ClusterData[]) {
                 const h = this.renderer.uploadClusters(c);
+                // (Uploaded, the pool frees the arrays once written.)
                 if (h) this.baseHandles.push(h);
-                // (Copied to the GPU: free now, not at the next GC.)
-                release(c.vertices, c.tris, c.clusters);
+                else release(c.vertices, c.tris, c.clusters);
               }
             });
             resolveBase();
@@ -361,7 +361,8 @@ export class City {
       h = this.renderer.uploadClusters(clusters);
     if (!h && clusters.clusterCount > 0)
       console.warn(`city: cluster pool full, tile ${tile} LOD${lod} dropped`);
-    release(clusters.vertices, clusters.tris, clusters.clusters);
+    // (Uploaded, the pool frees the arrays once written.)
+    if (!h) release(clusters.vertices, clusters.tris, clusters.clusters);
     if (lod === 2) {
       s.pending2 = false;
       if (s.lod2) this.renderer.freeClusters(s.lod2);

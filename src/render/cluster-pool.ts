@@ -75,6 +75,16 @@ export interface PoolHandle {
   bounds?: [[number, number, number], [number, number, number]];
 }
 
+/** Most bytes written to the pool per task (see ClusterPool.jobs). */
+const UPLOAD_CHUNK = 8 << 20;
+
+interface UploadJob {
+  h: PoolHandle;
+  /** Buffer, byte offset, words still to write. */
+  writes: [GPUBuffer, number, Uint32Array][];
+  done?: () => void;
+}
+
 export class ClusterPool {
   /** Packed vertex words (vpack.ts). */
   readonly vertexBuffer: GPUBuffer;
@@ -134,11 +144,21 @@ export class ClusterPool {
     };
   }
 
-  upload(d: ClusterData): PoolHandle | null {
+  /**
+   * Allocates room for `d` and writes it: at once if small, else in
+   * UPLOAD_CHUNK pieces, one per task (cluster records last, so the batch
+   * is culled until its geometry is in). done() runs once it is all written
+   * (the pool owns d's arrays until then); null if it does not fit (d
+   * untouched).
+   */
+  upload(d: ClusterData, done?: () => void): PoolHandle | null {
     const vn = d.vertices.length;
     const tn = d.tris.length;
     const cn = d.clusterCount;
-    if (cn === 0) return {v: 0, vn: 0, t: 0, tn: 0, c: 0, cn: 0};
+    if (cn === 0) {
+      done?.();
+      return {v: 0, vn: 0, t: 0, tn: 0, c: 0, cn: 0};
+    }
     const v = this.verts.alloc(vn);
     const t = v < 0 ? -1 : this.tris.alloc(tn);
     const c = t < 0 ? -1 : this.clusters.alloc(cn);
@@ -147,7 +167,7 @@ export class ClusterPool {
       if (t >= 0) this.tris.release(t, tn);
       return null;
     }
-    const cl = d.clusters.slice();
+    const cl = d.clusters.subarray(0, cn * CLUSTER_WORDS);
     let an = 0;
     for (let i = 0; i < cn; i++) {
       // (Word offset in the low 28 bits, vpack.ts; the pool is smaller.)
@@ -156,15 +176,80 @@ export class ClusterPool {
       if ((cl[i * CLUSTER_WORDS + 6] >>> 12) & CLUSTER_ALPHA) an++;
     }
     this.alphaClusters += an;
+    const h: PoolHandle = {v, vn, t, tn, c, cn, an};
+    const job: UploadJob = {
+      h,
+      writes: [
+        [this.vertexBuffer, v * 4, d.vertices],
+        [this.triBuffer, t * 4, d.tris],
+        [this.clusterBuffer, c * CLUSTER_WORDS * 4, cl],
+      ],
+      done,
+    };
+    const bytes = (vn + tn + cl.length) * 4;
+    if (!this.jobs.length && bytes <= UPLOAD_CHUNK) this.write(job, Infinity);
+    else {
+      this.jobs.push(job);
+      this.pump();
+    }
+    return h;
+  }
+
+  /** Batches queued or part written (they are not drawn yet). */
+  get pendingUploads() {
+    return this.jobs.length;
+  }
+
+  // Large writeBuffer calls cost their size again in staging memory, in the
+  // page and in the GPU process, and both keep it: after the base mesh
+  // (~125 MB in one call) each held ~125 MB for good. Writes of at most
+  // UPLOAD_CHUNK per task keep that to the chunk.
+  private jobs: UploadJob[] = [];
+  private pumping = false;
+  private channel: MessageChannel | null = null;
+
+  private pump() {
+    if (this.pumping) return;
+    this.pumping = true;
+    if (!this.channel) {
+      this.channel = new MessageChannel();
+      this.channel.port1.onmessage = () => {
+        this.pumping = false;
+        let budget = UPLOAD_CHUNK;
+        while (this.jobs.length && budget > 0) {
+          budget = this.write(this.jobs[0], budget);
+          if (!this.jobs[0].writes.length) this.jobs.shift();
+        }
+        if (this.jobs.length) this.pump();
+      };
+    }
+    this.channel.port2.postMessage(null);
+  }
+
+  /** Writes up to `budget` bytes of a job; returns the budget left. */
+  private write(job: UploadJob, budget: number) {
     const q = this.device.queue;
-    q.writeBuffer(this.vertexBuffer, v * 4, d.vertices);
-    q.writeBuffer(this.triBuffer, t * 4, d.tris);
-    q.writeBuffer(this.clusterBuffer, c * CLUSTER_WORDS * 4, cl);
-    return {v, vn, t, tn, c, cn, an};
+    while (job.writes.length && budget > 0) {
+      const w = job.writes[0];
+      const [buf, offset, data] = w;
+      const n = Math.min(data.length, Math.ceil(budget / 4));
+      q.writeBuffer(buf, offset, data, 0, n);
+      budget -= n * 4;
+      if (n === data.length) job.writes.shift();
+      else {
+        w[1] = offset + n * 4;
+        w[2] = data.subarray(n);
+      }
+    }
+    if (!job.writes.length) job.done?.();
+    return budget;
   }
 
   free(h: PoolHandle) {
     if (h.cn === 0) return;
+    // Still being written: drop the rest (its range may be reused).
+    const j = this.jobs.findIndex(job => job.h === h);
+    if (j >= 0) this.jobs.splice(j, 1);
     this.alphaClusters -= h.an ?? 0;
     // Zero the cluster records so culling skips them.
     this.device.queue.writeBuffer(

@@ -1,6 +1,7 @@
 // Frame orchestration: atmosphere LUTs, GPU culling, shadow cascades, G-buffer,
 // Hi-Z, clouds, tiled lighting, TAA, bloom, exposure and tonemapping.
 
+import {release} from '../mem.ts';
 import {createShader, type Gpu} from '../gpu/device.ts';
 import {addSpan, begin, fromWorker, pipeline, timed} from '../ui/timeline.ts';
 import {frustumPlanes, mat4, type Mat4} from '../math/mat4.ts';
@@ -921,23 +922,32 @@ export class Renderer {
     );
   }
 
+  /**
+   * Uploads a cluster batch; null if the pool has no room. Once uploaded
+   * the pool owns d's arrays and frees them when they are written.
+   */
   uploadClusters(d: ClusterData): PoolHandle | null {
-    const h = this.pool.upload(d);
-    if (h && d.clusterCount) {
-      // The batch's tile (every cluster of a batch shares it) and LOD.
-      const tile = d.clusters[7];
-      const lod = (d.clusters[6] >>> 8) & 0xf;
+    if (!d.clusterCount) return this.pool.upload(d);
+    // The batch's tile (every cluster of a batch shares it) and LOD.
+    const tile = d.clusters[7];
+    const lod = (d.clusters[6] >>> 8) & 0xf;
+    const bounds = d.bounds;
+    const h = this.pool.upload(d, () => {
+      // (Written: the static shadow cache redraws what it covers.)
+      if (this.shown(tile, lod)) this.shadowTouch(bounds[0], bounds[1]);
+      release(d.vertices, d.tris, d.clusters);
+    });
+    if (h) {
       h.tile = tile;
       h.lod = lod;
-      h.bounds = d.bounds;
+      h.bounds = bounds;
       const b = this.tileBounds.get(tile);
-      if (!b) this.tileBounds.set(tile, [[...d.bounds[0]], [...d.bounds[1]]]);
+      if (!b) this.tileBounds.set(tile, [[...bounds[0]], [...bounds[1]]]);
       else
         for (let k = 0; k < 3; k++) {
-          b[0][k] = Math.min(b[0][k], d.bounds[0][k]);
-          b[1][k] = Math.max(b[1][k], d.bounds[1][k]);
+          b[0][k] = Math.min(b[0][k], bounds[0][k]);
+          b[1][k] = Math.max(b[1][k], bounds[1][k]);
         }
-      if (this.shown(tile, lod)) this.shadowTouch(d.bounds[0], d.bounds[1]);
     }
     return h;
   }
