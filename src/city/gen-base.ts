@@ -80,6 +80,8 @@ export function roadMask(
   for (const [ci, c] of L.chains.entries()) {
     if (visible && L.hidden?.chains[ci]) continue;
     const half = ROAD_WIDTH[c.kind] / 2 + 1;
+    const half2In = half * half * (1 - 1e-9);
+    const half2Out = half * half * (1 + 1e-9);
     let sMin = -Infinity;
     let sMax = Infinity;
     if (geom && ends.size) {
@@ -109,7 +111,13 @@ export function roadMask(
             const X = gx + dx,
               Z = gz + dz;
             if (X < 0 || Z < 0 || X >= n || Z >= n) continue;
-            if (Math.hypot(X * hf.cell - S - x, Z * hf.cell - S - z) < half)
+            if (mask[Z * n + X]) continue;
+            // The exact distance only near the edge of the band.
+            const ex = X * hf.cell - S - x;
+            const ez = Z * hf.cell - S - z;
+            const d2 = ex * ex + ez * ez;
+            if (d2 > half2Out) continue;
+            if (d2 < half2In || Math.hypot(ex, ez) < half)
               mask[Z * n + X] = 1;
           }
         }
@@ -1350,8 +1358,15 @@ function fillMesh(
   uvOf?: (p: Vec2) => [number, number, number],
   yOf?: (p: Vec2) => number,
 ) {
+  // Points are shared by their coordinates to 1 cm (toFixed(2)); `exact`
+  // remembers each exact point's vertex so equal points skip the key.
   const cache = new Map<string, number>();
+  const exact = new Map<number, Map<number, number>>();
   const vid = (q: FillPt) => {
+    let row = exact.get(q.p[0]);
+    if (!row) exact.set(q.p[0], (row = new Map()));
+    const e = row.get(q.p[1]);
+    if (e !== undefined) return e;
     const k = `${q.p[0].toFixed(2)},${q.p[1].toFixed(2)}`;
     let v = cache.get(k);
     if (v === undefined) {
@@ -1370,6 +1385,7 @@ function fillMesh(
       );
       cache.set(k, v);
     }
+    row.set(q.p[1], v);
     return v;
   };
   for (const t of tris) m.triFacing(vid(t[0]), vid(t[1]), vid(t[2]), UP);
@@ -2691,18 +2707,18 @@ function railViaduct(
     const c1 = Math.min(segs, c0 + 8);
     const per: Edge[][] = [];
     for (let i = c0; i < c1; i++) per.push(edgesOf(i));
+    const keys = per.map(es => es.map(edgeKey));
     const done = per.map(es => es.map(() => false));
     for (let s = 0; s < per.length; s++) {
       for (let k = 0; k < per[s].length; k++) {
         if (done[s][k]) continue;
         const x = per[s][k];
-        const key = edgeKey(x);
+        const key = keys[s][k];
         // Extend the run over following segments with the same edge.
         let s1 = s + 1;
         for (; s1 < per.length; s1++) {
-          const j = per[s1].findIndex(
-            (y, q) => !done[s1][q] && edgeKey(y) === key,
-          );
+          const ks = keys[s1];
+          const j = per[s1].findIndex((_, q) => !done[s1][q] && ks[q] === key);
           if (j < 0) break;
           done[s1][j] = true;
         }
