@@ -3,12 +3,12 @@
 // Vertex format (32 bytes, read with vertex pulling in WGSL):
 //   pos: f32x3, normal: u32 (octahedral unorm16x2), uv: f32x2, mat: u32, aux: u32
 // mat = material id (low 8 bits) | parameter (high 24 bits).
-// aux: material-specific. For TUBE_MATS (wire, frame, paint, metal, lamp) the
-// low 16 bits are the tube radius in 0.5 mm units, written by tube() and 0 on
-// every other primitive (vertex() clears them); city.wgsl's vs widens such
-// tubes to a minimum on-screen width: hashed partial coverage for most, a
+// aux: material-specific. For TUBE_MATS (wire, frame, paint, metal, lamp,
+// ledLine) the low 16 bits are the tube radius in 0.5 mm units, written by
+// tube() and 0 on every other primitive (vertex() clears them); city.wgsl's
+// vs widens such tubes to a minimum on-screen width: hashed partial coverage for most, a
 // solid ~1 px line for wires (CM.wire params != 0, or param 0 under 2 cm
-// radius: utility spans; tyres stay hashed) and lamp
+// radius: utility spans; tyres stay hashed) and lamp / LED line
 // tubes (whose light is scaled by the true coverage). The high 16 bits stay
 // free (seed), except bit 31 on a tube: FINE_TUBE (distance fade).
 //
@@ -68,7 +68,8 @@ const TUBE_MATS =
   (1 << CM.frame) |
   (1 << CM.paint) |
   (1 << CM.metal) |
-  (1 << CM.lamp);
+  (1 << CM.lamp) |
+  (1 << CM.ledLine);
 
 /**
  * Tube aux flag: fine hardware (OHLE droppers, arms, insulators) that
@@ -118,7 +119,13 @@ function alphaTested(mat: number, aux: number) {
   const id = mat & 0xff;
   // Leaf cards cut out; solid LOD2 crowns (param LEAF_SOLID) do not.
   if (id === CM.leaves) return ((mat >>> 8) & 0x100) === 0;
-  return id < 32 && ((TUBE_MATS >>> id) & 1) === 1 && (aux & 0xffff) > 0;
+  // LED line tubes are always drawn solid (never hashed): opaque pipeline.
+  return (
+    id !== CM.ledLine &&
+    id < 32 &&
+    ((TUBE_MATS >>> id) & 1) === 1 &&
+    (aux & 0xffff) > 0
+  );
 }
 
 export function packMat(id: number, param = 0) {
