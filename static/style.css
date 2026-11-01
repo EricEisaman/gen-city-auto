@@ -19,7 +19,11 @@ canvas {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(#ba4c04, #050507);
+  background-image: url(gca.svg);
+  background-size: cover;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
   color: #eee;
   gap: 14px;
 }

@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" width="100%" height="100%">
+  <defs>
+    <!-- Sky background gradient -->
+    <linearGradient id="skyGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0d1322" />
+      <stop offset="45%" stop-color="#18233c" />
+      <stop offset="80%" stop-color="#28334a" />
+      <stop offset="100%" stop-color="#3a4253" />
+    </linearGradient>
+
+    <!-- Water gradient -->
+    <linearGradient id="waterGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#111726" />
+      <stop offset="35%" stop-color="#0a0e17" />
+      <stop offset="100%" stop-color="#05070b" />
+    </linearGradient>
+
+    <!-- Subtle atmospheric horizon glow -->
+    <radialGradient id="horizonGlow" cx="50%" cy="84%" r="60%">
+      <stop offset="0%" stop-color="#f0c27b" stop-opacity="0.25" />
+      <stop offset="40%" stop-color="#e27c3e" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#0d1322" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Sky -->
+  <rect width="1200" height="420" fill="url(#skyGrad)" />
+  <rect width="1200" height="420" fill="url(#horizonGlow)" />
+
+  <!-- Distant Background Layer (Faint silhouettes & towers) -->
+  <g fill="#161e2e" opacity="0.85">
+    <!-- Far radio mast left -->
+    <rect x="75" y="160" width="3" height="150" />
+    <line x1="76" y1="170" x2="60" y2="280" stroke="#161e2e" stroke-width="1.5" />
+    <line x1="77" y1="170" x2="92" y2="280" stroke="#161e2e" stroke-width="1.5" />
+    <rect x="52" y="240" width="50" height="180" />
+    <rect x="130" y="180" width="65" height="240" />
+    <polygon points="130,180 162,130 195,180" />
+    <rect x="161" y="90" width="3" height="40" />
+
+    <!-- Far cluster center-left -->
+    <rect x="290" y="200" width="45" height="220" />
+    <rect x="350" y="150" width="70" height="270" />
+    <polygon points="350,150 420,110 420,270 350,270" />
+    <rect x="440" y="220" width="55" height="200" />
+
+    <!-- Far high-rises center-right -->
+    <rect x="670" y="140" width="50" height="280" />
+    <polygon points="670,140 695,85 720,140" />
+    <rect x="694" y="55" width="2" height="30" />
+    <rect x="740" y="190" width="60" height="230" />
+    <rect x="825" y="170" width="40" height="250" />
+
+    <!-- Far right structures -->
+    <rect x="990" y="210" width="70" height="210" />
+    <rect x="1075" y="165" width="45" height="255" />
+    <polygon points="1075,165 1120,135 1120,255" />
+  </g>
+
+  <!-- Midground Skyline Layer -->
+  <g fill="#101522">
+    <!-- Classical stepped skyscraper -->
+    <rect x="20" y="260" width="60" height="160" />
+    <rect x="30" y="220" width="40" height="40" />
+    <rect x="40" y="190" width="20" height="30" />
+    <rect x="49" y="150" width="2" height="40" />
+
+    <!-- Diagonal angled corporate tower -->
+    <path d="M 215 420 L 215 170 L 275 115 L 275 420 Z" />
+    <line x1="245" y1="142" x2="245" y2="90" stroke="#101522" stroke-width="2.5" />
+
+    <!-- Twin column towers connected by skybridge -->
+    <rect x="480" y="160" width="32" height="260" />
+    <rect x="522" y="160" width="32" height="260" />
+    <rect x="500" y="215" width="34" height="14" />
+    <polygon points="480,160 496,125 512,160" />
+    <polygon points="522,160 538,125 554,160" />
+
+    <!-- Massive stepped tower with antenna -->
+    <path d="M 610 420 L 610 200 L 620 200 L 620 150 L 632 150 L 632 95 L 638 95 L 638 45 L 640 45 L 640 95 L 646 95 L 646 150 L 658 150 L 658 200 L 668 200 L 668 420 Z" />
+
+    <!-- Modern slanted block -->
+    <polygon points="870,420 870,230 925,185 955,185 955,420" />
+
+    <!-- Waterfront industrial / mid-rise docks & offices -->
+    <rect x="1100" y="270" width="85" height="150" />
+    <polygon points="1100,270 1142,235 1185,270" />
+  </g>
+
+  <!-- Foreground Main Skyline Silhouette (Crisp, sharp black) -->
+  <path d="
+    M 0 420
+    L 0 340
+    L 15 340 L 15 300 L 35 300 L 35 420
+    L 90 420 L 90 230 L 105 230 L 105 180 L 125 180 L 125 420
+    L 175 420 L 175 285 L 205 285 L 205 420
+    L 285 420 L 285 240 L 305 210 L 325 210 L 345 240 L 345 420
+    L 380 420 L 380 180 L 388 180 L 388 105 L 391 105 L 391 60 L 393 60 L 393 105 L 396 105 L 396 180 L 405 180 L 405 420
+    L 435 420 L 435 290 L 470 290 L 470 420
+    L 560 420 L 560 250 L 585 250 L 595 220 L 605 250 L 605 420
+    L 675 420 L 675 260 L 710 260 L 710 420
+    L 735 420 L 735 210 L 745 190 L 775 160 L 785 160 L 785 420
+    L 815 420 L 815 275 L 845 275 L 845 420
+    L 910 420 L 910 310 L 940 310 L 940 420
+    L 965 420 L 965 195 L 975 195 L 975 140 L 980 140 L 980 110 L 982 110 L 982 140 L 987 140 L 987 195 L 998 195 L 998 420
+    L 1030 420 L 1030 260 L 1060 220 L 1070 220 L 1070 420
+    L 1130 420 L 1130 330 L 1165 330 L 1165 350 L 1200 350
+    L 1200 420
+    Z
+  " fill="#060911" />
+
+  <!-- Waterfront Promenade / Base Line -->
+  <rect x="0" y="418" width="1200" height="4" fill="#030407" />
+
+  <!-- Water Surface & Reflections -->
+  <rect x="0" y="422" width="1200" height="78" fill="url(#waterGrad)" />
+
+  <!-- Shimmering horizontal reflections matching major towers -->
+  <g opacity="0.35">
+    <!-- Tall spire reflection (x: 390) -->
+    <ellipse cx="392" cy="432" rx="28" ry="1.5" fill="#e8c89a" />
+    <ellipse cx="392" cy="442" rx="20" ry="1.2" fill="#c49b68" />
+    <ellipse cx="392" cy="456" rx="14" ry="1" fill="#755a3c" />
+
+    <!-- Central monolith reflection (x: 640) -->
+    <ellipse cx="639" cy="430" rx="36" ry="1.8" fill="#dce4f5" />
+    <ellipse cx="639" cy="440" rx="26" ry="1.4" fill="#7b8ca3" />
+    <ellipse cx="639" cy="454" rx="18" ry="1.1" fill="#3f4b5c" />
+    <ellipse cx="639" cy="470" rx="9" ry="0.8" fill="#252d38" />
+
+    <!-- Right tower reflection (x: 980) -->
+    <ellipse cx="981" cy="434" rx="24" ry="1.5" fill="#dfc095" />
+    <ellipse cx="981" cy="445" rx="17" ry="1.2" fill="#997d5a" />
+    <ellipse cx="981" cy="460" rx="11" ry="0.9" fill="#4d3e2b" />
+
+    <!-- General ambient water ripples -->
+    <line x1="80" y1="435" x2="140" y2="435" stroke="#485c7b" stroke-width="1" opacity="0.4" />
+    <line x1="210" y1="442" x2="260" y2="442" stroke="#485c7b" stroke-width="1.2" opacity="0.5" />
+    <line x1="290" y1="431" x2="340" y2="431" stroke="#5a6f91" stroke-width="1" opacity="0.4" />
+    <line x1="470" y1="448" x2="550" y2="448" stroke="#3b4d67" stroke-width="1.4" opacity="0.6" />
+    <line x1="720" y1="436" x2="790" y2="436" stroke="#5a6f91" stroke-width="1" opacity="0.5" />
+    <line x1="850" y1="446" x2="910" y2="446" stroke="#3b4d67" stroke-width="1.2" opacity="0.4" />
+    <line x1="1040" y1="438" x2="1090" y2="438" stroke="#485c7b" stroke-width="1" opacity="0.4" />
+    <line x1="50" y1="462" x2="160" y2="462" stroke="#253346" stroke-width="1.5" opacity="0.3" />
+    <line x1="680" y1="468" x2="820" y2="468" stroke="#253346" stroke-width="1.5" opacity="0.3" />
+  </g>
+</svg>
