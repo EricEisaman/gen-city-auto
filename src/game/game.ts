@@ -749,7 +749,10 @@ export class Game {
     if (i.hit('KeyL')) void navigator.clipboard?.writeText(this.shareUrl());
     if (i.hit('KeyK'))
       this.camera.directorEnabled = !this.camera.directorEnabled;
-    if (i.hit('KeyT')) this.hour = (this.hour + 1) % 24;
+    if (i.hit('KeyT')) {
+      this.hour = (this.hour + 1) % 24;
+      this.weather.update(0, 1);
+    }
     if (i.hit('KeyY'))
       this.weather.set(
         WEATHER_KINDS[
@@ -784,7 +787,7 @@ export class Game {
     this.handleKeys();
     this.time += dt;
     this.hour = (this.hour + dt * this.timeSpeed + 24) % 24;
-    this.weather.update(dt);
+    this.weather.update(dt, dt * this.timeSpeed);
     // The asset lab shows its asset alone: no player, traffic, trains,
     // helicopters or pedestrians.
     const frozen = this.freeze && !!this.lastCam;

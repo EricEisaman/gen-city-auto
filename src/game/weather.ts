@@ -23,6 +23,11 @@ const TARGETS: Record<
   storm: {cloud: 1.0, rain: 1.0, fog: 0.65, wind: 1.6},
 };
 
+/** Clock hours for soaked roads to dry once the rain stops. */
+const DRY_HOURS = 2.5;
+/** Slowest drying in real seconds (when the clock runs slowly or is paused). */
+const DRY_SECONDS = 250;
+
 export class WeatherSystem {
   kind: WeatherKind = 'sunny';
   cycle = false;
@@ -50,7 +55,13 @@ export class WeatherSystem {
     }
   }
 
-  update(dt: number) {
+  /**
+   * Advance by `dt` real seconds, `hours` of which passed on the clock (dt x
+   * time speed, plus any skip). Roads dry in DRY_HOURS of clock time once the
+   * rain stops, and never slower than DRY_SECONDS of real time (so they dry
+   * with the clock paused too).
+   */
+  update(dt: number, hours = 0) {
     if (this.cycle) {
       this.cycleTimer += dt;
       if (this.cycleTimer > 90) {
@@ -72,7 +83,11 @@ export class WeatherSystem {
     s.wetness =
       s.rain > 0.05
         ? Math.min(1, s.wetness + dt * 0.05 * s.rain)
-        : Math.max(0, s.wetness - dt * 0.004);
+        : Math.max(
+            0,
+            s.wetness -
+              Math.max(dt / DRY_SECONDS, Math.max(0, hours) / DRY_HOURS),
+          );
     const w = lerp(Math.hypot(s.wind[0], s.wind[1]), t.wind, k);
     s.wind = [0.94 * w, 0.34 * w];
     // Lightning.
