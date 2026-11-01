@@ -91,13 +91,51 @@ export const CLUSTER_WORDS = 8;
  */
 export const CLUSTER_ALPHA = 2;
 /**
- * Cluster record bits 16-31 (packed word): the distance in metres past which
+ * Cluster record bits 20-31 (packed word): the distance in metres past which
  * the cull pass drops the cluster (0 = never), so fine detail of always-
  * resident meshes (kerbs, railings, wires, thin road paint) goes at range.
  * cull.wgsl jitters it per cluster (+-20 %) so the cut is not one ring.
  */
-export const CLUSTER_FAR_SHIFT = 16;
-export const CLUSTER_FAR_MAX = 0xffff;
+export const CLUSTER_FAR_SHIFT = 20;
+export const CLUSTER_FAR_MAX = 0xfff;
+/**
+ * Cluster record bits 16-19: the opaque cluster's material group (an index
+ * into MAT_GROUP_IDS). clusterize() keeps each group's triangles in
+ * clusters of their own; the cull pass bins the main view's opaque clusters
+ * by group and each list is drawn by a pipeline compiled with only that
+ * group's material code (city-materials.wgsl MAT_ON), so a road pixel does
+ * not pay for the registers of the facade shader. Group 0 (every material
+ * not listed, and every alpha-tested cluster) gets the full material shader.
+ */
+export const CLUSTER_GROUP_SHIFT = 16;
+const MAT_GROUP_IDS: readonly (readonly number[])[] = [
+  [],
+  [CM.facade],
+  [CM.road, CM.asphaltPlain],
+  [CM.sidewalk, CM.curb, CM.carPark, CM.grass],
+  [CM.roof, CM.tile],
+  [CM.glass],
+  [CM.concrete, CM.rail],
+  [CM.paint, CM.metal, CM.frame],
+];
+export const MAT_GROUPS = MAT_GROUP_IDS.length;
+const GROUP_OF = new Uint8Array(256);
+MAT_GROUP_IDS.forEach((ids, g) => ids.forEach(id => (GROUP_OF[id] = g)));
+
+/** Material group (CLUSTER_GROUP_SHIFT) of a material id. */
+export function matGroup(id: number) {
+  return GROUP_OF[id & 0xff];
+}
+
+/**
+ * The material ids (bit per id, all under 32) a group's pipeline compiles
+ * in (city-materials.wgsl MAT_ON). Group 0 compiles every material.
+ */
+export function groupMatMask(g: number) {
+  if (g === 0) return 0xffffffff;
+  return MAT_GROUP_IDS[g].reduce((m, id) => (m | (1 << id)) >>> 0, 0);
+}
+
 /** Grid cell (m) clusterize() groups far-classed triangles by. */
 const CLUSTER_CELL = 64;
 
@@ -752,8 +790,15 @@ export function clusterize(
     let b = nOpaque;
     for (let i = 0; i < triCount; i++) order[isAlpha[i] ? b++ : a++] = i;
   }
-  // Group keys per triangle: cull distance, then grid cell (each sort is
-  // stable within opaque / alpha).
+  // Opaque triangles' material group (the provoking vertex's material,
+  // which the fragment shader sees).
+  const grp = new Uint8Array(triCount);
+  for (let i = 0; i < nOpaque; i++) {
+    const tri = order[i];
+    grp[tri] = matGroup(vertexWords[m.idx[tri * 3] * VERTEX_WORDS + 6]);
+  }
+  // Group keys per triangle: cull distance, then material group, then grid
+  // cell (each sort is stable within opaque / alpha).
   let far: Uint16Array | null = null;
   let cell: Uint32Array | null = null;
   if (farOf) {
@@ -777,11 +822,25 @@ export function clusterize(
     const c = cell;
     const sortPart = (lo: number, hi: number) => {
       const part = Array.from(order.subarray(lo, hi));
-      part.sort((x, y) => f[x] - f[y] || c[x] - c[y] || x - y);
+      part.sort(
+        (x, y) => f[x] - f[y] || grp[x] - grp[y] || c[x] - c[y] || x - y,
+      );
       order.set(part, lo);
     };
     sortPart(0, nOpaque);
     sortPart(nOpaque, triCount);
+  } else {
+    // Opaque triangles by material group, each in index order (stable
+    // counting sort).
+    const start = new Uint32Array(MAT_GROUPS + 1);
+    for (let i = 0; i < nOpaque; i++) start[grp[order[i]] + 1]++;
+    if (start[1] !== nOpaque) {
+      for (let g = 0; g < MAT_GROUPS; g++) start[g + 1] += start[g];
+      const sorted = new Uint32Array(nOpaque);
+      for (let i = 0; i < nOpaque; i++)
+        sorted[start[grp[order[i]]]++] = order[i];
+      order.set(sorted, 0);
+    }
   }
   // Typed-array output (grown by doubling) and a per-vertex "local index in
   // the current cluster" table stamped with the cluster number, instead of
@@ -814,12 +873,14 @@ export function clusterize(
       ch2 = -Infinity;
     const alpha = t >= nOpaque;
     const farD = far ? far[order[t]] : 0;
+    const g0 = grp[order[t]];
     let cellK = cell ? cell[order[t]] : 0;
     while (
       t < triCount &&
       nt - tstart < CLUSTER_TRIS &&
       t >= nOpaque === alpha &&
-      (!far || far[order[t]] === farD)
+      (!far || far[order[t]] === farD) &&
+      grp[order[t]] === g0
     ) {
       // A new cell starts a new cluster once this one is 3/4 full (the
       // remainder of a cell spills into the next rather than leaving tiny
@@ -893,6 +954,7 @@ export function clusterize(
       (nt - tstart) |
       (lod << 8) |
       ((flags | (alpha ? CLUSTER_ALPHA : 0)) << 12) |
+      (g0 << CLUSTER_GROUP_SHIFT) |
       (farD << CLUSTER_FAR_SHIFT);
     clusters[nc + 7] = tile;
     nc += CLUSTER_WORDS;

@@ -22,8 +22,10 @@ struct Cluster {
 @group(1) @binding(1) var<storage, read> tris: array<u32>;
 @group(1) @binding(2) var<storage, read> clusters: array<Cluster>;
 @group(1) @binding(3) var<storage, read> visible: array<u32>;
-// The far draw (cull.wgsl argsFar) reads its clusters from the list's end.
-override FAR_LIST = false;
+// The main view's opaque draws (cull.wgsl args) each read list LIST of the
+// LISTS equal segments of `visible`.
+override LIST: u32 = 0u;
+override LISTS: u32 = 1u;
 
 struct VOut {
   @builtin(position) pos: vec4f,
@@ -69,7 +71,7 @@ const FINE_NEAR = 45.0;
 const FINE_FAR = 100.0;
 
 fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
-  let c = clusters[visible[select(ii, arrayLength(&visible) - 1u - ii, FAR_LIST)]];
+  let c = clusters[visible[LIST * (arrayLength(&visible) / LISTS) + ii]];
   let tri = vi / 3u;
   if (tri >= (c.packed & 0xffu)) {
     *ok = false;
