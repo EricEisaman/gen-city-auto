@@ -13,8 +13,19 @@ import type {CityLayout} from '../city/layout.ts';
 import {GBUFFER_FORMATS, Renderer} from '../render/renderer.ts';
 import {VehicleRenderer} from '../render/vehicles.ts';
 import {CpuProfiler} from '../render/profiler.ts';
-import {OFF_BITS} from '../render/ablation.ts';
+import {OFF_BITS, parseOff} from '../render/ablation.ts';
 import {UI} from '../ui/ui.ts';
+import {
+  DEFAULTS,
+  DynamicScale,
+  FIELDS,
+  PRESETS,
+  autoScale,
+  clearStored,
+  loadStored,
+  saveStored,
+  type Settings,
+} from '../ui/settings.ts';
 import {City} from '../world/city.ts';
 import {
   CameraSystem,
@@ -58,9 +69,16 @@ export interface GameOptions {
   prof?: 'pass' | 'frame';
   /** Ablation bits (?off=..., see render/ablation.ts). */
   off?: number;
-  /** LOD2 distance in metres (?lod2=, 0 = LOD1 shells everywhere). */
+  /** LOD2 distance in metres (?lod2=, 0 = LOD1 shells everywhere; else the setting). */
   lod2?: number;
+  /** Traffic count fixed by the URL (?traffic=; else the density setting). */
+  fixedTraffic?: boolean;
+  /** Graphics settings from the URL (on top of the stored ones, not saved). */
+  gfx?: Partial<Settings>;
 }
+
+/** Traffic count at 100% density. */
+const TRAFFIC = 380;
 
 export class Game {
   renderer!: Renderer;
@@ -119,6 +137,10 @@ export class Game {
   freeze = false;
   /** Per-frame CPU ms of frame() while profiling (for medians). */
   cpuFrames: number[] = [];
+  /** Effective graphics settings (stored + URL overrides) and the stored part. */
+  settings: Settings;
+  private stored: Partial<Settings>;
+  private dynScale = new DynamicScale();
 
   constructor(gpu: Gpu, opts: GameOptions) {
     this.gpu = gpu;
@@ -129,11 +151,91 @@ export class Game {
     this.timeSpeed = opts.timeSpeed;
     this.weather.set(opts.weather, true);
     this.input = new Input(gpu.canvas);
+    this.stored = loadStored();
+    this.settings = {...DEFAULTS, ...this.stored, ...opts.gfx};
+  }
+
+  /** Change one graphics setting (from the menu): applied live and saved. */
+  setSetting<K extends keyof Settings>(key: K, value: Settings[K]) {
+    const set = (k: keyof Settings, v: unknown) => {
+      (this.settings as unknown as Record<string, unknown>)[k] = v;
+      (this.stored as Record<string, unknown>)[k] = v;
+    };
+    set(key, value);
+    if (key === 'preset' && value !== 'custom')
+      for (const [k, v] of Object.entries(
+        PRESETS[value as keyof typeof PRESETS],
+      ))
+        set(k as keyof Settings, v);
+    // A preset-controlled setting off its preset's value: custom.
+    const pr = this.settings.preset;
+    if (
+      key !== 'preset' &&
+      pr !== 'custom' &&
+      FIELDS.find(f => f.key === key)?.preset &&
+      PRESETS[pr][key as keyof (typeof PRESETS)['high']] !== value
+    )
+      set('preset', 'custom');
+    saveStored(this.stored);
+    this.applySettings();
+  }
+
+  /** Back to the defaults (URL overrides still apply). */
+  resetSettings() {
+    clearStored();
+    this.stored = {};
+    this.settings = {...DEFAULTS, ...this.opts.gfx};
+    this.applySettings();
+  }
+
+  /** Push the settings into the renderer and simulation (cheap; idempotent). */
+  applySettings() {
+    const s = this.settings;
+    const r = this.renderer;
+    if (!r) return;
+    r.cloudQuality = s.clouds;
+    if (s.shadows > 0) r.setShadowSize(s.shadows);
+    const off: string[] = [];
+    if (!s.shadows) off.push('shadows');
+    if (s.reflections === 'off') off.push('ssr', 'cityrefl');
+    if (s.reflections === 'full') off.push('hrefl');
+    if (!s.ao) off.push('gtao');
+    if (!s.contact) off.push('contact');
+    if (!s.godrays) off.push('godrays');
+    if (!s.taa) off.push('taa');
+    r.userOff = parseOff(off.join(','));
+    r.bloom = s.bloom;
+    r.sharpen = s.sharpen;
+    r.farCullScale = s.detail;
+    r.measureGpu = s.readout || s.scale === 'dynamic';
+    if (this.rain) this.rain.density = s.rain;
+    if (this.city && this.opts.lod2 === undefined)
+      this.city.lod2Dist = s.drawDist > 0 ? s.drawDist : Infinity;
+    if (this.traffic) this.traffic.target = this.trafficTarget();
+  }
+
+  private trafficTarget() {
+    if (this.opts.lab) return 0;
+    return this.opts.fixedTraffic
+      ? this.opts.traffic
+      : Math.round(TRAFFIC * this.settings.traffic);
+  }
+
+  /** Internal render scale for this frame (render scale setting). */
+  private renderScale(): number {
+    const s = this.settings.scale;
+    if (s === 'dynamic')
+      return this.dynScale.update(this.renderer.gpuMs, this.settings.targetFps);
+    this.dynScale.scale = 1;
+    if (s === 'auto')
+      return autoScale(this.gpu.canvas.width, this.gpu.canvas.height);
+    return s / 100;
   }
 
   async init() {
     this.renderer = await Renderer.create(this.gpu);
     this.renderer.offBits = this.opts.off ?? 0;
+    this.applySettings();
     if (this.opts.prof) {
       this.renderer.enableProfiler(this.opts.prof === 'pass');
       this.cpuProf = new CpuProfiler();
@@ -155,6 +257,7 @@ export class Game {
       'rgba16float',
     );
     this.renderer.hooks.push(this.vehicles, this.rain, this.sprites);
+    this.rain.density = this.settings.rain;
     const progress = this.progress.bind(this);
     progress('Building vehicles from NURBS', 0.02);
     await Promise.all([
@@ -191,8 +294,8 @@ export class Game {
     document.getElementById('loading')!.style.display = '';
     this.city?.dispose();
     this.city = new City(this.renderer, type, seed, this.opts.lab);
-    if (this.opts.lod2 !== undefined)
-      this.city.lod2Dist = this.opts.lod2 > 0 ? this.opts.lod2 : Infinity;
+    const lod2 = this.opts.lod2 ?? this.settings.drawDist;
+    this.city.lod2Dist = lod2 > 0 ? lod2 : Infinity;
     let focus: Vec3 = [0, 0, 0];
     const city = this.city;
     // The asset lab knows its focus as soon as the layout arrives.
@@ -212,7 +315,7 @@ export class Game {
     const net = this.net!;
     this.traffic = new Traffic(net, this.vehicles);
     this.buildLightSprites();
-    this.traffic.target = this.opts.lab ? 0 : this.opts.traffic;
+    this.traffic.target = this.trafficTarget();
     this.trains = new Trains(city.summary.layout.elevated, this.vehicles);
     // The rail lab parks one train at the site for scale.
     const labTrain = city.summary.lab?.train;
@@ -554,9 +657,10 @@ export class Game {
     };
     if (this.freeMode) return {motionBlur: 0, dofAperture: 0, focus};
     const moving = Math.min(1, Math.abs(this.player.speed) / 3);
+    const s = this.settings;
     return {
-      motionBlur: (blur[shot] ?? 0.3) * moving,
-      dofAperture: dof[shot] ?? 0,
+      motionBlur: s.motionBlur ? (blur[shot] ?? 0.3) * moving : 0,
+      dofAperture: s.dof ? (dof[shot] ?? 0) : 0,
       focus,
     };
   }
@@ -763,10 +867,14 @@ export class Game {
     prof?.mark('vehicle upload');
     this.lastCam = cam;
     this.rain.intensity = this.weather.state.rain;
+    this.renderer.renderScale = this.renderScale();
+    // Field of view setting: the gameplay cameras only (free-camera links
+    // and the asset lab keep their exact framing).
+    const fovK = this.freeMode || this.opts.lab ? 1 : this.settings.fov;
     this.renderer.render({
       eye: cam.eye,
       target: cam.target,
-      fov: cam.fov,
+      fov: fovK === 1 ? cam.fov : 2 * Math.atan(Math.tan(cam.fov / 2) * fovK),
       near: cam.near,
       time: this.time,
       dt,
@@ -787,6 +895,7 @@ export class Game {
       ...this.renderer.stats,
       ...this.city.stats,
       fps: Math.round(this.fpsAvg),
+      render: `${this.renderer.renderSize.join('x')}`,
       cars: this.traffic.cars.length,
       shot: this.opts.lab
         ? `lab ${this.labView}`

@@ -5,6 +5,7 @@ import {Game} from './game/game.ts';
 import type {WeatherKind} from './game/weather.ts';
 import {initGpu, reportError, resizeToCss} from './gpu/device.ts';
 import {parseOff} from './render/ablation.ts';
+import {urlOverrides} from './ui/settings.ts';
 
 const params = new URLSearchParams(location.search);
 const num = (k: string, d: number) =>
@@ -20,7 +21,7 @@ async function main() {
   }
   // ui=0 hides the overlays (clean screenshots and videos).
   if (params.get('ui') === '0')
-    for (const id of ['hud', 'stats', 'help', 'toolbar'])
+    for (const id of ['hud', 'stats', 'perf', 'help', 'toolbar'])
       document.getElementById(id)!.style.visibility = 'hidden';
   resizeToCss(canvas);
   const gpu = await initGpu(canvas);
@@ -51,6 +52,7 @@ async function main() {
     shot: params.get('shot') ?? undefined,
     debug: num('debug', 0),
     traffic: num('traffic', 380),
+    fixedTraffic: params.has('traffic'),
     quality: params.get('quality') === 'low' ? 0 : 1,
     freecam: params.get('freecam')?.split(',').map(Number),
     lab,
@@ -62,7 +64,8 @@ async function main() {
           ? 'frame'
           : undefined,
     off: parseOff(params.get('off')),
-    lod2: num('lod2', 1500),
+    lod2: params.has('lod2') ? num('lod2', 1500) : undefined,
+    gfx: urlOverrides(params),
   });
   await game.init();
   (window as unknown as {__game: Game}).__game = game;

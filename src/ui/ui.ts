@@ -4,6 +4,7 @@ import {PRESETS, type CityType} from '../city/config.ts';
 import {CAMERA_MODES} from '../game/camera.ts';
 import {WEATHER_KINDS} from '../game/weather.ts';
 import type {Game} from '../game/game.ts';
+import {FIELDS, type Settings} from './settings.ts';
 
 const el = <K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -25,6 +26,9 @@ export class UI {
   private timeInput!: HTMLInputElement;
   private weatherSel!: HTMLSelectElement;
   private camSel!: HTMLSelectElement;
+  private perf = document.getElementById('perf')!;
+  /** Graphics setting selects, refreshed when a preset changes others. */
+  private gfxSels = new Map<keyof Settings, HTMLSelectElement>();
   showStats = false;
 
   constructor(game: Game) {
@@ -145,7 +149,41 @@ export class UI {
       row('Auto director', director),
       row('Vehicle', vehSel),
       row('', link),
+      el('div', {className: 'menu-section'}, 'GRAPHICS'),
     );
+    for (const f of FIELDS) {
+      const sel = el('select');
+      f.options.forEach(([label], i) =>
+        sel.append(el('option', {value: String(i), textContent: label})),
+      );
+      sel.onchange = () => {
+        const v = f.options[Number(sel.value)][1];
+        g.setSetting(f.key, v as never);
+        this.syncGraphics();
+      };
+      this.gfxSels.set(f.key, sel);
+      this.menu.append(row(f.label, sel));
+    }
+    const reset = el('button', {textContent: 'Reset graphics to defaults'});
+    reset.onclick = () => {
+      g.resetSettings();
+      this.syncGraphics();
+    };
+    this.menu.append(row('', reset));
+    this.syncGraphics();
+  }
+
+  /** Show the effective graphics settings in the menu. */
+  syncGraphics() {
+    const s = this.game.settings;
+    for (const f of FIELDS) {
+      const sel = this.gfxSels.get(f.key)!;
+      const i = f.options.findIndex(([, v]) => v === s[f.key]);
+      // (A URL value outside the menu's list, e.g. ?scale=60, shows blank.)
+      sel.value = String(i);
+      sel.parentElement!.parentElement!.style.display =
+        f.key === 'targetFps' && s.scale !== 'dynamic' ? 'none' : '';
+    }
   }
 
   toggleMenu() {
@@ -177,6 +215,16 @@ export class UI {
     if (document.activeElement !== this.camSel)
       this.camSel.value = g.freeMode ? 'free' : g.camera.mode;
     this.stats.style.display = this.showStats ? '' : 'none';
+    this.perf.style.display = g.settings.readout ? '' : 'none';
+    if (g.settings.readout) {
+      const r = g.renderer;
+      const [w, h] = r.renderSize;
+      const c = r.gpu.canvas;
+      const gpu = r.gpuMs > 0 ? `GPU ${r.gpuMs.toFixed(1)} ms` : 'GPU -';
+      this.perf.textContent =
+        `${fps.toFixed(0)} fps · ${(1000 / Math.max(fps, 1)).toFixed(1)} ms · ${gpu}\n` +
+        `${w}x${h} → ${c.width}x${c.height} (${Math.round((w / c.width) * 100)}%)`;
+    }
     if (this.showStats) {
       const s = {
         ...g.renderer.stats,

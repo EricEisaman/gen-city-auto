@@ -92,6 +92,19 @@ canvas {
   pointer-events: none;
 }
 
+#perf {
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  transform: translateX(-50%);
+  color: #cfe;
+  font: 11px monospace;
+  white-space: pre;
+  text-align: center;
+  text-shadow: 0 0 2px #000;
+  pointer-events: none;
+}
+
 #help {
   position: absolute;
   left: 12px;
@@ -117,6 +130,15 @@ canvas {
   border-radius: 8px;
   color: #eee;
   font-size: 12px;
+}
+
+#menu .menu-section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  opacity: 0.8;
 }
 
 #menu.hidden {

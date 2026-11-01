@@ -8,6 +8,8 @@ import type {DrawHook} from './renderer.ts';
 export class RainRenderer implements DrawHook {
   readonly name = 'rain';
   intensity = 0;
+  /** Particle count multiplier (graphics setting). */
+  density = 1;
   private pipeline: GPURenderPipeline;
   private bindGroup: GPUBindGroup;
 
@@ -52,7 +54,7 @@ export class RainRenderer implements DrawHook {
   }
 
   forward(pass: GPURenderPassEncoder) {
-    const n = Math.floor(this.intensity * 26000);
+    const n = Math.floor(this.intensity * 26000 * this.density);
     if (n <= 0) return;
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.bindGroup);
