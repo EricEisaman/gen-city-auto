@@ -95,7 +95,6 @@ class LoadingScreen implements LoadListener {
   private tau = 1;
   private last = 0;
   private phaseName: keyof typeof PHASE = 'gpu';
-  private label = '';
   // Layout step timing (device speed estimate).
   private stepIdx = -1;
   private layoutT0 = 0;
@@ -158,7 +157,6 @@ class LoadingScreen implements LoadListener {
 
   /** Set the phase label (and enter a phase). */
   phase(label: string, name?: keyof typeof PHASE) {
-    this.label = label;
     if (name && name !== this.phaseName) {
       this.phaseName = name;
       const [a, b] = PHASE[name];
@@ -471,10 +469,10 @@ class LoadingScreen implements LoadListener {
     g.stroke();
     for (const name of ['terrain', 'blocks', 'buildings', 'roads', 'rail']) {
       const l = this.layers.get(name);
-      if (!l || l.width !== n) continue;
+      if (!l) continue;
       const f = this.fades.get(name) ?? 0;
       g.globalAlpha = Math.min(1, (t - f) / 700);
-      g.drawImage(l, 0, 0);
+      g.drawImage(l, 0, 0, n, n); // (drawn at an older size after a resize)
     }
     // Tiles light up as their meshes arrive, then settle to a faint wash.
     if (this.tilesPerSide && this.size) {
