@@ -34,6 +34,7 @@ import {
   ROAD_WIDTH,
   SIDEWALK,
   Road,
+  simplePolygon,
   type BlockFill,
   type Building,
   type CityLayout,
@@ -103,12 +104,22 @@ function shrink(poly: Vec2[], f: number): Vec2[] {
   return poly.map(q => [c[0] + (q[0] - c[0]) * f, c[1] + (q[1] - c[1]) * f]);
 }
 
+/**
+ * `poly` moved in by `d`. On some concave plans the offset folds over itself
+ * or pokes out through the plan (a tower body wider than its podium, a crown
+ * with a twisted roof line); then a smaller inset, else null.
+ */
 function inset(poly: Vec2[], d: number): Vec2[] | null {
-  const r = insetPolygon(
-    poly,
-    poly.map(() => d),
-  );
-  return r && r.length >= 3 && polygonArea(r) > 20 ? r : null;
+  for (const k of [1, 0.6, 0.35]) {
+    const r = insetPolygon(
+      poly,
+      poly.map(() => d * k),
+    );
+    if (!r || r.length < 3 || polygonArea(r) <= 20) return null;
+    if (simplePolygon(r) === r && r.every(q => pointInPolygon(q, poly)))
+      return r;
+  }
+  return null;
 }
 
 /** Outward normal of polygon edge i (math-CCW polygon in x/z). */

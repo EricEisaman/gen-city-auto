@@ -11,6 +11,7 @@ import {
   pointInPolygon,
   pointSegment,
   polygonArea,
+  segmentIntersect,
   smoothstep,
   sub2,
   type Vec2,
@@ -317,6 +318,52 @@ function cleanPolygon(poly: Vec2[], minEdge: number): Vec2[] {
     out = next;
   }
   return out;
+}
+
+/**
+ * The largest simple loop of a polygon that crosses or touches itself. Lot
+ * cuts through a concave block leave a few plots pinched in two at a vertex
+ * or with a sliver folded back across them; towers inset from such a plan
+ * came out as broken, twisted shapes. Split at each crossing and keep the
+ * loop with the most area (same winding); a simple polygon comes back as is.
+ */
+export function simplePolygon(poly: Vec2[], depth = 0): Vec2[] {
+  const n = poly.length;
+  if (n < 4 || depth > 16) return poly;
+  const sign = polygonArea(poly) < 0 ? -1 : 1;
+  const touch = (q: Vec2, a: Vec2, b: Vec2) => pointSegment(q, a, b)[0] < 0.25;
+  for (let i = 0; i < n; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      const c = poly[j];
+      const d = poly[(j + 1) % n];
+      let x: Vec2 | null = null;
+      const hit = segmentIntersect(a, b, c, d);
+      if (hit)
+        x = [a[0] + (b[0] - a[0]) * hit[0], a[1] + (b[1] - a[1]) * hit[0]];
+      else if (touch(c, a, b)) x = c;
+      else if (touch(d, a, b)) x = d;
+      else if (touch(a, c, d)) x = a;
+      else if (touch(b, c, d)) x = b;
+      if (!x) continue;
+      const loops = [
+        [x, ...poly.slice(i + 1, j + 1)],
+        [x, ...poly.slice(j + 1), ...poly.slice(0, i + 1)],
+      ].map(l => {
+        const out: Vec2[] = [];
+        for (const q of l)
+          if (!out.length || dist2(out[out.length - 1], q) > 0.01) out.push(q);
+        if (out.length > 1 && dist2(out[0], out[out.length - 1]) <= 0.01)
+          out.pop();
+        return out.length >= 3 ? simplePolygon(out, depth + 1) : out;
+      });
+      const score = (l: Vec2[]) => (l.length >= 3 ? polygonArea(l) * sign : 0);
+      return score(loops[0]) >= score(loops[1]) ? loops[0] : loops[1];
+    }
+  }
+  return poly;
 }
 
 /** Whether segment a-b lies on a frontage edge of `poly`. */
@@ -1347,6 +1394,12 @@ export function generateLayout(
     const cut = clipToRail(fp, [cx, cz], elevated, 7, hf);
     if (cut !== fp) {
       const clean = cleanPolygon(cut, 1.2);
+      if (clean.length >= 3 && polygonArea(clean) > 25) fp = clean;
+    }
+    // Likewise a plan that crosses or touches itself keeps its main loop.
+    const loop = simplePolygon(fp);
+    if (loop !== fp) {
+      const clean = cleanPolygon(loop, 1.2);
       if (clean.length >= 3 && polygonArea(clean) > 25) fp = clean;
     }
     // Cleaning may drop vertices, so match edges back to the lot's.

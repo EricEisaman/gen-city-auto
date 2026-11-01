@@ -9,11 +9,13 @@ import {
   generateLayout,
   inTunnel,
   MAX_DECK_RISE,
+  simplePolygon,
   stableOrder,
   TERMINUS_OFFSET,
 } from '../../src/city/layout.ts';
 import {SEA_LEVEL} from '../../src/city/terrain.ts';
 import {computeRoadGeom} from '../../src/city/roadgeom.ts';
+import {polygonArea, type Vec2} from '../../src/math/vec.ts';
 
 // river seed 5 once had a kerb-return crossing extrapolated 55 km out of its
 // junction; landing()'s plate grid then took ~700 MB per city worker and the
@@ -167,4 +169,60 @@ void test('rail viaducts follow the ground and end at termini', () => {
   }
   // Neon seed 1's loop line crosses a river: it used to be cut open there.
   assert.ok(layoutOf('neon', 1).elevated[0].loop);
+});
+
+void test('simplePolygon keeps the main loop of a self-touching plan', () => {
+  const square: Vec2[] = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+  ];
+  assert.equal(simplePolygon(square), square);
+  // A 10 x 10 plot pinched at (10, 10) to a 4 x 4 lobe.
+  const pinched: Vec2[] = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [14, 10],
+    [14, 14],
+    [10, 14],
+    [10, 10],
+    [0, 10],
+  ];
+  const s = simplePolygon(pinched);
+  assert.equal(s.length, 4);
+  assert.equal(polygonArea(s), 100);
+  // A figure eight: the bigger lobe (same winding) wins.
+  const eight: Vec2[] = [
+    [0, 0],
+    [20, 12],
+    [20, 0],
+    [0, 12],
+  ];
+  assert.ok(simplePolygon(eight).length === 3);
+});
+
+// Chongqing seed 1 had a glass tower on a plot that touched itself: its
+// inset body and crown came out as a twisted box hanging past the podium.
+void test('building plans do not cross themselves', () => {
+  for (const [type, seed] of [
+    ['river', 1],
+    ['harbour', 1],
+  ] as const) {
+    const L = layoutOf(type, seed);
+    const bad = L.buildings.filter(
+      b => simplePolygon(b.footprint) !== b.footprint,
+    );
+    assert.ok(
+      bad.length <= L.buildings.length * 0.0005,
+      `${type} ${seed}: ${bad.length} self-crossing plans`,
+    );
+    const towers = bad.filter(b => b.kind === 'glass' || b.kind === 'tower');
+    assert.equal(
+      towers.length,
+      0,
+      `${type} ${seed}: towers ${towers.map(b => b.id)}`,
+    );
+  }
 });
