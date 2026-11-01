@@ -10,22 +10,25 @@ import type {LoadListener} from '../world/city.ts';
 import {counters, timed} from './timeline.ts';
 
 /**
- * The generation steps the primary city worker reports, with their measured
- * share of the layout + base phase (seconds on an M1 Max, neon seed 1).
+ * The generation steps the primary city worker reports, with their share of
+ * the layout + base phase (measured on an M1 Max, neon seed 1, while the
+ * vehicle workers run, scaled by 1.7; only the proportions matter, the bar
+ * adapts to the device's speed). The terrain is shaded by every worker;
+ * 'Layout done' includes sending the layout to the other workers.
  */
 const STEPS: [string, number][] = [
-  ['Shaping terrain', 7.6],
-  ['Tracing streets', 3.2],
-  ['Connecting streets', 0.8],
-  ['Grading roads', 2.1],
-  ['Elevated rail and expressways', 0.3],
-  ['Subdividing blocks', 0.8],
-  ['Grading blocks', 2.1],
-  ['Designing buildings', 3.1],
-  ['Open ground', 0.3],
-  ['Layout done', 0.1],
-  ['Building street meshes', 2.8],
-  ['Uploading city', 2.0],
+  ['Shaping terrain', 5.0],
+  ['Tracing streets', 2.7],
+  ['Connecting streets', 1.1],
+  ['Grading roads', 1.2],
+  ['Elevated rail and expressways', 0.6],
+  ['Subdividing blocks', 1.6],
+  ['Grading blocks', 3.8],
+  ['Designing buildings', 2.2],
+  ['Open ground', 0.8],
+  ['Layout done', 1.1],
+  ['Building street meshes', 4.1],
+  ['Uploading city', 0.9],
 ];
 const STEP_TOTAL = STEPS.reduce((a, s) => a + s[1], 0);
 
