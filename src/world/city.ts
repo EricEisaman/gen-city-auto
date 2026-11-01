@@ -83,6 +83,8 @@ export class City {
   private candSrc = new Uint32Array(8192);
   private candI = new Uint32Array(8192);
   lod0Radius = 520;
+  /** LOD0 tiles are freed this far past lod0Radius. */
+  lod0Keep = 250;
   /**
    * Tiles farther than this show LOD2 (city/lod.ts); Infinity = LOD1
    * everywhere. Set before load (?lod2=metres, 0 = off).
@@ -289,6 +291,15 @@ export class City {
     return lowMemory() ? 2 : 3;
   }
 
+  /**
+   * Low-memory devices (caps.ts): a smaller LOD0 ring, freed sooner, so the
+   * resident tiles fit the smaller cluster pool (RendererOptions).
+   */
+  useLowMemory() {
+    this.lod0Radius = 320;
+    this.lod0Keep = 120;
+  }
+
   /** Takes worker i out of the pool; terminated once its jobs are back. */
   private retire(i: number) {
     this.ready[i] = false;
@@ -466,7 +477,7 @@ export class City {
     for (let t = 0; t < this.tiles.length; t++) {
       const s = this.tiles[t];
       const d = this.tileDist(t, p);
-      if (s.lod0 && d > this.lod0Radius + 250) {
+      if (s.lod0 && d > this.lod0Radius + this.lod0Keep) {
         this.renderer.freeClusters(s.lod0);
         s.lod0 = null;
         s.lights0 = new Float32Array(0);

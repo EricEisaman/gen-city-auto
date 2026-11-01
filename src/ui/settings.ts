@@ -62,6 +62,14 @@ export const DEFAULTS: Settings = {
   readout: false,
 };
 
+/**
+ * The defaults on this device: the low preset on low-memory devices (caps.ts:
+ * phones, tablets), DEFAULTS elsewhere.
+ */
+export function deviceDefaults(lowMemory: boolean): Settings {
+  return lowMemory ? {...DEFAULTS, preset: 'low', ...PRESETS.low} : DEFAULTS;
+}
+
 type PresetKeys =
   | 'scale'
   | 'clouds'

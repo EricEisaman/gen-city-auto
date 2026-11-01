@@ -1,6 +1,7 @@
 // Game orchestration: city loading, simulation systems, cameras and the
 // render loop.
 
+import {lowMemory} from '../caps.ts';
 import {PRESETS as PRESETS_CITY, type CityType} from '../city/config.ts';
 import {reportError, resizeToCss, type Gpu} from '../gpu/device.ts';
 import {Rng} from '../math/random.ts';
@@ -18,7 +19,7 @@ import {UI} from '../ui/ui.ts';
 import {loading as loadScreen, nextPaint} from '../ui/loading.ts';
 import {begin, finish, mark, timed, timedAsync} from '../ui/timeline.ts';
 import {
-  DEFAULTS,
+  deviceDefaults,
   DynamicScale,
   FIELDS,
   PRESETS,
@@ -144,6 +145,9 @@ export class Game {
   private stored: Partial<Settings>;
   private dynScale = new DynamicScale();
 
+  /** Settings defaults on this device (the low preset on phones). */
+  private readonly defaults = deviceDefaults(lowMemory());
+
   constructor(gpu: Gpu, opts: GameOptions) {
     this.gpu = gpu;
     this.opts = opts;
@@ -154,7 +158,7 @@ export class Game {
     this.weather.set(opts.weather, true);
     this.input = new Input(gpu.canvas);
     this.stored = loadStored();
-    this.settings = {...DEFAULTS, ...this.stored, ...opts.gfx};
+    this.settings = {...this.defaults, ...this.stored, ...opts.gfx};
   }
 
   /** Change one graphics setting (from the menu): applied live and saved. */
@@ -186,7 +190,7 @@ export class Game {
   resetSettings() {
     clearStored();
     this.stored = {};
-    this.settings = {...DEFAULTS, ...this.opts.gfx};
+    this.settings = {...this.defaults, ...this.opts.gfx};
     this.applySettings();
   }
 
@@ -238,7 +242,7 @@ export class Game {
     // Everything slow starts here and runs at once: pipeline compiles and
     // the texture worker (Renderer.create), the city workers (loadCity) and
     // the vehicle workers. Pipelines are awaited only before the first frame.
-    this.renderer = Renderer.create(this.gpu);
+    this.renderer = Renderer.create(this.gpu, {lowMemory: lowMemory()});
     this.renderer.offBits = this.opts.off ?? 0;
     this.applySettings();
     if (this.opts.prof) {
@@ -305,6 +309,7 @@ export class Game {
     loadScreen.show(PRESETS_CITY[type].name, seed);
     this.city?.dispose();
     this.city = new City(this.renderer, type, seed, this.opts.lab);
+    if (lowMemory()) this.city.useLowMemory();
     const lod2 = this.opts.lod2 ?? this.settings.drawDist;
     this.city.lod2Dist = lod2 > 0 ? lod2 : Infinity;
     let focus: Vec3 = [0, 0, 0];

@@ -139,6 +139,11 @@ export const CLOUD_LEVELS = [
   {div: 2, mode: 2, steps: 1},
 ] as const;
 
+export interface RendererOptions {
+  /** Smaller cluster pool (see City.lowMemory). */
+  lowMemory?: boolean;
+}
+
 export class Renderer {
   readonly gpu: Gpu;
   readonly device: GPUDevice;
@@ -264,7 +269,7 @@ export class Renderer {
   /** Ablation: city material ids (bit per id) drawn as a flat colour. */
   offMats = 0;
 
-  private constructor(gpu: Gpu) {
+  private constructor(gpu: Gpu, opts: RendererOptions) {
     this.gpu = gpu;
     const device = gpu.device;
     this.device = device;
@@ -273,14 +278,16 @@ export class Renderer {
     // (neon seed 1 at load: 487 MB of packed vertex words, city/vpack.ts,
     // 16M triangles, 130k clusters); with less the last tiles to stream in
     // fail to upload and whole districts show as bare streets.
+    // Low-memory devices stream less (City.lowMemory) into a smaller pool.
+    const mb = opts.lowMemory ? 384 : 512;
     const maxWords = Math.floor(
-      Math.min(lim, device.limits.maxBufferSize, 512 * 1024 * 1024) / 4,
+      Math.min(lim, device.limits.maxBufferSize, mb * 1024 * 1024) / 4,
     );
     this.pool = new ClusterPool(
       device,
       maxWords,
-      Math.min(Math.floor(lim / 4), 20_000_000),
-      200_000,
+      Math.min(Math.floor(lim / 4), mb * 40_000),
+      mb * 400,
     );
     this.frameBuffer = device.createBuffer({
       label: 'frame/uniforms',
@@ -513,8 +520,8 @@ export class Renderer {
    */
   ready!: Promise<void>;
 
-  static create(gpu: Gpu): Renderer {
-    const r = timed('renderer resources', () => new Renderer(gpu));
+  static create(gpu: Gpu, opts: RendererOptions = {}): Renderer {
+    const r = timed('renderer resources', () => new Renderer(gpu, opts));
     const endAll = begin('renderer pipelines + textures');
     r.ready = Promise.all([r.createPipelines(), r.loadTextures()]).then(endAll);
     return r;
