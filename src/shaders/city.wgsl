@@ -1,10 +1,11 @@
 // City geometry: GPU-driven cluster rendering with vertex pulling. One indirect
 // draw renders every visible cluster (instance = cluster, vertex = corner).
 
+// A decoded vertex (cmesh.ts layout; stored packed, see vpack.ts).
 struct Vertex {
-  px: f32, py: f32, pz: f32,
+  p: vec3f,
   n: u32,
-  u: f32, v: f32,
+  uv: vec2f,
   mat: u32,
   aux: u32,
 };
@@ -18,7 +19,7 @@ struct Cluster {
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-@group(1) @binding(0) var<storage, read> vertices: array<Vertex>;
+@group(1) @binding(0) var<storage, read> vwords: array<u32>;
 @group(1) @binding(1) var<storage, read> tris: array<u32>;
 @group(1) @binding(2) var<storage, read> clusters: array<Cluster>;
 @group(1) @binding(3) var<storage, read> visible: array<u32>;
@@ -70,17 +71,53 @@ const FINE_TUBE = 0x80000000u;
 const FINE_NEAR = 45.0;
 const FINE_FAR = 100.0;
 
+// Cluster vertices (vpack.ts): vertOffset holds the word offset of the
+// cluster's vertices (bits 0-27) and the grid shift k (bits 28-31; 15 = the
+// 32-byte cmesh.ts layout). Packed: 19-bit grid positions relative to the
+// cluster origin, the normal, f32 uv and a 7-bit index into the cluster's
+// (mat, aux) palette, which counts down from the vertices.
 fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
   let c = clusters[visible[LIST * (arrayLength(&visible) / LISTS) + ii]];
   let tri = vi / 3u;
+  var v: Vertex;
   if (tri >= (c.packed & 0xffu)) {
     *ok = false;
-    return vertices[0];
+    return v;
   }
   *ok = true;
   let packed = tris[c.triOffset + tri];
   let local = (packed >> ((vi % 3u) * 8u)) & 0xffu;
-  return vertices[c.vertOffset + local];
+  let base = c.vertOffset & 0x0fffffffu;
+  let k = c.vertOffset >> 28u;
+  if (k == 15u) {
+    let o = base + local * 8u;
+    v.p = vec3f(bitcast<f32>(vwords[o]), bitcast<f32>(vwords[o + 1u]), bitcast<f32>(vwords[o + 2u]));
+    v.n = vwords[o + 3u];
+    v.uv = vec2f(bitcast<f32>(vwords[o + 4u]), bitcast<f32>(vwords[o + 5u]));
+    v.mat = vwords[o + 6u];
+    v.aux = vwords[o + 7u];
+    return v;
+  }
+  let o = base + local * 5u;
+  let w0 = vwords[o];
+  let w1 = vwords[o + 1u];
+  let q = vec3i(
+    i32(w0 & 0x7ffffu),
+    i32((w0 >> 19u) | ((w1 & 0x3fu) << 13u)),
+    i32((w1 >> 6u) & 0x7ffffu),
+  ) - vec3i(262144);
+  // Grid step 2^k / 4096 and its inverse, built exactly (every term of the
+  // decode is exact in f32: shared vertices match across clusters).
+  let s = bitcast<f32>((115u + k) << 23u);
+  let inv = bitcast<f32>((139u - k) << 23u);
+  let org = floor(vec3f(c.cx, c.cy, c.cz) * inv) * s;
+  v.p = org + vec3f(q) * s;
+  v.n = vwords[o + 2u];
+  v.uv = vec2f(bitcast<f32>(vwords[o + 3u]), bitcast<f32>(vwords[o + 4u]));
+  let po = base - 2u - 2u * (w1 >> 25u);
+  v.mat = vwords[po];
+  v.aux = vwords[po + 1u];
+  return v;
 }
 
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
@@ -91,7 +128,7 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
     o.pos = vec4f(2.0, 2.0, 2.0, 1.0);
     return o;
   }
-  var p = vec3f(v.px, v.py, v.pz);
+  var p = v.p;
   o.pos = frame.viewProj * vec4f(p, 1.0);
   o.normal = octDecode(v.n);
   o.cov = 1.0;
@@ -130,7 +167,7 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
     }
   }
   o.world = p;
-  o.uv = vec2f(v.u, v.v);
+  o.uv = v.uv;
   o.mat = v.mat;
   o.aux = v.aux;
   return o;
@@ -221,8 +258,8 @@ struct SOut {
     o.pos = vec4f(2.0, 2.0, 2.0, 1.0);
     return o;
   }
-  o.pos = shadowView.viewProj * vec4f(v.px, v.py, v.pz, 1.0);
-  o.uv = vec2f(v.u, v.v);
+  o.pos = shadowView.viewProj * vec4f(v.p, 1.0);
+  o.uv = v.uv;
   o.leaf = select(0u, 1u, (v.mat & 0xffu) == 25u);
   return o;
 }

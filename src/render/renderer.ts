@@ -268,17 +268,18 @@ export class Renderer {
     const device = gpu.device;
     this.device = device;
     const lim = device.limits.maxStorageBufferBindingSize;
-    // A whole city's LOD1 shells plus the LOD0 ring need ~19M vertices
-    // (neon seed 1); at 512 MB (16.7M) the last tiles to stream in failed
-    // to upload and whole districts showed as bare streets.
-    const maxVerts = Math.floor(
-      Math.min(lim, device.limits.maxBufferSize, 768 * 1024 * 1024) / 32,
+    // A whole city's LOD1 shells plus the LOD0 ring need ~24M vertices
+    // (neon seed 1 at load: 487 MB of packed vertex words, city/vpack.ts,
+    // 16M triangles, 130k clusters); with less the last tiles to stream in
+    // fail to upload and whole districts show as bare streets.
+    const maxWords = Math.floor(
+      Math.min(lim, device.limits.maxBufferSize, 512 * 1024 * 1024) / 4,
     );
     this.pool = new ClusterPool(
       device,
-      maxVerts,
-      Math.min(Math.floor(lim / 4), 24_000_000),
-      400_000,
+      maxWords,
+      Math.min(Math.floor(lim / 4), 20_000_000),
+      200_000,
     );
     this.frameBuffer = device.createBuffer({
       label: 'frame/uniforms',
@@ -2371,6 +2372,9 @@ export class Renderer {
       alphaClusters: ps.alphaClusters,
       tris: ps.tris,
       verts: ps.verts,
+      vertsTop: ps.vertsTop,
+      trisTop: ps.trisTop,
+      clustersTop: ps.clustersTop,
       lights: this.lightCount,
       patches: this.patchCount,
       cullGroups: this.cullCount,

@@ -1,12 +1,9 @@
 // GPU pool of city clusters: one big vertex buffer, triangle buffer and cluster
-// table shared by every tile, with simple first-fit range allocators.
+// table shared by every tile, with simple best-fit range allocators. The
+// vertex buffer holds packed vertex words (city/vpack.ts), allocated in
+// words.
 
-import {
-  CLUSTER_ALPHA,
-  CLUSTER_WORDS,
-  VERTEX_WORDS,
-  type ClusterData,
-} from '../city/cmesh.ts';
+import {CLUSTER_ALPHA, CLUSTER_WORDS, type ClusterData} from '../city/cmesh.ts';
 
 class RangeAllocator {
   private free: [number, number][] = [];
@@ -79,6 +76,7 @@ export interface PoolHandle {
 }
 
 export class ClusterPool {
+  /** Packed vertex words (vpack.ts). */
   readonly vertexBuffer: GPUBuffer;
   readonly triBuffer: GPUBuffer;
   readonly clusterBuffer: GPUBuffer;
@@ -90,7 +88,7 @@ export class ClusterPool {
 
   constructor(
     device: GPUDevice,
-    maxVerts: number,
+    maxWords: number,
     maxTris: number,
     maxClusters: number,
   ) {
@@ -98,7 +96,7 @@ export class ClusterPool {
     this.maxClusters = maxClusters;
     this.vertexBuffer = device.createBuffer({
       label: 'city/pool/vertices',
-      size: maxVerts * VERTEX_WORDS * 4,
+      size: maxWords * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.triBuffer = device.createBuffer({
@@ -111,7 +109,7 @@ export class ClusterPool {
       size: maxClusters * CLUSTER_WORDS * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.verts = new RangeAllocator(maxVerts);
+    this.verts = new RangeAllocator(maxWords);
     this.tris = new RangeAllocator(maxTris);
     this.clusters = new RangeAllocator(maxClusters);
   }
@@ -125,15 +123,19 @@ export class ClusterPool {
 
   get stats() {
     return {
+      /** Vertex words. */
       verts: this.verts.used,
       tris: this.tris.used,
       clusters: this.clusters.used,
+      vertsTop: this.verts.top,
+      trisTop: this.tris.top,
+      clustersTop: this.clusters.top,
       alphaClusters: this.alphaClusters,
     };
   }
 
   upload(d: ClusterData): PoolHandle | null {
-    const vn = d.vertices.length / VERTEX_WORDS;
+    const vn = d.vertices.length;
     const tn = d.tris.length;
     const cn = d.clusterCount;
     if (cn === 0) return {v: 0, vn: 0, t: 0, tn: 0, c: 0, cn: 0};
@@ -148,13 +150,14 @@ export class ClusterPool {
     const cl = d.clusters.slice();
     let an = 0;
     for (let i = 0; i < cn; i++) {
+      // (Word offset in the low 28 bits, vpack.ts; the pool is smaller.)
       cl[i * CLUSTER_WORDS + 4] += v;
       cl[i * CLUSTER_WORDS + 5] += t;
       if ((cl[i * CLUSTER_WORDS + 6] >>> 12) & CLUSTER_ALPHA) an++;
     }
     this.alphaClusters += an;
     const q = this.device.queue;
-    q.writeBuffer(this.vertexBuffer, v * VERTEX_WORDS * 4, d.vertices);
+    q.writeBuffer(this.vertexBuffer, v * 4, d.vertices);
     q.writeBuffer(this.triBuffer, t * 4, d.tris);
     q.writeBuffer(this.clusterBuffer, c * CLUSTER_WORDS * 4, cl);
     return {v, vn, t, tn, c, cn, an};

@@ -11,6 +11,7 @@
 // several GB of transient memory in the one renderer process.
 
 import {clusterize, type ClusterData} from '../city/cmesh.ts';
+import {packClusters} from '../city/vpack.ts';
 import {PRESETS, type CityType} from '../city/config.ts';
 import {
   assembleBase,
@@ -311,14 +312,10 @@ function finishCity(
   );
   // Fine base detail (kerbs, railings, wires, thin paint) drops at range.
   const tc = abs();
-  const baseClusters = clusterize(
-    base.mesh,
-    0,
-    0xffffffff,
-    1,
-    baseFarOf(base.mesh),
+  const baseClusters = packClusters(
+    clusterize(base.mesh, 0, 0xffffffff, 1, baseFarOf(base.mesh)),
   );
-  const pierClusters = clusterize(base.piers, 0, 0xffffffff, 0);
+  const pierClusters = packClusters(clusterize(base.piers, 0, 0xffffffff, 0));
   span('clusterize base', tc);
   post({type: 'base', base: baseClusters, piers: pierClusters}, [
     ...clusterTransfer(baseClusters),
@@ -362,7 +359,7 @@ function handle(req: WorkerRequest) {
     if (!ctx) throw new Error('tile request before init');
     const t0 = abs();
     const r = buildTile(ctx, req.tile, req.lod);
-    const c = clusterize(r.mesh, req.lod, req.tile, 1);
+    const c = packClusters(clusterize(r.mesh, req.lod, req.tile, 1));
     const lights = new Float32Array(r.lights);
     tileMs += abs() - t0;
     tileCount++;

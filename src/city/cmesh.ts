@@ -1,6 +1,6 @@
 // City geometry builder and clusterizer.
 //
-// Vertex format (32 bytes, read with vertex pulling in WGSL):
+// Vertex format (32 bytes; the GPU gets them packed to ~20, see vpack.ts):
 //   pos: f32x3, normal: u32 (octahedral unorm16x2), uv: f32x2, mat: u32, aux: u32
 // mat = material id (low 8 bits) | parameter (high 24 bits).
 // aux: material-specific. For TUBE_MATS (wire, frame, paint, metal, lamp,
@@ -731,6 +731,8 @@ export interface ClusterData {
    * Cluster records, CLUSTER_WORDS each:
    *   [cx, cy, cz, radius] as f32, vertOffset, triOffset, triCount | lod << 8 | flags << 12, tile
    * Offsets are relative to this batch; the pool rebases them on upload.
+   * (packClusters, vpack.ts, turns vertOffset into a word offset and grid
+   * shift of its packed vertices.)
    */
   clusters: Uint32Array;
   clusterCount: number;
