@@ -111,6 +111,16 @@ export class City {
     const endBase = begin('city: layout + base mesh (workers)');
     const tileMs: number[] = new Array(n).fill(0);
     const tileCount: number[] = new Array(n).fill(0);
+    // The workers' distribution tree (a binary heap: worker i's parent is
+    // (i - 1) >> 1): terrain bands go up to the primary, the layout comes
+    // down (see city-worker.ts).
+    const parents: (MessagePort | undefined)[] = [undefined];
+    const children: MessagePort[][] = Array.from({length: n}, () => []);
+    for (let i = 1; i < n; i++) {
+      const ch = new MessageChannel();
+      children[(i - 1) >> 1].push(ch.port1);
+      parents.push(ch.port2);
+    }
     for (let i = 0; i < n; i++) {
       const w = new Worker(new URL('./city-worker.js', import.meta.url), {
         type: 'module',
@@ -183,8 +193,13 @@ export class City {
         seed: this.seed,
         primary: i === 0,
         lab: this.lab,
+        index: i,
+        count: n,
+        parent: parents[i],
+        children: children[i],
       };
-      w.postMessage(req);
+      const ports = parents[i] ? [parents[i]!, ...children[i]] : children[i];
+      w.postMessage(req, ports);
     }
     endSpawn();
     let uploadMs = 0;

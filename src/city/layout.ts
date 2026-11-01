@@ -944,11 +944,13 @@ export function generateLayout(
   params: CityParams,
   seed: number,
   progress?: (msg: string, f: number, partial?: LayoutPartial) => void,
+  /** generateTerrain(params, seed), already made (by several workers). */
+  pregenerated?: Terrain,
 ): CityLayout {
   const rng = new Rng(seed);
   const noise = new Noise2D(seed + 7);
-  progress?.('Shaping terrain', 0.05);
-  const terrain = generateTerrain(params, seed);
+  if (!pregenerated) progress?.('Shaping terrain', 0.05);
+  const terrain = pregenerated ?? generateTerrain(params, seed);
   const hf = terrain.heights;
   const S = params.size / 2;
   const center = terrain.center;
