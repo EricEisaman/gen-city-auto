@@ -14,6 +14,8 @@ import {nearestFirst} from './nearest.ts';
 import type {PoolHandle} from '../render/cluster-pool.ts';
 import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
+import type {Preview} from '../city/preview.ts';
+import {addSpan, begin, fromWorker, mark, timed} from '../ui/timeline.ts';
 
 interface TileState {
   lod2: PoolHandle | null;
@@ -35,11 +37,17 @@ interface TileState {
 const SHELL_PREFETCH = 100;
 const SHELL_KEEP = 150;
 
-type Progress = (msg: string, f: number) => void;
-
-const SKYLINE_N = 2048;
-/** Bare-terrain offset in the skyline map (lighting.wgsl SKYLINE_TERRAIN). */
-const SKYLINE_TERRAIN = 10000;
+/** Loading progress (the loading screen). */
+export interface LoadListener {
+  /** A generation step started (f: the worker's own 0..0.75 estimate). */
+  step(msg: string, f: number): void;
+  /** A finished part of the layout, for the map. */
+  preview(p: Preview): void;
+  /** Initial tile set: fraction done. */
+  tiles(f: number): void;
+  /** A tile mesh arrived (the map lights it up). */
+  tile(tile: number, tilesPerSide: number): void;
+}
 
 export class City {
   summary!: LayoutSummary;
@@ -83,7 +91,7 @@ export class City {
     this.lab = lab;
   }
 
-  async load(progress: Progress, focus: () => Vec3) {
+  async load(progress: LoadListener, focus: () => Vec3) {
     const n = Math.max(
       2,
       Math.min(6, (navigator.hardwareConcurrency || 4) - 1),
@@ -97,6 +105,12 @@ export class City {
     });
     let resolveReady!: () => void;
     const allReady = new Promise<void>(res => (resolveReady = res));
+    let resolveSky!: () => void;
+    const skyDone = new Promise<void>(res => (resolveSky = res));
+    const endSpawn = begin(`spawn ${n} city workers`);
+    const endBase = begin('city: layout + base mesh (workers)');
+    const tileMs: number[] = new Array(n).fill(0);
+    const tileCount: number[] = new Array(n).fill(0);
     for (let i = 0; i < n; i++) {
       const w = new Worker(new URL('./city-worker.js', import.meta.url), {
         type: 'module',
@@ -108,28 +122,53 @@ export class City {
         const m = e.data;
         switch (m.type) {
           case 'progress':
-            progress(m.msg, m.f);
+            progress.step(m.msg, m.f);
+            break;
+          case 'span':
+            addSpan(
+              m.name,
+              fromWorker(m.start),
+              fromWorker(m.end),
+              `worker ${i}`,
+            );
             break;
           case 'band':
             // The primary's curb band: the others' tile context waits on it
             // (they never build the base mesh; see city-worker.ts).
-            for (const o of this.workers.slice(1)) {
-              const req: WorkerRequest = {type: 'band', band: m.band};
-              o.postMessage(req);
-            }
+            timed('forward band', () => {
+              for (const o of this.workers.slice(1)) {
+                const req: WorkerRequest = {type: 'band', band: m.band};
+                o.postMessage(req);
+              }
+            });
             break;
           case 'base':
+            mark('base message received');
             this.onBase(m.summary, m.base, m.piers, m.lights, m.landUse);
             resolveBase();
+            break;
+          case 'preview':
+            progress.preview(m.preview);
+            break;
+          case 'skyline':
+            this.renderer.setSkyline(m.sky, m.n);
+            resolveSky();
             break;
           case 'ready':
             if (++readyCount === n) resolveReady();
             break;
-          case 'tile':
+          case 'tile': {
             this.busy[i]--;
+            tileMs[i] = m.tileMs;
+            tileCount[i] = m.tileCount;
+            const t = performance.now();
             this.onTile(m.tile, m.lod, m.clusters, m.lights);
+            progress.tile(m.tile, this.tilesPerSide);
+            uploadMs += performance.now() - t;
+            uploads++;
             this.pump();
             break;
+          }
           case 'error':
             // (After loading nothing awaits the promise: log it as well.)
             console.error(`[city worker ${i}] ${m.message}`);
@@ -147,8 +186,15 @@ export class City {
       };
       w.postMessage(req);
     }
+    endSpawn();
+    let uploadMs = 0;
+    let uploads = 0;
     await baseDone;
+    endBase();
+    const endReady = begin('city: other workers ready');
     await allReady;
+    endReady();
+    const endTiles = begin('city: tiles (initial set)');
     // Every tile gets its shell (LOD1 near, LOD2 far); tiles near the focus
     // get LOD0 first.
     const total = this.tilesPerSide * this.tilesPerSide;
@@ -161,18 +207,31 @@ export class City {
         ).length;
         const near = this.nearTiles(focus(), this.lod0Radius);
         const done0 = near.filter(t => this.tiles[t].lod0).length;
-        progress(
-          'Building streets',
-          0.8 +
-            0.2 *
-              ((done1 / total) * 0.6 +
-                (done0 / Math.max(1, near.length)) * 0.4),
+        progress.tiles(
+          (done1 / total) * 0.6 + (done0 / Math.max(1, near.length)) * 0.4,
         );
-        if (done1 === total && done0 === near.length) res();
-        else setTimeout(check, 100);
+        if (done1 === total && done0 === near.length) {
+          endTiles();
+          const t = performance.now();
+          const sum = tileMs.reduce((a, b) => a + b, 0);
+          const cnt = tileCount.reduce((a, b) => a + b, 0);
+          addSpan(
+            `tile builds: ${cnt} jobs, ${sum.toFixed(0)} worker-ms over ${n} workers`,
+            t,
+            t,
+            'workers',
+          );
+          addSpan(
+            `tile uploads: ${uploads}, ${uploadMs.toFixed(0)} ms main thread`,
+            t,
+            t,
+          );
+          res();
+        } else setTimeout(check, 100);
       };
       check();
     });
+    await skyDone;
   }
 
   private onBase(
@@ -198,18 +257,21 @@ export class City {
       pending1: false,
       pending2: false,
     }));
-    this.renderer.setTerrain(
-      L.heights,
-      L.heightN,
-      L.cell,
-      L.params.size,
-      landUse,
+    timed('setTerrain', () =>
+      this.renderer.setTerrain(
+        L.heights,
+        L.heightN,
+        L.cell,
+        L.params.size,
+        landUse,
+      ),
     );
-    this.renderer.setSkyline(this.buildSkyline(), SKYLINE_N);
-    for (const c of [base, piers]) {
-      const h = this.renderer.uploadClusters(c);
-      if (h) this.baseHandles.push(h);
-    }
+    timed('upload base mesh', () => {
+      for (const c of [base, piers]) {
+        const h = this.renderer.uploadClusters(c);
+        if (h) this.baseHandles.push(h);
+      }
+    });
     this.baseLights = lights;
     this.baseLightTiles = Array.from({length: total}, () => []);
     for (let i = 0; i < lights.length / LIGHT_FLOATS; i++) {
@@ -218,73 +280,6 @@ export class City {
       );
     }
     this.renderer.setTileLods(this.tileLods);
-  }
-
-  /**
-   * Max of terrain and building tops on a 2048^2 grid (street-canyon sky
-   * visibility, the city reflection). Cells that are bare terrain store
-   * -(h + SKYLINE_TERRAIN) (lighting.wgsl skyH decodes), so the reflection
-   * can tell a hillside from a facade: it drew every rise of the ground as
-   * a building with lit windows (bright bars along the horizon in wet
-   * night views of the asset lab, which has no buildings).
-   */
-  private buildSkyline(): Float32Array {
-    const L = this.summary.layout;
-    const size = L.params.size;
-    const N = SKYLINE_N;
-    const cell = size / N;
-    const out = new Float32Array(N * N);
-    const built = new Uint8Array(N * N);
-    for (let j = 0; j < N; j++) {
-      for (let i = 0; i < N; i++) {
-        out[j * N + i] = this.heights.sample(
-          -size / 2 + (i + 0.5) * cell,
-          -size / 2 + (j + 0.5) * cell,
-        );
-      }
-    }
-    for (const b of L.buildings) {
-      const fp = b.footprint;
-      let x0 = Infinity,
-        x1 = -Infinity,
-        z0 = Infinity,
-        z1 = -Infinity;
-      for (const q of fp) {
-        x0 = Math.min(x0, q[0]);
-        x1 = Math.max(x1, q[0]);
-        z0 = Math.min(z0, q[1]);
-        z1 = Math.max(z1, q[1]);
-      }
-      const top = b.base + b.height;
-      const i0 = Math.max(0, Math.floor((x0 + size / 2) / cell));
-      const i1 = Math.min(N - 1, Math.floor((x1 + size / 2) / cell));
-      const j0 = Math.max(0, Math.floor((z0 + size / 2) / cell));
-      const j1 = Math.min(N - 1, Math.floor((z1 + size / 2) / cell));
-      for (let j = j0; j <= j1; j++) {
-        const z = -size / 2 + (j + 0.5) * cell;
-        for (let i = i0; i <= i1; i++) {
-          const x = -size / 2 + (i + 0.5) * cell;
-          let inside = false;
-          for (let a = 0, c = fp.length - 1; a < fp.length; c = a++) {
-            if (
-              fp[a][1] > z !== fp[c][1] > z &&
-              x <
-                ((fp[c][0] - fp[a][0]) * (z - fp[a][1])) /
-                  (fp[c][1] - fp[a][1]) +
-                  fp[a][0]
-            )
-              inside = !inside;
-          }
-          if (inside && top > out[j * N + i]) {
-            out[j * N + i] = top;
-            built[j * N + i] = 1;
-          }
-        }
-      }
-    }
-    for (let k = 0; k < N * N; k++)
-      if (!built[k]) out[k] = -(out[k] + SKYLINE_TERRAIN);
-    return out;
   }
 
   tileAt(x: number, z: number) {

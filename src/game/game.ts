@@ -1,7 +1,7 @@
 // Game orchestration: city loading, simulation systems, cameras and the
 // render loop.
 
-import type {CityType} from '../city/config.ts';
+import {PRESETS as PRESETS_CITY, type CityType} from '../city/config.ts';
 import {reportError, resizeToCss, type Gpu} from '../gpu/device.ts';
 import {Rng} from '../math/random.ts';
 import type {Vec3} from '../math/vec.ts';
@@ -15,6 +15,8 @@ import {VehicleRenderer} from '../render/vehicles.ts';
 import {CpuProfiler} from '../render/profiler.ts';
 import {OFF_BITS, parseOff} from '../render/ablation.ts';
 import {UI} from '../ui/ui.ts';
+import {loading as loadScreen, nextPaint} from '../ui/loading.ts';
+import {begin, finish, mark, timed, timedAsync} from '../ui/timeline.ts';
 import {
   DEFAULTS,
   DynamicScale,
@@ -233,7 +235,10 @@ export class Game {
   }
 
   async init() {
-    this.renderer = await Renderer.create(this.gpu);
+    // Everything slow starts here and runs at once: pipeline compiles and
+    // the texture worker (Renderer.create), the city workers (loadCity) and
+    // the vehicle workers. Pipelines are awaited only before the first frame.
+    this.renderer = Renderer.create(this.gpu);
     this.renderer.offBits = this.opts.off ?? 0;
     this.applySettings();
     if (this.opts.prof) {
@@ -258,25 +263,31 @@ export class Game {
     );
     this.renderer.hooks.push(this.vehicles, this.rain, this.sprites);
     this.rain.density = this.settings.rain;
-    const progress = this.progress.bind(this);
-    progress('Building vehicles from NURBS', 0.02);
-    await Promise.all([
-      this.vehicles.init(GBUFFER_FORMATS, 'rgba16float'),
-      this.loadCity(this.cityType, this.seed),
+    const gpuReady = Promise.all([
+      this.renderer.ready,
+      this.rain.ready,
+      this.sprites.ready,
     ]);
-    this.setupWorld();
+    gpuReady.catch(() => {}); // (awaited below; no unhandled rejection meanwhile)
+    const city = timedAsync(
+      'city load',
+      this.loadCity(this.cityType, this.seed),
+    );
+    const vehicles = timedAsync(
+      'vehicles init',
+      this.vehicles.init(GBUFFER_FORMATS, 'rgba16float'),
+    );
+    await Promise.all([city, vehicles]);
+    loadScreen.phase('Compiling shaders', 'finish');
+    await timedAsync('wait: pipelines + textures', gpuReady);
+    loadScreen.phase('Starting traffic');
+    await nextPaint();
+    timed('setupWorld', () => this.setupWorld());
     this.ui = new UI(this);
     if (this.opts.camera) {
       this.camera.mode = this.opts.camera;
       this.camera.directorEnabled = this.opts.director;
     }
-  }
-
-  private progress(msg: string, f: number) {
-    const m = document.getElementById('loadmsg');
-    const b = document.getElementById('loadbar');
-    if (m) m.textContent = msg;
-    if (b) b.style.width = `${Math.round(f * 100)}%`;
   }
 
   private spawnPoint(): Vec3 {
@@ -291,7 +302,7 @@ export class Game {
 
   private async loadCity(type: CityType, seed: number) {
     this.loading = true;
-    document.getElementById('loading')!.style.display = '';
+    loadScreen.show(PRESETS_CITY[type].name, seed);
     this.city?.dispose();
     this.city = new City(this.renderer, type, seed, this.opts.lab);
     const lod2 = this.opts.lod2 ?? this.settings.drawDist;
@@ -299,10 +310,7 @@ export class Game {
     let focus: Vec3 = [0, 0, 0];
     const city = this.city;
     // The asset lab knows its focus as soon as the layout arrives.
-    await city.load(
-      this.progress.bind(this),
-      () => city.summary?.lab?.focus ?? focus,
-    );
+    await city.load(loadScreen, () => city.summary?.lab?.focus ?? focus);
     // Focus streaming on the spawn point before revealing.
     focus = this.spawnPoint();
     city.updateStreaming(focus);
@@ -469,7 +477,7 @@ export class Game {
         this.player.pos,
         this.player.follower ? [this.player.follower] : [],
       );
-    document.getElementById('loading')!.style.display = 'none';
+    loadScreen.hide();
   }
 
   private pickVariant(kind: string, prefer?: string): number {
@@ -763,6 +771,7 @@ export class Game {
 
   frame(dt: number) {
     if (this.loading || !this.city || !this.traffic) return;
+    const endFirst = this.frames === 0 ? begin('first frame()') : null;
     const prof = this.cpuProf;
     const t0 = prof ? performance.now() : 0;
     prof?.start();
@@ -911,7 +920,19 @@ export class Game {
       window.__stats.cpu = prof.averages;
       window.__stats.gpu = this.renderer.prof?.averages ?? {};
     }
-    if (this.frames === 20) window.__ready = true;
+    if (endFirst) {
+      endFirst();
+      void timedAsync(
+        'first frame GPU work',
+        this.renderer.device.queue.onSubmittedWorkDone(),
+        'gpu',
+      );
+    }
+    if (this.frames === 20) {
+      mark('frame 20 (ready)');
+      finish();
+      window.__ready = true;
+    }
   }
 
   get rngSeed() {

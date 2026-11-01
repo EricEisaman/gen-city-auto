@@ -731,22 +731,17 @@ const TO_SRGB = Uint8Array.from({length: 256}, (_, i) => {
   return Math.round(e * 255);
 });
 
-export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
+/** Sign atlas mip levels. */
+export const SIGN_ATLAS_LEVELS = 5;
+
+/**
+ * Paint the sign atlas and its mip chain as RGBA bytes: sRGB-encoded colour
+ * from the atlas, alpha from the vinyl mask. CPU / 2D canvas work only (runs
+ * in the texture worker).
+ */
+export function signAtlasLevels(): Uint8ClampedArray[] {
   const canvas = paintSignAtlas();
   const mask = paintVinylMask();
-  // Mipmapped so distant sign text filters instead of shimmering (the
-  // shader clamps the level so neighbouring signs never bleed in).
-  const levels = 5;
-  const tex = device.createTexture({
-    label: 'signs/atlas',
-    size: [ATLAS_W, ATLAS_H],
-    format: 'rgba8unorm-srgb',
-    mipLevelCount: levels,
-    usage:
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_DST |
-      GPUTextureUsage.RENDER_ATTACHMENT,
-  });
   const scale = (from: OffscreenCanvas, w: number, h: number) => {
     const c = new OffscreenCanvas(w, h);
     const cg = c.getContext('2d')!;
@@ -756,7 +751,8 @@ export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
   };
   let src: OffscreenCanvas = canvas;
   let msrc: OffscreenCanvas = mask;
-  for (let l = 0; l < levels; l++) {
+  const out: Uint8ClampedArray[] = [];
+  for (let l = 0; l < SIGN_ATLAS_LEVELS; l++) {
     const w = ATLAS_W >> l,
       h = ATLAS_H >> l;
     if (l > 0) {
@@ -765,9 +761,8 @@ export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
     }
     // Colour from the sign atlas, alpha from the vinyl mask (ImageData is
     // unpremultiplied, so the colour survives under zero alpha).
-    const img = src.getContext('2d')!.getImageData(0, 0, w, h);
+    const d = src.getContext('2d')!.getImageData(0, 0, w, h).data;
     const m = msrc.getContext('2d')!.getImageData(0, 0, w, h).data;
-    const d = img.data;
     for (let i = 3; i < d.length; i += 4) d[i] = m[i - 3];
     for (const [y0, y1] of MASK_ROWS) {
       for (let i = (y0 >> l) * w * 4; i < (y1 >> l) * w * 4; i += 4) {
@@ -776,12 +771,37 @@ export function createSignAtlasTexture(device: GPUDevice): GPUTexture {
         d[i + 2] = TO_SRGB[d[i + 2]];
       }
     }
-    device.queue.copyExternalImageToTexture(
-      {source: img},
+    out.push(d);
+  }
+  return out;
+}
+
+/**
+ * Upload signAtlasLevels() output. Mipmapped so distant sign text filters
+ * instead of shimmering (the shader clamps the level so neighbouring signs
+ * never bleed in).
+ */
+export function uploadSignAtlas(
+  device: GPUDevice,
+  levels: Uint8ClampedArray[],
+): GPUTexture {
+  const tex = device.createTexture({
+    label: 'signs/atlas',
+    size: [ATLAS_W, ATLAS_H],
+    format: 'rgba8unorm-srgb',
+    mipLevelCount: SIGN_ATLAS_LEVELS,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  levels.forEach((d, l) => {
+    const w = ATLAS_W >> l,
+      h = ATLAS_H >> l;
+    device.queue.writeTexture(
       {texture: tex, mipLevel: l},
+      d,
+      {bytesPerRow: w * 4},
       [w, h],
     );
-  }
+  });
   return tex;
 }
 

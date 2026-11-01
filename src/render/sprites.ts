@@ -1,6 +1,7 @@
 // Distant night light sprites (street lamps, far traffic) in the forward pass.
 
 import {createShader} from '../gpu/device.ts';
+import {pipeline} from '../ui/timeline.ts';
 import commonWgsl from '../shaders/common.wgsl';
 import spritesWgsl from '../shaders/sprites.wgsl';
 import type {DrawHook} from './renderer.ts';
@@ -10,8 +11,10 @@ const CARS_PER_SEG = 4;
 export class LightSprites implements DrawHook {
   readonly name = 'sprites';
   private device: GPUDevice;
-  private cars: GPURenderPipeline;
-  private lampsPipe: GPURenderPipeline;
+  private cars!: GPURenderPipeline;
+  private lampsPipe!: GPURenderPipeline;
+  /** Resolves once both pipelines are compiled (setData() needs them). */
+  readonly ready: Promise<void>;
   private frameBuffer: GPUBuffer;
   private bindGroups: GPUBindGroup[] = [];
   private buffers: GPUBuffer[] = [];
@@ -31,7 +34,7 @@ export class LightSprites implements DrawHook {
       commonWgsl + '\n' + spritesWgsl,
     );
     const make = (entryPoint: string) =>
-      device.createRenderPipeline({
+      device.createRenderPipelineAsync({
         label: `pipeline/sprites ${entryPoint}`,
         layout: 'auto',
         vertex: {module, entryPoint},
@@ -54,8 +57,13 @@ export class LightSprites implements DrawHook {
           depthCompare: 'greater',
         },
       });
-    this.cars = make('vsCars');
-    this.lampsPipe = make('vsLamps');
+    this.ready = Promise.all([
+      pipeline('sprites cars', make('vsCars')),
+      pipeline('sprites lamps', make('vsLamps')),
+    ]).then(([cars, lamps]) => {
+      this.cars = cars;
+      this.lampsPipe = lamps;
+    });
   }
 
   /** segs: 12 floats per lane segment; lamps: 4 floats per lamp head. */
