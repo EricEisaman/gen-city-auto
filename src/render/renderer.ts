@@ -2410,7 +2410,8 @@ export class Renderer {
     const d = this.device;
     this.cullStatsBuf ??= d.createBuffer({
       label: 'cull/stats readback',
-      size: (VIEWS + LISTS) * 32,
+      // Per view: the alpha-tested args, then its opaque lists.
+      size: (2 * VIEWS - 1 + LISTS) * 32,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
     const buf = this.cullStatsBuf;
