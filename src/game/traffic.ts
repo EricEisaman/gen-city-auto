@@ -14,12 +14,55 @@ export interface LaneRef {
   lane: number;
 }
 
+/**
+ * A junction crossing: a cubic Bezier from the end of one lane to the start
+ * of the next, tangent to both, sampled by arc length (positions are taken
+ * on the curve itself, not on a chord polyline, so headings derived from
+ * points along it turn continuously).
+ */
 interface Turn {
-  pts: Vec3[];
+  ctrl: [Vec3, Vec3, Vec3, Vec3];
+  /** Curve parameter and arc length at each table entry. */
+  us: number[];
   cum: number[];
   len: number;
+  /** Distance traveled along the curve (while driving it). */
   t: number;
+  from: LaneRef;
   next: LaneRef;
+  /** Comfortable speed through the tightest part of the curve (m/s). */
+  vmax: number;
+  /** Indicator to show (-1 right, 0 none, 1 left). */
+  indicator: number;
+}
+
+/** Lateral acceleration allowed through junction curves (m/s^2). */
+const TURN_LAT_ACC = 3;
+/** Deceleration used to ease into an upcoming turn (m/s^2). */
+const TURN_EASE_DEC = 1.6;
+
+function bezier(c: Turn['ctrl'], u: number, m: number) {
+  const v = 1 - u;
+  return (
+    v * v * v * c[0][m] +
+    3 * v * v * u * c[1][m] +
+    3 * v * u * u * c[2][m] +
+    u * u * u * c[3][m]
+  );
+}
+
+function turnPoint(tr: Turn, t: number): Vec3 {
+  let lo = 0;
+  let hi = tr.cum.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (tr.cum[mid] <= t) lo = mid;
+    else hi = mid;
+  }
+  const seg = tr.cum[hi] - tr.cum[lo] || 1;
+  const f = (t - tr.cum[lo]) / seg;
+  const u = tr.us[lo] + (tr.us[hi] - tr.us[lo]) * f;
+  return [bezier(tr.ctrl, u, 0), bezier(tr.ctrl, u, 1), bezier(tr.ctrl, u, 2)];
 }
 
 export function modelMatrix(
@@ -77,6 +120,10 @@ export class LaneFollower {
   speed = 0;
   cruise: number;
   turn: Turn | null = null;
+  /** The crossing at the end of the current lane, chosen on entering it. */
+  private plan: Turn | null = null;
+  /** The crossing just completed (the rear of the car may still be on it). */
+  private last: Turn | null = null;
   pos: Vec3 = [0, 0, 0];
   dir: Vec2 = [0, 1];
   slope = 0;
@@ -140,7 +187,12 @@ export class LaneFollower {
     if (!exits.length)
       return {chain: this.ref.chain, dir: this.ref.dir === 1 ? -1 : 1, lane: 0};
     // Weight: straight ahead preferred, big roads preferred for sightseeing.
-    const arrive: Vec2 = this.dir;
+    const arrive: Vec2 = net.lanePos(
+      this.ref.chain,
+      this.ref.dir,
+      this.ref.lane,
+      this.sEnd(net),
+    ).d;
     const weights = exits.map(a => {
       const c = net.chains[a.chain];
       const n = c.pts.length;
@@ -164,46 +216,105 @@ export class LaneFollower {
     return {chain: a.chain, dir, lane};
   }
 
-  private startTurn(net: RoadNet) {
+  /** Lane start (just past the junction setback) for a lane ref. */
+  private static sStartOf(net: RoadNet, ref: LaneRef) {
+    const [s0, s1] = net.geom.setbacks[ref.chain];
+    return ref.dir === 1 ? s0 : s1;
+  }
+
+  private static sEndOf(net: RoadNet, ref: LaneRef) {
+    const [s0, s1] = net.geom.setbacks[ref.chain];
+    return net.length(ref.chain) - (ref.dir === 1 ? s1 : s0);
+  }
+
+  /** Plan the crossing at the end of the current lane. */
+  private planTurn(net: RoadNet): Turn {
+    const from = {...this.ref};
     const next = this.pickExit(net);
-    const a = net.lanePos(
-      this.ref.chain,
-      this.ref.dir,
-      this.ref.lane,
-      this.sEnd(net),
+    const a = net.lanePos(from.chain, from.dir, from.lane, this.sEnd(net));
+    const b = net.lanePos(
+      next.chain,
+      next.dir,
+      next.lane,
+      LaneFollower.sStartOf(net, next),
     );
-    const [n0, n1] = net.geom.setbacks[next.chain];
-    const sStart = next.dir === 1 ? n0 : n1;
-    const b = net.lanePos(next.chain, next.dir, next.lane, sStart);
     const dist = Math.hypot(b.p[0] - a.p[0], b.p[2] - a.p[2]);
-    const k = Math.max(1, dist * 0.45);
-    const c1: Vec3 = [a.p[0] + a.d[0] * k, a.p[1], a.p[2] + a.d[1] * k];
-    const c2: Vec3 = [b.p[0] - b.d[0] * k, b.p[1], b.p[2] - b.d[1] * k];
-    const pts: Vec3[] = [];
-    const N = 24;
-    for (let i = 0; i <= N; i++) {
-      const t = i / N;
-      const u = 1 - t;
-      pts.push(
-        [0, 1, 2].map(
-          m =>
-            u * u * u * a.p[m] +
-            3 * u * u * t * c1[m] +
-            3 * u * t * t * c2[m] +
-            t * t * t * b.p[m],
-        ) as Vec3,
-      );
-    }
+    // Handle length of a circular arc through the turn angle (0.39 chord for
+    // a right angle, 2/3 for a U-turn; at least 0.4 so straight crossings
+    // with a lane shift stay gentle): a near-constant radius, no tight kink.
+    const cos = Math.max(-1, Math.min(1, a.d[0] * b.d[0] + a.d[1] * b.d[1]));
+    const th = Math.acos(cos);
+    const ratio =
+      th < 1e-3 ? 1 / 3 : ((4 / 3) * Math.tan(th / 4)) / (2 * Math.sin(th / 2));
+    const k = Math.max(1, dist * Math.max(0.4, ratio));
+    const ctrl: Turn['ctrl'] = [
+      a.p,
+      [a.p[0] + a.d[0] * k, a.p[1], a.p[2] + a.d[1] * k],
+      [b.p[0] - b.d[0] * k, b.p[1], b.p[2] - b.d[1] * k],
+      b.p,
+    ];
+    const N = 32;
+    const us = [0];
     const cum = [0];
-    for (let i = 1; i < pts.length; i++)
-      cum.push(
-        cum[i - 1] +
-          Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][2] - pts[i - 1][2]),
+    let prev = a.p;
+    for (let i = 1; i <= N; i++) {
+      const u = i / N;
+      const q: Vec3 = [
+        bezier(ctrl, u, 0),
+        bezier(ctrl, u, 1),
+        bezier(ctrl, u, 2),
+      ];
+      us.push(u);
+      cum.push(cum[i - 1] + Math.hypot(q[0] - prev[0], q[2] - prev[2]));
+      prev = q;
+    }
+    // Peak curvature |B' x B''| / |B'|^3 (in plan) sets the turn speed.
+    let kmax = 0;
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      const v = 1 - u;
+      const d1 = [0, 2].map(
+        m =>
+          3 * v * v * (ctrl[1][m] - ctrl[0][m]) +
+          6 * v * u * (ctrl[2][m] - ctrl[1][m]) +
+          3 * u * u * (ctrl[3][m] - ctrl[2][m]),
       );
-    // Indicator for turns.
+      const d2 = [0, 2].map(
+        m =>
+          6 * v * (ctrl[2][m] - 2 * ctrl[1][m] + ctrl[0][m]) +
+          6 * u * (ctrl[3][m] - 2 * ctrl[2][m] + ctrl[1][m]),
+      );
+      const sp = Math.hypot(d1[0], d1[1]);
+      if (sp > 1e-6)
+        kmax = Math.max(
+          kmax,
+          Math.abs(d1[0] * d2[1] - d1[1] * d2[0]) / (sp * sp * sp),
+        );
+    }
     const cross = a.d[0] * b.d[1] - a.d[1] * b.d[0];
-    this.indicator = Math.abs(cross) > 0.4 ? (cross > 0 ? 1 : -1) : 0;
-    this.turn = {pts, cum, len: cum[cum.length - 1], t: 0, next};
+    return {
+      ctrl,
+      us,
+      cum,
+      len: cum[N],
+      t: 0,
+      from,
+      next,
+      vmax: Math.max(3, Math.sqrt(TURN_LAT_ACC / Math.max(kmax, 1e-4))),
+      indicator: Math.abs(cross) > 0.4 ? (cross > 0 ? 1 : -1) : 0,
+    };
+  }
+
+  private ensurePlan(net: RoadNet) {
+    if (!this.turn && !this.plan) this.plan = this.planTurn(net);
+  }
+
+  private startTurn(net: RoadNet) {
+    this.ensurePlan(net);
+    this.turn = this.plan;
+    this.plan = null;
+    this.last = null;
+    this.indicator = this.turn!.indicator;
   }
 
   /** Distance to the stop line ahead if the signal says stop, else Infinity. */
@@ -228,8 +339,33 @@ export class LaneFollower {
     gapToLeader: number,
     leaderSpeed: number,
   ) {
+    this.ensurePlan(net);
     const kind = net.chains[this.ref.chain].kind;
-    const v0 = SPEED_LIMIT[kind] * this.cruise * (this.turn ? 0.55 : 1);
+    const limit = SPEED_LIMIT[kind] * this.cruise;
+    // Ease into junction curves: the speed target follows a braking envelope
+    // down to the curve's comfortable speed (set by its tightest radius).
+    let v0 = limit;
+    if (this.turn) v0 = Math.min(limit * 0.85, this.turn.vmax);
+    else if (this.plan) {
+      const vt = Math.min(limit * 0.85, this.plan.vmax);
+      const d = Math.max(0, this.sEnd(net) - this.s);
+      v0 = Math.min(limit, Math.sqrt(vt * vt + 2 * TURN_EASE_DEC * d));
+      if (d < 30) this.indicator = this.plan.indicator;
+    }
+    // Likewise for sharp bends along the lane (rounded polyline corners),
+    // judged on this lane's radius (inside or outside of the bend alike).
+    if (!this.turn) {
+      const total = net.length(this.ref.chain);
+      const off = net.laneOffset(this.ref.chain, this.ref.lane);
+      for (const cn of net.corners(this.ref.chain)) {
+        const d = (this.ref.dir === 1 ? cn.a : total - cn.a) - this.s;
+        if (d < -cn.r || d > 80) continue;
+        const R = Math.max(1.5, 1 / cn.k - off);
+        const vc = Math.sqrt(TURN_LAT_ACC * R);
+        const ahead = Math.max(0, d - cn.r);
+        v0 = Math.min(v0, Math.sqrt(vc * vc + 2 * TURN_EASE_DEC * ahead));
+      }
+    }
     // Intelligent Driver Model.
     const a = 2.2;
     const b = 3.5;
@@ -256,11 +392,12 @@ export class LaneFollower {
       if (this.turn.t >= this.turn.len) {
         const over = this.turn.t - this.turn.len;
         const nx = this.turn.next;
-        const [n0, n1] = net.geom.setbacks[nx.chain];
         this.ref = nx;
-        this.s = (nx.dir === 1 ? n0 : n1) + over;
+        this.s = LaneFollower.sStartOf(net, nx) + over;
+        this.last = this.turn;
         this.turn = null;
         this.indicator = 0;
+        this.ensurePlan(net);
       }
     } else {
       this.s += step;
@@ -270,36 +407,61 @@ export class LaneFollower {
   }
 
   /**
-   * Position at path distance `ahead` from the current point. Past either end
-   * of the current lane or turn it continues straight along the end tangent,
-   * so points ahead/behind (axles, heading) move smoothly.
+   * Position on a lane at distance s, continuing straight along the end
+   * tangent past either end of the chain.
    */
-  private pointAt(net: RoadNet, ahead: number): Vec3 {
-    if (this.turn) {
-      const tr = this.turn;
-      const t = tr.t + ahead;
-      let i = 1;
-      while (i < tr.cum.length - 1 && tr.cum[i] < t) i++;
-      const seg = tr.cum[i] - tr.cum[i - 1] || 1;
-      const f = (t - tr.cum[i - 1]) / seg;
-      const p = tr.pts[i - 1];
-      const q = tr.pts[i];
-      return [
-        p[0] + (q[0] - p[0]) * f,
-        p[1] + (q[1] - p[1]) * f,
-        p[2] + (q[2] - p[2]) * f,
-      ];
-    }
-    const len = net.length(this.ref.chain);
-    const want = this.s + ahead;
+  private static laneAt(net: RoadNet, ref: LaneRef, want: number): Vec3 {
+    const len = net.length(ref.chain);
     const s = Math.max(0, Math.min(len, want));
-    const q = net.lanePos(this.ref.chain, this.ref.dir, this.ref.lane, s);
+    const q = net.lanePos(ref.chain, ref.dir, ref.lane, s);
     const over = want - s;
     if (over === 0) return q.p;
     return [q.p[0] + q.d[0] * over, q.p[1], q.p[2] + q.d[1] * over];
   }
 
+  /** Position at distance t along a crossing, continuing onto its lanes. */
+  private static crossingAt(net: RoadNet, tr: Turn, t: number): Vec3 {
+    if (t < 0)
+      return LaneFollower.laneAt(
+        net,
+        tr.from,
+        LaneFollower.sEndOf(net, tr.from) + t,
+      );
+    if (t > tr.len)
+      return LaneFollower.laneAt(
+        net,
+        tr.next,
+        LaneFollower.sStartOf(net, tr.next) + t - tr.len,
+      );
+    return turnPoint(tr, t);
+  }
+
+  /**
+   * Position at path distance `ahead` from the current point along the whole
+   * route: the previous crossing, the current lane, the planned crossing and
+   * the lane after it. Points ahead/behind (axles, heading) therefore stay on
+   * the path the car will actually drive and never jump when a turn starts
+   * or ends.
+   */
+  private pointAt(net: RoadNet, ahead: number): Vec3 {
+    if (this.turn)
+      return LaneFollower.crossingAt(net, this.turn, this.turn.t + ahead);
+    const want = this.s + ahead;
+    const sEnd = this.sEnd(net);
+    if (this.plan && want > sEnd)
+      return LaneFollower.crossingAt(net, this.plan, want - sEnd);
+    const sStart = LaneFollower.sStartOf(net, this.ref);
+    if (this.last && want < sStart)
+      return LaneFollower.crossingAt(
+        net,
+        this.last,
+        this.last.len + want - sStart,
+      );
+    return LaneFollower.laneAt(net, this.ref, want);
+  }
+
   place(net: RoadNet, dt = Infinity) {
+    this.ensurePlan(net);
     this.pos = this.pointAt(net, 0);
     // Both axles' points on the path (they stay on the lane through turns).
     const zf = this.axleFront;
