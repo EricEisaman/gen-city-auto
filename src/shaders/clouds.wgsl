@@ -2,7 +2,7 @@
 // reprojection (after Schneider's Nubis / Horizon Zero Dawn approach).
 // Texels whose whole neighbourhood is covered by geometry (Hi-Z of this
 // frame's depth) only carry their history forward; frame.extra.x = 2 marches
-// one texel of each 2x2 block per frame and reprojects the other three.
+// one 8x4 block of each 2x2 group of blocks per frame and reprojects the rest.
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var linearRepeat: sampler;
@@ -162,7 +162,12 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
   if (histOk) {
     // Hidden behind geometry, or not this texel's turn: carry the history.
     let order = array<u32, 4>(0u, 3u, 1u, 2u);
-    let turn = mode == 2u && (id.x & 1u) + 2u * (id.y & 1u) != order[u32(frame.time.z) & 3u];
+    // Interleaved by 8x4 blocks, not texels: a block is one 32-wide SIMD
+    // group of the 8x8 workgroup, so a group marches all or none of its
+    // lanes (a per-texel pattern left every group with a marching lane and
+    // saved nothing).
+    let blk = vec2u(id.x >> 3u, id.y >> 2u);
+    let turn = mode == 2u && (blk.x & 1u) + 2u * (blk.y & 1u) != order[u32(frame.time.z) & 3u];
     if (turn || !skyNear(uv, size)) {
       textureStore(cloudOut, id.xy, textureSampleLevel(historyTex, linearRepeat, puv, 0.0));
       return;
