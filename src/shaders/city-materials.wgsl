@@ -1311,7 +1311,8 @@ fn facadeRain(s: ptr<function, Surf>, uv: vec2f, n: vec3f, T: vec3f, washAmt: f3
   // A blank party wall has no sills: water runs only where something sheds
   // it (rainSrc), and the render soaks unevenly (patches, wetter low down).
   let drip = rainSrc >= 0.0;
-  let soak = select(1.0, (0.7 + 0.6 * valueNoise(uv * vec2f(0.4, 0.7) + 17.0)) * mix(1.0, 0.75, smoothstep(2.0, 12.0, uv.y)), drip);
+  var soak = 1.0;
+  if (drip) { soak = (0.7 + 0.6 * valueNoise(uv * vec2f(0.4, 0.7) + 17.0)) * mix(1.0, 0.75, smoothstep(2.0, 12.0, uv.y)); }
   (*s).albedo *= mix(1.0, 0.6, clamp(wet * porous * soak, 0.0, 1.0));
   // A soaked wall halves its roughness everywhere; the run-off sheets below
   // go near-mirror. The contrast between the two is what reads as wet (the
@@ -1323,10 +1324,14 @@ fn facadeRain(s: ptr<function, Surf>, uv: vec2f, n: vec3f, T: vec3f, washAmt: f3
   // Flow streaks: broad (0.2-0.8 m) sheets of run-off that stay glossy
   // and dark, hanging below every sill and ledge and wandering down the
   // wall between them. Big enough to catch the grey sky at 100 m+.
-  let fcol = valueNoise(vec2f(uv.x * 1.7, uv.y * 0.07 + 3.0));
-  var flow = smoothstep(0.5, 0.8, fcol) * (0.55 + 0.45 * valueNoise(vec2f(uv.x * 0.6, uv.y * 0.25)));
-  var sheet = clamp(max(flow, underSill * 0.9 + washAmt * 0.5), 0.0, 1.0);
-  if (drip) { sheet = rainSrc * (0.6 + 0.4 * valueNoise(vec2f(uv.x * 4.0, uv.y * 0.5))); }
+  var sheet: f32;
+  if (drip) {
+    sheet = rainSrc * (0.6 + 0.4 * valueNoise(vec2f(uv.x * 4.0, uv.y * 0.5)));
+  } else {
+    let fcol = valueNoise(vec2f(uv.x * 1.7, uv.y * 0.07 + 3.0));
+    let flow = smoothstep(0.5, 0.8, fcol) * (0.55 + 0.45 * valueNoise(vec2f(uv.x * 0.6, uv.y * 0.25)));
+    sheet = clamp(max(flow, underSill * 0.9 + washAmt * 0.5), 0.0, 1.0);
+  }
   (*s).rough = mix((*s).rough, 0.05, sheet * wet * 0.9);
   (*s).albedo *= 1.0 - 0.3 * sheet * wet;
   // The sheet's surface is rippled into vertical runs (5-25 cm), each tilted
