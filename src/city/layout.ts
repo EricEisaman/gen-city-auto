@@ -847,15 +847,33 @@ export function generateLayout(
   const faces = extractFaces(g, 400000);
   const blocks: Block[] = [];
   const lots: {lot: Lot; block: number}[] = [];
-  const nearRail = (q: Vec2, pad: number) => {
-    for (const e of elevated) {
-      if (e.kind !== 'rail') continue;
-      for (let i = 0; i + 1 < e.pts.length; i++) {
-        const a = e.pts[i];
-        if (Math.abs(a[0] - q[0]) > 60 || Math.abs(a[1] - q[1]) > 60) continue;
-        if (pointSegment(q, a, e.pts[i + 1])[0] < pad) return true;
-      }
+  // Rail segments binned by their first point (60 m cells): nearRail tests
+  // the same segments as a scan of every rail line (those whose first point
+  // is within 60 m on both axes), only without visiting the rest.
+  const railGrid = new Map<number, [Vec2, Vec2][]>();
+  const railKey = (cx: number, cz: number) => (cz + 2048) * 4096 + cx + 2048;
+  for (const e of elevated) {
+    if (e.kind !== 'rail') continue;
+    for (let i = 0; i + 1 < e.pts.length; i++) {
+      const a = e.pts[i];
+      const k = railKey(Math.floor(a[0] / 60), Math.floor(a[1] / 60));
+      let l = railGrid.get(k);
+      if (!l) railGrid.set(k, (l = []));
+      l.push([a, e.pts[i + 1]]);
     }
+  }
+  const nearRail = (q: Vec2, pad: number) => {
+    const x0 = Math.floor((q[0] - 60) / 60);
+    const x1 = Math.floor((q[0] + 60) / 60);
+    const z0 = Math.floor((q[1] - 60) / 60);
+    const z1 = Math.floor((q[1] + 60) / 60);
+    for (let cz = z0; cz <= z1; cz++)
+      for (let cx = x0; cx <= x1; cx++)
+        for (const [a, b] of railGrid.get(railKey(cx, cz)) ?? []) {
+          if (Math.abs(a[0] - q[0]) > 60 || Math.abs(a[1] - q[1]) > 60)
+            continue;
+          if (pointSegment(q, a, b)[0] < pad) return true;
+        }
     return false;
   };
   // Road sample points for rejecting blocks that overlap roads.
