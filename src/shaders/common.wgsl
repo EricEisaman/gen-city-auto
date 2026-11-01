@@ -24,6 +24,8 @@ struct Frame {
   cityGlow: vec4f,      // rgb night light pollution
   misc: vec4f,          // x = debug view, y = quality, z = sun disk size, w = moon phase
   off: vec4u,           // x = ablation bits, y = material ids drawn flat, z = ablation bits 32+ (?off=..., render/ablation.ts); 0 normally
+  upscale: vec4f,       // output (display) w, h, sharpening strength, render scale (internal / output)
+  extra: vec4f,         // x = cloud mode (0 off, 1 every texel, 2 one 8x4 block in each 2x2 of blocks per frame), y = cloud step scale, z = frames of cloud history, w = bloom strength
 };
 
 const PI = 3.14159265359;

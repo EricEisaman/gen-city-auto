@@ -26,7 +26,7 @@ const SHOTS = [
 await ensureDir(outDir);
 const {writeFile} = await import('node:fs/promises');
 await withServer(async base => {
-  const r = await withPage(`${base}/index.html?timespeed=0&ui=0${process.env.Q ?? ''}`, async (page, logs) => {
+  const r = await withPage(`${base}/index.html?timespeed=0&ui=0&scale=100${process.env.Q ?? ''}`, async (page, logs) => {
     const results = [];
     for (const s of SHOTS) {
       await page.evaluate(async s => {

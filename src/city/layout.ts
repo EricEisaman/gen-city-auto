@@ -11,6 +11,7 @@ import {
   pointInPolygon,
   pointSegment,
   polygonArea,
+  segmentIntersect,
   smoothstep,
   sub2,
   type Vec2,
@@ -319,6 +320,52 @@ function cleanPolygon(poly: Vec2[], minEdge: number): Vec2[] {
   return out;
 }
 
+/**
+ * The largest simple loop of a polygon that crosses or touches itself. Lot
+ * cuts through a concave block leave a few plots pinched in two at a vertex
+ * or with a sliver folded back across them; towers inset from such a plan
+ * came out as broken, twisted shapes. Split at each crossing and keep the
+ * loop with the most area (same winding); a simple polygon comes back as is.
+ */
+export function simplePolygon(poly: Vec2[], depth = 0): Vec2[] {
+  const n = poly.length;
+  if (n < 4 || depth > 16) return poly;
+  const sign = polygonArea(poly) < 0 ? -1 : 1;
+  const touch = (q: Vec2, a: Vec2, b: Vec2) => pointSegment(q, a, b)[0] < 0.25;
+  for (let i = 0; i < n; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      const c = poly[j];
+      const d = poly[(j + 1) % n];
+      let x: Vec2 | null = null;
+      const hit = segmentIntersect(a, b, c, d);
+      if (hit)
+        x = [a[0] + (b[0] - a[0]) * hit[0], a[1] + (b[1] - a[1]) * hit[0]];
+      else if (touch(c, a, b)) x = c;
+      else if (touch(d, a, b)) x = d;
+      else if (touch(a, c, d)) x = a;
+      else if (touch(b, c, d)) x = b;
+      if (!x) continue;
+      const loops = [
+        [x, ...poly.slice(i + 1, j + 1)],
+        [x, ...poly.slice(j + 1), ...poly.slice(0, i + 1)],
+      ].map(l => {
+        const out: Vec2[] = [];
+        for (const q of l)
+          if (!out.length || dist2(out[out.length - 1], q) > 0.01) out.push(q);
+        if (out.length > 1 && dist2(out[0], out[out.length - 1]) <= 0.01)
+          out.pop();
+        return out.length >= 3 ? simplePolygon(out, depth + 1) : out;
+      });
+      const score = (l: Vec2[]) => (l.length >= 3 ? polygonArea(l) * sign : 0);
+      return score(loops[0]) >= score(loops[1]) ? loops[0] : loops[1];
+    }
+  }
+  return poly;
+}
+
 /** Whether segment a-b lies on a frontage edge of `poly`. */
 function onFrontage(a: Vec2, b: Vec2, poly: Vec2[], frontage: boolean[]) {
   const mid: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -493,30 +540,238 @@ export function splitLots(
 }
 
 // ---------------------------------------------------------------------------
+// Bridges
+
+/** Water crossings at least this long are thinned out (rivers keep theirs). */
+const LONG_CROSSING = 200;
+/** Least distance between the ends of two long crossings kept. */
+const CROSSING_SPACING = 700;
+
+/**
+ * The street tracer runs every arterial on across open water, so a wide
+ * harbour got a lattice of long bridges meeting at junctions in mid-water.
+ * Keep the shortest crossings that are far enough apart and don't meet any
+ * other, and drop the rest (their dead ends go with pruneDeadEnds); edges in
+ * `keepEdges` stay regardless. Returns whether any edge was removed.
+ */
+function thinBridges(
+  g: Graph,
+  isLand: (q: Vec2) => boolean,
+  keepEdges: Set<number>,
+): boolean {
+  const wet = g.edges.map(e => {
+    if (e.dead) return false;
+    const a = g.nodes[e.a].p;
+    const b = g.nodes[e.b].p;
+    return !isLand([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+  });
+  if (!wet.some(w => w)) return false;
+  const len = (e: number) =>
+    dist2(g.nodes[g.edges[e].a].p, g.nodes[g.edges[e].b].p);
+  const shore = (n: number) => g.liveEdges(n).some(e => !wet[e]);
+  const dir = (from: number, e: number): Vec2 => {
+    const p = g.nodes[from].p;
+    const q = g.nodes[g.other(e, from)].p;
+    const l = dist2(p, q) || 1;
+    return [(q[0] - p[0]) / l, (q[1] - p[1]) / l];
+  };
+  interface Crossing {
+    edges: number[];
+    nodes: number[];
+    len: number;
+    kind: number;
+  }
+  const crossings = new Map<string, Crossing>();
+  for (let s = 0; s < g.nodes.length; s++) {
+    if (!shore(s)) continue;
+    for (const e0 of g.liveEdges(s)) {
+      if (!wet[e0]) continue;
+      // Straight on from node to node across the water to the far shore.
+      const edges = [e0];
+      const nodes = [s];
+      let n = g.other(e0, s);
+      let d = dir(s, e0);
+      let ok = true;
+      while (!shore(n)) {
+        nodes.push(n);
+        let best = -1;
+        let bestDot = Math.cos((35 * Math.PI) / 180);
+        for (const e of g.liveEdges(n)) {
+          if (!wet[e] || edges.includes(e)) continue;
+          const dd = dir(n, e);
+          const dot = d[0] * dd[0] + d[1] * dd[1];
+          if (dot > bestDot) {
+            bestDot = dot;
+            best = e;
+          }
+        }
+        if (best < 0 || edges.length > 400) {
+          ok = false;
+          break;
+        }
+        d = dir(n, best);
+        edges.push(best);
+        n = g.other(best, n);
+      }
+      if (!ok || n === s) continue;
+      nodes.push(n);
+      const key = edges
+        .slice()
+        .sort((x, y) => x - y)
+        .join(',');
+      if (crossings.has(key)) continue;
+      crossings.set(key, {
+        edges,
+        nodes,
+        len: edges.reduce((t, e) => t + len(e), 0),
+        kind: Math.min(...edges.map(e => g.edges[e].kind)),
+      });
+    }
+  }
+  const long = [...crossings.values()].filter(c => c.len >= LONG_CROSSING);
+  if (!long.length) return false;
+  // Shortest first (boulevards count a little shorter).
+  long.sort(
+    (a, b) =>
+      a.len / (a.kind >= Road.boulevard ? 1.25 : 1) -
+      b.len / (b.kind >= Road.boulevard ? 1.25 : 1),
+  );
+  const keep: Crossing[] = [];
+  const used = new Set<number>();
+  for (const c of long) {
+    if (c.nodes.some(n => used.has(n))) continue;
+    const ends = [c.nodes[0], c.nodes[c.nodes.length - 1]].map(
+      n => g.nodes[n].p,
+    );
+    const crowded = keep.some(k =>
+      [k.nodes[0], k.nodes[k.nodes.length - 1]].some(n =>
+        ends.some(p => dist2(p, g.nodes[n].p) < CROSSING_SPACING),
+      ),
+    );
+    if (crowded) continue;
+    keep.push(c);
+    for (const n of c.nodes) used.add(n);
+  }
+  keepEdges = new Set(keepEdges);
+  for (const c of keep) for (const e of c.edges) keepEdges.add(e);
+  for (const c of crossings.values())
+    if (c.len < LONG_CROSSING) for (const e of c.edges) keepEdges.add(e);
+  // Every other edge out over the water goes, including the bits of
+  // lattice no straight crossing ran along.
+  let removed = false;
+  wet.forEach((w, e) => {
+    if (w && !keepEdges.has(e)) {
+      g.removeEdge(e);
+      removed = true;
+    }
+  });
+  return removed;
+}
+
+/**
+ * `items` reordered so each whose key was at index i of `before` is at i
+ * again where it can be; the rest fill the gaps in their own order.
+ */
+export function stableOrder<T>(
+  items: T[],
+  key: (t: T) => string,
+  before: string[],
+): T[] {
+  const at = new Map(before.map((k, i) => [k, i]));
+  const out: (T | undefined)[] = new Array(items.length);
+  const rest: T[] = [];
+  for (const t of items) {
+    const i = at.get(key(t));
+    if (i !== undefined && i < items.length) out[i] = t;
+    else rest.push(t);
+  }
+  let r = 0;
+  for (let i = 0; i < out.length; i++)
+    if (out[i] === undefined) out[i] = rest[r++];
+  return out as T[];
+}
+
+// ---------------------------------------------------------------------------
 // Elevated lines
 
-function elevateProfile(
-  pts: Vec2[],
-  hf: Heightfield,
-  clearance: number,
-  grade: number,
-): number[] {
+/**
+ * Most a deck rises above its clearance profile (terrain plus clearance).
+ * Holding the gentle grade off every hilltop left decks 90-130 m up in the
+ * valleys of the hilly cities.
+ */
+export const MAX_DECK_RISE = 25;
+/** Expressways past MAX_DECK_RISE come down on this grade instead. */
+const STEEP_GRADE = 0.2;
+
+/** Point i of an elevated line is under the ground (in a tunnel). */
+export function inTunnel(e: Elevated, i: number, hf: Heightfield) {
+  const q = e.pts[i];
+  return e.heights[i] < hf.sample(q[0], q[1]);
+}
+
+/**
+ * Lowest profile over `floor` whose grade is at most `grade` both ways (a
+ * descent off a hilltop starts early enough to stay at or under it).
+ * Entries of `floor` may be -Infinity (no constraint).
+ */
+function gradeEnvelope(pts: Vec2[], floor: number[], grade: number) {
   const n = pts.length;
-  const h = pts.map(
-    q => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 2) + clearance,
-  );
-  // Limit grade both ways while staying above the clearance profile.
+  const h = floor.slice();
   for (let pass = 0; pass < 2; pass++) {
     for (let i = 1; i < n; i++)
       h[i] = Math.max(h[i], h[i - 1] - grade * dist2(pts[i], pts[i - 1]));
     for (let i = n - 2; i >= 0; i--)
       h[i] = Math.max(h[i], h[i + 1] - grade * dist2(pts[i], pts[i + 1]));
   }
+  return h;
+}
+
+/**
+ * Deck heights along an elevated line: at least `clearance` over the ground
+ * (or the water), at most `grade` steep, and at most MAX_DECK_RISE over that
+ * clearance profile. Rail lines (`tunnels`) keep their grade and go through
+ * the hills that would break that in tunnels (gen-base leaves out what is
+ * buried and builds the portals); expressways steepen to STEEP_GRADE.
+ */
+export function elevateProfile(
+  pts: Vec2[],
+  hf: Heightfield,
+  clearance: number,
+  grade: number,
+  tunnels = false,
+): number[] {
+  const n = pts.length;
+  const floor = pts.map(
+    q => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 2) + clearance,
+  );
+  const top = floor.map(f => f + MAX_DECK_RISE);
+  let need = floor;
+  let ceil: number[];
+  if (tunnels) {
+    // The highest gentle profile under `top`. Where it runs below the
+    // clearance profile the line is bored through the hill: the floor there
+    // no longer holds the deck up, so it never rises past `top` anywhere.
+    ceil = gradeEnvelope(
+      pts,
+      top.map(t => -t),
+      grade,
+    ).map(v => -v);
+    const bored = floor.map((f, i) => ceil[i] < f);
+    if (bored.some(b => !b))
+      need = floor.map((f, i) => (bored[i] ? -Infinity : f));
+    else ceil = gradeEnvelope(pts, top, grade);
+  } else {
+    ceil = gradeEnvelope(pts, top, Math.max(grade, STEEP_GRADE));
+  }
+  const h = gradeEnvelope(pts, need, grade).map((v, i) => Math.min(v, ceil[i]));
   // Smooth.
   for (let it = 0; it < 4; it++) {
     const c = h.slice();
     for (let i = 1; i + 1 < n; i++)
-      h[i] = Math.max(c[i], (c[i - 1] + c[i] * 2 + c[i + 1]) / 4);
+      h[i] = Math.min(
+        Math.max(c[i], (c[i - 1] + c[i] * 2 + c[i + 1]) / 4),
+        ceil[i],
+      );
   }
   return h;
 }
@@ -578,7 +833,7 @@ function railLines(
     if (!wet) {
       out.push({
         pts,
-        heights: elevateProfile(pts, hf, 9, 0.03),
+        heights: elevateProfile(pts, hf, 9, 0.03, true),
         kind: 'rail',
         loop: true,
         stations: [],
@@ -587,12 +842,14 @@ function railLines(
       // The loop would cross open water: keep the longest stretch on land.
       const piece =
         clipToLand(pts, hf, 350).sort((a, b) => b.length - a.length)[0] ?? [];
+      // Bridges over narrow water (rivers) keep it in one piece: then it is
+      // still a loop, not a line with two dead ends side by side.
       if (piece.length > 20)
         out.push({
           pts: piece,
-          heights: elevateProfile(piece, hf, 9, 0.03),
+          heights: elevateProfile(piece, hf, 9, 0.03, true),
           kind: 'rail',
-          loop: false,
+          loop: piece.length === pts.length,
           stations: [],
         });
     }
@@ -619,7 +876,7 @@ function railLines(
     if (pts.length > 10)
       out.push({
         pts,
-        heights: elevateProfile(pts, hf, 9 + k * 3, 0.03),
+        heights: elevateProfile(pts, hf, 9 + k * 3, 0.03, true),
         kind: 'rail',
         loop: false,
         stations: [],
@@ -639,16 +896,54 @@ function railLines(
       });
       if (bi >= 0) line.stations.push(bi);
     }
+    if (!line.loop) addTermini(line);
   }
   return out;
 }
 
+/**
+ * Stations' platforms cover segments si - 7 .. si + 6 (railViaduct), so a
+ * terminus at index 7 / n - 8 runs right up to the deck end.
+ */
+export const TERMINUS_OFFSET = 7;
+
+/**
+ * An open line ends at a terminus at each end (platforms up to the buffer
+ * stop) instead of a bare viaduct stopping in mid-air; hub stations that
+ * would overlap one give way to it.
+ */
+function addTermini(line: Elevated) {
+  const n = line.pts.length;
+  const a = TERMINUS_OFFSET;
+  const b = n - 1 - TERMINUS_OFFSET;
+  if (b - a < 30) return;
+  line.stations = line.stations.filter(
+    si =>
+      si - a >= 2 * TERMINUS_OFFSET + 4 && b - si >= 2 * TERMINUS_OFFSET + 4,
+  );
+  line.stations.push(a, b);
+}
+
 // ---------------------------------------------------------------------------
+
+/**
+ * What generateLayout has finished so far, handed to its progress callback
+ * (the loading screen's map). Read only: nothing here may draw from the
+ * random streams.
+ */
+export interface LayoutPartial {
+  terrain?: Terrain;
+  streets?: Polyline[];
+  chains?: RoadChain[];
+  elevated?: Elevated[];
+  blocks?: Block[];
+  buildings?: Building[];
+}
 
 export function generateLayout(
   params: CityParams,
   seed: number,
-  progress?: (msg: string, f: number) => void,
+  progress?: (msg: string, f: number, partial?: LayoutPartial) => void,
 ): CityLayout {
   const rng = new Rng(seed);
   const noise = new Noise2D(seed + 7);
@@ -674,7 +969,7 @@ export function generateLayout(
     });
   }
 
-  progress?.('Tracing streets', 0.15);
+  progress?.('Tracing streets', 0.15, {terrain});
   // Tensor field street network: grids around each hub, a radial pattern at
   // the center (rings and radials), and terrain contours on slopes.
   const bases: Basis[] = [];
@@ -735,7 +1030,7 @@ export function generateLayout(
     }
     allLines.push({pts: ring, kind: Road.boulevard});
   }
-  progress?.('Connecting streets', 0.25);
+  progress?.('Connecting streets', 0.25, {streets: allLines});
   let g: Graph = planarize(allLines, 2.5);
   g = mergeCloseNodes(g, 5);
   removeSlivers(g, 0.35);
@@ -750,10 +1045,32 @@ export function generateLayout(
   }
   pruneDeadEnds(g);
   g = g.compact();
+  // Thin out the arterials crossing open water (no random draws, and the
+  // graph is not compacted again, so every other edge, block and lot stays
+  // as it was). Chains and junctions untouched by it keep their indices:
+  // street furniture is hashed from them.
+  const chainKey = (c: Chain) => c.edges.join(',');
+  const chainsBefore = buildChains(g);
+  // Edges round a face that may become a block stay (a merged face would
+  // change the blocks, so the lots and every random draw after them).
+  const landEdges = new Set<number>();
+  for (const f of extractFaces(g, 400000)) {
+    // The block test below, with some margin.
+    const curb = insetPolygon(
+      f.nodes.map(n => g.nodes[n].p),
+      f.edges.map(e => ROAD_WIDTH[g.edges[e].kind] / 2),
+    );
+    if (curb && wetFraction(curb, hf) <= 0.3)
+      for (const e of f.edges) landEdges.add(e);
+  }
+  const thinned = thinBridges(g, isLand, landEdges);
+  if (thinned) pruneDeadEnds(g);
+  const chainsG: Chain[] = thinned
+    ? stableOrder(buildChains(g), chainKey, chainsBefore.map(chainKey))
+    : chainsBefore;
 
   progress?.('Grading roads', 0.35);
   // Smooth the road heights and carve the terrain so roads sit on it.
-  const chainsG: Chain[] = buildChains(g);
   const nodeH = g.nodes.map(n =>
     Math.max(hf.sample(n.p[0], n.p[1]), SEA_LEVEL + 1.2),
   );
@@ -837,25 +1154,62 @@ export function generateLayout(
     const maxKind = Math.max(...j.arms.map(a => chains[a.chain].kind));
     j.signal = j.arms.length >= 3 && maxKind >= Road.street;
   }
+  if (thinned) {
+    // Junction order as it was before thinning (first chain end at each).
+    const before: string[] = [];
+    const seen = new Set<number>();
+    for (const c of chainsBefore)
+      for (const n of [c.nodes[0], c.nodes[c.nodes.length - 1]])
+        if (!seen.has(n)) {
+          seen.add(n);
+          before.push(String(n));
+        }
+    const nodeOf = new Map<Junction, number>();
+    junctionOf.forEach((j, n) => nodeOf.set(junctions[j], n));
+    const order = stableOrder(junctions, j => String(nodeOf.get(j)), before);
+    junctions.splice(0, junctions.length, ...order);
+  }
 
-  progress?.('Elevated rail and expressways', 0.45);
+  progress?.('Elevated rail and expressways', 0.45, {chains});
   const elevated = railLines(params, rng, noise, hubs, center, hf);
   elevated.push(...expressways(params, rng, chains, hf));
   separateCrossings(elevated);
+  for (const e of elevated) e.stations = clearStations(e, hf);
 
-  progress?.('Subdividing blocks', 0.5);
+  progress?.('Subdividing blocks', 0.5, {elevated});
   const faces = extractFaces(g, 400000);
   const blocks: Block[] = [];
   const lots: {lot: Lot; block: number}[] = [];
-  const nearRail = (q: Vec2, pad: number) => {
-    for (const e of elevated) {
-      if (e.kind !== 'rail') continue;
-      for (let i = 0; i + 1 < e.pts.length; i++) {
-        const a = e.pts[i];
-        if (Math.abs(a[0] - q[0]) > 60 || Math.abs(a[1] - q[1]) > 60) continue;
-        if (pointSegment(q, a, e.pts[i + 1])[0] < pad) return true;
-      }
+  // Rail segments binned by their first point (60 m cells): nearRail tests
+  // the same segments as a scan of every rail line (those whose first point
+  // is within 60 m on both axes), only without visiting the rest. Segments
+  // in a tunnel are left out.
+  const railGrid = new Map<number, [Vec2, Vec2][]>();
+  const railKey = (cx: number, cz: number) => (cz + 2048) * 4096 + cx + 2048;
+  for (const e of elevated) {
+    if (e.kind !== 'rail') continue;
+    for (let i = 0; i + 1 < e.pts.length; i++) {
+      // Buildings may stand over a tunnel.
+      if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
+      const a = e.pts[i];
+      const k = railKey(Math.floor(a[0] / 60), Math.floor(a[1] / 60));
+      let l = railGrid.get(k);
+      if (!l) railGrid.set(k, (l = []));
+      l.push([a, e.pts[i + 1]]);
     }
+  }
+  const nearRail = (q: Vec2, pad: number) => {
+    const x0 = Math.floor((q[0] - 60) / 60);
+    const x1 = Math.floor((q[0] + 60) / 60);
+    const z0 = Math.floor((q[1] - 60) / 60);
+    const z1 = Math.floor((q[1] + 60) / 60);
+    for (let cz = z0; cz <= z1; cz++)
+      for (let cx = x0; cx <= x1; cx++)
+        for (const [a, b] of railGrid.get(railKey(cx, cz)) ?? []) {
+          if (Math.abs(a[0] - q[0]) > 60 || Math.abs(a[1] - q[1]) > 60)
+            continue;
+          if (pointSegment(q, a, b)[0] < pad) return true;
+        }
     return false;
   };
   // Road sample points for rejecting blocks that overlap roads.
@@ -997,7 +1351,7 @@ export function generateLayout(
   blocks.push(...slivers);
   gradeBlocks(hf, blocks);
 
-  progress?.('Designing buildings', 0.6);
+  progress?.('Designing buildings', 0.6, {blocks});
   const buildings: Building[] = [];
   // Buildings standing on each block, for the open-ground pass.
   const onBlock: number[][] = blocks.map(() => []);
@@ -1071,9 +1425,15 @@ export function generateLayout(
       kind === 'house' ? 2.9 : kind === 'glass' || kind === 'tower' ? 3.9 : 3.3;
     // Trim any edge that cuts through a viaduct (the checks above only look
     // at corners); the design above is unchanged, only the plan shrinks.
-    const cut = clipToRail(fp, [cx, cz], elevated, 7);
+    const cut = clipToRail(fp, [cx, cz], elevated, 7, hf);
     if (cut !== fp) {
       const clean = cleanPolygon(cut, 1.2);
+      if (clean.length >= 3 && polygonArea(clean) > 25) fp = clean;
+    }
+    // Likewise a plan that crosses or touches itself keeps its main loop.
+    const loop = simplePolygon(fp);
+    if (loop !== fp) {
+      const clean = cleanPolygon(loop, 1.2);
       if (clean.length >= 3 && polygonArea(clean) > 25) fp = clean;
     }
     // Cleaning may drop vertices, so match edges back to the lot's.
@@ -1116,11 +1476,11 @@ export function generateLayout(
     });
   }
   progress?.('Open ground', 0.68);
-  fillOpenGround(blocks, onBlock, buildings, elevated);
+  fillOpenGround(blocks, onBlock, buildings, elevated, hf);
   // Every seeded decision is made: give the river back the cells the road
   // carve heaped up around bridge ends (see carveRoads).
   restoreChannels(hf, flooded, buildings);
-  progress?.('Layout done', 0.7);
+  progress?.('Layout done', 0.7, {buildings});
   return {
     params,
     seed,
@@ -1150,6 +1510,7 @@ function fillOpenGround(
   onBlock: number[][],
   buildings: Building[],
   elevated: Elevated[],
+  hf: Heightfield,
 ) {
   const C = FILL_CELL;
   const bkey = (x: number, z: number) => (z + 1000) * 2000 + x + 1000;
@@ -1159,6 +1520,7 @@ function fillOpenGround(
   for (const e of elevated) {
     const r = elevatedHalfWidth(e);
     for (let i = 0; i + 1 < e.pts.length; i++) {
+      if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
       const a = e.pts[i],
         b = e.pts[i + 1];
       const steps = Math.ceil(dist2(a, b) / 3);
@@ -1511,7 +1873,8 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
 
 /**
  * Where two elevated lines cross, lift the later one so it clears the other's
- * deck (train + overhead wires) with a gentle approach grade.
+ * deck (train + overhead wires) with a gentle approach grade, unless it
+ * already runs that far below it.
  */
 function separateCrossings(lines: Elevated[]) {
   const clearance = 8.5;
@@ -1527,6 +1890,7 @@ function separateCrossings(lines: Elevated[]) {
       // hundreds of metres, not just at the centreline intersection), B must
       // clear A's deck. A line that folds over itself clears its earlier part.
       const reach = elevatedHalfWidth(A) + elevatedHalfWidth(B) + 2;
+      // [arc length, lift over B's own deck there].
       const need: [number, number][] = [];
       for (let k = 0; k < B.pts.length; k++) {
         const own = a === b ? A.pts.slice(0, Math.max(0, k - SELF_GAP)) : A.pts;
@@ -1534,20 +1898,46 @@ function separateCrossings(lines: Elevated[]) {
         const c = closestOnPolyline(own, B.pts[k]);
         if (c.d < reach) {
           const h = lerp(A.heights[c.i], A.heights[c.i + 1], c.t);
-          need.push([along[k], h + clearance]);
+          // B already passes under A (out of a hill, or in a tunnel below
+          // it) with room to spare: leave it there.
+          if (h + clearance > B.heights[k] && B.heights[k] + clearance > h)
+            need.push([along[k], h + clearance - B.heights[k]]);
         }
       }
       if (!need.length) continue;
+      // The lift eases off along B's own profile, not as an absolute height:
+      // a crossing on a hilltop used to hold B up at the hilltop height for
+      // a kilometre and more down into the valleys on either side.
+      const own = B.heights.slice();
       for (let k = 0; k < B.pts.length; k++) {
-        for (const [s, h] of need) {
+        for (const [s, lift] of need) {
           B.heights[k] = Math.max(
             B.heights[k],
-            h - grade * Math.max(0, Math.abs(along[k] - s) - 30),
+            own[k] + lift - grade * Math.max(0, Math.abs(along[k] - s) - 30),
           );
         }
       }
     }
   }
+}
+
+/**
+ * Stations whose platforms (si - 7 .. si + 7) stand clear of the ground, or
+ * lie wholly in a tunnel (an underground station: trains still stop there).
+ * One at the mouth of a tunnel, cut through by the portal, is left out.
+ */
+function clearStations(e: Elevated, hf: Heightfield) {
+  const n = e.pts.length;
+  return e.stations.filter(si => {
+    let open = true;
+    let deep = true;
+    for (let k = si - 7; k <= si + 7; k++) {
+      const i = e.loop ? (k + n) % n : clamp(k, 0, n - 1);
+      if (e.heights[i] < hf.sample(e.pts[i][0], e.pts[i][1]) + 5) open = false;
+      if (!inTunnel(e, i, hf)) deep = false;
+    }
+    return open || deep;
+  });
 }
 
 /** Points (12 m apart) that must separate two parts of one line to count as a fold. */
@@ -1867,6 +2257,7 @@ function clipToRail(
   c: Vec2,
   elevated: Elevated[],
   pad: number,
+  hf: Heightfield,
 ): Vec2[] {
   let poly = fp;
   for (const e of elevated) {
@@ -1875,6 +2266,7 @@ function clipToRail(
       const a = e.pts[i];
       const b = e.pts[i + 1];
       if (Math.abs(a[0] - c[0]) > 150 || Math.abs(a[1] - c[1]) > 150) continue;
+      if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
       let near = false;
       for (let j = 0; j < poly.length && !near; j++)
         near = segmentGap(poly[j], poly[(j + 1) % poly.length], a, b) < pad;

@@ -34,6 +34,7 @@ import {
   ROAD_WIDTH,
   SIDEWALK,
   Road,
+  simplePolygon,
   type BlockFill,
   type Building,
   type CityLayout,
@@ -103,12 +104,22 @@ function shrink(poly: Vec2[], f: number): Vec2[] {
   return poly.map(q => [c[0] + (q[0] - c[0]) * f, c[1] + (q[1] - c[1]) * f]);
 }
 
+/**
+ * `poly` moved in by `d`. On some concave plans the offset folds over itself
+ * or pokes out through the plan (a tower body wider than its podium, a crown
+ * with a twisted roof line); then a smaller inset, else null.
+ */
 function inset(poly: Vec2[], d: number): Vec2[] | null {
-  const r = insetPolygon(
-    poly,
-    poly.map(() => d),
-  );
-  return r && r.length >= 3 && polygonArea(r) > 20 ? r : null;
+  for (const k of [1, 0.6, 0.35]) {
+    const r = insetPolygon(
+      poly,
+      poly.map(() => d * k),
+    );
+    if (!r || r.length < 3 || polygonArea(r) <= 20) return null;
+    if (simplePolygon(r) === r && r.every(q => pointInPolygon(q, poly)))
+      return r;
+  }
+  return null;
 }
 
 /** Outward normal of polygon edge i (math-CCW polygon in x/z). */
@@ -2693,18 +2704,21 @@ export function building(
         m.box([q[0], top + 0.9, q[1]], [0.22, 0.22, 0.22], packMat(CM.lamp, 2));
       }
     }
-    // LED crown line (lit at night).
+    // LED crown line (lit at night). A tube, so city.wgsl keeps it a solid
+    // line at least ~1 px wide with its light spread over the widened
+    // pixels: a sub-pixel box flickered under the TAA jitter. (No aux: the
+    // seed's bit 31 would read as FINE_TUBE and fade it out.)
     for (let i = 0; i < roof.length; i++) {
       const a = roof[i],
         c = roof[(i + 1) % roof.length];
       const n = edgeNormal(roof, i);
-      m.beam(
-        [a[0] + n[0] * 0.05, top - 0.4, a[1] + n[2] * 0.05],
-        [c[0] + n[0] * 0.05, top - 0.4, c[1] + n[2] * 0.05],
-        0.06,
-        0.12,
+      m.tube(
+        [
+          [a[0] + n[0] * 0.06, top - 0.4, a[1] + n[2] * 0.06],
+          [c[0] + n[0] * 0.06, top - 0.4, c[1] + n[2] * 0.06],
+        ],
+        0.1,
         packMat(CM.ledLine, b.style & 0xff),
-        aux,
       );
     }
     cap(m, roof, roofY, packMat(CM.roof, b.style & 0xffff), aux);
@@ -8685,8 +8699,9 @@ function deckFloor(L: CityLayout) {
         const t = k / steps;
         const x = lerp(a[0], b[0], t);
         const z = lerp(a[1], b[1], t);
-        // Underside of the deck with its girders.
+        // Underside of the deck with its girders (none over a tunnel).
         const h = lerp(e.heights[i], e.heights[i + 1], t) - 3.5;
+        if (h + 3.5 < L.terrain.heights.sample(x, z)) continue;
         for (let dz = -r; dz <= r; dz += DECK_CELL / 2) {
           for (let dx = -r; dx <= r; dx += DECK_CELL / 2) {
             if (dx * dx + dz * dz > r * r) continue;

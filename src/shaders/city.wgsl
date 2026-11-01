@@ -38,9 +38,9 @@ struct VOut {
   @location(5) cov: f32,
 };
 
-// Wire (20), frame (15), paint (16), metal (6) and lamp (11) tubes carry
-// their radius in aux bits 0-15 (0.5 mm units, 0 = not a tube; see
-// cmesh.ts). A tube thinner than MIN_TUBE_PX pixels is pushed out along its
+// Wire (20), frame (15), paint (16), metal (6), lamp (11) and LED line (22)
+// tubes carry their radius in aux bits 0-15 (0.5 mm units, 0 = not a tube;
+// see cmesh.ts). A tube thinner than MIN_TUBE_PX pixels is pushed out along its
 // radial normal to that width and drawn with hashed partial coverage.
 //
 // Hashed coverage only resolves where TAA keeps its history: the variance
@@ -57,7 +57,7 @@ struct VOut {
 const MIN_TUBE_PX = 0.7;
 const MIN_LINE_PX = 0.7;
 const LINE_FADE = 700.0;
-const TUBE_MATS = (1u << 6u) | (1u << 11u) | (1u << 15u) | (1u << 16u) | (1u << 20u);
+const TUBE_MATS = (1u << 6u) | (1u << 11u) | (1u << 15u) | (1u << 16u) | (1u << 20u) | (1u << 22u);
 // Fine hardware (aux bit 31, cmesh.ts FINE_TUBE: OHLE droppers, registration
 // and messenger arms, drop poles, insulators): at mid / far range each piece
 // is a 1 px dot, so a line of them read as beads strung along the continuous
@@ -104,13 +104,18 @@ fn fetch(vi: u32, ii: u32, ok: ptr<function, bool>) -> Vertex {
     // stubs): a hashed sub-pixel wire beaded into a dotted line in the sky
     // (the TAA variance clip drops the sparse dither). Bike / tyre rings
     // (wire param 0, r 2.2 cm) keep the hashed coverage.
-    let isLine = id == 11u || (id == 20u && ((v.mat >> 8u) != 0u || r < 0.02));
+    // LED lines (22): the rooftop crown line of towers, 2 dm across, so a
+    // sub-pixel bright line at range; jittered, its pixels were lit in some
+    // frames and empty in others and the variance clip kept resetting the
+    // history (the flickering tower tops at dusk / night).
+    let lit = id == 11u || id == 22u;
+    let isLine = lit || (id == 20u && ((v.mat >> 8u) != 0u || r < 0.02));
     let rMin = select(MIN_TUBE_PX, MIN_LINE_PX, isLine) * px;
     if (r < rMin) {
       p += o.normal * (rMin - r);
       o.pos = frame.viewProj * vec4f(p, 1.0);
       o.cov = r / rMin;
-      if (id == 11u || (isLine && o.pos.w < LINE_FADE)) {
+      if (lit || (isLine && o.pos.w < LINE_FADE)) {
         // Solid min-width line (no dither); -cov carries the true coverage.
         o.cov = -o.cov;
       } else if (isLine) {

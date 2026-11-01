@@ -19,6 +19,9 @@
 // ignores devicePixelRatio), e.g. 640x360 960x540 1280x720 for a resolution
 // sweep (fill-bound vs vertex/CPU-bound).
 //
+// Render scale: 100% unless --q sets one (e.g. --q=scale=75; the game's
+// default drops below 100% at 1080p and up).
+//
 // --live: keep the simulation (and the chase camera) running while
 // measuring, so caches keyed on the view (the shadow cache) see real motion.
 // Noisier: each measurement renders a different stretch of the drive.
@@ -110,6 +113,11 @@ async function measure(page, n) {
     n =>
       new Promise(res => {
         const g = window.__game;
+        // Spans of frames from here on: timestamp readbacks can land many
+        // frames late, so selecting by arrival would mix in frames rendered
+        // before a settings / ablation change.
+        const f0 = g.renderer.prof?.frameCount ?? 0;
+        // (Builds without span frame tags: by arrival.)
         const s0 = g.renderer.prof?.spans.length ?? 0;
         const c0 = g.cpuFrames.length;
         const sr0 = g.renderer.shadowRedraws ?? 0;
@@ -124,7 +132,9 @@ async function measure(page, n) {
             () =>
               res({
                 raf: raf.slice(1),
-                gpu: g.renderer.prof?.spans.slice(s0) ?? [],
+                gpu: g.renderer.prof?.spanFrames
+                  ? g.renderer.prof.spans.filter((_, i) => g.renderer.prof.spanFrames[i] > f0)
+                  : (g.renderer.prof?.spans.slice(s0) ?? []),
                 cpu: g.cpuFrames.slice(c0),
                 redraws: ((g.renderer.shadowRedraws ?? 0) - sr0) / raf.length,
                 cpuSub: window.__stats.cpu,
@@ -140,7 +150,10 @@ async function measure(page, n) {
   // Keep the arrays from growing without bound.
   await page.evaluate(() => {
     const g = window.__game;
-    if (g.renderer.prof) g.renderer.prof.spans.length = 0;
+    if (g.renderer.prof) {
+      g.renderer.prof.spans.length = 0;
+      if (g.renderer.prof.spanFrames) g.renderer.prof.spanFrames.length = 0;
+    }
     g.cpuFrames.length = 0;
   });
   return {
@@ -162,7 +175,7 @@ await withServer(async base => {
   for (const size of sizes) {
     const [w, h] = size.split('x').map(Number);
     const r = await withPage(
-      `${base}/index.html?timespeed=0&ui=0&prof=${passes ? 1 : 'frame'}&size=${size}${extra ? '&' + extra : ''}`,
+      `${base}/index.html?timespeed=0&ui=0&prof=${passes ? 1 : 'frame'}&size=${size}${/(^|&)scale=/.test(extra) ? '' : '&scale=100'}${extra ? '&' + extra : ''}`,
       async page => {
         const out = {};
         for (const s of SCENARIOS) {

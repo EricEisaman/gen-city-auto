@@ -24,7 +24,8 @@ const TUBES =
   (1 << CM.frame) |
   (1 << CM.paint) |
   (1 << CM.metal) |
-  (1 << CM.lamp);
+  (1 << CM.lamp) |
+  (1 << CM.ledLine);
 
 /** Narrowest width of triangle `t` (2 * area / longest edge), metres. */
 function width(m: CMesh, t: number) {

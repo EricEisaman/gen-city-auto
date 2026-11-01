@@ -28,7 +28,7 @@ const VIEWS = [
 
 await ensureDir(outDir);
 await withServer(async base => {
-  const r = await withPage(`${base}/index.html?timespeed=0&ui=0&traffic=380${extra ? '&' + extra : ''}`, async page => {
+  const r = await withPage(`${base}/index.html?timespeed=0&ui=0&traffic=380${/(^|&)scale=/.test(extra) ? '' : '&scale=100'}${extra ? '&' + extra : ''}`, async page => {
     // Let traffic and pedestrians settle, then freeze them for every view.
     await sleep(2000);
     await page.evaluate(() => (window.__game.freeze = true));

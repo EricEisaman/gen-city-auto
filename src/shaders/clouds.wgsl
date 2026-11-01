@@ -1,5 +1,8 @@
-// Volumetric clouds: raymarched at quarter resolution with temporal
+// Volumetric clouds: raymarched at reduced resolution with temporal
 // reprojection (after Schneider's Nubis / Horizon Zero Dawn approach).
+// Texels whose whole neighbourhood is covered by geometry (Hi-Z of this
+// frame's depth) only carry their history forward; frame.extra.x = 2 marches
+// one 8x4 block of each 2x2 group of blocks per frame and reprojects the rest.
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var linearRepeat: sampler;
@@ -76,6 +79,8 @@ fn genNoise(@builtin(global_invocation_id) id: vec3u) {
 @group(1) @binding(0) var noiseTex: texture_3d<f32>;
 @group(1) @binding(1) var historyTex: texture_2d<f32>;
 @group(1) @binding(2) var cloudOut: texture_storage_2d<rgba16float, write>;
+// Farthest (reverse-Z: minimum) depth pyramid of this frame; mip 0 = half res.
+@group(1) @binding(3) var hizTex: texture_2d<f32>;
 
 const CLOUD_BOTTOM = 1500.0;
 const CLOUD_TOP = 4200.0;
@@ -117,15 +122,57 @@ fn hg(c: f32, g: f32) -> f32 {
   return (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * c, 1.5));
 }
 
+// Whether any sky shows within a texel of this cloud texel: the lighting
+// pass samples the clouds bilinearly at sky pixels only.
+fn skyNear(uv: vec2f, size: vec2u) -> bool {
+  let h0 = vec2f(textureDimensions(hizTex, 0));
+  let levels = i32(textureNumLevels(hizTex));
+  // The first mip whose texels are at least a cloud texel wide.
+  let lv = clamp(i32(ceil(log2(max(h0.x / f32(size.x), 1.0)))), 0, levels - 1);
+  let dims = vec2i(textureDimensions(hizTex, lv));
+  let c = vec2i(uv * vec2f(dims));
+  var far = 1.0;
+  for (var y = -1; y <= 1; y++) {
+    for (var x = -1; x <= 1; x++) {
+      let q = clamp(c + vec2i(x, y), vec2i(0), dims - 1);
+      far = min(far, textureLoad(hizTex, q, lv).r);
+    }
+  }
+  return far <= 0.0;
+}
+
 @compute @workgroup_size(8, 8)
 fn march(@builtin(global_invocation_id) id: vec3u) {
   let size = textureDimensions(cloudOut);
   if (any(id.xy >= size)) { return; }
+  let mode = u32(frame.extra.x);
+  if (mode == 0u) {
+    textureStore(cloudOut, id.xy, vec4f(0.0, 0.0, 0.0, 1.0));
+    return;
+  }
   let uv = (vec2f(id.xy) + 0.5) / vec2f(size);
   let ndc = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.5, 1.0);
   let wp = frame.invViewProj * ndc;
   let rd = normalize(wp.xyz / wp.w - frame.camPos.xyz);
   let ro = frame.camPos.xyz;
+  // Temporal reprojection (clouds are far: reproject by direction).
+  let prev = frame.prevViewProj * vec4f(ro + rd * 20000.0, 1.0);
+  let puv = prev.xy / prev.w * vec2f(0.5, -0.5) + 0.5;
+  let histOk = frame.extra.z > 2.0 && all(puv > vec2f(0.0)) && all(puv < vec2f(1.0));
+  if (histOk) {
+    // Hidden behind geometry, or not this texel's turn: carry the history.
+    let order = array<u32, 4>(0u, 3u, 1u, 2u);
+    // Interleaved by 8x4 blocks, not texels: a block is one 32-wide SIMD
+    // group of the 8x8 workgroup, so a group marches all or none of its
+    // lanes (a per-texel pattern left every group with a marching lane and
+    // saved nothing).
+    let blk = vec2u(id.x >> 3u, id.y >> 2u);
+    let turn = mode == 2u && (blk.x & 1u) + 2u * (blk.y & 1u) != order[u32(frame.time.z) & 3u];
+    if (turn || !skyNear(uv, size)) {
+      textureStore(cloudOut, id.xy, textureSampleLevel(historyTex, linearRepeat, puv, 0.0));
+      return;
+    }
+  }
   var result = vec4f(0.0, 0.0, 0.0, 1.0);
   if (frame.weather.x > 0.01 && rd.y > 0.005) {
     let t0 = max((CLOUD_BOTTOM - ro.y) / rd.y, 0.0);
@@ -133,7 +180,7 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
     if (t1 > t0) {
       // Grazing rays toward the horizon cross tens of kilometres of the
       // layer: give them more steps so distant clouds keep defined edges.
-      let baseSteps = select(24.0, 56.0, frame.misc.y > 0.5);
+      let baseSteps = select(24.0, 56.0, frame.misc.y > 0.5) * frame.extra.y;
       let steps = i32(baseSteps * mix(1.0, 1.75, smoothstep(6000.0, 30000.0, t1 - t0)));
       let dt = (t1 - t0) / f32(steps);
       let jitter = fract(hash21(vec2f(id.xy)) + frame.time.z * 0.618034);
@@ -185,12 +232,10 @@ fn march(@builtin(global_invocation_id) id: vec3u) {
       result = vec4f(L, 1.0 - a2);
     }
   }
-  // Temporal accumulation (clouds are far: reproject by direction).
-  let prev = frame.prevViewProj * vec4f(ro + rd * 20000.0, 1.0);
-  let puv = prev.xy / prev.w * vec2f(0.5, -0.5) + 0.5;
-  if (frame.time.z > 2.0 && all(puv > vec2f(0.0)) && all(puv < vec2f(1.0))) {
+  // Temporal accumulation (a texel marched every 4th frame keeps less history).
+  if (histOk) {
     let h = textureSampleLevel(historyTex, linearRepeat, puv, 0.0);
-    result = mix(result, h, 0.85);
+    result = mix(result, h, select(0.85, 0.7, mode == 2u));
   }
   textureStore(cloudOut, id.xy, result);
 }

@@ -30,6 +30,19 @@ export function signalState(t: number, phase: number, group: number): number {
   return 2;
 }
 
+/** A rounded polyline vertex of a road chain (see RoadNet.smoothAt). */
+export interface Corner {
+  /** Arc position of the vertex along the chain. */
+  a: number;
+  /** Fillet half-length: the curve spans a - r .. a + r. */
+  r: number;
+  /** Peak centerline curvature of the fillet (1/m). */
+  k: number;
+}
+
+/** Most a fillet may cut inside a polyline vertex (m). */
+const FILLET_CUT = 1.5;
+
 export interface LanePos {
   p: Vec3;
   /** Travel direction (x, z). */
@@ -51,6 +64,9 @@ export class RoadNet {
   readonly size: number;
   private poleGrid = new Map<number, Vec3[]>();
   private junctionGrid = new Map<number, number[]>();
+  /** Fillet half-length per chain vertex (lazily built). */
+  private fillets = new Map<number, Float64Array>();
+  private cornerList = new Map<number, Corner[]>();
 
   constructor(summary: LayoutSummary, hf: Heightfield) {
     const L = summary.layout;
@@ -178,6 +194,125 @@ export class RoadNet {
     return (lane + 0.5) * w + 0.2;
   }
 
+  /**
+   * Fillet half-length at each vertex of a chain: half the shorter adjacent
+   * segment, less at sharp corners so the curve never cuts more than
+   * FILLET_CUT inside the vertex.
+   */
+  private filletsOf(chain: number): Float64Array {
+    let r = this.fillets.get(chain);
+    if (r) return r;
+    const pts = this.chains[chain].pts;
+    const n = pts.length;
+    r = new Float64Array(n);
+    for (let i = 1; i + 1 < n; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const c = pts[i + 1];
+      const l0 = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const l1 = Math.hypot(c[0] - b[0], c[1] - b[1]);
+      if (l0 < 1e-6 || l1 < 1e-6) continue;
+      const cos =
+        ((b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1])) /
+        (l0 * l1);
+      const half = Math.acos(Math.max(-1, Math.min(1, cos))) / 2;
+      // The quadratic fillet's apex sits r sin(half) / 2 inside the vertex.
+      const cap = half > 1e-4 ? (2 * FILLET_CUT) / Math.sin(half) : Infinity;
+      r[i] = Math.min(l0 / 2, l1 / 2, cap);
+    }
+    this.fillets.set(chain, r);
+    return r;
+  }
+
+  /**
+   * Sharp-ish rounded vertices of a chain (turning more than ~6 degrees),
+   * for slowing down ahead of them.
+   */
+  corners(chain: number): Corner[] {
+    let list = this.cornerList.get(chain);
+    if (list) return list;
+    list = [];
+    const r = this.filletsOf(chain);
+    const pts = this.chains[chain].pts;
+    const arc = this.geom.arc[chain];
+    for (let i = 1; i + 1 < pts.length; i++) {
+      if (r[i] <= 0) continue;
+      const a = pts[i - 1];
+      const b = pts[i];
+      const c = pts[i + 1];
+      const l0 = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const l1 = Math.hypot(c[0] - b[0], c[1] - b[1]);
+      const cos =
+        ((b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1])) /
+        (l0 * l1);
+      const half = Math.acos(Math.max(-1, Math.min(1, cos))) / 2;
+      if (half < 0.05) continue;
+      // Apex curvature of a symmetric quadratic Bezier with legs r.
+      const ch = Math.cos(half);
+      const k = Math.sin(half) / (r[i] * Math.max(ch * ch, 1e-3));
+      list.push({a: arc[i], r: r[i], k});
+    }
+    this.cornerList.set(chain, list);
+    return list;
+  }
+
+  /**
+   * Point and tangent on a chain's centerline at arc position a, with every
+   * polyline vertex rounded by a quadratic fillet (see filletsOf). The plain
+   * polyline turns its whole vertex angle in an instant; this curve has a
+   * continuous tangent, so headings measured along it change smoothly.
+   */
+  smoothAt(chain: number, a: number): {p: Vec2; d: Vec2} {
+    const pts = this.chains[chain].pts;
+    const arc = this.geom.arc[chain];
+    const n = pts.length;
+    const total = arc[n - 1];
+    a = Math.max(0, Math.min(total, a));
+    let lo = 0;
+    let hi = n - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (arc[mid] <= a) lo = mid;
+      else hi = mid;
+    }
+    const segDir = (i: number): Vec2 => {
+      const p = pts[i];
+      const q = pts[i + 1];
+      const l = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+      return [(q[0] - p[0]) / l, (q[1] - p[1]) / l];
+    };
+    const r = this.filletsOf(chain);
+    let v = -1;
+    if (lo > 0 && a - arc[lo] < r[lo]) v = lo;
+    else if (hi < n - 1 && arc[hi] - a < r[hi]) v = hi;
+    if (v < 0) {
+      const seg = arc[hi] - arc[lo] || 1;
+      const t = (a - arc[lo]) / seg;
+      const p0 = pts[lo];
+      const p1 = pts[hi];
+      return {
+        p: [p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t],
+        d: segDir(lo),
+      };
+    }
+    const din = segDir(v - 1);
+    const dout = segDir(v);
+    const rv = r[v];
+    const u = (a - (arc[v] - rv)) / (2 * rv);
+    const V = pts[v];
+    const w0 = (1 - u) * (1 - u);
+    const w1 = 2 * u * (1 - u);
+    const w2 = u * u;
+    const p: Vec2 = [
+      w0 * (V[0] - din[0] * rv) + w1 * V[0] + w2 * (V[0] + dout[0] * rv),
+      w0 * (V[1] - din[1] * rv) + w1 * V[1] + w2 * (V[1] + dout[1] * rv),
+    ];
+    const dx = (1 - u) * din[0] + u * dout[0];
+    const dz = (1 - u) * din[1] + u * dout[1];
+    const dl = Math.hypot(dx, dz);
+    return {p, d: dl > 1e-6 ? [dx / dl, dz / dl] : din};
+  }
+
   /** Position on a lane: s is the distance traveled in the travel direction. */
   lanePos(chain: number, dir: 1 | -1, lane: number, s: number): LanePos {
     const c = this.chains[chain];
@@ -185,14 +320,16 @@ export class RoadNet {
     const total = arc[arc.length - 1];
     const a = dir === 1 ? s : total - s;
     const q = chainAt(c, arc, a);
-    const d: Vec2 = dir === 1 ? q.d : [-q.d[0], -q.d[1]];
+    // Lanes follow the rounded centerline (heights from the road's grade).
+    const sm = this.smoothAt(chain, a);
+    const d: Vec2 = dir === 1 ? sm.d : [-sm.d[0], -sm.d[1]];
     const off = this.laneOffset(chain, lane);
     // Drive on the left (Japan): left of travel direction is (dz, -dx).
     const left: Vec2 = [d[1], -d[0]];
     const q2 = chainAt(c, arc, a + dir * 2);
     const slope = (q2.h - q.h) / 2;
     return {
-      p: [q.p[0] + left[0] * off, q.h + 0.03, q.p[1] + left[1] * off],
+      p: [sm.p[0] + left[0] * off, q.h + 0.03, sm.p[1] + left[1] * off],
       d,
       slope,
     };

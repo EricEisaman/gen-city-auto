@@ -15,8 +15,15 @@ import {
 } from '../city/gen-tile.ts';
 import {baseFarOf} from '../city/lod.ts';
 import {isolate, labInfo, type LabInfo, type LabSpec} from '../city/lab.ts';
-import {generateLayout, type CityLayout} from '../city/layout.ts';
+import {
+  generateLayout,
+  type CityLayout,
+  type LayoutPartial,
+} from '../city/layout.ts';
+import {packPreview, previewTransfer} from '../city/preview.ts';
 import type {RoadGeom} from '../city/roadgeom.ts';
+import {buildSkyline, SKYLINE_N} from '../city/skyline.ts';
+import {Heightfield} from '../city/terrain.ts';
 
 export type WorkerRequest =
   | {
@@ -46,9 +53,30 @@ export interface LayoutSummary {
 
 let layout: CityLayout | null = null;
 let ctx: TileContext | null = null;
+/** Primary: the skyline map, built once the base is on its way. */
+let skyline: (() => Float32Array) | null = null;
 
 const post = (msg: unknown, transfer: Transferable[] = []) =>
   (self as unknown as Worker).postMessage(msg, transfer);
+
+const abs = () => performance.timeOrigin + performance.now();
+/** Timeline span (absolute times; see ui/timeline.ts). */
+const span = (name: string, start: number) =>
+  post({type: 'span', name, start, end: abs()});
+// Worker spin-up: creation to this module running.
+span('worker script loaded', performance.timeOrigin);
+
+/** Run fn and send its span. */
+function timed<T>(name: string, fn: () => T): T {
+  const t = abs();
+  const r = fn();
+  span(name, t);
+  return r;
+}
+
+/** Tile builds served since the last report (sum of ms). */
+let tileMs = 0;
+let tileCount = 0;
 
 function clusterTransfer(c: ClusterData): Transferable[] {
   return [c.vertices.buffer, c.tris.buffer, c.clusters.buffer];
@@ -56,17 +84,31 @@ function clusterTransfer(c: ClusterData): Transferable[] {
 
 function init(req: Extract<WorkerRequest, {type: 'init'}>) {
   const params = PRESETS[req.cityType];
-  layout = generateLayout(
-    params,
-    req.seed,
-    req.primary ? (msg, f) => post({type: 'progress', msg, f}) : undefined,
+  // Primary: progress messages, each layout step as a span, and the
+  // finished parts for the loading screen's map.
+  let step = '';
+  let stepT = 0;
+  const progress = (msg: string, f: number, partial?: LayoutPartial) => {
+    if (step) span(`layout: ${step}`, stepT);
+    step = msg;
+    stepT = abs();
+    post({type: 'progress', msg, f});
+    const pv = partial && packPreview(partial, params.size);
+    if (pv) post({type: 'preview', preview: pv}, previewTransfer(pv));
+  };
+  layout = timed('generateLayout', () =>
+    generateLayout(params, req.seed, req.primary ? progress : undefined),
   );
   // The lab filters the finished layout, so generation is unchanged.
   const iso = req.lab ? isolate(layout, req.lab) : null;
   if (iso) layout = iso.layout;
   if (!req.primary) return;
-  const base = buildBase(layout);
-  ctx = makeTileContext(layout, base.geom, base.roadMask);
+  const lay = layout;
+  post({type: 'progress', msg: 'Building street meshes', f: 0.72});
+  const base = timed('buildBase', () => buildBase(lay));
+  ctx = timed('makeTileContext', () =>
+    makeTileContext(lay, base.geom, base.roadMask),
+  );
   // The others build their tile context while this one clusterizes.
   const band = bandTrisData(base.geom);
   post({type: 'band', band}, [band.buffer]);
@@ -85,6 +127,7 @@ function init(req: Extract<WorkerRequest, {type: 'init'}>) {
     lab: iso ? labInfo(iso, base.geom, base.solids) : undefined,
   };
   // Fine base detail (kerbs, railings, wires, thin paint) drops at range.
+  const tc = abs();
   const baseClusters = clusterize(
     base.mesh,
     0,
@@ -93,6 +136,7 @@ function init(req: Extract<WorkerRequest, {type: 'init'}>) {
     baseFarOf(base.mesh),
   );
   const pierClusters = clusterize(base.piers, 0, 0xffffffff, 0);
+  span('clusterize base', tc);
   post(
     {
       type: 'base',
@@ -108,6 +152,12 @@ function init(req: Extract<WorkerRequest, {type: 'init'}>) {
       base.landUse.buffer,
     ],
   );
+  const hf = new Heightfield(
+    lay.params.size,
+    terrain.heights.cell,
+    base.terrainHeights,
+  );
+  skyline = () => buildSkyline(lay.buildings, hf, lay.params.size);
 }
 
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
@@ -116,15 +166,27 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     if (req.type === 'init') {
       init(req);
       post({type: 'ready'});
+      if (skyline) {
+        // (After 'ready': the other workers start on tiles meanwhile.)
+        const sky = timed('buildSkyline', skyline);
+        skyline = null;
+        post({type: 'skyline', sky, n: SKYLINE_N}, [sky.buffer]);
+      }
     } else if (req.type === 'band') {
       if (!layout) throw new Error('band before init');
-      const t = tileGeom(layout, req.band);
-      ctx = makeTileContext(layout, t.geom, t.roadMask);
+      const lay = layout;
+      const t = timed('tileGeom', () => tileGeom(lay, req.band));
+      ctx = timed('makeTileContext', () =>
+        makeTileContext(lay, t.geom, t.roadMask),
+      );
     } else if (req.type === 'tile') {
       if (!ctx) throw new Error('tile request before init');
+      const t0 = abs();
       const r = buildTile(ctx, req.tile, req.lod);
       const c = clusterize(r.mesh, req.lod, req.tile, 1);
       const lights = new Float32Array(r.lights);
+      tileMs += abs() - t0;
+      tileCount++;
       post(
         {
           type: 'tile',
@@ -133,6 +195,8 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           id: req.id,
           clusters: c,
           lights,
+          tileMs,
+          tileCount,
         },
         [...clusterTransfer(c), lights.buffer],
       );

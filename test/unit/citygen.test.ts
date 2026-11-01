@@ -5,8 +5,17 @@ import {bandTrisData, buildBase, tileGeom} from '../../src/city/gen-base.ts';
 import {CLUSTER_ALPHA, CM, clusterize} from '../../src/city/cmesh.ts';
 import {buildTile, makeTileContext} from '../../src/city/gen-tile.ts';
 import {LEAF_SOLID} from '../../src/city/lod.ts';
-import {generateLayout} from '../../src/city/layout.ts';
+import {
+  generateLayout,
+  inTunnel,
+  MAX_DECK_RISE,
+  simplePolygon,
+  stableOrder,
+  TERMINUS_OFFSET,
+} from '../../src/city/layout.ts';
+import {SEA_LEVEL} from '../../src/city/terrain.ts';
 import {computeRoadGeom} from '../../src/city/roadgeom.ts';
+import {polygonArea, type Vec2} from '../../src/math/vec.ts';
 
 // river seed 5 once had a kerb-return crossing extrapolated 55 km out of its
 // junction; landing()'s plate grid then took ~700 MB per city worker and the
@@ -82,4 +91,138 @@ void test('LOD2 tiles thin the LOD1 shell', () => {
     }
   }
   assert.ok(t2 < t1 * 0.7, `LOD2 ${t2 / 3} vs LOD1 ${t1 / 3} triangles`);
+});
+
+// Full-size layouts shared by the tests below (each takes a few seconds).
+const layouts = new Map<string, ReturnType<typeof generateLayout>>();
+const layoutOf = (type: keyof typeof PRESETS, seed: number) => {
+  const k = `${type} ${seed}`;
+  let L = layouts.get(k);
+  if (!L) layouts.set(k, (L = generateLayout(PRESETS[type], seed)));
+  return L;
+};
+
+void test('stableOrder keeps surviving items at their old index', () => {
+  const before = ['a', 'b', 'c', 'd', 'e'];
+  // b and d went, x is new: a and c keep 0 and 2; e (old 4, past the end)
+  // and x fill the gaps in order.
+  const out = stableOrder(['a', 'c', 'e', 'x'], s => s, before);
+  assert.deepEqual(out, ['a', 'e', 'c', 'x']);
+});
+
+// Hong Kong seed 1 once had a lattice of ~20 long bridges across the
+// harbour, crossing each other at junctions in mid-water.
+void test('long water crossings do not meet in mid-water (harbour)', () => {
+  for (const seed of [1, 2]) {
+    const L = layoutOf('harbour', seed);
+    const hf = L.terrain.heights;
+    const wetLen = (ci: number) =>
+      L.chains[ci].bridge.filter(b => b).length * 8;
+    for (const j of L.junctions) {
+      if (hf.sample(j.p[0], j.p[1]) > SEA_LEVEL + 0.5) continue;
+      const long = j.arms.filter(a => wetLen(a.chain) > 150).length;
+      assert.ok(
+        long < 3,
+        `seed ${seed}: ${long} long bridges meet at ${j.p.map(Math.round)}`,
+      );
+    }
+    const long = L.chains.filter((_, ci) => wetLen(ci) > 400).length;
+    assert.ok(long >= 1 && long <= 8, `seed ${seed}: ${long} long bridges`);
+  }
+});
+
+// Hong Kong and Chongqing viaducts once stood 100-136 m over the valleys
+// (held at a 3% grade off every hilltop) and ran off the end of the deck
+// at the harbour. Lines now tunnel through hills, end at termini, and a
+// loop that bridges a river stays a loop.
+void test('rail viaducts follow the ground and end at termini', () => {
+  for (const [type, seed] of [
+    ['harbour', 1],
+    ['harbour', 2],
+    ['river', 1],
+  ] as const) {
+    const L = layoutOf(type, seed);
+    const hf = L.terrain.heights;
+    for (const e of L.elevated) {
+      if (e.kind !== 'rail') continue;
+      e.pts.forEach((q, i) => {
+        const ground = Math.max(hf.sample(q[0], q[1]), SEA_LEVEL);
+        // Clearance (<= 15) + MAX_DECK_RISE, plus a lift over another line.
+        const above = e.heights[i] - ground;
+        assert.ok(
+          above < 15 + MAX_DECK_RISE + 12,
+          `${type} ${seed}: deck ${above.toFixed(0)} m up at ${q.map(Math.round)}`,
+        );
+      });
+      if (e.loop) continue;
+      const n = e.pts.length;
+      for (const [end, si] of [
+        [0, TERMINUS_OFFSET],
+        [n - 1, n - 1 - TERMINUS_OFFSET],
+      ]) {
+        assert.ok(
+          e.stations.includes(si) || inTunnel(e, end, hf),
+          `${type} ${seed}: open line ends at ${e.pts[end].map(Math.round)} without a terminus`,
+        );
+      }
+    }
+  }
+  // Neon seed 1's loop line crosses a river: it used to be cut open there.
+  assert.ok(layoutOf('neon', 1).elevated[0].loop);
+});
+
+void test('simplePolygon keeps the main loop of a self-touching plan', () => {
+  const square: Vec2[] = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+  ];
+  assert.equal(simplePolygon(square), square);
+  // A 10 x 10 plot pinched at (10, 10) to a 4 x 4 lobe.
+  const pinched: Vec2[] = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [14, 10],
+    [14, 14],
+    [10, 14],
+    [10, 10],
+    [0, 10],
+  ];
+  const s = simplePolygon(pinched);
+  assert.equal(s.length, 4);
+  assert.equal(polygonArea(s), 100);
+  // A figure eight: the bigger lobe (same winding) wins.
+  const eight: Vec2[] = [
+    [0, 0],
+    [20, 12],
+    [20, 0],
+    [0, 12],
+  ];
+  assert.ok(simplePolygon(eight).length === 3);
+});
+
+// Chongqing seed 1 had a glass tower on a plot that touched itself: its
+// inset body and crown came out as a twisted box hanging past the podium.
+void test('building plans do not cross themselves', () => {
+  for (const [type, seed] of [
+    ['river', 1],
+    ['harbour', 1],
+  ] as const) {
+    const L = layoutOf(type, seed);
+    const bad = L.buildings.filter(
+      b => simplePolygon(b.footprint) !== b.footprint,
+    );
+    assert.ok(
+      bad.length <= L.buildings.length * 0.0005,
+      `${type} ${seed}: ${bad.length} self-crossing plans`,
+    );
+    const towers = bad.filter(b => b.kind === 'glass' || b.kind === 'tower');
+    assert.equal(
+      towers.length,
+      0,
+      `${type} ${seed}: towers ${towers.map(b => b.id)}`,
+    );
+  }
 });

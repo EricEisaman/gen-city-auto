@@ -47,6 +47,15 @@ URL parameters: `city=neon|metro|harbour|river`, `seed`, `time` (hours),
 `shot=<director shot>`, `spawn=x,z`, `freecam=x,y,z,yaw,pitch`, `quality=low`,
 `debug=1..8` (G-buffer and lighting views).
 
+Graphics settings live in the menu (M, under GRAPHICS) and persist in
+localStorage. URL parameters override them for that page load without being
+saved: `scale=25..100|auto|dynamic` (render scale: the internal resolution
+in % of the display, upsampled by TAA; `auto` = 75% at 1440p and up, 85% at
+1080p, native below; `dynamic` steers it to hold `fps=30|45|60|90|120`),
+`gfx=low|medium|high|ultra` (quality preset), `clouds=0..4`,
+`shadows=0|1024|1536|2048|3072`, `readout=1` (FPS / GPU ms readout),
+`traffic=<cars>`, `lod2=<metres>`.
+
 Asset lab (one asset alone in the full renderer, for art review):
 `lab=building|road|rail`, `pick=<n>` (0 = most typical building / most
 central signalized junction / first straight viaduct section),
