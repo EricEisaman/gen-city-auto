@@ -113,6 +113,10 @@ const MAT_GROUP_IDS: readonly (readonly number[])[] = [
   [CM.facade],
   [CM.road, CM.asphaltPlain],
   [CM.sidewalk, CM.curb, CM.carPark, CM.grass],
+  [CM.roof, CM.tile],
+  [CM.glass],
+  [CM.concrete, CM.rail],
+  [CM.paint, CM.metal, CM.frame],
 ];
 export const MAT_GROUPS = MAT_GROUP_IDS.length;
 const GROUP_OF = new Uint8Array(256);
