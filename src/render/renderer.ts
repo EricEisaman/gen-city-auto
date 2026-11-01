@@ -19,7 +19,7 @@ import {computeSky, type SkyState} from '../world/sky.ts';
 import {ClusterPool, type PoolHandle} from './cluster-pool.ts';
 import {F, FrameData} from './frame.ts';
 import {CpuProfiler, GpuProfiler} from './profiler.ts';
-import {OFF_BITS, type OffName} from './ablation.ts';
+import {OFF_BITS, hasOff, offWords, type OffName} from './ablation.ts';
 import {receiverPlanes} from './shadow-cull.ts';
 import {
   createLeafTexture,
@@ -628,7 +628,7 @@ export class Renderer {
   }
 
   private off(name: OffName) {
-    return (this.offBits & OFF_BITS[name]) !== 0;
+    return hasOff(this.offBits, name);
   }
 
   /** Hooks minus the ones switched off by ablation flags. */
@@ -1159,7 +1159,8 @@ export class Renderer {
       v.interior ? 2 : v.lensDrops ? 1 : 0,
       sky.moonPhase,
     ]);
-    new Uint32Array(fd.f.buffer).set([this.offBits, this.offMats], F.off);
+    const [offLo, offHi] = offWords(this.offBits);
+    new Uint32Array(fd.f.buffer).set([offLo, this.offMats, offHi], F.off);
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);
     d.queue.writeBuffer(
       this.atmoBuffer,

@@ -3,6 +3,13 @@
 // change in frame time is that feature's cost. The bit set is mirrored into
 // the frame uniform (frame.off.x; lighting.wgsl / city-materials.wgsl read
 // the shader-side bits). With no flags set every check is a no-op.
+//
+// Flags past bit 31 are worth 2 ** (32 + k): the set is a plain number (up
+// to 2 ** 53), so combine with orOff() / test with hasOff(), not | and &.
+// (& still works for the low flags: ToInt32 keeps the low word.) The high
+// word is mirrored into frame.off.z.
+
+const HI = 2 ** 32;
 
 export const OFF_BITS = {
   ssr: 1 << 0, // lighting: screen-space reflections
@@ -40,11 +47,28 @@ export const OFF_BITS = {
 
 export type OffName = keyof typeof OFF_BITS;
 
+/** Low (frame.off.x) and high (frame.off.z) words of a flag set. */
+export function offWords(bits: number): [number, number] {
+  return [(bits % HI) >>> 0, Math.floor(bits / HI) >>> 0];
+}
+
+export function hasOff(bits: number, name: OffName): boolean {
+  const [lo, hi] = offWords(bits);
+  const [blo, bhi] = offWords(OFF_BITS[name]);
+  return ((lo & blo) | (hi & bhi)) !== 0;
+}
+
+export function orOff(a: number, b: number): number {
+  const [alo, ahi] = offWords(a);
+  const [blo, bhi] = offWords(b);
+  return ((ahi | bhi) >>> 0) * HI + ((alo | blo) >>> 0);
+}
+
 export function parseOff(list: string | null | undefined): number {
   let bits = 0;
   for (const n of (list ?? '').split(',')) {
     const b = OFF_BITS[n.trim() as OffName];
-    if (b) bits |= b;
+    if (b) bits = orOff(bits, b);
   }
   return bits;
 }

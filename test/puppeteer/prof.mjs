@@ -1,7 +1,7 @@
 // Frame-time profiler over a set of fixed scenarios.
 //
 //   node test/puppeteer/prof.mjs [WxH ...] [--only=substr] [--q=extra&query] [--json=out.json]
-//        [--ablate=ssr,gtao,ssr+cityrefl,...] [--frames=240] [--passes]
+//        [--ablate=ssr,gtao,ssr+cityrefl,...] [--frames=240] [--passes] [--live]
 //
 // Default: for each scenario, the median over --frames frames of the
 // uncapped rAF interval, the GPU frame span (one timestamp pair around the
@@ -19,11 +19,15 @@
 // ignores devicePixelRatio), e.g. 640x360 960x540 1280x720 for a resolution
 // sweep (fill-bound vs vertex/CPU-bound).
 //
+// --live: keep the simulation (and the chase camera) running while
+// measuring, so caches keyed on the view (the shadow cache) see real motion.
+// Noisier: each measurement renders a different stretch of the drive.
+//
 // --passes: per-pass GPU timestamps (?prof=1, every segment its own pass).
 // On Apple (tile-based) GPUs passes overlap and timestamps exist only at
 // pass boundaries, so treat these as indicative only; prefer --ablate.
 import {writeFile} from 'node:fs/promises';
-import {OFF_BITS} from '../../src/render/ablation.ts';
+import {OFF_BITS, orOff} from '../../src/render/ablation.ts';
 import {sleep, withPage, withServer} from './harness.mjs';
 
 const argv = process.argv.slice(2);
@@ -35,6 +39,7 @@ const jsonOut = opt('json');
 const extra = opt('q') ?? '';
 const frames = Number(opt('frames') ?? 240);
 const passes = argv.includes('--passes');
+const liveRun = argv.includes('--live');
 const ablate = (opt('ablate') ?? '').split(',').filter(Boolean);
 // 'mat3' = city material id 3 drawn flat (cityMaterial early-out).
 const isMat = n => /^mat\d+$/.test(n);
@@ -42,7 +47,7 @@ const bitsOf = s =>
   s.split('+').reduce((b, n) => {
     if (isMat(n)) return b;
     if (!(n in OFF_BITS)) throw new Error(`unknown ablation flag ${n}`);
-    return b | OFF_BITS[n];
+    return orOff(b, OFF_BITS[n]);
   }, 0);
 const matsOf = s => s.split('+').filter(isMat).reduce((b, n) => (b | (1 << Number(n.slice(3)))) >>> 0, 0);
 for (const a of ablate) bitsOf(a);
@@ -107,6 +112,7 @@ async function measure(page, n) {
         const g = window.__game;
         const s0 = g.renderer.prof?.spans.length ?? 0;
         const c0 = g.cpuFrames.length;
+        const sr0 = g.renderer.shadowRedraws ?? 0;
         const raf = [];
         let last = performance.now();
         const tick = now => {
@@ -120,6 +126,7 @@ async function measure(page, n) {
                 raf: raf.slice(1),
                 gpu: g.renderer.prof?.spans.slice(s0) ?? [],
                 cpu: g.cpuFrames.slice(c0),
+                redraws: ((g.renderer.shadowRedraws ?? 0) - sr0) / raf.length,
                 cpuSub: window.__stats.cpu,
                 passes: window.__stats.gpu,
               }),
@@ -140,6 +147,7 @@ async function measure(page, n) {
     frame: median(r.raf),
     gpu: median(r.gpu),
     cpu: median(r.cpu),
+    redraws: r.redraws,
     cpuSub: r.cpuSub,
     passes: r.passes,
   };
@@ -162,7 +170,7 @@ await withServer(async base => {
           await sleep(s.freecam ? 4000 : 3000);
           // CPU subsystems with the simulation running.
           const live = await measure(page, 90);
-          await page.evaluate(() => (window.__game.freeze = true));
+          if (!liveRun) await page.evaluate(() => (window.__game.freeze = true));
           await sleep(500);
           const res = {live, base: await measure(page, frames), off: {}};
           for (const a of ablate) {
@@ -217,7 +225,7 @@ await withServer(async base => {
           await page.evaluate(() => (window.__game.renderer.cullStats = false));
           out[s.name] = res;
           console.log(
-            `[${size}] ${s.name}: frame ${fmt(res.base.frame)}ms gpu ${fmt(res.base.gpu)}ms cpu ${fmt(res.base.cpu)}ms (live: frame ${fmt(live.frame)} gpu ${fmt(live.gpu)} cpu ${fmt(live.cpu)})`,
+            `[${size}] ${s.name}: frame ${fmt(res.base.frame)}ms gpu ${fmt(res.base.gpu)}ms cpu ${fmt(res.base.cpu)}ms cascade redraws/frame ${fmt(res.base.redraws)} (live: frame ${fmt(live.frame)} gpu ${fmt(live.gpu)} cpu ${fmt(live.cpu)})`,
           );
         }
         return out;
