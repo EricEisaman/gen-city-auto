@@ -14,6 +14,7 @@ import {nearestFirst} from './nearest.ts';
 import type {PoolHandle} from '../render/cluster-pool.ts';
 import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
+import type {Preview} from '../city/preview.ts';
 import {addSpan, begin, fromWorker, mark, timed} from '../ui/timeline.ts';
 
 interface TileState {
@@ -36,7 +37,17 @@ interface TileState {
 const SHELL_PREFETCH = 100;
 const SHELL_KEEP = 150;
 
-type Progress = (msg: string, f: number) => void;
+/** Loading progress (the loading screen). */
+export interface LoadListener {
+  /** A generation step started (f: the worker's own 0..0.75 estimate). */
+  step(msg: string, f: number): void;
+  /** A finished part of the layout, for the map. */
+  preview(p: Preview): void;
+  /** Initial tile set: fraction done. */
+  tiles(f: number): void;
+  /** A tile mesh arrived (the map lights it up). */
+  tile(tile: number, tilesPerSide: number): void;
+}
 
 export class City {
   summary!: LayoutSummary;
@@ -80,7 +91,7 @@ export class City {
     this.lab = lab;
   }
 
-  async load(progress: Progress, focus: () => Vec3) {
+  async load(progress: LoadListener, focus: () => Vec3) {
     const n = Math.max(
       2,
       Math.min(6, (navigator.hardwareConcurrency || 4) - 1),
@@ -111,7 +122,7 @@ export class City {
         const m = e.data;
         switch (m.type) {
           case 'progress':
-            progress(m.msg, m.f);
+            progress.step(m.msg, m.f);
             break;
           case 'span':
             addSpan(
@@ -136,6 +147,9 @@ export class City {
             this.onBase(m.summary, m.base, m.piers, m.lights, m.landUse);
             resolveBase();
             break;
+          case 'preview':
+            progress.preview(m.preview);
+            break;
           case 'skyline':
             this.renderer.setSkyline(m.sky, m.n);
             resolveSky();
@@ -149,6 +163,7 @@ export class City {
             tileCount[i] = m.tileCount;
             const t = performance.now();
             this.onTile(m.tile, m.lod, m.clusters, m.lights);
+            progress.tile(m.tile, this.tilesPerSide);
             uploadMs += performance.now() - t;
             uploads++;
             this.pump();
@@ -192,12 +207,8 @@ export class City {
         ).length;
         const near = this.nearTiles(focus(), this.lod0Radius);
         const done0 = near.filter(t => this.tiles[t].lod0).length;
-        progress(
-          'Building streets',
-          0.8 +
-            0.2 *
-              ((done1 / total) * 0.6 +
-                (done0 / Math.max(1, near.length)) * 0.4),
+        progress.tiles(
+          (done1 / total) * 0.6 + (done0 / Math.max(1, near.length)) * 0.4,
         );
         if (done1 === total && done0 === near.length) {
           endTiles();

@@ -645,10 +645,24 @@ function railLines(
 
 // ---------------------------------------------------------------------------
 
+/**
+ * What generateLayout has finished so far, handed to its progress callback
+ * (the loading screen's map). Read only: nothing here may draw from the
+ * random streams.
+ */
+export interface LayoutPartial {
+  terrain?: Terrain;
+  streets?: Polyline[];
+  chains?: RoadChain[];
+  elevated?: Elevated[];
+  blocks?: Block[];
+  buildings?: Building[];
+}
+
 export function generateLayout(
   params: CityParams,
   seed: number,
-  progress?: (msg: string, f: number) => void,
+  progress?: (msg: string, f: number, partial?: LayoutPartial) => void,
 ): CityLayout {
   const rng = new Rng(seed);
   const noise = new Noise2D(seed + 7);
@@ -674,7 +688,7 @@ export function generateLayout(
     });
   }
 
-  progress?.('Tracing streets', 0.15);
+  progress?.('Tracing streets', 0.15, {terrain});
   // Tensor field street network: grids around each hub, a radial pattern at
   // the center (rings and radials), and terrain contours on slopes.
   const bases: Basis[] = [];
@@ -735,7 +749,7 @@ export function generateLayout(
     }
     allLines.push({pts: ring, kind: Road.boulevard});
   }
-  progress?.('Connecting streets', 0.25);
+  progress?.('Connecting streets', 0.25, {streets: allLines});
   let g: Graph = planarize(allLines, 2.5);
   g = mergeCloseNodes(g, 5);
   removeSlivers(g, 0.35);
@@ -838,12 +852,12 @@ export function generateLayout(
     j.signal = j.arms.length >= 3 && maxKind >= Road.street;
   }
 
-  progress?.('Elevated rail and expressways', 0.45);
+  progress?.('Elevated rail and expressways', 0.45, {chains});
   const elevated = railLines(params, rng, noise, hubs, center, hf);
   elevated.push(...expressways(params, rng, chains, hf));
   separateCrossings(elevated);
 
-  progress?.('Subdividing blocks', 0.5);
+  progress?.('Subdividing blocks', 0.5, {elevated});
   const faces = extractFaces(g, 400000);
   const blocks: Block[] = [];
   const lots: {lot: Lot; block: number}[] = [];
@@ -997,7 +1011,7 @@ export function generateLayout(
   blocks.push(...slivers);
   gradeBlocks(hf, blocks);
 
-  progress?.('Designing buildings', 0.6);
+  progress?.('Designing buildings', 0.6, {blocks});
   const buildings: Building[] = [];
   // Buildings standing on each block, for the open-ground pass.
   const onBlock: number[][] = blocks.map(() => []);
@@ -1120,7 +1134,7 @@ export function generateLayout(
   // Every seeded decision is made: give the river back the cells the road
   // carve heaped up around bridge ends (see carveRoads).
   restoreChannels(hf, flooded, buildings);
-  progress?.('Layout done', 0.7);
+  progress?.('Layout done', 0.7, {buildings});
   return {
     params,
     seed,

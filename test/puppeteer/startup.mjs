@@ -1,7 +1,7 @@
 // Startup timeline: load the game and print window.__startup (every load
 // phase, see src/ui/timeline.ts) plus main-thread long tasks.
-//   node build.mjs && node test/puppeteer/startup.mjs [query] [--runs=N] [--shot=ms] [--json]
-// --shot=ms saves test/out/loading.png that many ms after navigation.
+//   node build.mjs && node test/puppeteer/startup.mjs [query] [--runs=N] [--shot=ms] [--size=WxH] [--json]
+// --shot=ms[,ms...] saves test/out/loading-<ms>.png that long after navigation.
 import {ensureDir, sleep, withServer} from './harness.mjs';
 import puppeteer from 'puppeteer';
 
@@ -9,7 +9,7 @@ const args = process.argv.slice(2);
 const opt = k => args.find(a => a.startsWith(`--${k}=`))?.split('=')[1];
 const query = args.find(a => !a.startsWith('--')) ?? '';
 const runs = Number(opt('runs') ?? 1);
-const shotAt = opt('shot') ? Number(opt('shot')) : null;
+const shots = opt('shot') ? opt('shot').split(',').map(Number) : [];
 const json = args.includes('--json');
 
 await withServer(async base => {
@@ -18,16 +18,17 @@ await withServer(async base => {
     const browser = await puppeteer.launch({headless: true, protocolTimeout: 180000});
     try {
       const page = await browser.newPage();
-      await page.setViewport({width: 1280, height: 720});
+      const [vw, vh] = (opt('size') ?? '1280x720').split('x').map(Number);
+      await page.setViewport({width: vw, height: vh});
       const errors = [];
       page.on('pageerror', e => errors.push(e.message));
       const t0 = Date.now();
       await page.goto(`${base}/index.html?${query}`);
-      if (shotAt !== null) {
-        await sleep(Math.max(0, shotAt - (Date.now() - t0)));
+      for (const ms of shots) {
+        await sleep(Math.max(0, ms - (Date.now() - t0)));
         await ensureDir('test/out');
-        await page.screenshot({path: 'test/out/loading.png'});
-        console.log('saved test/out/loading.png');
+        await page.screenshot({path: `test/out/loading-${ms}.png`});
+        console.log(`saved test/out/loading-${ms}.png`);
       }
       while (Date.now() - t0 < 180000) {
         const s = await page.evaluate(() => ({

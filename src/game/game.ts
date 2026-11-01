@@ -1,7 +1,7 @@
 // Game orchestration: city loading, simulation systems, cameras and the
 // render loop.
 
-import type {CityType} from '../city/config.ts';
+import {PRESETS as PRESETS_CITY, type CityType} from '../city/config.ts';
 import {reportError, resizeToCss, type Gpu} from '../gpu/device.ts';
 import {Rng} from '../math/random.ts';
 import type {Vec3} from '../math/vec.ts';
@@ -15,6 +15,7 @@ import {VehicleRenderer} from '../render/vehicles.ts';
 import {CpuProfiler} from '../render/profiler.ts';
 import {OFF_BITS, parseOff} from '../render/ablation.ts';
 import {UI} from '../ui/ui.ts';
+import {loading as loadScreen, nextPaint} from '../ui/loading.ts';
 import {begin, finish, mark, timed, timedAsync} from '../ui/timeline.ts';
 import {
   DEFAULTS,
@@ -277,21 +278,16 @@ export class Game {
       this.vehicles.init(GBUFFER_FORMATS, 'rgba16float'),
     );
     await Promise.all([city, vehicles]);
-    this.progress('Compiling shaders', 0.99);
+    loadScreen.phase('Compiling shaders', 'finish');
     await timedAsync('wait: pipelines + textures', gpuReady);
+    loadScreen.phase('Starting traffic');
+    await nextPaint();
     timed('setupWorld', () => this.setupWorld());
     this.ui = new UI(this);
     if (this.opts.camera) {
       this.camera.mode = this.opts.camera;
       this.camera.directorEnabled = this.opts.director;
     }
-  }
-
-  private progress(msg: string, f: number) {
-    const m = document.getElementById('loadmsg');
-    const b = document.getElementById('loadbar');
-    if (m) m.textContent = msg;
-    if (b) b.style.width = `${Math.round(f * 100)}%`;
   }
 
   private spawnPoint(): Vec3 {
@@ -306,7 +302,7 @@ export class Game {
 
   private async loadCity(type: CityType, seed: number) {
     this.loading = true;
-    document.getElementById('loading')!.style.display = '';
+    loadScreen.show(PRESETS_CITY[type].name, seed);
     this.city?.dispose();
     this.city = new City(this.renderer, type, seed, this.opts.lab);
     const lod2 = this.opts.lod2 ?? this.settings.drawDist;
@@ -314,10 +310,7 @@ export class Game {
     let focus: Vec3 = [0, 0, 0];
     const city = this.city;
     // The asset lab knows its focus as soon as the layout arrives.
-    await city.load(
-      this.progress.bind(this),
-      () => city.summary?.lab?.focus ?? focus,
-    );
+    await city.load(loadScreen, () => city.summary?.lab?.focus ?? focus);
     // Focus streaming on the spawn point before revealing.
     focus = this.spawnPoint();
     city.updateStreaming(focus);
@@ -483,7 +476,7 @@ export class Game {
         this.player.pos,
         this.player.follower ? [this.player.follower] : [],
       );
-    document.getElementById('loading')!.style.display = 'none';
+    loadScreen.hide();
   }
 
   private pickVariant(kind: string, prefer?: string): number {

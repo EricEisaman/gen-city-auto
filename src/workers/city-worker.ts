@@ -15,7 +15,12 @@ import {
 } from '../city/gen-tile.ts';
 import {baseFarOf} from '../city/lod.ts';
 import {isolate, labInfo, type LabInfo, type LabSpec} from '../city/lab.ts';
-import {generateLayout, type CityLayout} from '../city/layout.ts';
+import {
+  generateLayout,
+  type CityLayout,
+  type LayoutPartial,
+} from '../city/layout.ts';
+import {packPreview, previewTransfer} from '../city/preview.ts';
 import type {RoadGeom} from '../city/roadgeom.ts';
 import {buildSkyline, SKYLINE_N} from '../city/skyline.ts';
 import {Heightfield} from '../city/terrain.ts';
@@ -79,14 +84,17 @@ function clusterTransfer(c: ClusterData): Transferable[] {
 
 function init(req: Extract<WorkerRequest, {type: 'init'}>) {
   const params = PRESETS[req.cityType];
-  // Primary: progress messages, and each layout step as a span.
+  // Primary: progress messages, each layout step as a span, and the
+  // finished parts for the loading screen's map.
   let step = '';
   let stepT = 0;
-  const progress = (msg: string, f: number) => {
+  const progress = (msg: string, f: number, partial?: LayoutPartial) => {
     if (step) span(`layout: ${step}`, stepT);
     step = msg;
     stepT = abs();
     post({type: 'progress', msg, f});
+    const pv = partial && packPreview(partial, params.size);
+    if (pv) post({type: 'preview', preview: pv}, previewTransfer(pv));
   };
   layout = timed('generateLayout', () =>
     generateLayout(params, req.seed, req.primary ? progress : undefined),

@@ -1,11 +1,12 @@
-import {addSpan, begin, mark} from './ui/timeline.ts';
-import type {CityType} from './city/config.ts';
+import {addSpan, mark, timedAsync} from './ui/timeline.ts';
+import {PRESETS, type CityType} from './city/config.ts';
 import {isBuildingKind, isLabAsset, type LabSpec} from './city/lab.ts';
 import type {CameraMode} from './game/camera.ts';
 import {Game} from './game/game.ts';
 import type {WeatherKind} from './game/weather.ts';
 import {initGpu, reportError, resizeToCss} from './gpu/device.ts';
 import {parseOff} from './render/ablation.ts';
+import {loading, nextPaint} from './ui/loading.ts';
 import {urlOverrides} from './ui/settings.ts';
 
 const params = new URLSearchParams(location.search);
@@ -39,9 +40,14 @@ async function main() {
     for (const id of ['hud', 'stats', 'perf', 'help', 'toolbar'])
       document.getElementById(id)!.style.visibility = 'hidden';
   resizeToCss(canvas);
-  const endGpu = begin('initGpu');
-  const gpu = await initGpu(canvas);
-  endGpu();
+  // Loading screen up and painted before any heavy work starts.
+  const cityType = (params.get('city') ?? 'neon') as CityType;
+  loading.show(PRESETS[cityType]?.name ?? cityType, num('seed', 1));
+  loading.phase('Starting WebGPU');
+  const gpuP = timedAsync('initGpu', initGpu(canvas));
+  await nextPaint();
+  mark('loading screen painted');
+  const gpu = await gpuP;
   // lab=building|road|rail shows one asset alone (see city/lab.ts).
   const asset = params.get('lab');
   const kind = params.get('kind');
@@ -57,7 +63,7 @@ async function main() {
   const spawn = params.get('spawn')?.split(',').map(Number) as
     [number, number] | undefined;
   const game = new Game(gpu, {
-    cityType: (params.get('city') ?? 'neon') as CityType,
+    cityType,
     seed: num('seed', 1),
     hour: num('time', 16.5),
     timeSpeed: num('timespeed', 1 / 60),

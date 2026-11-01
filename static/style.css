@@ -39,8 +39,24 @@ canvas {
   paint-order: stroke fill;
 }
 
+#loading .load-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 56px;
+}
+
+#loading .load-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
 #loading .bar {
-  width: 320px;
+  position: relative;
+  width: 340px;
+  max-width: 80vw;
   height: 4px;
   background: #333;
   border-radius: 2px;
@@ -48,10 +64,129 @@ canvas {
 }
 
 #loadbar {
+  position: relative;
   height: 100%;
   width: 0;
   background: #ffd36e;
-  transition: width 0.2s;
+  overflow: hidden;
+}
+
+/* A highlight sweeping along the filled part: a compositor animation, so it
+   keeps moving even while the main thread is busy. */
+#loadbar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 60px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  animation: loadsweep 1.4s linear infinite;
+}
+
+@keyframes loadsweep {
+  from {
+    transform: translateX(-60px);
+  }
+  to {
+    transform: translateX(340px);
+  }
+}
+
+#loadcity {
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffd36e;
+  text-shadow: 0 1px 3px #000;
+  min-height: 1.2em;
+}
+
+#loadmsg {
+  text-shadow: 0 1px 3px #000;
+}
+
+#loaddetail {
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #9aa6c0;
+  min-height: 1.2em;
+  text-shadow: 0 1px 3px #000;
+}
+
+#loading .load-map {
+  display: none;
+  position: relative;
+  width: min(58vh, 40vw);
+  aspect-ratio: 1;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0a0f1c;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+#loading.active .load-map {
+  display: block;
+}
+
+#loadmap {
+  width: 100%;
+  height: 100%;
+}
+
+/* Waiting for the terrain: a scan line over the empty map. */
+#loading.scanning .load-map::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 30%;
+  background: linear-gradient(180deg, transparent, rgba(127, 211, 255, 0.12), transparent);
+  animation: loadscan 2.4s ease-in-out infinite alternate;
+}
+
+@keyframes loadscan {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(333%);
+  }
+}
+
+#loadtip {
+  position: absolute;
+  bottom: 6vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(640px, 90vw);
+  text-align: center;
+  font-size: 14px;
+  color: #cfd6e6;
+  text-shadow: 0 1px 3px #000;
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+
+#loadtip.show {
+  opacity: 1;
+}
+
+#loadtip b {
+  color: #ffd36e;
+}
+
+/* Portrait (phones): map under the title. */
+@media (max-aspect-ratio: 1/1) {
+  #loading .load-main {
+    flex-direction: column;
+    gap: 24px;
+  }
+  #loading .load-map {
+    width: min(84vw, 40vh);
+  }
+  #loading .title {
+    font-size: 4.5em;
+  }
 }
 
 #hud {
