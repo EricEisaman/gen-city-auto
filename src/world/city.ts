@@ -119,14 +119,15 @@ export class City {
     const endBase = begin('city: layout + base mesh (workers)');
     const tileMs: number[] = new Array(n).fill(0);
     const tileCount: number[] = new Array(n).fill(0);
-    // The workers' distribution tree (a binary heap: worker i's parent is
-    // (i - 1) >> 1): terrain bands go up to the primary, the layout comes
-    // down (see city-worker.ts).
+    // The workers' distribution tree: terrain bands and base parts go up to
+    // the primary, the layout comes down (see city-worker.ts). Workers 1-3
+    // hang off the primary (1 and 2 build base parts as soon as the layout
+    // reaches them, so they forward nothing); 3 forwards to the rest.
     const parents: (MessagePort | undefined)[] = [undefined];
     const children: MessagePort[][] = Array.from({length: n}, () => []);
     for (let i = 1; i < n; i++) {
       const ch = new MessageChannel();
-      children[(i - 1) >> 1].push(ch.port1);
+      children[i <= 3 ? 0 : 3 + ((i - 4) >> 1)].push(ch.port1);
       parents.push(ch.port2);
     }
     for (let i = 0; i < n; i++) {

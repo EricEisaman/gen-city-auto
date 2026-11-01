@@ -12,7 +12,14 @@ import {
   type Vec2,
   type Vec3,
 } from '../math/vec.ts';
-import {CM, CMesh, FINE_TUBE, packMat, triangulate} from './cmesh.ts';
+import {
+  CM,
+  CMesh,
+  FINE_TUBE,
+  packMat,
+  triangulate,
+  VERTEX_WORDS,
+} from './cmesh.ts';
 import {
   LANES,
   ROAD_WIDTH,
@@ -117,8 +124,7 @@ export function roadMask(
             const ez = Z * hf.cell - S - z;
             const d2 = ex * ex + ez * ez;
             if (d2 > half2Out) continue;
-            if (d2 < half2In || Math.hypot(ex, ez) < half)
-              mask[Z * n + X] = 1;
+            if (d2 < half2In || Math.hypot(ex, ez) < half) mask[Z * n + X] = 1;
           }
         }
       }
@@ -5707,57 +5713,182 @@ export interface BaseGeometry {
   solids: number[];
 }
 
-export function buildBase(L: CityLayout): BaseGeometry {
+/**
+ * The independent parts of the base build, in mesh order: the roads (with
+ * the bridge piers, the settled terrain and the land use raster), the
+ * blocks (sidewalks, ground fill; they record the curb band) and the
+ * elevated rail and expressways (with the street lights).
+ * Each can be built in its own worker (buildBasePart) and the parts put
+ * together in this order (assembleBase) give the same base as one build.
+ */
+export const BASE_PARTS = ['roads', 'blocks', 'elevated'] as const;
+export type BasePartName = (typeof BASE_PARTS)[number];
+
+/** A built part: mesh, lights and camera solids, as transferable arrays. */
+export interface BasePart {
+  name: BasePartName;
+  /** Vertex words (VERTEX_WORDS per vertex) and triangle indices. */
+  words: Uint32Array;
+  idx: Uint32Array;
+  lights: Float64Array;
+  solids: Float64Array;
+  /** roads: the pier mesh, the terrain heights as rendered, land use. */
+  pierWords?: Uint32Array;
+  pierIdx?: Uint32Array;
+  settled?: Float32Array;
+  landUse?: Uint8Array;
+  /** The road mask, if the maker sends it along (assembleBase's default). */
+  mask?: Uint8Array;
+  /** elevated: the street lights (after the part's own lights). */
+  streetLights?: Float64Array;
+  /** blocks: the curb band triangles (bandTrisData). */
+  band?: Float64Array;
+}
+
+export function basePartTransfer(p: BasePart): Transferable[] {
+  const out: Transferable[] = [
+    p.words.buffer,
+    p.idx.buffer,
+    p.lights.buffer,
+    p.solids.buffer,
+  ];
+  for (const a of [
+    p.pierWords,
+    p.pierIdx,
+    p.settled,
+    p.landUse,
+    p.mask,
+    p.streetLights,
+    p.band,
+  ])
+    if (a) out.push(a.buffer);
+  return out;
+}
+
+/**
+ * Record the large boxes the bridge and viaduct builders emit into `mesh`,
+ * so the camera can treat them as solid (they are otherwise only render
+ * meshes). Returns the undo.
+ */
+function recordSolids(mesh: CMesh, solids: number[]) {
+  const box = mesh.box.bind(mesh);
+  mesh.box = (
+    c,
+    h,
+    mat,
+    yaw = 0,
+    aux = 0,
+    skipBottom = true,
+    skipBack = false,
+  ) => {
+    if (h[1] >= 0.75 && Math.max(h[0], h[2]) >= 0.5)
+      solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw);
+    box(c, h, mat, yaw, aux, skipBottom, skipBack);
+  };
+  return () => {
+    mesh.box = box;
+  };
+}
+
+const meshWords = (m: CMesh) => m.u32.slice(0, m.vcount * VERTEX_WORDS);
+const meshIdx = (m: CMesh) => m.idx.slice(0, m.icount);
+
+/**
+ * One part of the base: geom = computeRoadGeom(L), mask = roadMask(L) (the
+ * blocks do without it).
+ */
+export function buildBasePart(
+  L: CityLayout,
+  name: BasePartName,
+  geom: RoadGeom,
+  mask: Uint8Array = new Uint8Array(0),
+): BasePart {
+  const m = new CMesh(1 << 16, 1 << 17);
+  const lights = new LightList();
+  const solids: number[] = [];
+  const unM = recordSolids(m, solids);
+  const part: Partial<BasePart> = {name};
+  if (name === 'roads') {
+    const piers = new CMesh(1 << 12, 1 << 13);
+    const unP = recordSolids(piers, solids);
+    const settled = settleRoadbed(L);
+    roads(L, geom, m, lights, piers, settled);
+    unP();
+    part.pierWords = meshWords(piers);
+    part.pierIdx = meshIdx(piers);
+    part.settled = settled;
+    part.landUse = landUse(
+      L,
+      mask,
+      L.hidden ? roadMask(L, true, geom) : undefined,
+    );
+  } else if (name === 'blocks') {
+    blocks(L, m, geom);
+    part.band = bandTrisData(geom);
+  } else {
+    elevatedStructures(L, mask, m, lights, (c, h, yaw) =>
+      solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw),
+    );
+    const street = new LightList();
+    streetLights(L, geom, street);
+    part.streetLights = new Float64Array(street.data);
+  }
+  unM();
+  part.words = meshWords(m);
+  part.idx = meshIdx(m);
+  part.lights = new Float64Array(lights.data);
+  part.solids = new Float64Array(solids);
+  return part as BasePart;
+}
+
+/**
+ * The base from its parts (one of each, any order) and the rest; `mask`
+ * defaults to the one a part carries.
+ */
+export function assembleBase(
+  L: CityLayout,
+  geom: RoadGeom,
+  mask: Uint8Array | undefined,
+  parts: BasePart[],
+): BaseGeometry {
   const m = new CMesh(1 << 18, 1 << 19);
   const piers = new CMesh(1 << 12, 1 << 13);
   const lights = new LightList();
-  const geom = computeRoadGeom(L);
-  const mask = roadMask(L);
-  // Record the large boxes the bridge and viaduct builders emit, so the
-  // camera can treat them as solid (they are otherwise only render meshes).
   const solids: number[] = [];
-  const record = (mesh: CMesh) => {
-    const box = mesh.box.bind(mesh);
-    mesh.box = (
-      c,
-      h,
-      mat,
-      yaw = 0,
-      aux = 0,
-      skipBottom = true,
-      skipBack = false,
-    ) => {
-      if (h[1] >= 0.75 && Math.max(h[0], h[2]) >= 0.5)
-        solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw);
-      box(c, h, mat, yaw, aux, skipBottom, skipBack);
-    };
-    return () => {
-      mesh.box = box;
-    };
-  };
-  const unM = record(m);
-  const unP = record(piers);
-  const settled = settleRoadbed(L);
-  roads(L, geom, m, lights, piers, settled);
-  blocks(L, m, geom);
-  elevatedStructures(L, mask, m, lights, (c, h, yaw) =>
-    solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw),
-  );
-  unM();
-  unP();
-  streetLights(L, geom, lights);
+  const of = (name: BasePartName) => parts.find(p => p.name === name)!;
+  for (const name of BASE_PARTS) {
+    const p = of(name);
+    m.append(p.words, p.idx);
+    for (const v of p.lights) lights.data.push(v);
+    for (const v of p.solids) solids.push(v);
+  }
+  for (const v of of('elevated').streetLights!) lights.data.push(v);
+  const r = of('roads');
+  piers.append(r.pierWords!, r.pierIdx!);
+  if (!bandTrisOf.has(geom)) attachBand(geom, of('blocks').band!);
   // The asset lab shows its subject alone, without the distant skyline.
   if (!L.hidden) outskirts(L, m);
   return {
     mesh: m,
     piers,
     lights: lights.data,
-    landUse: landUse(L, mask, L.hidden ? roadMask(L, true, geom) : undefined),
-    roadMask: mask,
+    landUse: r.landUse!,
+    roadMask: mask ?? parts.find(p => p.mask)!.mask!,
     geom,
-    terrainHeights: settled,
+    terrainHeights: r.settled!,
     solids,
   };
+}
+
+export function buildBase(L: CityLayout): BaseGeometry {
+  const geom = computeRoadGeom(L);
+  const mask = roadMask(L);
+  return assembleBase(
+    L,
+    geom,
+    mask,
+    BASE_PARTS.map(name => buildBasePart(L, name, geom, mask)),
+  );
 }
 
 /** Street light positions (the poles themselves are props in detail tiles). */
