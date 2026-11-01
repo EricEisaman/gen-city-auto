@@ -355,6 +355,9 @@ export class LaneFollower {
   }
 }
 
+/** Neighbour grid cell size (m). */
+const CELL = 32;
+
 interface Car {
   f: LaneFollower;
   variant: number;
@@ -375,6 +378,8 @@ export class Traffic {
   private net: RoadNet;
   private vr: VehicleRenderer;
   private pools: {variants: number[]; weight: number; cruise: number}[] = [];
+  /** Neighbour grid (cell key -> indices into update()'s `all`). */
+  private grid = new Map<number, number[]>();
 
   constructor(net: RoadNet, vr: VehicleRenderer) {
     this.net = net;
@@ -471,14 +476,35 @@ export class Traffic {
       if (!l) lanes.set(k, (l = []));
       l.push(f);
     }
-    for (const l of lanes.values()) l.sort((a, b) => a.s - b.s);
-    const leaderOf = (f: LaneFollower): [number, number] => {
+    const laneIndex = new Map<LaneFollower, number>();
+    for (const l of lanes.values()) {
+      l.sort((a, b) => a.s - b.s);
+      l.forEach((f, i) => laneIndex.set(f, i));
+    }
+    // Uniform grid over the followers' positions for the "anything directly
+    // ahead" test (was a scan over every car for every car). Cells are kept
+    // current as cars move during the update loop below, so the candidates
+    // are exactly those of the full scan; ties keep the full scan's
+    // winner (the lane leader, then the lowest index in `all`).
+    const grid = this.grid;
+    grid.clear();
+    const cellOf = (f: LaneFollower) =>
+      (Math.floor(f.pos[0] / CELL) + 4096) * 8192 +
+      (Math.floor(f.pos[2] / CELL) + 4096);
+    const cells = all.map(cellOf);
+    cells.forEach((k, i) => {
+      let c = grid.get(k);
+      if (!c) grid.set(k, (c = []));
+      c.push(i);
+    });
+    const leaderOf = (f: LaneFollower, fi: number): [number, number] => {
       let gap = Infinity;
       let lv = 0;
+      let best = -1;
       const k = f.laneKey();
       if (k >= 0) {
         const l = lanes.get(k)!;
-        const i = l.indexOf(f);
+        const i = laneIndex.get(f)!;
         if (i + 1 < l.length) {
           const ld = l[i + 1];
           gap = ld.s - f.s - (ld.length + f.length) / 2;
@@ -486,31 +512,50 @@ export class Traffic {
         }
       }
       // Anything directly ahead (junctions, merging cars, the player).
-      for (const o of all) {
-        if (o === f) continue;
-        const dx = o.pos[0] - f.pos[0];
-        const dz = o.pos[2] - f.pos[2];
-        if (Math.abs(dx) > 30 || Math.abs(dz) > 30) continue;
-        const ahead = dx * f.dir[0] + dz * f.dir[1];
-        if (
-          ahead > 0 &&
-          ahead < 25 &&
-          Math.abs(dx * f.dir[1] - dz * f.dir[0]) < 1.9 &&
-          (o.dir[0] * f.dir[0] + o.dir[1] * f.dir[1] > 0.3 || f.turn || o.turn)
-        ) {
-          const g = ahead - (o.length + f.length) / 2;
-          if (g < gap) {
-            gap = g;
-            lv = o.speed;
+      const fx = f.pos[0];
+      const fz = f.pos[2];
+      const x0 = Math.floor((fx - 30) / CELL) + 4096;
+      const x1 = Math.floor((fx + 30) / CELL) + 4096;
+      const z0 = Math.floor((fz - 30) / CELL) + 4096;
+      const z1 = Math.floor((fz + 30) / CELL) + 4096;
+      for (let cx = x0; cx <= x1; cx++)
+        for (let cz = z0; cz <= z1; cz++) {
+          const cell = grid.get(cx * 8192 + cz);
+          if (!cell) continue;
+          for (const oi of cell) {
+            if (oi === fi) continue;
+            const o = all[oi];
+            const dx = o.pos[0] - fx;
+            const dz = o.pos[2] - fz;
+            if (Math.abs(dx) > 30 || Math.abs(dz) > 30) continue;
+            const ahead = dx * f.dir[0] + dz * f.dir[1];
+            if (
+              ahead > 0 &&
+              ahead < 25 &&
+              Math.abs(dx * f.dir[1] - dz * f.dir[0]) < 1.9 &&
+              (o.dir[0] * f.dir[0] + o.dir[1] * f.dir[1] > 0.3 ||
+                f.turn ||
+                o.turn)
+            ) {
+              const g = ahead - (o.length + f.length) / 2;
+              if (g < gap || (g === gap && best >= 0 && oi < best)) {
+                gap = g;
+                lv = o.speed;
+                best = oi;
+              }
+            }
           }
         }
-      }
       return [gap, lv];
     };
-    for (const f of extra) [f.leaderGap, f.leaderSpeed] = leaderOf(f);
-    for (const c of this.cars) {
+    const nCars = this.cars.length;
+    extra.forEach(
+      (f, i) => ([f.leaderGap, f.leaderSpeed] = leaderOf(f, nCars + i)),
+    );
+    for (let ci = 0; ci < nCars; ci++) {
+      const c = this.cars[ci];
       const f = c.f;
-      let [gap, lv] = leaderOf(f);
+      let [gap, lv] = leaderOf(f, ci);
       // Deadlock breaker: after waiting a while at a junction, creep forward
       // ignoring crossing traffic (lane leaders and signals still apply).
       f.stuck = f.speed < 0.3 ? f.stuck + dt : 0;
@@ -527,6 +572,16 @@ export class Traffic {
         continue;
       }
       f.update(dt, this.net, time, gap, lv);
+      // Keep the grid current.
+      const cell = cellOf(f);
+      if (cell !== cells[ci]) {
+        const from = grid.get(cells[ci])!;
+        from.splice(from.indexOf(ci), 1);
+        let to = grid.get(cell);
+        if (!to) grid.set(cell, (to = []));
+        to.push(ci);
+        cells[ci] = cell;
+      }
       c.prev.set(c.model);
       modelMatrix(c.model, f.pos, f.dir, f.slope);
       c.spin += (f.speed * dt) / c.radius;

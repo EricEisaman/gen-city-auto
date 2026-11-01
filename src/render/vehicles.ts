@@ -80,12 +80,6 @@ function rotX(a: number): Mat4 {
   return setM(1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1);
 }
 
-function rotY(a: number): Mat4 {
-  const c = Math.cos(a),
-    s = Math.sin(a);
-  return setM(c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1);
-}
-
 function rotAxis(axis: Vec3, a: number): Mat4 {
   const [x, y, z] = axis;
   const c = Math.cos(a),
@@ -117,6 +111,73 @@ function translate(p: Vec3): Mat4 {
 
 const mul = (...ms: Mat4[]) =>
   ms.reduce((acc, m) => mat4.multiply(scratch(), acc, m));
+
+/** out = translate(p) * rotY(ay) * rotX(ax), without temporaries. */
+function wheelLocal(out: Mat4, p: Vec3, ay: number, ax: number): Mat4 {
+  const cy = Math.cos(ay),
+    sy = Math.sin(ay),
+    cb = Math.cos(ax),
+    sb = Math.sin(ax);
+  out[0] = cy;
+  out[1] = 0;
+  out[2] = -sy;
+  out[3] = 0;
+  out[4] = sb * sy;
+  out[5] = cb;
+  out[6] = sb * cy;
+  out[7] = 0;
+  out[8] = cb * sy;
+  out[9] = -sb;
+  out[10] = cb * cy;
+  out[11] = 0;
+  out[12] = p[0];
+  out[13] = p[1];
+  out[14] = p[2];
+  out[15] = 1;
+  return out;
+}
+
+/** out = translate(p) * rotAxis(axis, a). */
+function rotorLocal(out: Mat4, p: Vec3, axis: Vec3, a: number): Mat4 {
+  const [x, y, z] = axis;
+  const c = Math.cos(a),
+    s = Math.sin(a),
+    t = 1 - c;
+  out[0] = t * x * x + c;
+  out[1] = t * x * y + s * z;
+  out[2] = t * x * z - s * y;
+  out[3] = 0;
+  out[4] = t * x * y - s * z;
+  out[5] = t * y * y + c;
+  out[6] = t * y * z + s * x;
+  out[7] = 0;
+  out[8] = t * x * z + s * y;
+  out[9] = t * y * z - s * x;
+  out[10] = t * z * z + c;
+  out[11] = 0;
+  out[12] = p[0];
+  out[13] = p[1];
+  out[14] = p[2];
+  out[15] = 1;
+  return out;
+}
+
+/** d[o..o+16] = a * b (column-major), written in place. */
+function mulInto(d: Float32Array, o: number, a: Mat4, b: Mat4) {
+  for (let c = 0; c < 4; c++) {
+    const b0 = b[c * 4],
+      b1 = b[c * 4 + 1],
+      b2 = b[c * 4 + 2],
+      b3 = b[c * 4 + 3];
+    d[o + c * 4] = a[0] * b0 + a[4] * b1 + a[8] * b2 + a[12] * b3;
+    d[o + c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9] * b2 + a[13] * b3;
+    d[o + c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+    d[o + c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+  }
+}
+
+const localA = new Float32Array(16);
+const localB = new Float32Array(16);
 
 export class VehicleRenderer implements DrawHook {
   readonly name = 'vehicles';
@@ -346,15 +407,28 @@ export class VehicleRenderer implements DrawHook {
     this.contacts = [];
   }
 
-  private push(
+  /**
+   * Instance of `part` whose matrices are model * local and prev * prevLocal,
+   * written straight into the group's storage.
+   */
+  private pushLocal(
     key: number,
     part: Part,
     lod: number,
-    body: boolean,
     model: Mat4,
     prev: Mat4,
+    local: Mat4,
+    prevLocal: Mat4,
     inst: VehicleInstance,
   ) {
+    const g = this.slot(key, part, lod, false);
+    const o = g.n * INSTANCE_FLOATS;
+    mulInto(g.data, o, model, local);
+    mulInto(g.data, o + 16, prev, prevLocal);
+    this.fill(g, o, inst);
+  }
+
+  private slot(key: number, part: Part, lod: number, body: boolean): Group {
     let g = this.groups.get(key);
     if (!g) {
       g = {part, lod, body, data: new Float32Array(INSTANCE_FLOATS * 16), n: 0};
@@ -366,10 +440,11 @@ export class VehicleRenderer implements DrawHook {
       grown.set(g.data);
       g.data = grown;
     }
+    return g;
+  }
+
+  private fill(g: Group, o: number, inst: VehicleInstance) {
     const d = g.data;
-    const o = g.n * INSTANCE_FLOATS;
-    d.set(model, o);
-    d.set(prev, o + 16);
     d[o + 32] = inst.color[0];
     d[o + 33] = inst.color[1];
     d[o + 34] = inst.color[2];
@@ -385,6 +460,22 @@ export class VehicleRenderer implements DrawHook {
     g.n++;
   }
 
+  private push(
+    key: number,
+    part: Part,
+    lod: number,
+    body: boolean,
+    model: Mat4,
+    prev: Mat4,
+    inst: VehicleInstance,
+  ) {
+    const g = this.slot(key, part, lod, body);
+    const o = g.n * INSTANCE_FLOATS;
+    g.data.set(model, o);
+    g.data.set(prev, o + 16);
+    this.fill(g, o, inst);
+  }
+
   add(inst: VehicleInstance) {
     if (!this.ready || inst.hidden) return;
     const v = this.variants[inst.variant];
@@ -395,7 +486,8 @@ export class VehicleRenderer implements DrawHook {
       m[13] - this.eye[1],
       m[14] - this.eye[2],
     );
-    const size = Math.max(...v.info.size);
+    const sz = v.info.size;
+    const size = Math.max(sz[0], sz[1], sz[2]);
     if (dist > 900 + size * 10) return;
     // LOD with hysteresis so vehicles near a threshold don't pop every frame.
     const prevLod = this.lodMemory.get(inst.model);
@@ -415,7 +507,6 @@ export class VehicleRenderer implements DrawHook {
       v.info.kind !== 'helicopter' &&
       v.info.kind !== 'train'
     ) {
-      const sz = v.info.size;
       this.contacts.push({
         d: dist,
         v: [
@@ -434,61 +525,50 @@ export class VehicleRenderer implements DrawHook {
         ],
       });
     }
-    if (L.wheel && lod < 2 + (size > 8 ? 1 : 0)) {
-      v.info.wheels.forEach((w, k) => {
+    const pm = inst.prevModel;
+    if (L.wheel) {
+      const spinning = lod < 2 + (size > 8 ? 1 : 0);
+      for (const w of v.info.wheels) {
         const left = w.position[0] < 0;
-        const local = mul(
-          translate(w.position),
-          rotY((w.steer ? inst.steer : 0) + (left ? Math.PI : 0)),
-          rotX(left ? -inst.wheelSpin : inst.wheelSpin),
-        );
-        const wm = mat4.multiply(scratch(), m, local);
-        const wp = mat4.multiply(scratch(), inst.prevModel, local);
-        this.push(key + 1, L.wheel!, lod, false, wm, wp, inst);
-        void k;
-      });
-    } else if (L.wheel) {
-      v.info.wheels.forEach(w => {
-        const local = mul(
-          translate(w.position),
-          rotY(w.position[0] < 0 ? Math.PI : 0),
-        );
-        this.push(
-          key + 1,
-          L.wheel!,
-          lod,
-          false,
-          mat4.multiply(scratch(), m, local),
-          mat4.multiply(scratch(), inst.prevModel, local),
-          inst,
-        );
-      });
+        const local = spinning
+          ? wheelLocal(
+              localA,
+              w.position,
+              (w.steer ? inst.steer : 0) + (left ? Math.PI : 0),
+              left ? -inst.wheelSpin : inst.wheelSpin,
+            )
+          : wheelLocal(localA, w.position, left ? Math.PI : 0, 0);
+        this.pushLocal(key + 1, L.wheel, lod, m, pm, local, local, inst);
+      }
     }
-    v.info.rotors.forEach((r, k) => {
+    const rotors = v.info.rotors;
+    const person = v.info.kind === 'person';
+    for (let k = 0; k < rotors.length; k++) {
+      const r = rotors[k];
       const angle = (phase: number) =>
-        v.info.kind === 'person'
+        person
           ? // Limbs swing: legs opposite each other, arms opposite their leg.
             Math.sin(phase + (k === 1 || k === 2 ? Math.PI : 0)) *
             (k < 2 ? 0.45 : 0.35)
           : phase * (k === 0 ? 1 : 4.3);
-      const local = mul(
-        translate(r.position),
-        rotAxis(r.axis, angle(inst.rotor)),
+      const local = rotorLocal(localA, r.position, r.axis, angle(inst.rotor));
+      const prevLocal = rotorLocal(
+        localB,
+        r.position,
+        r.axis,
+        angle(inst.prevRotor ?? inst.rotor),
       );
-      const prevLocal = mul(
-        translate(r.position),
-        rotAxis(r.axis, angle(inst.prevRotor ?? inst.rotor)),
-      );
-      this.push(
+      this.pushLocal(
         key + 3 + k,
         L.rotors[k],
         lod,
-        false,
-        mat4.multiply(scratch(), m, local),
-        mat4.multiply(scratch(), inst.prevModel, prevLocal),
+        m,
+        pm,
+        local,
+        prevLocal,
         inst,
       );
-    });
+    }
     if (L.steering && v.info.steeringWheel && lod === 0) {
       const sw = v.info.steeringWheel;
       const local = mul(
@@ -544,35 +624,42 @@ export class VehicleRenderer implements DrawHook {
     void tmp;
   }
 
+  // Bind groups only reference buffers that live as long as the renderer:
+  // made once per pipeline / cascade.
+  private bindGroups = new Map<string, [GPUBindGroup, GPUBindGroup]>();
+
   private bind(
     pass: GPURenderPassEncoder,
     pipe: GPURenderPipeline,
+    key: string,
     g0: GPUBindGroupEntry[],
   ) {
+    let bgs = this.bindGroups.get(key);
+    if (!bgs) {
+      bgs = [
+        this.device.createBindGroup({
+          label: 'bg/vehicles/frame',
+          layout: pipe.getBindGroupLayout(0),
+          entries: g0,
+        }),
+        this.device.createBindGroup({
+          label: 'bg/vehicles/instances',
+          layout: pipe.getBindGroupLayout(1),
+          entries: [{binding: 0, resource: {buffer: this.instanceBuffer}}],
+        }),
+      ];
+      this.bindGroups.set(key, bgs);
+    }
     pass.setPipeline(pipe);
-    pass.setBindGroup(
-      0,
-      this.device.createBindGroup({
-        label: 'bg/vehicles/frame',
-        layout: pipe.getBindGroupLayout(0),
-        entries: g0,
-      }),
-    );
-    pass.setBindGroup(
-      1,
-      this.device.createBindGroup({
-        label: 'bg/vehicles/instances',
-        layout: pipe.getBindGroupLayout(1),
-        entries: [{binding: 0, resource: {buffer: this.instanceBuffer}}],
-      }),
-    );
+    pass.setBindGroup(0, bgs[0]);
+    pass.setBindGroup(1, bgs[1]);
     pass.setVertexBuffer(0, this.vb!);
     pass.setIndexBuffer(this.ib!, 'uint32');
   }
 
   gbuffer(pass: GPURenderPassEncoder) {
     if (!this.draws.length) return;
-    this.bind(pass, this.gbufferPipe, [
+    this.bind(pass, this.gbufferPipe, 'gbuffer', [
       {binding: 0, resource: {buffer: this.frameBuffer}},
     ]);
     for (const d of this.draws)
@@ -587,7 +674,7 @@ export class VehicleRenderer implements DrawHook {
 
   forward(pass: GPURenderPassEncoder) {
     if (!this.draws.length) return;
-    this.bind(pass, this.glassPipe, [
+    this.bind(pass, this.glassPipe, 'glass', [
       {binding: 0, resource: {buffer: this.frameBuffer}},
     ]);
     for (const d of this.draws)
@@ -603,7 +690,7 @@ export class VehicleRenderer implements DrawHook {
 
   shadow(pass: GPURenderPassEncoder, cascade: number) {
     if (!this.draws.length || cascade > 2) return;
-    this.bind(pass, this.shadowPipe, [
+    this.bind(pass, this.shadowPipe, `shadow${cascade}`, [
       {binding: 1, resource: {buffer: this.shadowViews[cascade]}},
     ]);
     for (const d of this.draws)
