@@ -72,6 +72,10 @@ export interface PoolHandle {
   cn: number;
   /** Alpha-tested clusters among them (stats). */
   an?: number;
+  /** Tile, LOD and bounds of the batch (renderer: shadow cache). */
+  tile?: number;
+  lod?: number;
+  bounds?: [[number, number, number], [number, number, number]];
 }
 
 export class ClusterPool {

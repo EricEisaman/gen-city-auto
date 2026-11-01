@@ -43,6 +43,7 @@ export const OFF_BITS = {
   gndrefl: 1 << 28, // lighting: no SSR / skyline reflection on CLASS_GROUND
   roadrain: 1 << 29, // city-materials: road / junction rain layer skipped
   rcvcull: 1 << 30, // cull: shadow casters not culled to their cascade's receivers (A/B shots)
+  shcache: HI * (1 << 0), // shadows: no static shadow-map cache (every cascade redrawn every frame)
 } as const;
 
 export type OffName = keyof typeof OFF_BITS;

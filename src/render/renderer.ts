@@ -22,6 +22,12 @@ import {CpuProfiler, GpuProfiler} from './profiler.ts';
 import {OFF_BITS, hasOff, offWords, type OffName} from './ablation.ts';
 import {receiverPlanes} from './shadow-cull.ts';
 import {
+  CACHE_TOL,
+  cacheTouches,
+  cacheValid,
+  type CascadeCache,
+} from './shadow-cache.ts';
+import {
   createLeafTexture,
   createSignAtlasTexture,
   vinylWgsl,
@@ -182,6 +188,16 @@ export class Renderer {
   private lastViewDir: Vec3 = [0, 0, -1];
   private cascadeMats: Mat4[] = [];
   private cascadeRadii: number[] = [];
+  /** Static city depth per cascade (shadow-cache.ts) and what it covers. */
+  private shadowStatic: GPUTexture;
+  private shadowCache: (CascadeCache | null)[] = [null, null, null, null];
+  /** Cascades whose city depth is redrawn this frame. */
+  private shadowRedraw = [true, true, true, true];
+  /** Cascade redraws (stats: how often the cache misses). */
+  shadowRedraws = 0;
+  /** The tile LODs last published, and each tile's geometry bounds. */
+  private tileLodsCpu = new Uint32Array(0);
+  private tileBounds = new Map<number, [Vec3, Vec3]>();
   /** GPU pass timer (only with ?prof=1; see enableProfiler). */
   prof: GpuProfiler | null = null;
   /** CPU marks inside render() when profiling. */
@@ -284,7 +300,15 @@ export class Renderer {
       size: [SHADOW_SIZE, SHADOW_SIZE, CASCADES],
       format: DEPTH_FORMAT,
       usage:
-        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST,
+    });
+    this.shadowStatic = device.createTexture({
+      label: 'shadow/static cascades',
+      size: [SHADOW_SIZE, SHADOW_SIZE, CASCADES],
+      format: DEPTH_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
     const lut = (label: string, w: number, h: number, d = 1) =>
       device.createTexture({
@@ -752,15 +776,59 @@ export class Renderer {
   }
 
   uploadClusters(d: ClusterData): PoolHandle | null {
-    return this.pool.upload(d);
+    const h = this.pool.upload(d);
+    if (h && d.clusterCount) {
+      // The batch's tile (every cluster of a batch shares it) and LOD.
+      const tile = d.clusters[7];
+      const lod = (d.clusters[6] >>> 8) & 0xf;
+      h.tile = tile;
+      h.lod = lod;
+      h.bounds = d.bounds;
+      const b = this.tileBounds.get(tile);
+      if (!b) this.tileBounds.set(tile, [[...d.bounds[0]], [...d.bounds[1]]]);
+      else
+        for (let k = 0; k < 3; k++) {
+          b[0][k] = Math.min(b[0][k], d.bounds[0][k]);
+          b[1][k] = Math.max(b[1][k], d.bounds[1][k]);
+        }
+      if (this.shown(tile, lod)) this.shadowTouch(d.bounds[0], d.bounds[1]);
+    }
+    return h;
   }
 
   freeClusters(h: PoolHandle) {
     this.pool.free(h);
+    if (h.bounds && this.shown(h.tile!, h.lod!))
+      this.shadowTouch(h.bounds[0], h.bounds[1]);
   }
 
   setTileLods(lods: Uint32Array) {
     this.device.queue.writeBuffer(this.tileLodBuffer, 0, lods);
+    const prev = this.tileLodsCpu;
+    if (prev.length === lods.length) {
+      for (let t = 0; t < lods.length; t++) {
+        if (prev[t] === lods[t]) continue;
+        const b = this.tileBounds.get(t);
+        if (b) this.shadowTouch(b[0], b[1]);
+      }
+      prev.set(lods);
+    } else {
+      this.tileLodsCpu = lods.slice();
+      this.shadowCache.fill(null);
+    }
+  }
+
+  /** Whether clusters of `tile` at `lod` are drawn (cull.wgsl's LOD test). */
+  private shown(tile: number, lod: number) {
+    return tile === 0xffffffff || this.tileLodsCpu[tile] === lod;
+  }
+
+  /** Drop the cached shadow cascades whose footprint the box reaches. */
+  private shadowTouch(lo: Vec3, hi: Vec3) {
+    for (let c = 0; c < CASCADES; c++) {
+      const k = this.shadowCache[c];
+      if (k && cacheTouches(k, lo, hi)) this.shadowCache[c] = null;
+    }
   }
 
   /** lights: packed x,y,z,radius,r,g,b,kind (already selected & scaled). */
@@ -907,8 +975,9 @@ export class Renderer {
     aspect: number,
     lightDir: Vec3,
     splits: number[],
-  ): Mat4[] {
-    const out: Mat4[] = [];
+    grow: boolean,
+  ): CascadeCache[] {
+    const out: CascadeCache[] = [];
     let prev = 0.1;
     const th = Math.tan(fovY / 2);
     for (let c = 0; c < CASCADES; c++) {
@@ -946,8 +1015,20 @@ export class Renderer {
           radius,
           Math.hypot(q[0] - center[0], q[1] - center[1], q[2] - center[2]),
         );
+      const sliceRadius = radius;
+      // A cached cascade covers the slices of later frames too.
+      if (grow) {
+        const t = CACHE_TOL[c];
+        radius +=
+          t.move +
+          Math.hypot(
+            center[0] - eye[0],
+            center[1] - eye[1],
+            center[2] - eye[2],
+          ) *
+            t.turn;
+      }
       radius = Math.ceil(radius * 16) / 16;
-      this.cascadeRadii[c] = radius;
       // Snap the center to shadow texels in light space to avoid shimmering.
       const lz = norm3(lightDir);
       const lx = norm3(
@@ -985,7 +1066,21 @@ export class Renderer {
         1,
         back + radius * 2,
       );
-      out.push(mat4.multiply(mat4.create(), proj, view));
+      out.push({
+        eye: [...eye],
+        fwd: [...fwd],
+        light: [...lz],
+        halfFov: fovY / 2,
+        center,
+        sliceRadius,
+        key: '',
+        mat: mat4.multiply(mat4.create(), proj, view),
+        radius,
+        lx,
+        ly,
+        cx,
+        cy,
+      });
     }
     return out;
   }
@@ -1089,7 +1184,13 @@ export class Renderer {
     const sky = this.sky;
     const lightDir: Vec3 = sky.sunDir[1] > -0.02 ? sky.sunDir : sky.moonDir;
     const splits = [22, 75, 240, 800];
-    this.cascadeMats = this.cascadeMatrices(
+    // Static shadow cache (shadow-cache.ts): reuse each cascade's city depth
+    // while it still covers this frame's slice.
+    const shadowsOn =
+      (sky.sunUp > 0 || sky.moonLight > 0) && !this.off('shadows');
+    const useCache = shadowsOn && !this.off('shcache');
+    const cacheKey = `${aspect},${this.offBits}`;
+    const fresh = this.cascadeMatrices(
       v.eye,
       fwd,
       right,
@@ -1098,7 +1199,23 @@ export class Renderer {
       aspect,
       lightDir,
       splits,
+      useCache,
     );
+    for (let c = 0; c < CASCADES; c++) {
+      const k = this.shadowCache[c];
+      fresh[c].key = cacheKey;
+      if (useCache && cacheValid(k, c, fresh[c], SHADOW_SIZE)) {
+        this.cascadeMats[c] = k.mat;
+        this.cascadeRadii[c] = k.radius;
+        this.shadowRedraw[c] = false;
+      } else {
+        this.shadowCache[c] = useCache ? fresh[c] : null;
+        this.cascadeMats[c] = fresh[c].mat;
+        this.cascadeRadii[c] = fresh[c].radius;
+        this.shadowRedraw[c] = true;
+        if (useCache) this.shadowRedraws++;
+      }
+    }
 
     fd.set(F.viewProj, viewProj);
     fd.set(F.invViewProj, invViewProj);
@@ -1186,7 +1303,17 @@ export class Renderer {
       t.hizMips,
     );
     const camPlanes = frustumPlanes(viewProjNoJ);
+    // A point of a slice is at most diag x its far depth from the eye.
+    const th = Math.tan(v.fov / 2);
+    const diag = Math.hypot(1, th * aspect, th);
     for (let c = 0; c < CASCADES; c++) {
+      d.queue.writeBuffer(this.shadowViewBuffers[c], 0, this.cascadeMats[c]);
+      if (!this.shadowRedraw[c]) continue;
+      // A cached cascade's receivers are those of every frame that may
+      // reuse it: the planes pushed out by its move / turn tolerance.
+      const tol = useCache
+        ? CACHE_TOL[c].move + diag * splits[c] * CACHE_TOL[c].turn
+        : 0;
       this.writeCullView(
         1 + c,
         this.cascadeMats[c],
@@ -1210,10 +1337,10 @@ export class Renderer {
               2 *
                 (1.5 * (splits[c] / 1024) +
                   (3 * this.cascadeRadii[c]) / SHADOW_SIZE) +
-                0.5,
+                0.5 +
+                tol,
             ),
       );
-      d.queue.writeBuffer(this.shadowViewBuffers[c], 0, this.cascadeMats[c]);
     }
     this.updateTerrainPatches(v.eye);
 
@@ -1368,6 +1495,7 @@ export class Renderer {
       pass.setPipeline(this.p.cull as GPUComputePipeline);
       const groups = Math.ceil(Math.max(1, this.pool.clusterHighWater) / 64);
       for (let vi = 0; vi < VIEWS; vi++) {
+        if (vi > 0 && !this.shadowRedraw[vi - 1]) continue;
         pass.setBindGroup(
           0,
           this.bg(
@@ -1406,30 +1534,41 @@ export class Renderer {
         label,
       );
     for (let c = 0; c < CASCADES; c++) {
-      const rp = this.renderPass(
-        enc,
-        {
-          colorAttachments: [],
-          depthStencilAttachment: {
-            view: this.shadowMap.createView({
-              dimension: '2d',
-              baseArrayLayer: c,
-              arrayLayerCount: 1,
-              label: `shadow/cascade${c} view`,
-            }),
-            depthClearValue: 1,
-            depthLoadOp: 'clear',
-            depthStoreOp: 'store',
-          },
-        },
-        `shadow c${c} city`,
-      );
       const skipCascade =
-        this.off('shadows') ||
+        !shadowsOn ||
         (c === 3 && this.off('c3')) ||
         (c === 2 && this.off('c2'));
-      if ((sky.sunUp > 0 || sky.moonLight > 0) && !skipCascade) {
-        const pass = rp.pass;
+      const layer = (tex: GPUTexture, load: boolean) => ({
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: tex.createView({
+            dimension: '2d',
+            baseArrayLayer: c,
+            arrayLayerCount: 1,
+            label: `${tex.label} c${c} view`,
+          }),
+          depthClearValue: 1,
+          depthLoadOp: load ? ('load' as const) : ('clear' as const),
+          depthStoreOp: 'store' as const,
+        },
+      });
+      // Cached: the city goes to the static layer (only when it is redrawn),
+      // which is copied into the live map; the hooks draw over the copy.
+      const cityPass = useCache
+        ? this.shadowRedraw[c]
+          ? this.renderPass(
+              enc,
+              layer(this.shadowStatic, false),
+              `shadow c${c} city`,
+            )
+          : null
+        : this.renderPass(
+            enc,
+            layer(this.shadowMap, false),
+            `shadow c${c} city`,
+          );
+      if (cityPass && !skipCascade) {
+        const pass = cityPass.pass;
         // Opaque clusters: depth only, no fragment stage.
         pass.setPipeline(this.p.cityShadowOpaque as GPURenderPipeline);
         pass.setBindGroup(
@@ -1479,10 +1618,25 @@ export class Renderer {
           ),
         );
         pass.drawIndirect(this.argsAlphaBuffers[1 + c], 0);
-        for (const hk of hooks)
-          if (hk.shadow) hk.shadow(rp.seg(`shadow c${c} ${hk.name}`), c);
       }
-      rp.end();
+      let rp = cityPass;
+      if (useCache) {
+        cityPass?.end();
+        enc.copyTextureToTexture(
+          {texture: this.shadowStatic, origin: [0, 0, c]},
+          {texture: this.shadowMap, origin: [0, 0, c]},
+          [SHADOW_SIZE, SHADOW_SIZE, 1],
+        );
+        rp = this.renderPass(
+          enc,
+          layer(this.shadowMap, true),
+          `shadow c${c} dynamic`,
+        );
+      }
+      if (!skipCascade)
+        for (const hk of hooks)
+          if (hk.shadow) hk.shadow(rp!.seg(`shadow c${c} ${hk.name}`), c);
+      rp!.end();
     }
 
     // --- G-buffer.
