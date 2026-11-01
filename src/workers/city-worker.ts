@@ -310,23 +310,22 @@ function finishCity(
     solids: base.solids,
     lab: iso ? labInfo(iso, base.geom, base.solids) : undefined,
   };
-  post(
-    {
-      type: 'summary',
-      summary,
-      lights: new Float32Array(base.lights),
-      landUse: base.landUse,
-    },
-    [base.landUse.buffer],
-  );
+  // (The summary's heights are cloned: the skyline below still needs them.)
+  const lights = new Float32Array(base.lights);
+  post({type: 'summary', summary, lights, landUse: base.landUse}, [
+    lights.buffer,
+    base.landUse.buffer,
+  ]);
   // Fine base detail (kerbs, railings, wires, thin paint) drops at range.
   const tc = abs();
-  const baseClusters = pack(
-    clusterize(base.mesh, 0, 0xffffffff, 1, baseFarOf(base.mesh)),
-  );
+  // (Each copy freed before the next is made: the mesh, its clusters, the
+  // packed clusters are ~185, 170 and 110 MB.)
+  const baseRaw = clusterize(base.mesh, 0, 0xffffffff, 1, baseFarOf(base.mesh));
   release(base.mesh.u32, base.mesh.idx);
-  const pierClusters = pack(clusterize(base.piers, 0, 0xffffffff, 0));
+  const baseClusters = pack(baseRaw);
+  const pierRaw = clusterize(base.piers, 0, 0xffffffff, 0);
   release(base.piers.u32, base.piers.idx);
+  const pierClusters = pack(pierRaw);
   span('clusterize base', tc);
   post({type: 'base', base: baseClusters, piers: pierClusters}, [
     ...clusterTransfer(baseClusters),
