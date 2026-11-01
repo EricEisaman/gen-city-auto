@@ -10,7 +10,12 @@
 
 import {clusterize, type ClusterData} from '../city/cmesh.ts';
 import {PRESETS, type CityType} from '../city/config.ts';
-import {bandTrisData, buildBase, tileGeom} from '../city/gen-base.ts';
+import {
+  attachBand,
+  bandTrisData,
+  buildBase,
+  tileGeom,
+} from '../city/gen-base.ts';
 import {
   buildTile,
   makeTileContext,
@@ -76,6 +81,8 @@ export interface LayoutSummary {
 let req0: Extract<WorkerRequest, {type: 'init'}>;
 let layout: CityLayout | null = null;
 let ctx: TileContext | null = null;
+/** Non-primary: the tile context's road geometry, awaiting the band. */
+let roadGeom: ReturnType<typeof tileGeom> | null = null;
 /** Main-thread requests that arrived before the layout. */
 const pending: WorkerRequest[] = [];
 /** Primary: the terrain bands so far. */
@@ -176,7 +183,10 @@ function onPort(e: MessageEvent<PortMessage>) {
     const h = L.terrain.heights;
     L.terrain.heights = new Heightfield(h.size, h.cell, h.data);
     // The lab filters the finished layout, so generation is unchanged.
-    layout = req0.lab ? isolate(L, req0.lab).layout : L;
+    const lay = (layout = req0.lab ? isolate(L, req0.lab).layout : L);
+    // Everything of the tile context but the primary's curb band, made
+    // while the primary builds the base mesh.
+    roadGeom = timed('tileGeom', () => tileGeom(lay));
     post({type: 'ready'});
     for (const r of pending.splice(0)) handle(r);
   } catch (err) {
@@ -275,7 +285,9 @@ function handle(req: WorkerRequest) {
   }
   if (req.type === 'band') {
     const lay = layout;
-    const t = timed('tileGeom', () => tileGeom(lay, req.band));
+    const t = roadGeom!;
+    roadGeom = null;
+    attachBand(t.geom, req.band);
     ctx = timed('makeTileContext', () =>
       makeTileContext(lay, t.geom, t.roadMask),
     );

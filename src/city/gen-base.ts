@@ -1473,13 +1473,21 @@ export function bandTrisData(geom: RoadGeom): Float64Array {
  * geometry, the road mask and the curb band triangles that the primary
  * worker's buildBase() recorded (bandTrisData() of its geometry). The
  * lazily built lookups (landing, light spots, tree shifts) are rebuilt on
- * demand from the same inputs, so tiles come out identical.
+ * demand from the same inputs, so tiles come out identical. Without `band`
+ * the band is attached later (attachBand), so the rest can be made while
+ * the primary is still building the base.
  */
 export function tileGeom(
   L: CityLayout,
-  band: Float64Array,
+  band?: Float64Array,
 ): {geom: RoadGeom; roadMask: Uint8Array} {
   const geom = computeRoadGeom(L);
+  if (band) attachBand(geom, band);
+  return {geom, roadMask: roadMask(L)};
+}
+
+/** Gives `geom` the curb band triangles of bandTrisData(). */
+export function attachBand(geom: RoadGeom, band: Float64Array) {
   const bt = new BandTris();
   for (let i = 0; i < band.length; i += 9)
     bt.add(
@@ -1488,7 +1496,6 @@ export function tileGeom(
       [band[i + 6], band[i + 7], band[i + 8]],
     );
   bandTrisOf.set(geom, bt);
-  return {geom, roadMask: roadMask(L)};
 }
 
 /**
