@@ -150,12 +150,12 @@ function addBand(k: number, rows: Float32Array) {
   for (let i = 0, o = 0; i < b.rows.length; o += b.rows[i++].length)
     heights.set(b.rows[i], o);
   makeCity(assembleTerrain(b.plan, heights));
-  post({type: 'ready'});
-  for (const r of pending.splice(0)) handle(r);
-  // (After 'ready': the other workers start on tiles meanwhile.)
+  // (The other workers are on tiles meanwhile.)
   const sky = timed('buildSkyline', skyline!);
   skyline = null;
   post({type: 'skyline', sky, n: SKYLINE_N}, [sky.buffer]);
+  post({type: 'ready'});
+  for (const r of pending.splice(0)) handle(r);
 }
 
 function onPort(e: MessageEvent<PortMessage>) {
@@ -205,7 +205,8 @@ function makeCity(terrain: Terrain) {
   ctx = timed('makeTileContext', () =>
     makeTileContext(lay, base.geom, base.roadMask),
   );
-  // The others build their tile context while this one clusterizes.
+  // The others build their tile context and start on tiles while this one
+  // clusterizes the base mesh.
   const band = bandTrisData(base.geom);
   post({type: 'band', band}, [band.buffer]);
   post({type: 'progress', msg: 'Uploading city', f: 0.75});
@@ -222,6 +223,15 @@ function makeCity(terrain: Terrain) {
     solids: base.solids,
     lab: iso ? labInfo(iso, base.geom, base.solids) : undefined,
   };
+  post(
+    {
+      type: 'summary',
+      summary,
+      lights: new Float32Array(base.lights),
+      landUse: base.landUse,
+    },
+    [base.landUse.buffer],
+  );
   // Fine base detail (kerbs, railings, wires, thin paint) drops at range.
   const tc = abs();
   const baseClusters = clusterize(
@@ -233,21 +243,10 @@ function makeCity(terrain: Terrain) {
   );
   const pierClusters = clusterize(base.piers, 0, 0xffffffff, 0);
   span('clusterize base', tc);
-  post(
-    {
-      type: 'base',
-      summary,
-      base: baseClusters,
-      piers: pierClusters,
-      lights: new Float32Array(base.lights),
-      landUse: base.landUse,
-    },
-    [
-      ...clusterTransfer(baseClusters),
-      ...clusterTransfer(pierClusters),
-      base.landUse.buffer,
-    ],
-  );
+  post({type: 'base', base: baseClusters, piers: pierClusters}, [
+    ...clusterTransfer(baseClusters),
+    ...clusterTransfer(pierClusters),
+  ]);
   const hf = new Heightfield(
     lay.params.size,
     lt.heights.cell,
