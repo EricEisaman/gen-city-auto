@@ -38,8 +38,15 @@ export class UI {
     this.build();
     for (const b of document.querySelectorAll<HTMLElement>('#toolbar button'))
       b.onmousedown = e => e.preventDefault(); // keep keyboard focus on the canvas
-    document.getElementById('btn-cam')!.onclick = () => g.cycleCamera();
-    document.getElementById('btn-veh')!.onclick = () => g.toggleHeli();
+    // (Toolbar buttons are user input: the showcase director hands over.)
+    document.getElementById('btn-cam')!.onclick = () => {
+      g.input.activity = true;
+      g.cycleCamera();
+    };
+    document.getElementById('btn-veh')!.onclick = () => {
+      g.input.activity = true;
+      g.toggleHeli();
+    };
     document.getElementById('btn-menu')!.onclick = () => this.toggleMenu();
     this.help.innerHTML =
       '<b>WASD</b> drive / fly &nbsp; <b>Space</b> handbrake / climb &nbsp; <b>Shift</b> descend &nbsp; <b>Q/E</b> yaw<br>' +
@@ -137,6 +144,19 @@ export class UI {
     };
     const row = (label: string, ...c: Node[]) =>
       el('label', {}, label, el('span', {}, ...c));
+    const fieldRow = (f: (typeof FIELDS)[number]) => {
+      const sel = el('select');
+      f.options.forEach(([label], i) =>
+        sel.append(el('option', {value: String(i), textContent: label})),
+      );
+      sel.onchange = () => {
+        const v = f.options[Number(sel.value)][1];
+        g.setSetting(f.key, v as never);
+        this.syncGraphics();
+      };
+      this.gfxSels.set(f.key, sel);
+      return row(f.label, sel);
+    };
     this.menu.append(
       el('div', {className: 'menu-title'}, 'GEN CITY AUTO'),
       row('City', citySel),
@@ -148,23 +168,12 @@ export class UI {
       row('Cycle weather', cycle),
       row('Camera', this.camSel),
       row('Auto director', director),
+      ...FIELDS.filter(f => f.demo).map(fieldRow),
       row('Vehicle', vehSel),
       row('', link),
       el('div', {className: 'menu-section'}, 'GRAPHICS'),
     );
-    for (const f of FIELDS) {
-      const sel = el('select');
-      f.options.forEach(([label], i) =>
-        sel.append(el('option', {value: String(i), textContent: label})),
-      );
-      sel.onchange = () => {
-        const v = f.options[Number(sel.value)][1];
-        g.setSetting(f.key, v as never);
-        this.syncGraphics();
-      };
-      this.gfxSels.set(f.key, sel);
-      this.menu.append(row(f.label, sel));
-    }
+    for (const f of FIELDS) if (!f.demo) this.menu.append(fieldRow(f));
     const reset = el('button', {textContent: 'Reset graphics to defaults'});
     reset.onclick = () => {
       g.resetSettings();
@@ -204,11 +213,13 @@ export class UI {
     const m = Math.floor((g.hour - h) * 60);
     const mode = g.freeMode
       ? 'FREE CAMERA'
-      : p.autopilot && g.camera.directorEnabled
-        ? `AUTOPILOT · ${g.camera.shot?.name ?? ''}`
-        : p.autopilot
-          ? `AUTOPILOT · ${g.camera.mode}`
-          : `MANUAL · ${g.camera.mode}`;
+      : g.showcaseOn
+        ? `SHOWCASE · ${g.showcase?.current?.kind ?? ''} · ${g.camera.shot?.name ?? ''}`
+        : p.autopilot && g.camera.directorEnabled
+          ? `AUTOPILOT · ${g.camera.shot?.name ?? ''}`
+          : p.autopilot
+            ? `AUTOPILOT · ${g.camera.mode}`
+            : `MANUAL · ${g.camera.mode}`;
     this.hud.innerHTML = `<div class="speed">${kmh}<span class="unit"> km/h</span></div><div class="info">${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} · ${g.weather.kind} · ${mode}</div>`;
     if (document.activeElement !== this.timeInput)
       this.timeInput.value = String(g.hour);

@@ -6,10 +6,11 @@ import {PRESETS as PRESETS_CITY, type CityType} from '../city/config.ts';
 import {signLocaleOf} from '../city/signs.ts';
 import {reportError, resizeToCss, type Gpu} from '../gpu/device.ts';
 import {Rng} from '../math/random.ts';
-import type {Vec3} from '../math/vec.ts';
+import {clamp, type Vec2, type Vec3} from '../math/vec.ts';
+import {sunDirection} from '../world/sky.ts';
 import {RainRenderer} from '../render/rain.ts';
 import {LightSprites} from '../render/sprites.ts';
-import {streetLightSpots} from '../city/gen-base.ts';
+import {LightKind, streetLightSpots} from '../city/gen-base.ts';
 import type {LabSpec} from '../city/lab.ts';
 import type {CityLayout} from '../city/layout.ts';
 import {GBUFFER_FORMATS, Renderer} from '../render/renderer.ts';
@@ -41,8 +42,23 @@ import {
 import {Input} from './input.ts';
 import {Pedestrians} from './pedestrians.ts';
 import {Player} from './player.ts';
-import {RoadNet} from './roadnet.ts';
-import {Traffic} from './traffic.ts';
+import {
+  findHighlights,
+  SignGrid,
+  type Place,
+  type RoadSpot,
+} from './highlights.ts';
+import {RoadNet, SPEED_LIMIT} from './roadnet.ts';
+import {
+  Programme,
+  SCENE_DEFS,
+  Showcase,
+  sunsetHour,
+  type Scene,
+  type SceneKind,
+  type ShotPlan,
+} from './showcase.ts';
+import {Traffic, type LaneFollower} from './traffic.ts';
 import {AmbientHelis, Trains} from './trains.ts';
 import {WEATHER_KINDS, WeatherSystem, type WeatherKind} from './weather.ts';
 
@@ -56,6 +72,12 @@ export interface GameOptions {
   director: boolean;
   /** The director swaps the filmed vehicle between shots (off with ?vehicle=, ?shot=, ?swap=0). */
   swap?: boolean;
+  /**
+   * The showcase director may run (game/showcase.ts; the director style
+   * setting chooses it). Off for tests, the profiler and links that pin
+   * the view or the vehicle (see main.ts).
+   */
+  showcase?: boolean;
   vehicle: string;
   spawn?: [number, number];
   shot?: string;
@@ -85,6 +107,25 @@ export interface GameOptions {
 
 /** Traffic count at 100% density. */
 const TRAFFIC = 380;
+/** Seconds without input before the showcase director takes over again. */
+const SHOWCASE_IDLE = 60;
+/** Shots each kind of showcase subject may fall back on once its plan runs out. */
+const SHOWCASE_SHOTS: Record<Scene['subject'], Set<string>> = {
+  car: new Set([
+    'chase',
+    'bumper',
+    'flyby',
+    'telephoto',
+    'orbit',
+    'aerial',
+    'side',
+    'wheel',
+    'rear',
+  ]),
+  heli: new Set(['chase', 'flyby', 'telephoto', 'orbit', 'aerial']),
+  train: new Set(['train', 'trainpace']),
+  none: new Set(['vista']),
+};
 
 export class Game {
   renderer!: Renderer;
@@ -118,6 +159,13 @@ export class Game {
   private swapRng = new Rng(9137);
   /** Seconds the player's car has been (nearly) stopped. */
   private stoppedFor = 0;
+  /** Showcase director (null where the page doesn't allow it). */
+  showcase: Showcase | null = null;
+  private signGrid: SignGrid | null = null;
+  /** Train the camera films in a showcase train scene (-1: the nearest). */
+  private subjectTrain = -1;
+  /** Seconds since the last user input (Infinity: none yet). */
+  private idleFor = Infinity;
   private fpsAvg = 60;
   private carLights = new Float32Array(64 * 8);
   /** Free-fly inspection camera (the vehicle keeps driving itself). */
@@ -456,8 +504,10 @@ export class Game {
       return out;
     };
     this.camera.trainCars = () => {
-      // Car positions of the train nearest the player.
+      // Car positions of the filmed train, else the one nearest the player.
       const t = this.trains!;
+      const st = t.trains[this.subjectTrain];
+      if (st) return st.cars.map(c => [c.model[12], c.model[13], c.model[14]]);
       let best: Vec3[] = [];
       let bd = Infinity;
       for (const tr of t.trains) {
@@ -476,8 +526,9 @@ export class Game {
       return best;
     };
     this.camera.trainFocus = () => {
-      // Nearest train car to the player.
+      // The filmed train, else the nearest train car to the player.
       const t = this.trains!;
+      if (t.trains[this.subjectTrain]) return t.focusPoint(this.subjectTrain);
       let best: Vec3 | null = null;
       let bd = Infinity;
       for (let i = 0; i < t.trains.length; i++) {
@@ -533,7 +584,533 @@ export class Game {
         this.player.pos,
         this.player.follower ? [this.player.follower] : [],
       );
+    timed('showcase setup', () => this.initShowcase());
     loadScreen.hide();
+  }
+
+  // -- Showcase director (game/showcase.ts) ---------------------------------
+
+  /** Highlights and the programme (once the city's shells and lights are resident). */
+  private initShowcase() {
+    this.showcase?.end();
+    this.showcase = null;
+    this.subjectTrain = -1;
+    if (!this.opts.showcase || this.opts.lab) return;
+    const city = this.city!;
+    const L = city.summary.layout;
+    const signs = new SignGrid(city.lightPoints(LightKind.sign));
+    this.camera.signsNear = (x, z, r) => signs.near(x, z, r);
+    const trains = this.trains!;
+    const hl = findHighlights({
+      net: this.net!,
+      elevated: L.elevated,
+      rail: trains.lines.map((l, li) => ({
+        e: l.e,
+        arc: l.arc,
+        stationArcs: l.stationArcs,
+        hasTrains: trains.trains.some(t => t.line === li),
+      })),
+      signs,
+      landUse: city.landUse
+        ? {data: city.landUse, n: L.heightN, cell: L.cell, size: L.params.size}
+        : null,
+    });
+    const low = lowMemory();
+    const prog = new Programme(hl, (this.seed * 7919 + 17) >>> 0, {
+      maxJump: low ? 1600 : Infinity,
+    });
+    // Prefetch rings around the next scene: LOD0 within r0 of its first
+    // point (where the camera starts) and LOD1 shells within r1 of every
+    // point. LOD0 tiles are big (~1.7M vertex words, 15 LOD1 shells), and
+    // the cluster pool already runs ~80% full, so the LOD0 ring is small;
+    // smaller still on phones (a smaller pool).
+    const r0 = low ? 110 : 160;
+    const r1 = low ? 400 : 800;
+    const rings = (focus: Vec3[]) =>
+      focus.map((p, i) => ({p, r0: i === 0 ? r0 : 0, r1}));
+    this.showcase = new Showcase(
+      {
+        build: (kind, place, rng) => this.buildScene(kind, place, rng),
+        ready: focus =>
+          rings(focus).every(f => this.city?.readyAt(f.p, f.r0, f.r1) ?? false),
+        prefetch: focus => {
+          if (this.city) this.city.prefetch = rings(focus);
+        },
+        start: sc => this.startScene(sc),
+        subjectSpeed: () => this.subjectSpeed(),
+        takeOver: () => this.takeOverMoving(),
+        position: () => [this.player.pos[0], this.player.pos[2]],
+      },
+      prog,
+    );
+    (window as unknown as {__highlights: unknown}).__highlights = hl;
+  }
+
+  /** The showcase director is filming (not just allowed). */
+  get showcaseOn() {
+    return !!this.showcase?.current;
+  }
+
+  /**
+   * Showcase while unattended: the director on, autopilot, no input for a
+   * while (or ever). Any input leaves it for normal play, with the clock
+   * and weather left as they are.
+   */
+  private updateShowcase(dt: number) {
+    const sc = this.showcase;
+    if (!sc) return;
+    if (this.input.activity) this.idleFor = 0;
+    else this.idleFor += dt;
+    const want =
+      this.settings.director === 'showcase' &&
+      this.camera.directorEnabled &&
+      this.player.autopilot &&
+      !this.freeMode &&
+      this.idleFor > SHOWCASE_IDLE;
+    if (want && !sc.current) this.enterShowcase();
+    else if (!want && sc.current) this.leaveShowcase();
+    if (sc.current) sc.update(dt);
+  }
+
+  /** Start the programme from what is on screen (no cut to elsewhere yet). */
+  private enterShowcase() {
+    const pl = this.player;
+    const heli = pl.kind === 'heli';
+    const shots: ShotPlan[] = heli
+      ? [
+          {name: 'chase', dur: 7},
+          {name: 'aerial', dur: 6},
+        ]
+      : [
+          {name: 'chase', dur: 8},
+          {name: 'flyby', dur: 6},
+          {name: 'telephoto', dur: 6},
+        ];
+    const scene: Scene = {
+      kind: heli ? 'heli' : 'expressway',
+      place: {kind: 'expressway', name: 'start', p: [...pl.pos], score: 0},
+      subject: heli ? 'heli' : 'car',
+      hour: this.hour,
+      weather: this.weather.kind,
+      shots,
+      focus: [],
+      stopLimit: 2,
+    };
+    this.camera.startPlan(shots, SHOWCASE_SHOTS[scene.subject]);
+    this.showcase!.begin(scene);
+  }
+
+  private leaveShowcase() {
+    this.showcase!.end();
+    this.camera.endPlan();
+    this.subjectTrain = -1;
+    this.player.heliArea = null;
+  }
+
+  private subjectSpeed(): number {
+    const sc = this.showcase?.current;
+    if (!sc || sc.subject === 'none') return Infinity;
+    if (sc.subject === 'train')
+      return this.subjectTrain >= 0
+        ? this.trains!.speedOf(this.subjectTrain)
+        : Infinity;
+    return Math.abs(this.player.speed);
+  }
+
+  /**
+   * Film a moving car nearby instead of the stopped one: preferably one
+   * about to turn (signalling), or heading into a bend or onto a bridge.
+   */
+  private takeOverMoving(): boolean {
+    const pl = this.player;
+    const net = this.net!;
+    const r = this.showcase!.programme.rng;
+    const ground: Vec3 = [pl.pos[0], 0, pl.pos[2]];
+    const score = (f: LaneFollower) => {
+      let sc = 1 + r.next() * 0.5;
+      const t = f.nextTurn(net);
+      if (t.indicator !== 0 && t.dist < 70) sc += 2;
+      // Not one about to stop at a red light.
+      const end: 0 | 1 = f.ref.dir === 1 ? 1 : 0;
+      const j = t.dist > 0 ? net.junctionAt(f.ref.chain, end) : -1;
+      if (
+        j >= 0 &&
+        t.dist < 80 &&
+        net.signalFor(j, f.ref.chain, end, this.time + t.dist / 8) !== 0
+      )
+        sc -= 5;
+      const c = net.chains[f.ref.chain];
+      if (c.bridge.some(b => b)) sc += 1.5;
+      const total = net.length(f.ref.chain);
+      for (const cn of net.corners(f.ref.chain)) {
+        const d = (f.ref.dir === 1 ? cn.a : total - cn.a) - f.s;
+        if (d > 0 && d < 80) sc += 1;
+      }
+      return sc + c.kind * 0.3;
+    };
+    const c = this.traffic?.take(ground, 12, 200, n => r.int(0, n), -1, score);
+    if (!c) return false;
+    pl.takeOver(c);
+    this.camera.cut();
+    return true;
+  }
+
+  /** A road vehicle for a showcase car scene (mostly cars). */
+  private showcaseVehicle(r: Rng, kind: SceneKind): number {
+    // (No buses or trucks: the close shots are framed for a car, and the
+    // chase camera ends up inside a bus.)
+    const kinds =
+      kind === 'rain' ? ['car', 'taxi'] : ['car', 'car', 'taxi', 'van'];
+    const list = this.vehicles.variantsOf(r.pick(kinds));
+    return list.length ? r.pick(list) : this.pickVariant('car', 'sports');
+  }
+
+  /** A lane `lead` metres short of a road spot (in its travel direction). */
+  private laneBefore(spot: RoadSpot, lead: number, r: Rng): Scene['lane'] {
+    const net = this.net!;
+    const c = spot.chain;
+    const len = net.length(c);
+    const dir: 1 | -1 = spot.dir ?? (r.chance(0.5) ? 1 : -1);
+    const [s0, s1] = net.geom.setbacks[c];
+    const sStart = dir === 1 ? s0 : s1;
+    const sEnd = len - (dir === 1 ? s1 : s0);
+    if (sEnd - sStart < 20) return undefined;
+    const sT = dir === 1 ? spot.arc : len - spot.arc;
+    const s = clamp(sT - lead, sStart + 2, sEnd - 8);
+    return {
+      chain: c,
+      dir,
+      lane: r.int(0, net.lanesPerDir(c)),
+      s,
+      speed: SPEED_LIMIT[net.chains[c].kind] * 0.8,
+    };
+  }
+
+  /** A road spot near (x, z) (a car to bring traffic to a scene without one). */
+  private spotNear(x: number, z: number): RoadSpot | null {
+    const nr = this.net!.nearestRoad(x, z, 4);
+    if (!nr) return null;
+    const arc = this.net!.geom.arc[nr.chain];
+    return {
+      chain: nr.chain,
+      arc: arc[nr.seg] + (arc[nr.seg + 1] - arc[nr.seg]) * nr.t,
+    };
+  }
+
+  /** Highest roof (absolute height) within about r of (x, z). */
+  private roofsNear(x: number, z: number, r: number) {
+    let h = 0;
+    for (let i = -2; i <= 2; i++)
+      for (let k = -2; k <= 2; k++) {
+        const b = this.net!.buildingAt(x + (i * r) / 2, z + (k * r) / 2);
+        if (b) h = Math.max(h, b.base + b.height);
+      }
+    return h;
+  }
+
+  private groundAt(x: number, z: number) {
+    return Math.max(this.net!.hf.sample(x, z), 0);
+  }
+
+  /** A concrete showcase scene of `kind` at `place`, or null if it doesn't work there. */
+  private buildScene(kind: SceneKind, place: Place, r: Rng): Scene | null {
+    const sc: Scene = {
+      kind,
+      place,
+      subject: SCENE_DEFS[kind].subject,
+      hour: 12,
+      weather: 'sunny',
+      shots: [],
+      focus: [],
+      stopLimit: 2,
+    };
+    const fine = (): WeatherKind => (r.chance(0.8) ? 'sunny' : 'cloudy');
+    const car = (lead: number) => {
+      const spot = place.road ?? this.spotNear(place.p[0], place.p[2]);
+      if (!spot) return false;
+      const l = this.laneBefore(spot, lead, r);
+      if (!l) return false;
+      sc.lane = l;
+      sc.focus = [this.net!.lanePos(l.chain, l.dir, l.lane, l.s).p, place.p];
+      return true;
+    };
+    switch (kind) {
+      case 'expressway':
+        if (!car(10)) return null;
+        sc.hour = r.range(15.5, 17.5);
+        sc.weather = fine();
+        sc.shots = [
+          {name: 'aerial', dur: 6},
+          {name: 'chase', dur: 7},
+          {name: 'flyby', dur: 6},
+        ];
+        break;
+      case 'heli': {
+        const water = place.water;
+        const c: Vec2 = water
+          ? [place.p[0] + water[0] * 120, place.p[2] + water[1] * 120]
+          : [place.p[0], place.p[2]];
+        const h = place.top ? place.top + r.range(30, 70) : r.range(70, 120);
+        const a = r.range(0, Math.PI * 2);
+        const d: Vec2 = [Math.cos(a), Math.sin(a)];
+        const p: Vec3 = [
+          c[0] - d[0] * 350,
+          this.groundAt(c[0], c[1]) + h,
+          c[1] - d[1] * 350,
+        ];
+        sc.heli = {p, dir: d, area: {c, r: 320, h}};
+        sc.hour = r.chance(0.25) ? r.range(16.8, 17.4) : r.range(9, 16);
+        sc.weather = fine();
+        sc.shots = [
+          {name: 'aerial', dur: 7},
+          {name: 'chase', dur: 6},
+          {name: 'orbit', dur: 7},
+        ];
+        sc.focus = [p, [c[0], 0, c[1]]];
+        sc.stopLimit = Infinity;
+        break;
+      }
+      case 'train':
+        if (place.line === undefined || place.stationArc === undefined)
+          return null;
+        // The car (it brings the traffic) on a street near the station.
+        if (!car(0)) return null;
+        sc.approach = 220;
+        sc.hour = r.range(8.5, 16.5);
+        sc.weather = fine();
+        sc.shots = [
+          {name: 'train', dur: 7},
+          {name: 'trainpace', dur: 9},
+          {name: 'train', dur: 7},
+        ];
+        sc.focus = [place.p];
+        // Pulling in is the point; standing at the platform is not.
+        sc.stopLimit = 3;
+        break;
+      case 'junction':
+        if (!car(95)) return null;
+        sc.signal = true;
+        sc.hour = r.range(19.2, 20.6);
+        sc.weather = fine();
+        sc.shots = [
+          {name: 'telephoto', dur: 6},
+          {name: 'chase', dur: 7},
+          {name: 'rear', dur: 6},
+        ];
+        // Braking for the light, brake lights on, is part of it.
+        sc.stopLimit = 5;
+        break;
+      case 'bridge':
+        if (!car(110)) return null;
+        sc.hour = r.chance(0.5) ? r.range(7, 9.5) : r.range(15, 17.3);
+        sc.weather = fine();
+        sc.shots = [
+          {name: 'aerial', dur: 6},
+          {name: 'flyby', dur: 6},
+          {name: 'chase', dur: 6},
+        ];
+        break;
+      case 'park':
+        if (!car(50)) return null;
+        sc.hour = r.range(10, 14.5);
+        sc.shots = [
+          {name: 'aerial', dur: 6},
+          {name: 'side', dur: 6},
+          {name: 'flyby', dur: 6},
+        ];
+        break;
+      case 'signs':
+        if (!car(60)) return null;
+        sc.hour = r.range(21, 23.5);
+        sc.weather = fine();
+        sc.shots = [
+          {name: 'telephoto', dur: 6},
+          {name: 'side', dur: 6},
+          {name: 'chase', dur: 6},
+        ];
+        break;
+      case 'rain':
+        if (!car(60)) return null;
+        sc.hour = r.range(19.8, 23);
+        sc.weather = r.chance(0.7) ? 'rain' : 'storm';
+        sc.shots = [
+          {name: 'chase', dur: 7},
+          {name: 'bumper', dur: 6},
+          {name: 'wheel', dur: 5},
+        ];
+        break;
+      case 'nightAerial': {
+        if (!place.curve || !car(0)) return null;
+        sc.hour = r.range(22, 23.8);
+        const v = this.expresswayVistas(place.curve, r);
+        if (!v) return null;
+        sc.shots = v;
+        sc.focus = [v[0].eye!, v[0].look!];
+        break;
+      }
+      case 'sunset': {
+        if (!car(0)) return null;
+        sc.hour = sunsetHour(r.range(0.05, 0.1));
+        const v = this.sunsetVistas(place, sc.hour, r);
+        if (!v) return null;
+        sc.shots = v;
+        sc.focus = [v[0].eye!, v[0].look!];
+        break;
+      }
+    }
+    return sc;
+  }
+
+  /** Two high views over an expressway bend at night, drifting along it. */
+  private expresswayVistas(curve: Vec3[], r: Rng): ShotPlan[] | null {
+    const n = curve.length;
+    const c: Vec3 = [0, 0, 0];
+    for (const q of curve) for (let k = 0; k < 3; k++) c[k] += q[k] / n;
+    let ax = curve[n - 1][0] - curve[0][0];
+    let az = curve[n - 1][2] - curve[0][2];
+    const al = Math.hypot(ax, az) || 1;
+    ax /= al;
+    az /= al;
+    const out: ShotPlan[] = [];
+    for (let k = 0; k < 2; k++) {
+      const far = k === 0;
+      for (let tries = 0; tries < 12; tries++) {
+        const side = r.chance(0.5) ? 1 : -1;
+        const D = far ? r.range(170, 280) : r.range(50, 110);
+        const along = r.range(-60, 60);
+        const x = c[0] - az * side * D + ax * along;
+        const z = c[2] + ax * side * D + az * along;
+        const up = far ? r.range(80, 150) : r.range(180, 240);
+        const eye: Vec3 = [x, Math.max(this.groundAt(x, z), c[1]) + up, z];
+        const fov = far ? 0.7 : 0.9;
+        if (!this.camera.vistaClear(eye, c, fov)) continue;
+        const v = r.range(4, 8) * (r.chance(0.5) ? 1 : -1);
+        out.push({
+          name: 'vista',
+          dur: far ? 9 : 8,
+          eye,
+          look: [...c],
+          move: [ax * v, 0, az * v],
+          fov,
+        });
+        break;
+      }
+    }
+    return out.length ? out : null;
+  }
+
+  /** Low views toward the setting sun with the tower cluster against it. */
+  private sunsetVistas(place: Place, hour: number, r: Rng): ShotPlan[] | null {
+    const sd = sunDirection(hour);
+    const sl = Math.hypot(sd[0], sd[2]) || 1;
+    const top = place.top ?? 80;
+    const R = place.radius ?? 100;
+    const c = place.p;
+    const out: ShotPlan[] = [];
+    for (let k = 0; k < 2; k++) {
+      const long = k === 1;
+      for (let tries = 0; tries < 14; tries++) {
+        const rot = r.range(-0.3, 0.3);
+        const dx = (sd[0] / sl) * Math.cos(rot) - (sd[2] / sl) * Math.sin(rot);
+        const dz = (sd[0] / sl) * Math.sin(rot) + (sd[2] / sl) * Math.cos(rot);
+        const D = R + (long ? r.range(600, 900) : r.range(250, 450));
+        const x = c[0] - dx * D;
+        const z = c[2] - dz * D;
+        const up = long ? r.range(40, 110) : r.range(25, 60);
+        // Above the nearby rooftops (a rooftop view across to the towers).
+        const eye: Vec3 = [
+          x,
+          Math.max(this.groundAt(x, z) + up, this.roofsNear(x, z, 50) + 12),
+          z,
+        ];
+        const look: Vec3 = [c[0], c[1] + top * (long ? 0.6 : 0.45), c[2]];
+        const fov = long ? 0.42 : 0.85;
+        if (!this.camera.vistaClear(eye, look, fov)) continue;
+        const v = r.range(2.5, 5) * (r.chance(0.5) ? 1 : -1);
+        out.push({
+          name: 'vista',
+          dur: 8,
+          eye,
+          look,
+          move: [-dz * v, 0.3, dx * v],
+          fov,
+        });
+        break;
+      }
+    }
+    return out.length ? out : null;
+  }
+
+  /**
+   * Shift the simulation clock (on a cut, unseen) so the signal at the end
+   * of the filmed car's lane is green when it gets there: the director
+   * waits for the lights offscreen instead of filming a car at a red light.
+   */
+  private greenWave(f: LaneFollower) {
+    const net = this.net!;
+    const end: 0 | 1 = f.ref.dir === 1 ? 1 : 0;
+    const j = net.junctionAt(f.ref.chain, end);
+    if (j < 0 || !net.junctions[j].signal) return;
+    const eta = Math.max(0, f.sEnd(net) - f.s) / Math.max(f.speed, 3);
+    const green = (t: number) => {
+      for (let k = -1; k <= 6; k++)
+        if (net.signalFor(j, f.ref.chain, end, t + eta + k) !== 0) return false;
+      return true;
+    };
+    for (let k = 0; k < 44; k++)
+      if (green(this.time + k)) {
+        this.time += k;
+        return;
+      }
+  }
+
+  /** Cut to a showcase scene: clock, weather, subject, traffic, camera. */
+  private startScene(sc: Scene) {
+    const pl = this.player;
+    const r = this.showcase!.programme.rng;
+    this.hour = sc.hour;
+    // (Immediate: rain scenes start on wet roads, dry ones on dry roads.)
+    this.weather.set(sc.weather, true);
+    this.subjectTrain = -1;
+    if (sc.heli) {
+      if (pl.kind === 'car') this.lastCar = pl.variant;
+      pl.placeHeli(
+        this.pickVariant('helicopter'),
+        sc.heli.p,
+        sc.heli.dir,
+        30,
+        sc.heli.area,
+      );
+    } else if (sc.lane) {
+      const l = sc.lane;
+      pl.placeCar(
+        {chain: l.chain, dir: l.dir, lane: l.lane},
+        l.s,
+        this.showcaseVehicle(r, sc.kind),
+        l.speed,
+      );
+      if (sc.signal) pl.follower?.preferTurn(this.net!);
+      if (pl.follower) this.greenWave(pl.follower);
+    }
+    if (sc.subject === 'train' && sc.place.line !== undefined)
+      this.subjectTrain = this.trains!.stage(
+        sc.place.line,
+        sc.place.stationArc!,
+        sc.approach ?? 220,
+        r.int(0, 4),
+      );
+    // Busy streets from the first frame there.
+    const focus: Vec3 = sc.heli
+      ? [sc.heli.area.c[0], 0, sc.heli.area.c[1]]
+      : pl.pos;
+    this.traffic!.refill(
+      focus,
+      this.time,
+      pl.follower && pl.autopilot ? [pl.follower] : [],
+    );
+    for (let k = 0; k < 40; k++) this.peds!.update(0, sc.focus[0] ?? pl.pos);
+    this.stoppedFor = 0;
+    this.camera.startPlan(sc.shots, SHOWCASE_SHOTS[sc.subject]);
   }
 
   private pickVariant(kind: string, prefer?: string): number {
@@ -759,6 +1336,8 @@ export class Game {
    * place; the helicopter gets about one shot in five (runs of two or three).
    */
   private directorSwap() {
+    // (The showcase director chooses its own subjects.)
+    if (this.showcaseOn) return;
     const pl = this.player;
     // Waiting at lights or in a jam makes dull footage: move on sooner.
     if (pl.kind === 'car' && this.stoppedFor > 8) this.swapIn = 1;
@@ -897,6 +1476,7 @@ export class Game {
     prof?.start();
     resizeToCss(this.gpu.canvas);
     this.handleKeys();
+    if (!this.opts.lab && !this.freeze) this.updateShowcase(dt);
     this.time += dt;
     this.hour = (this.hour + dt * this.timeSpeed + 24) % 24;
     this.weather.update(dt, dt * this.timeSpeed);

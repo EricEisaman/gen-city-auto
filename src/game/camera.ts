@@ -8,6 +8,7 @@ import {clamp, lerp, type Vec3} from '../math/vec.ts';
 import type {Input} from './input.ts';
 import type {Player} from './player.ts';
 import type {RoadNet} from './roadnet.ts';
+import type {ShotPlan} from './showcase.ts';
 
 export type CameraMode = 'chase' | 'first' | 'hood' | 'orbit';
 export const CAMERA_MODES: CameraMode[] = ['chase', 'first', 'hood', 'orbit'];
@@ -30,7 +31,10 @@ interface ShotState {
   h: number;
   side: number;
   fov: number;
-  focus: 'player' | 'train';
+  focus: 'player' | 'train' | 'none';
+  /** Vista (focus 'none'): the point looked at and the eye's drift (m/s). */
+  look?: Vec3;
+  move?: Vec3;
   /** Seconds actually on screen (t can be forced by tests). */
   shown?: number;
   framing?: Framing;
@@ -47,6 +51,10 @@ const SHOTS = [
   'interior',
   'train',
   'wheel',
+  // Showcase only (weight 0 here: they come from a scene's shot plan).
+  'rear',
+  'trainpace',
+  'vista',
 ] as const;
 const WEIGHTS: Record<string, number> = {
   chase: 3.5,
@@ -59,6 +67,9 @@ const WEIGHTS: Record<string, number> = {
   interior: 0.3,
   train: 1.5,
   wheel: 0,
+  rear: 0,
+  trainpace: 0,
+  vista: 0,
 };
 /** Shots that read alike; two of these in a row look like a repeat. */
 const FAMILY: Record<string, string> = {
@@ -68,9 +79,19 @@ const FAMILY: Record<string, string> = {
   wheel: 'low',
   flyby: 'roadside',
   side: 'roadside',
+  rear: 'low',
 };
+/** Shots that look across the street past the subject: they need a background. */
+const ROADSIDE = new Set(['side', 'flyby']);
 /** Shots that frame the whole subject (others look along or out of it). */
-const WIDE = new Set(['flyby', 'telephoto', 'aerial', 'train', 'orbit']);
+const WIDE = new Set([
+  'flyby',
+  'telephoto',
+  'aerial',
+  'train',
+  'orbit',
+  'trainpace',
+]);
 /** Screenshots and the canvas are landscape; frustum tests assume 16:9. */
 const ASPECT = 16 / 9;
 /** Elevated deck slab, girders below and parapet above, relative to the line height. */
@@ -191,6 +212,19 @@ export class CameraSystem {
   private solidGrid = new Map<number, VehicleBox[]>();
   /** Nearby dynamic obstacles (pedestrians) the camera must not sit in or look through. */
   obstacles: () => [number, number, number, number][] = () => [];
+  /**
+   * Showcase director (game/showcase.ts): the scene's planned shots, taken
+   * in order at each cut, and the shots allowed once they run out (null:
+   * the follow director's full set). Roadside shots then also need an
+   * interesting background (see background()).
+   */
+  plan: ShotPlan[] = [];
+  allowed: Set<string> | null = null;
+  showcase = false;
+  /** The scene's vista (repeated, drifting back, if a vista scene waits). */
+  private lastVista: ShotPlan | null = null;
+  /** Signs within r of (x, z) (for background()). */
+  signsNear: (x: number, z: number, r: number) => number = () => 0;
 
   constructor(net: RoadNet) {
     this.net = net;
@@ -330,8 +364,14 @@ export class CameraSystem {
         return [at(2, 0, 0.8), at(20, 0, 1.5)];
       case 'side':
         return [at(1.5, s.side * 5, 1.1), at(0.5, 0, 0.9)];
+      case 'rear': {
+        const len = pl.info?.size[2] ?? 4.5;
+        return [at(-len / 2 - 2.4, s.side * 1.5, 0.95), at(-len * 0.3, 0, 0.7)];
+      }
       case 'orbit':
         return [this.orbitEye(p, s.a, pl.kind === 'heli'), at(0, 0, 1)];
+      case 'vista':
+        return [s.eye, s.look ?? at(0, 0, 1)];
       default:
         return [
           s.eye,
@@ -451,7 +491,8 @@ export class CameraSystem {
   }
 
   /** Points on the subject that should be on screen. */
-  private subjectPoints(pl: Player, focus: 'player' | 'train'): Vec3[] {
+  private subjectPoints(pl: Player, focus: ShotState['focus']): Vec3[] {
+    if (focus === 'none') return [];
     if (focus === 'train') {
       const cars = this.trainCars();
       const m = Math.floor(cars.length / 2);
@@ -495,7 +536,7 @@ export class CameraSystem {
     target: Vec3,
     fov: number,
     pl: Player,
-    focus: 'player' | 'train',
+    focus: ShotState['focus'],
   ) {
     return (
       !this.badEye(eye) &&
@@ -523,6 +564,107 @@ export class CameraSystem {
   private trainTarget(): Vec3 | null {
     const t = this.trainFocus();
     return t ? [t[0], t[1] + 2.2, t[2]] : null;
+  }
+
+  /** Showcase: cut now to a scene's shot plan (see plan, allowed). */
+  startPlan(plan: ShotPlan[], allowed: Set<string>) {
+    this.plan = plan.map(p => ({...p}));
+    this.allowed = allowed;
+    this.showcase = true;
+    this.lastVista = plan.find(p => p.name === 'vista') ?? null;
+    this.shot = null;
+    this.framings = [];
+    this.recent = [];
+    this.blockedFor = 0;
+  }
+
+  /** Back to the follow director. */
+  endPlan() {
+    this.plan = [];
+    this.allowed = null;
+    this.showcase = false;
+    this.lastVista = null;
+  }
+
+  /** Cut to a new shot on the next update (the subject changed). */
+  cut() {
+    this.shot = null;
+  }
+
+  /**
+   * A vista camera (no subject) worth cutting to: a free eye, nothing over
+   * the nearer part of the line of sight (the far end may be a tower face)
+   * and no wall filling the frame.
+   */
+  vistaClear(eye: Vec3, look: Vec3, fov: number) {
+    if (this.badEye(eye)) return false;
+    const mid: Vec3 = [
+      lerp(eye[0], look[0], 0.6),
+      lerp(eye[1], look[1], 0.6),
+      lerp(eye[2], look[2], 0.6),
+    ];
+    return !this.blocked(eye, mid) && !this.crowded(eye, look, fov);
+  }
+
+  /**
+   * How interesting the view past the subject is, for shots looking across
+   * the street: water (+2), an open view (+1.5) or a far one (+1), a tower
+   * (+1) and signs (up to +2) beyond it; a building face within 15 m of the
+   * subject costs 1.5. Below 1 is a blank wall: not worth a roadside shot.
+   */
+  background(eye: Vec3, target: Vec3): number {
+    let dx = target[0] - eye[0];
+    let dz = target[2] - eye[2];
+    const l = Math.hypot(dx, dz) || 1;
+    dx /= l;
+    dz /= l;
+    const y = target[1] + 1.5;
+    let hit = -1;
+    let water = false;
+    let tall = false;
+    for (let t = 2; t <= 150; t += 3) {
+      const x = target[0] + dx * t;
+      const z = target[2] + dz * t;
+      if (this.net.hf.sample(x, z) < SEA_LEVEL - 0.5) water = true;
+      const b = this.net.buildingAt(x, z);
+      if (b && y < b.base + b.height) {
+        hit = t;
+        tall = b.height > 50;
+        break;
+      }
+    }
+    let score = 0;
+    if (water) score += 2;
+    if (hit < 0) score += 1.5;
+    else if (hit > 60) score += 1;
+    if (tall) score += 1;
+    if (hit >= 0 && hit < 15) score -= 1.5;
+    // Signs on the frontage behind the subject (or along an open view).
+    const at = hit < 0 ? 25 : Math.min(hit, 40);
+    const n = this.signsNear(target[0] + dx * at, target[2] + dz * at, 20);
+    return score + Math.min(2, n * 0.3);
+  }
+
+  /** Eye and look point pacing the filmed train (shot 'trainpace'). */
+  private paceView(s: ShotState): {eye: Vec3; look: Vec3} | null {
+    const cars = this.trainCars();
+    if (cars.length < 2) return null;
+    const a = cars[0];
+    const b = cars[cars.length - 1];
+    let dx = a[0] - b[0];
+    let dz = a[2] - b[2];
+    const l = Math.hypot(dx, dz) || 1;
+    dx /= l;
+    dz /= l;
+    // Beside and ahead of the leading car, looking back at the second one:
+    // the train comes on toward the lens, the camera keeping pace.
+    const eye: Vec3 = [
+      a[0] - dz * s.r * s.side + dx * s.a,
+      a[1] + s.h,
+      a[2] + dx * s.r * s.side + dz * s.a,
+    ];
+    const m = cars[1];
+    return {eye, look: [m[0], m[1] + 2, m[2]]};
   }
 
   cycle() {
@@ -569,34 +711,72 @@ export class CameraSystem {
     return s;
   }
 
+  /** A vista shot from its plan (no subject: a drifting free camera). */
+  private vistaShot(v: ShotPlan): ShotState {
+    return {
+      name: 'vista',
+      t: 0,
+      dur: v.dur,
+      eye: [...v.eye!],
+      look: [...v.look!],
+      move: v.move ? [...v.move] : [0, 0, 0],
+      a: 0,
+      r: 0,
+      h: 0,
+      side: 1,
+      fov: v.fov ?? 0.9,
+      focus: 'none',
+    };
+  }
+
   private pickShot(pl: Player): ShotState {
     const isHeli = pl.kind === 'heli';
+    // The scene's next planned shot (showcase), else the weighted choice.
+    let want = this.plan.shift();
+    if (!want && this.allowed?.has('vista') && this.lastVista) {
+      // A vista scene outlasting its plan: the vista again, drifting back.
+      const v = this.lastVista;
+      const m = v.move ?? [0, 0, 0];
+      want = {...v, move: [-m[0], -m[1], -m[2]], dur: 4};
+      this.lastVista = want;
+    }
+    if (want?.name === 'vista' && want.eye && want.look)
+      return this.vistaShot(want);
     const names = SHOTS.filter(
       s =>
         s !== this.shot?.name &&
-        !(isHeli && ['bumper', 'interior', 'wheel', 'side'].includes(s)) &&
-        !(s === 'train' && !this.nearTrain(pl)),
+        (!this.allowed || this.allowed.has(s)) &&
+        s !== 'vista' &&
+        !(
+          isHeli && ['bumper', 'interior', 'wheel', 'side', 'rear'].includes(s)
+        ) &&
+        !(s === 'train' && !this.nearTrain(pl)) &&
+        !(s === 'trainpace' && this.trainCars().length < 2),
     );
     const last = this.recent[0];
     for (let attempt = 0; attempt < 16; attempt++) {
       const slow = pl.speed < 2;
-      const name = this.rng.weighted(
-        names,
-        names.map(n => {
-          let w = WEIGHTS[n];
-          if (slow && ['flyby', 'side', 'bumper', 'wheel'].includes(n))
-            w *= 0.2;
-          // Don't keep coming back to the same kind of framing.
-          const ago = this.recent.indexOf(n);
-          if (ago >= 0) w *= ago === 0 ? 0.15 : ago === 1 ? 0.4 : 0.7;
-          if (last && FAMILY[n] && FAMILY[n] === FAMILY[last]) w *= 0.3;
-          return w;
-        }),
-      );
+      const planned = !!want && attempt < 10;
+      if (!planned && !names.some(n => WEIGHTS[n] > 0)) break;
+      const name = planned
+        ? want!.name
+        : this.rng.weighted(
+            names,
+            names.map(n => {
+              let w = WEIGHTS[n];
+              if (slow && ['flyby', 'side', 'bumper', 'wheel'].includes(n))
+                w *= 0.2;
+              // Don't keep coming back to the same kind of framing.
+              const ago = this.recent.indexOf(n);
+              if (ago >= 0) w *= ago === 0 ? 0.15 : ago === 1 ? 0.4 : 0.7;
+              if (last && FAMILY[n] && FAMILY[n] === FAMILY[last]) w *= 0.3;
+              return w;
+            }),
+          );
       const s: ShotState = {
         name,
         t: 0,
-        dur: this.rng.range(5, 9),
+        dur: planned ? want!.dur : this.rng.range(5, 9),
         eye: [0, 0, 0],
         a: this.rng.range(0, Math.PI * 2),
         r: 0,
@@ -691,6 +871,17 @@ export class CameraSystem {
           s.fov = this.rng.range(0.6, 0.85);
           break;
         }
+        case 'trainpace': {
+          s.focus = 'train';
+          s.r = this.rng.range(11, 18);
+          s.a = this.rng.range(14, 28);
+          s.h = this.rng.range(1, 7);
+          s.fov = this.rng.range(0.6, 0.8);
+          const v = this.paceView(s);
+          if (!v) continue;
+          s.eye = v.eye;
+          break;
+        }
         case 'orbit': {
           // Check the arc the orbit will sweep; shorten the shot where it
           // would swing into a wall, reject it if that is almost at once.
@@ -723,11 +914,15 @@ export class CameraSystem {
         default:
           s.eye = [...p];
       }
-      if (['flyby', 'telephoto', 'aerial', 'train'].includes(name)) {
+      if (
+        ['flyby', 'telephoto', 'aerial', 'train', 'trainpace'].includes(name)
+      ) {
         const target =
-          s.focus === 'train'
-            ? this.trainTarget()!
-            : ([p[0], p[1] + 1, p[2]] as Vec3);
+          name === 'trainpace'
+            ? this.paceView(s)!.look
+            : s.focus === 'train'
+              ? this.trainTarget()!
+              : ([p[0], p[1] + 1, p[2]] as Vec3);
         if (!this.frameOk(s.eye, target, s.fov, pl, s.focus)) continue;
         // Static cameras: follow the car's path ahead and end the shot
         // before it drives behind something.
@@ -751,11 +946,32 @@ export class CameraSystem {
       // Same spot, same direction, or the same overpass as a recent cut.
       const [fe, fl] = this.shotFraming(s, pl);
       if (attempt < 10 && this.repeatsFraming(fe, fl)) continue;
+      // Showcase: no roadside shot against a blank wall.
+      if (this.showcase && ROADSIDE.has(name) && this.background(fe, fl) < 1)
+        continue;
       s.framing = {
         eye: fe,
         yaw: Math.atan2(fl[0] - fe[0], fl[2] - fe[2]),
         covered: this.covered(fe),
       };
+      return s;
+    }
+    // A train scene with no clear framing: pace the train anyway (beside
+    // the viaduct is rarely obstructed) rather than chase the parked car.
+    if (this.allowed?.has('trainpace') && this.trainCars().length >= 2) {
+      const s: ShotState = {
+        name: 'trainpace',
+        t: 0,
+        dur: 7,
+        eye: [0, 0, 0],
+        a: 20,
+        r: 14,
+        h: 4,
+        side: this.rng.chance(0.5) ? 1 : -1,
+        fov: 0.7,
+        focus: 'train',
+      };
+      s.eye = this.paceView(s)!.eye;
       return s;
     }
     return {
@@ -948,7 +1164,12 @@ export class CameraSystem {
     if (this.locked) return out;
     // Periodically verify the subject is visible; cut if blocked for a while.
     this.losTimer += dt;
-    if (this.shot && this.shot.name !== 'interior' && this.losTimer > 0.1) {
+    if (
+      this.shot &&
+      this.shot.name !== 'interior' &&
+      this.shot.focus !== 'none' &&
+      this.losTimer > 0.1
+    ) {
       this.losTimer = 0;
       const tgt =
         this.shot.focus === 'train'
@@ -1053,6 +1274,63 @@ export class CameraSystem {
         // Aim a little below a helicopter: it sits against the city, not the sky.
         const tgt: Vec3 = heli ? [focus[0], focus[1] - 6, focus[2]] : focus;
         return {eye, target: tgt, fov: 0.9, near: 0.1, interior: false};
+      }
+      case 'rear': {
+        // Low behind a rear corner: brake lights and turn signals up close.
+        const len = pl.info?.size[2] ?? 4.5;
+        const eye: Vec3 = [
+          p[0] - f[0] * (len / 2 + 2.4) + r[0] * s.side * 1.5,
+          p[1] + 0.95,
+          p[2] - f[1] * (len / 2 + 2.4) + r[2] * s.side * 1.5,
+        ];
+        return {
+          eye,
+          target: [
+            p[0] - f[0] * len * 0.3,
+            p[1] + 0.7,
+            p[2] - f[1] * len * 0.3,
+          ],
+          fov: 0.85,
+          near: 0.05,
+          interior: false,
+        };
+      }
+      case 'trainpace': {
+        const v = this.paceView(s);
+        if (!v) {
+          s.t = s.dur + 1;
+          return {
+            eye: [...this.eye],
+            target: [...this.look],
+            fov: s.fov,
+            near: 0.1,
+            interior: false,
+          };
+        }
+        this.eye = v.eye;
+        this.look = v.look;
+        return {
+          eye: v.eye,
+          target: v.look,
+          fov: s.fov,
+          near: 0.1,
+          interior: false,
+        };
+      }
+      case 'vista': {
+        const m = s.move ?? [0, 0, 0];
+        s.eye = [
+          s.eye[0] + m[0] * dt,
+          s.eye[1] + m[1] * dt,
+          s.eye[2] + m[2] * dt,
+        ];
+        return {
+          eye: [...s.eye],
+          target: [...(s.look ?? focus)],
+          fov: s.fov,
+          near: 0.5,
+          interior: false,
+        };
       }
       case 'side': {
         const eye: Vec3 = [

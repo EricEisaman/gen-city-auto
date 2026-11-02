@@ -62,6 +62,12 @@ async function main() {
     : undefined;
   const spawn = params.get('spawn')?.split(',').map(Number) as
     [number, number] | undefined;
+  // Links that pin the view, the vehicle, the place or the camera (tests,
+  // the profiler, shared views) never get the showcase director.
+  const pinned =
+    ['shot', 'freecam', 'vehicle', 'probe', 'lab', 'prof', 'spawn', 'cam'].some(
+      k => params.has(k),
+    ) || params.get('director') === '0';
   const game = new Game(gpu, {
     cityType,
     seed: num('seed', 1),
@@ -76,6 +82,7 @@ async function main() {
       !params.has('freecam') &&
       !params.has('probe') &&
       params.get('swap') !== '0',
+    showcase: !pinned,
     vehicle: params.get('vehicle') ?? 'sports',
     spawn,
     shot: params.get('shot') ?? undefined,

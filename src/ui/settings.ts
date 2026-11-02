@@ -45,6 +45,12 @@ export interface Settings {
    * no farthest shadow cascade (see Game.applySettings).
    */
   lean: boolean;
+  /**
+   * The auto director when the demo runs unattended: 'showcase' plays a
+   * programme of scenes across the city (game/showcase.ts), 'follow'
+   * films one vehicle wherever it drives.
+   */
+  director: 'showcase' | 'follow';
 }
 
 export const DEFAULTS: Settings = {
@@ -70,6 +76,7 @@ export const DEFAULTS: Settings = {
   readout: false,
   help: false,
   lean: false,
+  director: 'showcase',
 };
 
 /**
@@ -163,6 +170,8 @@ export interface Field {
   options: Opt[];
   /** Set by the quality preset. */
   preset?: boolean;
+  /** Shown with the demo options at the top of the menu, not under graphics. */
+  demo?: boolean;
 }
 
 const pct = (v: number[]) => v.map((x): Opt => [`${Math.round(x * 100)}%`, x]);
@@ -368,6 +377,15 @@ export const FIELDS: Field[] = [
       ['On', true],
     ],
   },
+  {
+    key: 'director',
+    label: 'Director style',
+    demo: true,
+    options: [
+      ['Showcase', 'showcase'],
+      ['Follow', 'follow'],
+    ],
+  },
 ];
 
 const KEY = 'gen-city-auto/settings/v1';
@@ -437,6 +455,9 @@ export function urlOverrides(params: URLSearchParams): Partial<Settings> {
   for (const f of FIELDS)
     if (f.key !== 'scale' && f.key in o && !valid(f, o[f.key])) delete o[f.key];
   if (params.get('readout') === '1') o.readout = true;
+  const show = params.get('showcase');
+  if (show === '1' || show === '0')
+    o.director = show === '1' ? 'showcase' : 'follow';
   const phone = params.get('phone');
   if (phone === '1' || phone === '0') o.lean = phone === '1';
   return o;
