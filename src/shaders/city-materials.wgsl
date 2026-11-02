@@ -156,8 +156,18 @@ fn paintColor(p: u32) -> vec3f {
   if (p == 0x92u) { return vec3f(0.8, 0.55, 0.04); }
   // New York's dark green signal and lamp-post paint (gen-tile NYC_GREEN).
   if (p == 0x96u) { return vec3f(0.03, 0.085, 0.05); }
-  // Rail line colour (station bands): JR-style green.
-  if (p == 0x0cu) { return vec3f(0.06, 0.46, 0.26); }
+  // New York's third-rail cover boards (gen-base THIRD_RAIL_BOARD):
+  // weathered brown-grey fibreglass.
+  if (p == 0x98u) { return vec3f(0.24, 0.215, 0.18); }
+  // Citi Bike blue (bike-share frames and docks).
+  if (p == 0x99u) { return vec3f(0.02, 0.27, 0.62); }
+  // New York stoops (gen-tile BROWNSTONE, DOOR_WOOD): brown sandstone,
+  // and a dark stained door.
+  if (p == 0x9au) { return vec3f(0.3, 0.19, 0.14); }
+  if (p == 0x9bu) { return vec3f(0.15, 0.075, 0.04); }
+  // Rail line colour (station bands): JR-style green; New York's el
+  // stations a dark steel grey-green.
+  if (p == 0x0cu) { return select(vec3f(0.06, 0.46, 0.26), vec3f(0.1, 0.13, 0.115), signLocale() == 1u); }
   if (p == 0x80u) { return vec3f(0.5, 0.5, 0.5); }
   if (p >= 0xd0u && p < 0xf0u) { return vec3f(0.62, 0.62, 0.6); }
   let h = hashu(p * 2654435761u);
@@ -4379,7 +4389,8 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   let foot = max(length(dWorldX), length(dWorldY));
   let kind = aux & 3u;
   let apron = (aux & 4u) != 0u;
-  let plant = (aux & 8u) != 0u;
+  // (New York has no hedge strip: paved, its planters stand on the walk.)
+  let plant = (aux & 8u) != 0u && signLocale() != 1u;
   let bw = select(f32((aux >> 8u) & 0xffu) * 0.02, 2.5, ((aux >> 8u) & 0xffu) == 0u);
   let dist = distance(world, frame.camPos.xyz);
   let y = uv.y;
@@ -4811,6 +4822,24 @@ fn coverMat(world: vec3f, n: vec3f, uv: vec2f, span: f32, aux: u32) -> Surf {
 fn hedgeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
   if (param == 2u) { return coverMat(world, n, uv, 1.0, aux); }
+  if (param == 3u) {
+    // New York's open tree pit (gen-tile TREE_PIT_SOIL): dark loam, lumps
+    // and pebbles, scattered leaf litter, a ring of bare earth round the
+    // trunk.
+    let q = world.xz;
+    let lump = valueNoise(q * 9.0) * 0.6 + valueNoise(q * 31.0) * 0.4;
+    var a = mix(vec3f(0.085, 0.065, 0.045), vec3f(0.16, 0.125, 0.09), lump);
+    let peb = step(0.82, valueNoise(q * 55.0));
+    a = mix(a, vec3f(0.3, 0.28, 0.25), peb * 0.6);
+    let lit = smoothstep(0.62, 0.7, valueNoise(q * 14.0 + 7.0));
+    a = mix(a, vec3f(0.32, 0.24, 0.1), lit * 0.7);
+    let r = length(uv - 0.5);
+    if (r < 0.12) { a = vec3f(0.12, 0.09, 0.07); }
+    s.albedo = a;
+    s.rough = 0.95;
+    applyWetness(&s, world, 0.3, 0.6);
+    return s;
+  }
   if (param == 1u) {
     let p = (uv - 0.5) * 1.2;
     let r = length(p);
@@ -5609,9 +5638,22 @@ fn fauxLatin(p: vec2f, h: u32) -> f32 {
 
 // Distance to the strokes' centre lines of Latin capital `i` (fauxLatin's
 // 0.52 x 0.72 segment letters): A E H I L N O R S T C U P M K Y, then G W
-// D X B F (D drawn as O); 31 or more is a space.
+// D X B F; 31 or more is a space. D has its own strokes: a full stem, the
+// top and bottom bars stopping short and cut corners down to a shortened
+// right side, so it does not read as O.
 fn latinDist(p: vec2f, i: u32) -> f32 {
   if (i >= 22u) { return 1e3; }
+  if (i == 18u) {
+    let W = 0.26;
+    let H = 0.36;
+    let c = 0.2;
+    var d = rdSeg(p, vec2f(-W, H), vec2f(-W, -H));
+    d = min(d, rdSeg(p, vec2f(-W, H), vec2f(W - c, H)));
+    d = min(d, rdSeg(p, vec2f(-W, -H), vec2f(W - c, -H)));
+    d = min(d, rdSeg(p, vec2f(W - c, H), vec2f(W, H - c)));
+    d = min(d, rdSeg(p, vec2f(W - c, -H), vec2f(W, -H + c)));
+    return min(d, rdSeg(p, vec2f(W, H - c), vec2f(W, -H + c)));
+  }
   let letters = array<u32, 22>(247u, 121u, 246u, 777u, 56u, 9270u, 63u, 8435u, 237u, 769u, 57u, 62u, 243u, 3126u, 10352u, 3584u, 189u, 12342u, 63u, 15360u, 255u, 113u);
   let m = letters[i];
   let W = 0.26;
@@ -7523,19 +7565,22 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       a = mix(a, vec3f(0.37, 0.365, 0.35) * tex * (1.0 - 0.5 * cj) * (1.0 - 0.15 * smoothstep(0.5, 0.8, valueNoise(vec2f(x * 3.0, uy * 0.7)))), cope);
       a *= 1.0 - 0.45 * bandF(x, 0.39, 0.42, fu.x);
       // White edge line, 15 cm, fresh paint (a little worn at the joints).
-      let wl = bandF(x, 0.05, 0.2, fu.x);
+      // New York: none; its yellow warning strip runs along the edge.
+      let ny = signLocale() == 1u;
+      let wl = bandF(x, 0.05, 0.2, fu.x) * select(1.0, 0.0, ny);
       a = mix(a, vec3f(0.9, 0.9, 0.87) * mix(0.9, 1.0, d.a) * (1.0 - 0.25 * cj), wl);
       s.rough = mix(s.rough, 0.5, wl);
       // Yellow tactile warning strip (0.3 m blocks of domed dots on a 75 mm
       // grid). The dots are drawn into the albedo too (dark gaps, lit caps)
       // so they read in canopy shade, and keep a speckled mean tone and the
       // block joints out to the far end.
-      let tk = bandF(x, 0.8, 1.1, fu.x);
+      let tx0 = select(0.8, 0.0, ny);
+      let tk = bandF(x, tx0, select(1.1, 0.6, ny), fu.x);
       if (tk > 0.0) {
         var tu: vec3f;
         var tv: vec3f;
         uvDirs(&tu, &tv);
-        let q = fract(vec2f(x - 0.8, uy) / 0.075) - 0.5;
+        let q = fract(vec2f(x - tx0, uy) / 0.075) - 0.5;
         let r = length(q);
         let vis = 1.0 - smoothstep(0.03, 0.065, fp);
         let w = min(fp / 0.075 * 0.6, 0.3);
@@ -7544,23 +7589,26 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         s.normal = normalize(mix(s.normal, normalize(n + (tu * q.x + tv * q.y) / max(r, 1e-3) * slope * 1.6), vis * tk));
         let ring = smoothstep(0.28, 0.33, r) * (1.0 - smoothstep(0.36, 0.46, r));
         let cap = 1.0 - smoothstep(0.0, 0.16, r);
-        let tb = vec2f(floor((x - 0.8) / 0.3), floor(uy / 0.3));
+        let tb = vec2f(floor((x - tx0) / 0.3), floor(uy / 0.3));
         let ht = hash21(tb + 3.7);
         // Blocks: most a faded ochre, a few fresh replacements.
         var ya = select(vec3f(0.8, 0.6, 0.06), vec3f(0.92, 0.72, 0.04), ht < 0.15) * mix(0.88, 1.05, d.a);
         ya *= mix(0.78, 1.0 - 0.65 * ring - 0.5 * (1.0 - dome) + 0.25 * cap, vis);
-        ya *= 1.0 - 0.6 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.012 / 0.3), jointCov((x - 0.8) / 0.3, fu.x / 0.3, 0.012 / 0.3));
+        ya *= 1.0 - 0.6 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.012 / 0.3), jointCov((x - tx0) / 0.3, fu.x / 0.3, 0.012 / 0.3));
         // Boot-scuffed grey wear on the dots, black tyre / sole marks.
         ya = mix(ya, vec3f(0.4, 0.38, 0.33), 0.4 * smoothstep(0.55, 0.8, valueNoise(vec2f(x * 4.0, uy * 0.6))));
         a = mix(a, ya, tk);
         s.ao = mix(s.ao, mix(0.9, 1.0 - 0.4 * ring, vis), tk);
         s.rough = mix(s.rough, 0.55, tk);
       }
-      // Car-stop marks every 20 m: a white triangle and a numeral plate.
-      let ay = (fract(uy / 20.0) - 0.5) * 20.0;
-      let tri = step(0.25, x) * step(x, 0.6) * step(abs(ay), 0.15 * (x - 0.25) / 0.35);
-      let num = bandF(x, 0.65, 0.8, fu.x) * bandF(ay, -0.08, 0.08, fu.y);
-      a = mix(a, vec3f(0.82, 0.82, 0.8), max(tri * fine, num * (1.0 - smoothstep(0.03, 0.06, fp))));
+      // Car-stop marks every 20 m: a white triangle and a numeral plate
+      // (Tokyo).
+      if (!ny) {
+        let ay = (fract(uy / 20.0) - 0.5) * 20.0;
+        let tri = step(0.25, x) * step(x, 0.6) * step(abs(ay), 0.15 * (x - 0.25) / 0.35);
+        let num = bandF(x, 0.65, 0.8, fu.x) * bandF(ay, -0.08, 0.08, fu.y);
+        a = mix(a, vec3f(0.82, 0.82, 0.8), max(tri * fine, num * (1.0 - smoothstep(0.03, 0.06, fp))));
+      }
       // The slab is laid nearly flat: it ponds in the rain.
       flat = 0.75;
       porous = 0.4;
@@ -8109,9 +8157,12 @@ fn galvSteel(world: vec3f, n: vec3f, uv: vec2f, aux: u32) -> Surf {
 // road-facing web (seed bit 0x80), a yellow clearance board.
 fn railGirder(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
   let seed = param & 0x7fu;
-  // Blue-grey, JR teal or rust-brown (oxide primer showing through).
+  // Blue-grey, JR teal or rust-brown (oxide primer showing through); New
+  // York's els dark green or dark grey.
   let pal = array<vec3f, 3>(vec3f(0.36, 0.42, 0.5), vec3f(0.2, 0.4, 0.37), vec3f(0.28, 0.13, 0.065));
-  var s = paintedSteelC(world, n, seed, pal[seed % 3u] * mix(0.94, 1.06, hashuf(seed * 0x9e37u)));
+  let palNy = array<vec3f, 3>(vec3f(0.11, 0.17, 0.13), vec3f(0.2, 0.21, 0.22), vec3f(0.09, 0.14, 0.11));
+  let pc = select(pal[seed % 3u], palNy[seed % 3u], signLocale() == 1u);
+  var s = paintedSteelC(world, n, seed, pc * mix(0.94, 1.06, hashuf(seed * 0x9e37u)));
   if (abs(n.y) > 0.5) { return s; }
   let fp = railFoot();
   let fu = uvFoot();
@@ -8563,14 +8614,28 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       // units): weathered, matte paint. At 0.5 a grazing golden-hour sun lit
       // them up near-white against the wall.
       if (param == 0x90u || param == 0x91u || param == 0x96u || (param >= 0xd0u && param < 0xf0u)) { s.rough = 0.7; }
+      if (param == 0x9au) { s.rough = 0.88; s.metal = 0.0; }
       if (param == POLE_PAINT) {
         // (Grey in Tokyo, New York's dark green.)
         s = roadPole(world, n, uv, paintColor(select(0x90u, 0x96u, signLocale() == 1u)), 0.08);
       } else if (param == CABINET || param == UTIL_POLE || (param >= SIGNAL_BORDER && param <= UTIL_PLATE)) {
         s = roadFurniture(world, n, uv, param, aux);
+      } else if (param == 0x9cu) {
+        // New York tree guards and stoop railings (gen-tile RAIL_IRON).
+        s = paintedSteelC(world, n, 0x9cu, vec3f(0.03, 0.03, 0.032));
       } else if (param == 0x97u) {
-        // New York fire escapes (gen-tile FIRE_ESCAPE): black paint over rust.
-        s = paintedSteelC(world, n, 0x97u, vec3f(0.022, 0.022, 0.024));
+        // New York fire escapes (gen-tile FIRE_ESCAPE): black paint over
+        // rust, a shade off black in a satin coat (its sheen picks up
+        // street and window light). At night a faint warm spill from the
+        // lit windows behind (by floor and bay, not every one), strongest
+        // on the faces turned up and on the edges seen at a grazing angle,
+        // so the ironwork still reads against a dark wall.
+        s = paintedSteelC(world, n, 0x97u, vec3f(0.034, 0.033, 0.034));
+        s.rough = min(s.rough, 0.42);
+        let lit = step(0.4, hash21(floor(world.xz / 2.6) + floor(world.y / 3.2) * 7.3));
+        let vd = normalize(frame.camPos.xyz - world);
+        let rim = pow(1.0 - abs(dot(n, vd)), 2.0);
+        s.emissive += vec3f(1.0, 0.72, 0.42) * nightLight() * mix(0.3, 1.0, lit) * (0.0096 + 0.0064 * max(n.y, 0.0) + 0.024 * rim);
       } else if ((param & ~0xffu) == PAINT_STEEL) {
         s = paintedSteel(world, n, param);
       } else if ((param & ~0xffu) == RAIL_GIRDER) {
