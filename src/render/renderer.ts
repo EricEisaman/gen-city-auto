@@ -68,6 +68,18 @@ export interface ViewParams {
 }
 
 /** Hook for other systems (vehicles, rain) to add draws into renderer passes. */
+/**
+ * This frame's culling volumes for hooks that cull on the CPU (vehicles):
+ * planes (xyz inward normal, w) of the main view, and per shadow cascade the
+ * planes a caster must be inside to shade a visible pixel (its receivers
+ * swept toward the light, as the city's cull uses, plus the cascade's own
+ * box); null when that cascade is not drawn this frame.
+ */
+export interface HookCull {
+  view: Float32Array;
+  casters: (Float32Array | null)[];
+}
+
 export interface DrawHook {
   /** Pass label suffix for the GPU profiler. */
   readonly name?: string;
@@ -92,6 +104,16 @@ const CASCADES = 4;
 const VIEWS = 1 + CASCADES;
 const MAX_LIGHTS = 1024;
 const TERRAIN_GRID = 32;
+
+/** The same binding resource (buffers by buffer, offset and size)? */
+function sameResource(
+  a: GPUBindingResource | null,
+  b: GPUBindingResource | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || !('buffer' in a) || !('buffer' in b)) return false;
+  return a.buffer === b.buffer && a.offset === b.offset && a.size === b.size;
+}
 
 const halton = (i: number, b: number) => {
   let f = 1;
@@ -159,6 +181,27 @@ export class Renderer {
   cullStats = false;
   /** Scales the fine-detail cull distances (cmesh CLUSTER_FAR_SHIFT). */
   farCullScale = 1;
+  /**
+   * Terrain quadtree: a patch splits while the eye is nearer than
+   * terrainSplit x its size, down to terrainMinPatch metres (32 x 32 quads
+   * each; the heightmap has 4 m cells).
+   */
+  terrainSplit = 1.4;
+  terrainMinPatch = 64;
+  /**
+   * Main view: detail clusters (cmesh flags bit 0) smaller than this radius
+   * / distance are culled.
+   */
+  detailCull = 0.0015;
+  /** Main view: city clusters wholly farther than this are culled (m; 0 = no limit). */
+  cityMaxDist = 0;
+  private bgCache = new Map<
+    string,
+    {entries: (GPUBindingResource | null)[]; bg: GPUBindGroup}[]
+  >();
+  private views = new WeakMap<GPUTexture, Map<string, GPUTextureView>>();
+  /** Culling volumes of the frame being rendered (set before hook prepare). */
+  hookCull: HookCull | null = null;
   /**
    * Internal render resolution as a fraction of the canvas (per axis). Below
    * 1 the G-buffer and every screen-space pass run smaller and TAA upsamples
@@ -778,20 +821,50 @@ export class Renderer {
     this.p = Object.fromEntries(entries.map(([k], i) => [k, done[i]]));
   }
 
+  /**
+   * Bind group for `pipeline`'s group, reused from earlier frames while its
+   * resources are the same objects (views come from view(), so they are
+   * stable until a texture is recreated). Creating ~100 bind groups and
+   * views every frame cost CPU time, and each is a GPU-process round trip
+   * in Safari.
+   */
   private bg(
     pipeline: string,
     group: number,
     entries: (GPUBindingResource | null)[],
     label: string,
   ): GPUBindGroup {
+    const key = `${pipeline}|${group}|${label}`;
+    // (Two per key: ping-pong textures alternate between two sets.)
+    let slots = this.bgCache.get(key);
+    if (!slots) this.bgCache.set(key, (slots = []));
+    for (const hit of slots)
+      if (
+        hit.entries.length === entries.length &&
+        hit.entries.every((e, i) => sameResource(e, entries[i]))
+      )
+        return hit.bg;
     const p = this.p[pipeline];
-    return this.device.createBindGroup({
+    const bg = this.device.createBindGroup({
       label,
       layout: p.getBindGroupLayout(group),
       entries: entries
         .map((resource, binding) => ({binding, resource}))
         .filter(e => e.resource !== null) as GPUBindGroupEntry[],
     });
+    slots.unshift({entries, bg});
+    slots.length = Math.min(slots.length, 2);
+    return bg;
+  }
+
+  /** A view of `tex`, made once per texture and descriptor. */
+  private view(tex: GPUTexture, desc?: GPUTextureViewDescriptor) {
+    let m = this.views.get(tex);
+    if (!m) this.views.set(tex, (m = new Map()));
+    const key = desc ? JSON.stringify(desc) : '';
+    let v = m.get(key);
+    if (!v) m.set(key, (v = tex.createView(desc)));
+    return v;
   }
 
   private ubuf(b: GPUBuffer): GPUBufferBinding {
@@ -1370,7 +1443,15 @@ export class Renderer {
     );
     f.set([w, h, mips, this.off('farcull') ? 0 : this.farCullScale], 72);
     const lists = v === 0 ? LISTS : 1;
-    f.set([farDepth, v === 0 && !this.off('matgroup') ? 1 : 0, lists], 76);
+    f.set(
+      [
+        farDepth,
+        v === 0 && !this.off('matgroup') ? 1 : 0,
+        lists,
+        v === 0 ? this.cityMaxDist : 0,
+      ],
+      76,
+    );
     this.device.queue.writeBuffer(this.cullViewBuffers[v], 0, data);
     // Reset the indirect draws: 128 triangles * 3 vertices per instance
     // (cluster).
@@ -1392,7 +1473,11 @@ export class Renderer {
       )
         return;
       const d = Math.hypot(eye[0] - cx, eye[2] - cz, Math.max(0, eye[1] - 60));
-      if (d < size * 1.4 && size > 64 && patches.length < 2000 * 4) {
+      if (
+        d < size * this.terrainSplit &&
+        size > this.terrainMinPatch &&
+        patches.length < 2000 * 4
+      ) {
         const h = size / 2;
         visit(x, z, h);
         visit(x + h, z, h);
@@ -1578,7 +1663,7 @@ export class Renderer {
       0,
       viewProjNoJ,
       v.eye,
-      0.0015,
+      this.detailCull,
       occl && this.useOcclusion,
       Math.ceil(w / 2),
       Math.ceil(h / 2),
@@ -1629,6 +1714,30 @@ export class Renderer {
             ),
       );
     }
+    this.hookCull = {
+      view: camPlanes,
+      casters: Array.from({length: CASCADES}, (_, c) =>
+        shadowsOn
+          ? new Float32Array([
+              ...(this.off('rcvcull')
+                ? []
+                : receiverPlanes(
+                    camPlanes,
+                    v.eye,
+                    fwd,
+                    c === 0 ? 0 : splits[c - 1],
+                    splits[c],
+                    lightDir,
+                    2 *
+                      (1.5 * (splits[c] / 1024) +
+                        (3 * this.cascadeRadii[c]) / this.shadowSize) +
+                      0.5,
+                  )),
+              ...frustumPlanes(this.cascadeMats[c]),
+            ])
+          : null,
+      ),
+    };
     this.updateTerrainPatches(v.eye);
 
     this.cpuProf?.mark('render setup');
@@ -1670,7 +1779,7 @@ export class Renderer {
           this.bg(
             'transmittance',
             1,
-            [this.transmittance.createView()],
+            [this.view(this.transmittance)],
             'bg/transmittance/out',
           ),
         );
@@ -1684,9 +1793,9 @@ export class Renderer {
             1,
             [
               null,
-              this.transmittance.createView(),
+              this.view(this.transmittance),
               null,
-              this.multiScat.createView(),
+              this.view(this.multiScat),
             ],
             'bg/multiscatter',
           ),
@@ -1710,7 +1819,7 @@ export class Renderer {
           this.bg(
             'cloudNoise',
             1,
-            [this.cloudNoise.createView()],
+            [this.view(this.cloudNoise)],
             'bg/cloud noise',
           ),
         );
@@ -1726,10 +1835,10 @@ export class Renderer {
           1,
           [
             null,
-            this.transmittance.createView(),
-            this.multiScat.createView(),
+            this.view(this.transmittance),
+            this.view(this.multiScat),
             null,
-            this.skyView.createView(),
+            this.view(this.skyView),
           ],
           'bg/sky view',
         ),
@@ -1744,11 +1853,11 @@ export class Renderer {
           1,
           [
             null,
-            this.transmittance.createView(),
-            this.multiScat.createView(),
+            this.view(this.transmittance),
+            this.view(this.multiScat),
             null,
             null,
-            this.apVolume.createView(),
+            this.view(this.apVolume),
           ],
           'bg/aerial perspective',
         ),
@@ -1756,12 +1865,20 @@ export class Renderer {
       pass.dispatchWorkgroups(4, 4);
 
       // Cluster culling for the main view and each shadow cascade.
-      const hizView = t.hiz.createView({label: 'hiz/all mips'});
+      const hizView = this.view(t.hiz, {label: 'hiz/all mips'});
       pass = this.compute(enc, 'cull');
       pass.setPipeline(this.p.cull as GPUComputePipeline);
       const groups = Math.ceil(Math.max(1, this.pool.clusterHighWater) / 64);
       for (let vi = 0; vi < VIEWS; vi++) {
         if (vi > 0 && !this.shadowRedraw[vi - 1]) continue;
+        // (Cascades not rendered need no cull.)
+        if (
+          vi > 0 &&
+          (!shadowsOn ||
+            (vi === 4 && this.off('c3')) ||
+            (vi === 3 && this.off('c2')))
+        )
+          continue;
         pass.setBindGroup(
           0,
           this.bg(
@@ -1807,7 +1924,7 @@ export class Renderer {
       const layer = (tex: GPUTexture, load: boolean) => ({
         colorAttachments: [],
         depthStencilAttachment: {
-          view: tex.createView({
+          view: this.view(tex, {
             dimension: '2d',
             baseArrayLayer: c,
             arrayLayerCount: 1,
@@ -1879,7 +1996,7 @@ export class Renderer {
           this.bg(
             'cityShadow',
             2,
-            [null, this.linear, this.leafTex.createView()],
+            [null, this.linear, this.view(this.leafTex)],
             `bg/city shadow/leaves${c}`,
           ),
         );
@@ -1911,13 +2028,13 @@ export class Renderer {
         enc,
         {
           colorAttachments: t.gbuf.map((tx, i) => ({
-            view: tx.createView(),
+            view: this.view(tx),
             loadOp: 'clear',
             storeOp: 'store',
             clearValue: i === 1 ? [0, 0, 1, 0] : [0, 0, 0, 0],
           })),
           depthStencilAttachment: {
-            view: t.depth.createView({label: 'gbuffer/depth view'}),
+            view: this.view(t.depth, {label: 'gbuffer/depth view'}),
             depthClearValue: 0,
             depthLoadOp: 'clear',
             depthStoreOp: 'store',
@@ -1946,10 +2063,10 @@ export class Renderer {
             pipe,
             2,
             [
-              this.signAtlas.createView(),
+              this.view(this.signAtlas),
               this.anisoClamp,
-              this.leafTex.createView(),
-              this.detailTex.createView({dimension: '2d-array'}),
+              this.view(this.leafTex),
+              this.view(this.detailTex, {dimension: '2d-array'}),
               this.detailSampler,
             ],
             `bg/${label}/textures`,
@@ -1983,8 +2100,8 @@ export class Renderer {
             'terrain',
             1,
             [
-              this.heightTex.createView(),
-              this.landTex.createView(),
+              this.view(this.heightTex),
+              this.view(this.landTex),
               this.ubuf(this.patchBuffer),
             ],
             'bg/terrain',
@@ -1998,7 +2115,7 @@ export class Renderer {
         pass.setBindGroup(0, frameG0('water'));
         pass.setBindGroup(
           1,
-          this.bg('water', 1, [this.heightTex.createView()], 'bg/water'),
+          this.bg('water', 1, [this.view(this.heightTex)], 'bg/water'),
         );
         if (!this.off('water')) pass.draw(64 * 64 * 6);
       }
@@ -2025,9 +2142,9 @@ export class Renderer {
           'hizFromDepth',
           1,
           [
-            t.depth.createView(),
+            this.view(t.depth),
             null,
-            t.hiz.createView({baseMipLevel: 0, mipLevelCount: 1}),
+            this.view(t.hiz, {baseMipLevel: 0, mipLevelCount: 1}),
           ],
           'bg/hiz/mip0',
         ),
@@ -2046,8 +2163,8 @@ export class Renderer {
             1,
             [
               null,
-              t.hiz.createView({baseMipLevel: m - 1, mipLevelCount: 1}),
-              t.hiz.createView({baseMipLevel: m, mipLevelCount: 1}),
+              this.view(t.hiz, {baseMipLevel: m - 1, mipLevelCount: 1}),
+              this.view(t.hiz, {baseMipLevel: m, mipLevelCount: 1}),
             ],
             `bg/hiz/mip${m}`,
           ),
@@ -2079,10 +2196,10 @@ export class Renderer {
             'clouds',
             1,
             [
-              this.cloudNoise.createView(),
-              cIn.createView(),
-              cOut.createView(),
-              t.hiz.createView({label: 'hiz/all mips (clouds)'}),
+              this.view(this.cloudNoise),
+              this.view(cIn),
+              this.view(cOut),
+              this.view(t.hiz, {label: 'hiz/all mips (clouds)'}),
             ],
             'bg/clouds',
           ),
@@ -2107,10 +2224,10 @@ export class Renderer {
             'ao',
             1,
             [
-              t.depth.createView(),
-              t.gbuf[1].createView(),
-              t.ao.createView(),
-              (this.skylineTex ?? this.heightTex!).createView(),
+              this.view(t.depth),
+              this.view(t.gbuf[1]),
+              this.view(t.ao),
+              this.view(this.skylineTex ?? this.heightTex!),
             ],
             'bg/ssao',
           ),
@@ -2134,25 +2251,25 @@ export class Renderer {
           pipe,
           1,
           [
-            main ? t.gbuf[0].createView() : null,
-            t.gbuf[1].createView(),
-            t.gbuf[2].createView(),
-            t.depth.createView(),
-            main ? this.shadowMap.createView({dimension: '2d-array'}) : null,
+            main ? this.view(t.gbuf[0]) : null,
+            this.view(t.gbuf[1]),
+            this.view(t.gbuf[2]),
+            this.view(t.depth),
+            main ? this.view(this.shadowMap, {dimension: '2d-array'}) : null,
             main ? this.shadowSampler : null,
-            main ? this.skyView.createView() : null,
-            main ? this.transmittance.createView() : null,
-            main ? this.apVolume.createView() : null,
+            main ? this.view(this.skyView) : null,
+            main ? this.view(this.transmittance) : null,
+            main ? this.view(this.apVolume) : null,
             this.linear,
-            main ? this.clouds[(this.frameIndex + 1) % 2].createView() : null,
-            refl ? histPrev.createView() : null,
-            main ? t.lit.createView() : null,
+            main ? this.view(this.clouds[(this.frameIndex + 1) % 2]) : null,
+            refl ? this.view(histPrev) : null,
+            main ? this.view(t.lit) : null,
             main ? this.ubuf(this.lightBuffer) : null,
-            main ? t.ao.createView() : null,
+            main ? this.view(t.ao) : null,
             main ? this.ubuf(this.contactBuffer) : null,
-            (this.skylineTex ?? this.heightTex!).createView(),
-            main ? t.refl[0].createView() : null,
-            main ? t.refl[1].createView() : null,
+            this.view(this.skylineTex ?? this.heightTex!),
+            main ? this.view(t.refl[0]) : null,
+            main ? this.view(t.refl[1]) : null,
           ],
           `bg/${pipe}/inputs`,
         );
@@ -2175,7 +2292,7 @@ export class Renderer {
           this.bg(
             'reflect',
             2,
-            [t.refl[0].createView(), t.refl[1].createView()],
+            [this.view(t.refl[0]), this.view(t.refl[1])],
             'bg/reflect/out',
           ),
         );
@@ -2205,10 +2322,10 @@ export class Renderer {
         enc,
         {
           colorAttachments: [
-            {view: t.lit.createView(), loadOp: 'load', storeOp: 'store'},
+            {view: this.view(t.lit), loadOp: 'load', storeOp: 'store'},
           ],
           depthStencilAttachment: {
-            view: t.depth.createView(),
+            view: this.view(t.depth),
             depthReadOnly: true,
           },
         },
@@ -2255,11 +2372,11 @@ export class Renderer {
             tp,
             1,
             [
-              t.lit.createView(),
-              histPrev.createView(),
-              t.gbuf[3].createView(),
-              t.depth.createView(),
-              histNext.createView(),
+              this.view(t.lit),
+              this.view(histPrev),
+              this.view(t.gbuf[3]),
+              this.view(t.depth),
+              this.view(histNext),
             ],
             `bg/${tp}`,
           ),
@@ -2275,7 +2392,7 @@ export class Renderer {
           this.bg(
             'godRays',
             1,
-            [t.depth.createView(), t.rays.createView()],
+            [this.view(t.depth), this.view(t.rays)],
             'bg/god rays',
           ),
         );
@@ -2295,10 +2412,10 @@ export class Renderer {
             'motionDof',
             1,
             [
-              histNext.createView(),
-              t.gbuf[3].createView(),
-              t.depth.createView(),
-              mbOut.createView(),
+              this.view(histNext),
+              this.view(t.gbuf[3]),
+              this.view(t.depth),
+              this.view(mbOut),
             ],
             'bg/motion blur + dof',
           ),
@@ -2318,7 +2435,7 @@ export class Renderer {
             this.bg(
               'bloomDown',
               1,
-              [src.createView(), o.bloomDown[i].createView()],
+              [this.view(src), this.view(o.bloomDown[i])],
               `bg/bloom down ${i}`,
             ),
           );
@@ -2338,9 +2455,9 @@ export class Renderer {
               'bloomUp',
               1,
               [
-                src.createView(),
-                o.bloomUp[i].createView(),
-                o.bloomDown[i].createView(),
+                this.view(src),
+                this.view(o.bloomUp[i]),
+                this.view(o.bloomDown[i]),
               ],
               `bg/bloom up ${i}`,
             ),
@@ -2359,7 +2476,7 @@ export class Renderer {
         this.bg(
           'exposure',
           1,
-          [o.bloomDown[3].createView(), this.ubuf(this.exposureBuffer)],
+          [this.view(o.bloomDown[3]), this.ubuf(this.exposureBuffer)],
           'bg/exposure',
         ),
       );
@@ -2402,10 +2519,10 @@ export class Renderer {
           'tonemap',
           1,
           [
-            post.createView(),
-            o.bloomUp[0].createView(),
+            this.view(post),
+            this.view(o.bloomUp[0]),
             this.ubuf(this.exposureBuffer),
-            t.rays.createView(),
+            this.view(t.rays),
           ],
           'bg/tonemap',
         ),

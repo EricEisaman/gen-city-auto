@@ -20,6 +20,11 @@ export class LightSprites implements DrawHook {
   private buffers: GPUBuffer[] = [];
   private segCount = 0;
   private lampCount = 0;
+  /**
+   * False while sprites.wgsl lightsOn() is 0 (day, dry): every vertex would
+   * be culled, so the draws are skipped (~1M degenerate triangles).
+   */
+  lightsOn: () => boolean = () => true;
 
   constructor(
     device: GPUDevice,
@@ -100,7 +105,7 @@ export class LightSprites implements DrawHook {
   }
 
   forward(pass: GPURenderPassEncoder) {
-    if (!this.bindGroups.length) return;
+    if (!this.bindGroups.length || !this.lightsOn()) return;
     if (this.segCount) {
       pass.setPipeline(this.cars);
       pass.setBindGroup(0, this.bindGroups[0]);

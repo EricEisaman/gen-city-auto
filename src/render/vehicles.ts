@@ -11,7 +11,7 @@ import surfaceWgsl from '../shaders/surface.wgsl';
 import vehicleWgsl from '../shaders/vehicle.wgsl';
 import {designs} from '../vehicles/designs/index.ts';
 import type {VehicleVariant} from '../workers/vehicle-worker.ts';
-import type {DrawHook, Renderer} from './renderer.ts';
+import type {DrawHook, HookCull, Renderer} from './renderer.ts';
 
 const INSTANCE_FLOATS = 44;
 
@@ -20,9 +20,33 @@ interface Group {
   lod: number;
   body: boolean;
   data: Float32Array;
+  /** Per instance: the index of its vehicle (add() call) this frame. */
+  vid: Uint32Array;
   n: number;
 }
-const MAX_INSTANCES = 8192;
+/**
+ * Instances uploaded per frame, over every pass: each pass (the view, each
+ * shadow cascade) gets its own culled copy of the instances it draws.
+ */
+const MAX_INSTANCES = 16384;
+/** Passes with their own instance lists: 0 the view, 1 + c cascade c. */
+const PASSES = 4;
+
+interface Draw {
+  part: Part;
+  first: number;
+  count: number;
+  body: boolean;
+  lod: number;
+}
+
+/** Sphere (x, y, z, r) inside every plane (xyz inward normal, w)? */
+function inside(pl: Float32Array, x: number, y: number, z: number, r: number) {
+  for (let i = 0; i < pl.length; i += 4)
+    if (pl[i] * x + pl[i + 1] * y + pl[i + 2] * z + pl[i + 3] < -r)
+      return false;
+  return true;
+}
 
 interface Part {
   firstIndex: number;
@@ -192,13 +216,26 @@ export class VehicleRenderer implements DrawHook {
   private ib: GPUBuffer | null = null;
   private instanceBuffer: GPUBuffer;
   private instanceData = new Float32Array(MAX_INSTANCES * INSTANCE_FLOATS);
-  private draws: {
-    part: Part;
-    first: number;
-    count: number;
-    body: boolean;
-    lod: number;
-  }[] = [];
+  /** Per pass (0 the view, 1 + c shadow cascade c): this frame's draws. */
+  private draws: Draw[][] = Array.from({length: PASSES}, () => []);
+  /** This frame's vehicles: bounding sphere (x, y, z, r) per add() call. */
+  private bounds = new Float32Array(1024 * 4);
+  private masks = new Uint8Array(1024);
+  private vehicleCount = 0;
+  private vid = 0;
+  /** False: every vehicle in every pass (A/B checks of the culling). */
+  cull = true;
+  /** Vehicles farther than this are not drawn (m; plus 10 x their size). */
+  maxDist = 900;
+  /** Scales the LOD switch distances (below 1: coarser LODs nearer). */
+  lodScale = 1;
+  /**
+   * Distance (m, for a 4.5 m car; scaled by size) past which the far LOD 3
+   * is drawn. Infinity = never (the default look).
+   */
+  farLod = Infinity;
+  /** Shadow cascades vehicles cast into (the renderer has 4; at most 3). */
+  shadowCascades = 3;
   private gbufferPipe!: GPURenderPipeline;
   private glassPipe!: GPURenderPipeline;
   private shadowPipe!: GPURenderPipeline;
@@ -416,6 +453,7 @@ export class VehicleRenderer implements DrawHook {
 
   begin(eye: Vec3) {
     this.eye = eye;
+    this.vehicleCount = 0;
     for (const g of this.order) g.n = 0;
     this.order = [];
     this.contacts = [];
@@ -439,13 +477,21 @@ export class VehicleRenderer implements DrawHook {
     const o = g.n * INSTANCE_FLOATS;
     mulInto(g.data, o, model, local);
     mulInto(g.data, o + 16, prev, prevLocal);
+    g.vid[g.n] = this.vid;
     this.fill(g, o, inst);
   }
 
   private slot(key: number, part: Part, lod: number, body: boolean): Group {
     let g = this.groups.get(key);
     if (!g) {
-      g = {part, lod, body, data: new Float32Array(INSTANCE_FLOATS * 16), n: 0};
+      g = {
+        part,
+        lod,
+        body,
+        data: new Float32Array(INSTANCE_FLOATS * 16),
+        vid: new Uint32Array(16),
+        n: 0,
+      };
       this.groups.set(key, g);
     }
     if (g.n === 0) this.order.push(g);
@@ -453,6 +499,9 @@ export class VehicleRenderer implements DrawHook {
       const grown = new Float32Array(g.data.length * 2);
       grown.set(g.data);
       g.data = grown;
+      const vid = new Uint32Array(g.vid.length * 2);
+      vid.set(g.vid);
+      g.vid = vid;
     }
     return g;
   }
@@ -487,6 +536,7 @@ export class VehicleRenderer implements DrawHook {
     const o = g.n * INSTANCE_FLOATS;
     g.data.set(model, o);
     g.data.set(prev, o + 16);
+    g.vid[g.n] = this.vid;
     this.fill(g, o, inst);
   }
 
@@ -502,15 +552,40 @@ export class VehicleRenderer implements DrawHook {
     );
     const sz = v.info.size;
     const size = Math.max(sz[0], sz[1], sz[2]);
-    if (dist > 900 + size * 10) return;
+    if (dist > this.maxDist * (1 + size / 90)) return;
     // LOD with hysteresis so vehicles near a threshold don't pop every frame.
     const prevLod = this.lodMemory.get(inst.model);
-    const b0 = 18 + size * 2;
-    const b1 = 70 + size * 6;
+    const b0 = (18 + size * 2) * this.lodScale;
+    const b1 = (70 + size * 6) * this.lodScale;
     const k = (l: number) =>
       prevLod === undefined ? 1 : prevLod <= l ? 1.12 : 0.9;
-    const lod = inst.lod ?? (dist < b0 * k(0) ? 0 : dist < b1 * k(1) ? 1 : 2);
+    // (The far LOD 3 only when farLod is set: vehicle-worker.ts.)
+    const b2 = (this.farLod * size) / 4.5;
+    const lod =
+      inst.lod ??
+      (dist < b0 * k(0)
+        ? 0
+        : dist < b1 * k(1)
+          ? 1
+          : dist < b2 * k(2) || v.lods.length < 4
+            ? 2
+            : 3);
     this.lodMemory.set(inst.model, lod);
+    // Bounding sphere for the per-pass culling (prepare): the model's
+    // origin sits at the ground, the parts reach about half the diagonal.
+    if (this.vehicleCount * 4 >= this.bounds.length) {
+      const grown = new Float32Array(this.bounds.length * 2);
+      grown.set(this.bounds);
+      this.bounds = grown;
+      this.masks = new Uint8Array(grown.length / 4);
+    }
+    this.vid = this.vehicleCount++;
+    const scale = Math.hypot(m[0], m[1], m[2]);
+    this.bounds[this.vid * 4] = m[12];
+    this.bounds[this.vid * 4 + 1] = m[13];
+    this.bounds[this.vid * 4 + 2] = m[14];
+    this.bounds[this.vid * 4 + 3] =
+      (Math.hypot(sz[0], sz[1], sz[2]) * 0.5 + sz[1] * 0.5 + 1) * scale;
     const L = v.lods[lod];
     // Group key: variant, LOD, part (0 body, 1 wheel, 2 steering, 3+ rotors).
     const key = (inst.variant * 4 + lod) * 64;
@@ -608,34 +683,70 @@ export class VehicleRenderer implements DrawHook {
     const cd = new Float32Array(cn * 12);
     for (let i = 0; i < cn; i++) cd.set(this.contacts[i].v, i * 12);
     this.renderer.setContacts(cd, cn);
-    this.draws = [];
+    void tmp;
+  }
+
+  /**
+   * Inside render(), once the frame's culling volumes are known: each pass
+   * gets the instances of the vehicles it can see (the view frustum; for a
+   * shadow cascade, the casters that can shade a visible pixel), packed
+   * pass by pass into the instance buffer.
+   */
+  prepare() {
+    this.pack(this.cull ? this.renderer.hookCull : null);
+  }
+
+  private pack(cull: HookCull | null) {
+    const nv = this.vehicleCount;
+    const b = this.bounds;
+    const masks = this.masks;
+    for (let i = 0; i < nv; i++) {
+      const x = b[i * 4];
+      const y = b[i * 4 + 1];
+      const z = b[i * 4 + 2];
+      const r = b[i * 4 + 3];
+      let mask = !cull || inside(cull.view, x, y, z, r) ? 1 : 0;
+      for (let c = 0; c < this.shadowCascades; c++) {
+        const pl = cull ? cull.casters[c] : null;
+        if (!cull || (pl && inside(pl, x, y, z, r))) mask |= 2 << c;
+      }
+      masks[i] = mask;
+    }
+    const F = INSTANCE_FLOATS;
+    const out = this.instanceData;
     let n = 0;
-    for (const g of this.order) {
-      const count = g.n;
-      if (n + count > MAX_INSTANCES) break;
-      this.instanceData.set(
-        g.data.subarray(0, count * INSTANCE_FLOATS),
-        n * INSTANCE_FLOATS,
-      );
-      this.draws.push({
-        part: g.part,
-        first: n,
-        count,
-        body: g.body,
-        lod: g.lod,
-      });
-      n += count;
+    for (let p = 0; p < PASSES; p++) {
+      const draws: Draw[] = (this.draws[p] = []);
+      const bit = 1 << p;
+      for (const g of this.order) {
+        const first = n;
+        const src = g.data;
+        const vid = g.vid;
+        for (let j = 0; j < g.n && n < MAX_INSTANCES; j++) {
+          if ((masks[vid[j]] & bit) === 0) continue;
+          const o = n * F;
+          const i = j * F;
+          for (let k = 0; k < F; k++) out[o + k] = src[i + k];
+          n++;
+        }
+        if (n > first)
+          draws.push({
+            part: g.part,
+            first,
+            count: n - first,
+            body: g.body,
+            lod: g.lod,
+          });
+      }
     }
     this.instanceCount = n;
     if (n)
+      // (A subarray: given the whole array plus a size, Chrome took ~1 ms.)
       this.device.queue.writeBuffer(
         this.instanceBuffer,
         0,
-        this.instanceData,
-        0,
-        n * INSTANCE_FLOATS,
+        out.subarray(0, n * F),
       );
-    void tmp;
   }
 
   // Bind groups only reference buffers that live as long as the renderer:
@@ -672,11 +783,11 @@ export class VehicleRenderer implements DrawHook {
   }
 
   gbuffer(pass: GPURenderPassEncoder) {
-    if (!this.draws.length) return;
+    if (!this.draws[0].length) return;
     this.bind(pass, this.gbufferPipe, 'gbuffer', [
       {binding: 0, resource: {buffer: this.frameBuffer}},
     ]);
-    for (const d of this.draws)
+    for (const d of this.draws[0])
       pass.drawIndexed(
         d.part.indexCount,
         d.count,
@@ -687,11 +798,11 @@ export class VehicleRenderer implements DrawHook {
   }
 
   forward(pass: GPURenderPassEncoder) {
-    if (!this.draws.length) return;
+    if (!this.draws[0].some(d => d.body && d.lod < 2)) return;
     this.bind(pass, this.glassPipe, 'glass', [
       {binding: 0, resource: {buffer: this.frameBuffer}},
     ]);
-    for (const d of this.draws)
+    for (const d of this.draws[0])
       if (d.body && d.lod < 2)
         pass.drawIndexed(
           d.part.indexCount,
@@ -703,18 +814,18 @@ export class VehicleRenderer implements DrawHook {
   }
 
   shadow(pass: GPURenderPassEncoder, cascade: number) {
-    if (!this.draws.length || cascade > 2) return;
+    const draws = this.draws[1 + cascade];
+    if (cascade >= this.shadowCascades || !draws?.length) return;
     this.bind(pass, this.shadowPipe, `shadow${cascade}`, [
       {binding: 1, resource: {buffer: this.shadowViews[cascade]}},
     ]);
-    for (const d of this.draws)
-      if (d.lod >= (cascade === 0 ? 0 : 1) || cascade > 0)
-        pass.drawIndexed(
-          d.part.indexCount,
-          d.count,
-          d.part.firstIndex,
-          d.part.baseVertex,
-          d.first,
-        );
+    for (const d of draws)
+      pass.drawIndexed(
+        d.part.indexCount,
+        d.count,
+        d.part.firstIndex,
+        d.part.baseVertex,
+        d.first,
+      );
   }
 }
