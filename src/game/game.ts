@@ -882,7 +882,10 @@ export class Game {
 
   private handleKeys() {
     const i = this.input;
-    if (i.hit('KeyC')) this.cycleCamera();
+    if (i.hit('KeyC')) {
+      this.ui.closeMenu();
+      this.cycleCamera();
+    }
     if (i.hit('KeyL')) void navigator.clipboard?.writeText(this.shareUrl());
     if (i.hit('KeyK'))
       this.camera.directorEnabled = !this.camera.directorEnabled;
@@ -896,11 +899,14 @@ export class Game {
           (WEATHER_KINDS.indexOf(this.weather.kind) + 1) % WEATHER_KINDS.length
         ],
       );
-    if (i.hit('KeyN'))
+    if (i.hit('KeyN')) {
+      this.ui.closeMenu();
       void this.regenerate(this.cityType, Math.floor(Math.random() * 100000));
+    }
     if (i.hit('KeyM')) this.ui.toggleMenu();
     if (i.hit('KeyH')) this.ui.toggleHelp();
     if (i.hit('KeyF')) this.ui.showStats = !this.ui.showStats;
+    if (i.hit('KeyV') || i.hit('KeyB')) this.ui.closeMenu();
     if (i.hit('KeyV')) this.toggleHeli();
     if (i.hit('KeyB')) this.nextVehicle();
   }

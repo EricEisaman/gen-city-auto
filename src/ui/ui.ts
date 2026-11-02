@@ -38,8 +38,14 @@ export class UI {
     this.build();
     for (const b of document.querySelectorAll<HTMLElement>('#toolbar button'))
       b.onmousedown = e => e.preventDefault(); // keep keyboard focus on the canvas
-    document.getElementById('btn-cam')!.onclick = () => g.cycleCamera();
-    document.getElementById('btn-veh')!.onclick = () => g.toggleHeli();
+    document.getElementById('btn-cam')!.onclick = () => {
+      this.closeMenu();
+      g.cycleCamera();
+    };
+    document.getElementById('btn-veh')!.onclick = () => {
+      this.closeMenu();
+      g.toggleHeli();
+    };
     document.getElementById('btn-menu')!.onclick = () => this.toggleMenu();
     this.help.innerHTML =
       '<b>WASD</b> drive / fly &nbsp; <b>Space</b> handbrake / climb &nbsp; <b>Shift</b> descend &nbsp; <b>Q/E</b> yaw<br>' +
@@ -61,11 +67,14 @@ export class UI {
     } as Partial<HTMLInputElement>);
     seed.style.width = '80px';
     const gen = el('button', {textContent: 'Generate'});
-    gen.onclick = () =>
+    gen.onclick = () => {
+      this.closeMenu();
       void g.regenerate(citySel.value as CityType, Number(seed.value) || 1);
+    };
     const rnd = el('button', {textContent: 'Random city'});
     rnd.onclick = () => {
       seed.value = String(Math.floor(Math.random() * 100000));
+      this.closeMenu();
       void g.regenerate(citySel.value as CityType, Number(seed.value));
     };
     this.timeInput = el('input', {
@@ -101,6 +110,7 @@ export class UI {
     for (const m of [...CAMERA_MODES, 'free'])
       this.camSel.append(el('option', {value: m, textContent: m}));
     this.camSel.onchange = () => {
+      this.closeMenu();
       if (this.camSel.value === 'free') g.enterFreeCam();
       else {
         g.freeMode = false;
@@ -126,7 +136,10 @@ export class UI {
       });
       vehSel.value = String(g.player.variant);
     };
-    vehSel.onchange = () => g.selectVehicle(Number(vehSel.value));
+    vehSel.onchange = () => {
+      this.closeMenu();
+      g.selectVehicle(Number(vehSel.value));
+    };
     vehSel.append(el('option', {textContent: 'choose…'}));
     const link = el('button', {textContent: 'Copy link to this view'});
     link.onclick = () => {
@@ -191,6 +204,11 @@ export class UI {
 
   toggleMenu() {
     this.menu.classList.toggle('hidden');
+  }
+
+  /** Close the menu (after an action that should show the scene). */
+  closeMenu() {
+    this.menu.classList.add('hidden');
   }
 
   toggleHelp() {
