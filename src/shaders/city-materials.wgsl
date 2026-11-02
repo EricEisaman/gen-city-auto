@@ -154,6 +154,8 @@ fn paintColor(p: u32) -> vec3f {
   if (p == 0x90u) { return vec3f(0.45, 0.46, 0.45); }
   if (p == 0x91u) { return vec3f(0.06, 0.06, 0.06); }
   if (p == 0x92u) { return vec3f(0.8, 0.55, 0.04); }
+  // New York's dark green signal and lamp-post paint (gen-tile NYC_GREEN).
+  if (p == 0x96u) { return vec3f(0.03, 0.085, 0.05); }
   // Rail line colour (station bands): JR-style green.
   if (p == 0x0cu) { return vec3f(0.06, 0.46, 0.26); }
   if (p == 0x80u) { return vec3f(0.5, 0.5, 0.5); }
@@ -3511,7 +3513,10 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var track = exp(-pow((abs(o) - 0.85) * 2.8, 2.0));
   track = mix(track, 0.22, smoothstep(0.08, 0.35, foot));
   // Edge line / gutter geometry.
-  let green = kind <= 1u && rdH(seed, 0, 40) < 0.5;
+  // (New York: no green school-route belts; bike lanes white-lined, green
+  // only where they cross a junction approach.)
+  let nycRoad = signLocale() == 1u;
+  let green = kind <= 1u && rdH(seed, 0, 40) < 0.5 && !nycRoad;
   let ec = select(hw - 0.525, hw - 1.175, green);
   let gIn = select(hw - 0.45, hw - 0.4, kind >= 2u);
   let inner = select(0.0, 0.25, kind >= 1u);
@@ -3568,8 +3573,11 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   // Blue bike lane band on 25 % of kind 3 chains.
   let bikeBand = kind == 3u && rdH(seed, 0, 43) < 0.25;
   if (bikeBand && !inCross) {
-    let c = rdCov(abs(ax - (hw - 1.1)) - 0.5, 1.0, foot) * smoothstep(6.0, 7.0, select(a, 1e3, !sig));
-    if (c > surfCov) { surfCol = vec3f(0.08, 0.25, 0.6); surfCov = c; surfRough = 0.8; }
+    var c = rdCov(abs(ax - (hw - 1.1)) - 0.5, 1.0, foot) * smoothstep(6.0, 7.0, select(a, 1e3, !sig));
+    // New York paints its bike lanes green only in the conflict zone
+    // where turning traffic crosses them (the last 25 m to a signal).
+    if (nycRoad) { c *= select(0.0, 1.0, sig && a < 25.0); }
+    if (c > surfCov) { surfCol = select(vec3f(0.08, 0.25, 0.6), vec3f(0.06, 0.3, 0.12), nycRoad); surfCov = c; surfRough = 0.8; }
   }
   // Green school-route belt outside the edge line (kinds 0-1).
   if (green && !inCross) {
@@ -3695,7 +3703,9 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   if (kind == 1u && !inCross) {
     let dash = select(paintLine(rdDash(along, 10.0, 5.0), 5.0, foot), 1.0, sig && a < 30.0);
     let c = paintLine(ax, 0.15, foot) * dash;
-    if (c > covW) { covW = c; bevDir = vec2f(sx, 0.0); }
+    // (US centre lines are yellow.)
+    if (nycRoad) { covY = max(covY, c); }
+    else if (c > covW) { covW = c; bevDir = vec2f(sx, 0.0); }
   }
   if (kind >= 2u && !inCross) {
     let c = paintLine(abs(axw - 0.155), 0.15, foot);
@@ -3767,7 +3777,8 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         covW = max(covW, rdCov(sd, 0.15, foot));
       }
     }
-    if (a > 33.0) {
+    // (Tokyo's crossing-ahead diamonds.)
+    if (a > 33.0 && !nycRoad) {
       let dc = select(56.0, 36.0, a < 46.0);
       let sd = rdRhombus(vec2f(o, a - dc), vec2f(0.75, 1.5));
       covW = max(covW, paintLine(abs(sd + 0.1), 0.2, foot));
@@ -3775,11 +3786,15 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   }
   // Blue bike marks: arrow + white glyph every 10 m in the curb lane.
   let bc = floor(a / 10.0) * 10.0 + 5.0;
-  if (kind >= 2u && !inCross && !(sig && bc < 14.0)) {
+  // (New York: white bike symbols and chevrons in the bike lanes only.)
+  if (kind >= 2u && !inCross && !(sig && bc < 14.0) && !(nycRoad && !bikeBand)) {
     let p = vec2f(ax - (hw - 1.1), a - bc);
     let arrow = min(rdTri(p - vec2f(0.0, -0.8), vec2f(0.375, 0.7)), rdBox(p - vec2f(0.0, 0.35), vec2f(0.17, 0.45)));
     let bcov = rdCov(arrow, 0.34, foot);
-    if (bcov > 0.0) {
+    if (nycRoad) {
+      let ch = abs(abs(p.x) * 0.9 + (p.y + 0.6)) - 0.07;
+      covW = max(covW, rdCov(max(ch, abs(p.x) - 0.32), 0.14, foot));
+    } else if (bcov > 0.0) {
       s.albedo = mix(s.albedo, mix(vec3f(0.08, 0.25, 0.6), s.albedo, 0.3 * track), bcov);
       s.rough = mix(s.rough, 0.6, bcov);
     }
@@ -3791,8 +3806,8 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       covW = max(covW, paintLine(abs(ax - (hw - 1.675)), 0.15, foot) * paintLine(rdDash(along, 3.0, 2.0), 2.0, foot));
     }
   }
-  // Fire-hydrant frame every ~110 m near the gutter.
-  {
+  // Fire-hydrant frame every ~110 m near the gutter (Tokyo).
+  if (!nycRoad) {
     let hc = floor(along / 110.0);
     let hp = hc * 110.0 + 15.0 + 80.0 * rdH(seed, i32(hc) * 2 + side, 44);
     let p = vec2f(ax - (ec - 0.75), along - hp);
@@ -4437,7 +4452,8 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   }
   let night = nightLight();
   _ = night;
-  if (kind >= 1u) {
+  // (Tokyo's yellow guide line; New York has warning pads at the crossings only.)
+  if (kind >= 1u && signLocale() != 1u) {
     let tcov = rdCov(abs(y - tc) - 0.15, 0.3, foot);
     if (tcov > 0.0) {
       // Four raised linear bars per 300 mm tile, running along the walk.
@@ -5049,6 +5065,83 @@ fn roadSignMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     // Route shield.
     let sh = length(q - vec2f(-0.45, 0.33)) - 0.08;
     col = mix(col, white, 1.0 - smoothstep(-aa, aa, sh));
+  } else if (k >= 6u && k < 16u) {
+    // New York regulatory plates (gen-tile US_SIGN, uv in reading order):
+    // in metres about the centre, plate half sizes as US_PLATE.
+    let sz = array<vec2f, 7>(vec2f(0.3, 0.375), vec2f(0.3, 0.45), vec2f(0.45, 0.15), vec2f(0.45, 0.15), vec2f(0.3, 0.3), vec2f(0.3, 0.45), vec2f(0.3, 0.375));
+    let hs = sz[min(k - 6u, 6u)];
+    let q = p * hs * 2.0;
+    let am = max(foot, 0.004) * hs.x * 2.0;
+    let ink = vec3f(0.025);
+    let usRed = vec3f(0.6, 0.03, 0.03);
+    col = white;
+    if (k == 6u) {
+      // SPEED LIMIT 25: black on white, a black rim inset.
+      var c = paintLine(abs(rdBox(q, hs - 0.025)), 0.014, am);
+      c = max(c, usText((q - vec2f(0.0, 0.22)) / 0.11, 18908552u, 0u, 5u, 0.075, am / 0.11));
+      c = max(c, usText((q - vec2f(0.0, 0.1)) / 0.11, 9548900u, 0u, 5u, 0.075, am / 0.11));
+      let d2 = rdDigit((q - vec2f(-0.08, -0.13)) / 0.3, 2u, 0.055);
+      let d5 = rdDigit((q - vec2f(0.08, -0.13)) / 0.3, 5u, 0.055);
+      c = max(c, 1.0 - smoothstep(-am / 0.3, am / 0.3, min(d2, d5)));
+      col = mix(white, ink, c);
+    } else if (k == 7u || k == 11u) {
+      // NO PARKING / NO STANDING ANYTIME: red on white, a double arrow.
+      var c = usText((q - vec2f(0.0, 0.3)) / 0.17, 197u, 0u, 2u, 0.08, am / 0.17);
+      if (k == 7u) {
+        c = max(c, usText((q - vec2f(0.0, 0.11)) / 0.09, 171383820u, 16u, 7u, 0.08, am / 0.09));
+        c = max(c, usText((q - vec2f(0.0, -0.3)) / 0.075, 439663776u, 1u, 7u, 0.08, am / 0.075));
+      } else {
+        c = max(c, usText((q - vec2f(0.0, 0.11)) / 0.08, 119701800u, 517u, 8u, 0.08, am / 0.08));
+        c = max(c, usText((q - vec2f(0.0, -0.04)) / 0.08, 439663776u, 1u, 7u, 0.08, am / 0.08));
+      }
+      let ay = select(-0.22, -0.13, k == 7u) - select(0.0, 0.08, k == 11u);
+      var ad = rdSeg(q, vec2f(-0.18, ay), vec2f(0.18, ay)) - 0.012;
+      ad = min(ad, rdTri(vec2f(q.y - ay, -(q.x - 0.26)), vec2f(0.05, 0.09)));
+      ad = min(ad, rdTri(vec2f(q.y - ay, q.x + 0.26), vec2f(0.05, 0.09)));
+      c = max(c, 1.0 - smoothstep(-am, am, ad));
+      col = mix(white, usRed, c);
+    } else if (k == 8u || k == 9u) {
+      // ONE WAY: a white arrow on black with the words in black.
+      let a = vec2f(select(-q.x, q.x, k == 8u), q.y);
+      var ad = rdBox(a - vec2f(-0.08, 0.0), vec2f(0.3, 0.07));
+      ad = min(ad, rdTri(vec2f(a.y, -(a.x - 0.41)), vec2f(0.12, 0.2)));
+      col = mix(ink, white, 1.0 - smoothstep(-am, am, ad));
+      let t = usText((q - vec2f(select(0.06, -0.06, k == 8u), 0.0)) / 0.085, 18842790u, 15u, 7u, 0.08, am / 0.085);
+      col = mix(col, ink, t);
+      col = mix(col, white, paintLine(abs(rdBox(q, hs - 0.012)), 0.01, am));
+    } else if (k == 10u) {
+      // DO NOT ENTER: red disc, white bar and words.
+      let r2 = length(q);
+      col = mix(white, usRed, 1.0 - smoothstep(0.27 - am, 0.27 + am, r2));
+      var c = 1.0 - smoothstep(-am, am, rdBox(q, vec2f(0.2, 0.035)));
+      c = max(c, usText((q - vec2f(0.0, 0.11)) / 0.075, 308477138u, 0u, 6u, 0.08, am / 0.075));
+      c = max(c, usText((q - vec2f(0.0, -0.11)) / 0.075, 7382177u, 0u, 5u, 0.08, am / 0.075));
+      col = mix(col, white, c);
+    } else {
+      // DON'T BLOCK THE BOX: black words on white in a red rim.
+      var c = usText((q - vec2f(0.0, 0.2)) / 0.13, 300242u, 0u, 4u, 0.08, am / 0.13);
+      c = max(c, usText((q - vec2f(0.0, 0.02)) / 0.13, 15014036u, 0u, 5u, 0.08, am / 0.13));
+      c = max(c, usText((q - vec2f(0.0, -0.16)) / 0.1, 223315017u, 19u, 7u, 0.08, am / 0.1));
+      col = mix(white, ink, c);
+      col = mix(col, usRed, paintLine(abs(rdBox(q, hs - 0.03)), 0.03, am));
+    }
+  } else if (k >= 24u && k < 32u && signAspect() < 2.9 && signLocale() == 1u) {
+    // New York platform sign (gen-base, 1.1 x 0.5 m): MTA black, a white
+    // rule along the top, the line's coloured bullet with its number and
+    // UPTOWN / DOWNTOWN in white.
+    let q = p * vec2f(1.1, 0.5);
+    let am = max(foot, 0.004) * 1.1;
+    col = vec3f(0.02);
+    col = mix(col, white, step(0.19, q.y) * step(q.y, 0.205));
+    let num = (k - 24u) % 7u + 1u;
+    let lines = array<vec3f, 7>(vec3f(0.85, 0.12, 0.1), vec3f(0.85, 0.12, 0.1), vec3f(0.85, 0.12, 0.1), vec3f(0.0, 0.5, 0.2), vec3f(0.0, 0.5, 0.2), vec3f(0.0, 0.5, 0.2), vec3f(0.6, 0.1, 0.6));
+    let bc = q - vec2f(-0.4, -0.03);
+    col = mix(col, lines[num - 1u], 1.0 - smoothstep(0.13 - am, 0.13 + am, length(bc)));
+    let dg = rdDigit(bc / 0.22, num, 0.07);
+    col = mix(col, white, 1.0 - smoothstep(-am / 0.22, am / 0.22, dg));
+    let up = (k & 1u) == 0u;
+    let t = select(usText((q - vec2f(0.13, -0.03)) / 0.1, 210945234u, 177u, 8u, 0.08, am / 0.1), usText((q - vec2f(0.1, -0.03)) / 0.12, 185804171u, 0u, 6u, 0.08, am / 0.12), up);
+    col = mix(col, white, t);
   } else if (k >= 24u && k < 32u && signAspect() < 2.9) {
     // Platform number plate (gen-base, 1.1 x 0.5 m; the road's name plates
     // are 3.6:1): JR-style white plate, the track number in a dark ring on
@@ -5500,9 +5593,16 @@ fn signLocale() -> u32 { return frame.off.w; }
 // built from 14 segments (sides, halves of the middle bar, centre
 // verticals, diagonals) in a 0.6 x 0.8 box.
 fn fauxLatin(p: vec2f, h: u32) -> f32 {
-  // Segment masks of A E H I L N O R S T C U P M K Y.
-  let letters = array<u32, 16>(247u, 121u, 246u, 777u, 56u, 9270u, 63u, 8435u, 237u, 769u, 57u, 62u, 243u, 3126u, 10352u, 3584u);
-  let m = letters[h % 16u];
+  return step(latinDist(p, h % 16u), 0.065);
+}
+
+// Distance to the strokes' centre lines of Latin capital `i` (fauxLatin's
+// 0.52 x 0.72 segment letters): A E H I L N O R S T C U P M K Y, then G W
+// D X B F (D drawn as O); 31 or more is a space.
+fn latinDist(p: vec2f, i: u32) -> f32 {
+  if (i >= 22u) { return 1e3; }
+  let letters = array<u32, 22>(247u, 121u, 246u, 777u, 56u, 9270u, 63u, 8435u, 237u, 769u, 57u, 62u, 243u, 3126u, 10352u, 3584u, 189u, 12342u, 63u, 15360u, 255u, 113u);
+  let m = letters[i];
   let W = 0.26;
   let H = 0.36;
   var d = 1e3;
@@ -5514,7 +5614,22 @@ fn fauxLatin(p: vec2f, h: u32) -> f32 {
   for (var k = 0u; k < 14u; k++) {
     if (((m >> k) & 1u) != 0u) { d = min(d, rdSeg(p, pts[k].xy, pts[k].zw)); }
   }
-  return step(d, 0.065);
+  return d;
+}
+
+// Coverage of a word of latinDist capitals: up to 12 letter indices, five
+// bits each, six to a word of (w0, w1), `n` letters centred on the origin
+// of q (in letter units: 0.72 tall, 0.74 pitch); strokes `th` thick, edges
+// antialiased over `aa` (letter units).
+fn usText(q: vec2f, w0: u32, w1: u32, n: u32, th: f32, aa: f32) -> f32 {
+  let P = 0.74;
+  let fx = q.x / P + f32(n) * 0.5;
+  if (fx < 0.0 || fx >= f32(n) || abs(q.y) > 0.6) { return 0.0; }
+  let i = u32(floor(fx));
+  var idx = (w0 >> (5u * min(i, 5u))) & 31u;
+  if (i >= 6u) { idx = (w1 >> (5u * (i - 6u))) & 31u; }
+  let d = latinDist(vec2f((fract(fx) - 0.5) * P, q.y), idx);
+  return 1.0 - smoothstep(th - aa, th + aa, d);
 }
 
 // A kanji-like glyph (p in -0.5..0.5, 1 = stroke): 1-4 horizontal and 1-3
@@ -8405,16 +8520,25 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       let group = (param >> 2u) & 1u;
       let phase = f32((param >> 3u) & 0xffu);
       let state = signalState(frame.time.x, phase, group);
-      let cols = array<vec3f, 3>(vec3f(0.1, 1.0, 0.75), vec3f(1.0, 0.75, 0.05), vec3f(1.0, 0.08, 0.04));
+      var cols = array<vec3f, 3>(vec3f(0.1, 1.0, 0.75), vec3f(1.0, 0.75, 0.05), vec3f(1.0, 0.08, 0.04));
+      let us = signLocale() == 1u;
+      // (New York: a yellower green than Tokyo's blue-green "ao".)
+      if (us) { cols[0] = vec3f(0.15, 1.0, 0.5); }
       s.albedo = vec3f(0.05);
       s.rough = 0.2;
       if (lamp == 3u) {
         // Pedestrian head (same group/phase as the vehicle head it serves):
         // upper red man, lower green man, which flashes during amber.
+        // New York: upper orange hand (flashing during the clearance),
+        // lower white walking person.
         let upper = (param & 0x800u) != 0u;
         let blink = step(0.5, fract(frame.time.x * 2.0));
-        let on = select(select(0.0, blink, state == 1u) + select(0.0, 1.0, state == 0u), select(0.0, 1.0, state != 0u), upper);
-        let c = select(vec3f(0.1, 1.0, 0.6), vec3f(1.0, 0.12, 0.06), upper);
+        var on = select(select(0.0, blink, state == 1u) + select(0.0, 1.0, state == 0u), select(0.0, 1.0, state != 0u), upper);
+        var c = select(vec3f(0.1, 1.0, 0.6), vec3f(1.0, 0.12, 0.06), upper);
+        if (us) {
+          on = select(select(0.0, 1.0, state == 0u), select(select(0.0, 1.0, state == 2u), blink, state == 1u), upper);
+          c = select(vec3f(0.85, 0.92, 1.0), vec3f(1.0, 0.38, 0.06), upper);
+        }
         s.emissive = c * mix(0.03, mix(5.0, 12.0, night), on);
       } else if (state == lamp) { s.emissive = cols[lamp] * mix(6.0, 14.0, night); } else { s.emissive = cols[lamp] * 0.03; }
     }
@@ -8426,9 +8550,10 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       // Service fixtures (steel grey, black plates, meters, pipes, AC
       // units): weathered, matte paint. At 0.5 a grazing golden-hour sun lit
       // them up near-white against the wall.
-      if (param == 0x90u || param == 0x91u || (param >= 0xd0u && param < 0xf0u)) { s.rough = 0.7; }
+      if (param == 0x90u || param == 0x91u || param == 0x96u || (param >= 0xd0u && param < 0xf0u)) { s.rough = 0.7; }
       if (param == POLE_PAINT) {
-        s = roadPole(world, n, uv, paintColor(0x90u), 0.08);
+        // (Grey in Tokyo, New York's dark green.)
+        s = roadPole(world, n, uv, paintColor(select(0x90u, 0x96u, signLocale() == 1u)), 0.08);
       } else if (param == CABINET || param == UTIL_POLE || (param >= SIGNAL_BORDER && param <= UTIL_PLATE)) {
         s = roadFurniture(world, n, uv, param, aux);
       } else if ((param & ~0xffu) == PAINT_STEEL) {

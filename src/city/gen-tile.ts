@@ -7581,7 +7581,9 @@ const PUSH_FACE = 0xea;
  * plate (PUSH_FACE) 1.5 mm proud of the front.
  */
 function pushButton(m: CMesh, c: Vec3, f: Vec2) {
-  m.box(c, [0.1, 0.15, 0.06], packMat(CM.paint, 0x92), Math.atan2(f[0], f[1]));
+  // (Yellow in Tokyo; New York's are dark green, as the poles.)
+  const housing = packMat(CM.paint, nyc() ? NYC_GREEN : 0x92);
+  m.box(c, [0.1, 0.15, 0.06], housing, Math.atan2(f[0], f[1]));
   signBoardFace(
     m,
     [c[0] + f[0] * 0.0615, c[1] + 0.01, c[2] + f[1] * 0.0615],
@@ -7634,6 +7636,15 @@ const STAND: number[][] = [
   [-0.058, -0.03, -0.04, -0.03, -0.04, 0.06, -0.058, 0.055],
   [0.04, -0.03, 0.058, -0.03, 0.058, 0.055, 0.04, 0.06],
 ];
+// New York's upper head: a raised hand (palm, four fingers, thumb).
+const HAND: number[][] = [
+  [-0.05, -0.1, 0.045, -0.1, 0.05, 0.02, -0.05, 0.02],
+  [-0.05, 0.02, -0.028, 0.02, -0.028, 0.085, -0.05, 0.08],
+  [-0.023, 0.02, -0.001, 0.02, -0.001, 0.105, -0.023, 0.105],
+  [0.004, 0.02, 0.026, 0.02, 0.026, 0.1, 0.004, 0.1],
+  [0.031, 0.02, 0.05, 0.02, 0.05, 0.075, 0.031, 0.078],
+  [-0.05, -0.05, -0.05, -0.015, -0.085, 0.025, -0.1, 0.01],
+];
 const WALK: number[][] = [
   [-0.02, -0.03, 0.03, -0.03, 0.045, 0.065, -0.008, 0.065],
   [-0.075, -0.135, -0.05, -0.135, 0.005, -0.025, -0.022, -0.025],
@@ -7651,7 +7662,8 @@ function pictogram(m: CMesh, c: Vec3, f: Vec2, stand: boolean, mat: number) {
     c[2] + rz * u,
   ];
   const uv = (u: number, v: number): Vec2 => [0.5 + u / 0.34, 0.5 - v / 0.34];
-  for (const q of stand ? STAND : WALK) {
+  const hand = stand && nyc();
+  for (const q of hand ? HAND : stand ? STAND : WALK) {
     const pts = [0, 2, 4, 6].map(k => P(q[k], q[k + 1]));
     m.quad(
       pts,
@@ -7660,6 +7672,7 @@ function pictogram(m: CMesh, c: Vec3, f: Vec2, stand: boolean, mat: number) {
       mat,
     );
   }
+  if (hand) return;
   const hc = stand ? [0, 0.105] : [0.025, 0.105];
   const mid = m.vertex(P(hc[0], hc[1]), n, ...uv(hc[0], hc[1]), mat);
   const ring: number[] = [];
@@ -7967,6 +7980,254 @@ function signal(
 }
 
 /**
+ * CM.paint param of New York's dark green signal mast arms and sign
+ * brackets (the shader paints POLE_PAINT columns the same green in the New
+ * York locale).
+ */
+const NYC_GREEN = 0x96;
+
+/**
+ * US vehicle signal head centred at c facing `face`: a black housing with
+ * three 30 cm lenses stacked red over yellow over green, a tunnel visor
+ * over each.
+ */
+function usHead(
+  m: CMesh,
+  c: Vec3,
+  face: Vec2,
+  group: number,
+  phase: number,
+  housing: number,
+) {
+  m.box(c, [0.2, 0.55, 0.12], housing, Math.atan2(face[0], face[1]));
+  for (let k = 0; k < 3; k++) {
+    // Lamp 0 green (bottom), 1 yellow, 2 red (top).
+    const lp: Vec3 = [
+      c[0] + face[0] * 0.125,
+      c[1] + (k - 1) * 0.36,
+      c[2] + face[1] * 0.125,
+    ];
+    disc(
+      m,
+      lp,
+      face,
+      0.14,
+      10,
+      packMat(CM.signal, signalParam(k, group, phase)),
+    );
+    hood(m, lp, face, 0.165, 0.165, 0.24, housing, true);
+  }
+}
+
+/** Mast arm height of a New York signal (usSignal). */
+const US_ARM_Y = 6.2;
+
+/**
+ * New York traffic signal on its pole (signal()'s spot and junction
+ * luminaire): a dark green mast arm at US_ARM_Y with vertical heads hung
+ * from it (one at the end, a second over the near lanes of a wide
+ * approach), the green street name sign on the arm by the pole, and a
+ * regulatory plate strapped to the column (ONE WAY, DON'T BLOCK THE BOX or
+ * DO NOT ENTER).
+ */
+function usSignal(
+  m: CMesh,
+  p: Vec3,
+  armDir: Vec2,
+  reach: number,
+  phase: number,
+  group: number,
+  name: number,
+  lums: [Vec3, Vec2, number, boolean][],
+) {
+  const green = packMat(CM.paint, NYC_GREEN);
+  const black = packMat(CM.paint, 0x91);
+  const column = packMat(CM.paint, POLE_PAINT);
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.12,
+    SIGNAL_LUM.h + 0.25 + SINK,
+    12,
+    column,
+    false,
+  );
+  poleFoot(
+    m,
+    p,
+    0.12,
+    column,
+    green,
+    16,
+    [-armDir[0], -armDir[1]],
+    [2.45, 3.15],
+    true,
+  );
+  const y = p[1] + US_ARM_Y;
+  const top: Vec3 = [p[0], y, p[2]];
+  const end: Vec3 = [p[0] + armDir[0] * reach, y, p[2] + armDir[1] * reach];
+  m.beam(top, end, 0.07, 0.07, green);
+  m.cylinder([p[0], y - 0.2, p[2]], 0.17, 0.38, 8, green, false);
+  m.cylinder(
+    [p[0], p[1] + SIGNAL_LUM.h - 0.18, p[2]],
+    0.16,
+    0.45,
+    8,
+    green,
+    true,
+  );
+  // Heads face back toward oncoming traffic (perpendicular to the arm).
+  const face: Vec2 = [armDir[1], -armDir[0]];
+  for (const at of reach > 6 ? [reach - 0.6, reach * 0.5] : [reach - 0.6]) {
+    const hx = p[0] + armDir[0] * at;
+    const hz = p[2] + armDir[1] * at;
+    m.tube(
+      [
+        [hx, y, hz],
+        [hx, y - 0.3, hz],
+      ],
+      0.03,
+      green,
+    );
+    usHead(m, [hx, y - 0.85, hz], face, group, phase, black);
+  }
+  // Street name sign on the arm near the pole.
+  const nc: Vec3 = [p[0] + armDir[0] * 1.7, y + 0.3, p[2] + armDir[1] * 1.7];
+  signBoard(
+    m,
+    nc,
+    face,
+    0.6,
+    0.15,
+    0.015,
+    packMat(CM.roadSign, 24 + (name & 7)),
+    packMat(CM.roadSign, (24 + (name & 7)) | 0x100),
+  );
+  for (const d of [-0.4, 0.4])
+    m.tube(
+      [
+        [nc[0] + armDir[0] * d, y, nc[2] + armDir[1] * d],
+        [nc[0] + armDir[0] * d, y + 0.16, nc[2] + armDir[1] * d],
+      ],
+      0.015,
+      green,
+    );
+  // Junction luminaires (shared pole).
+  const lt: Vec3 = [p[0], p[1] + SIGNAL_LUM.h, p[2]];
+  m.beam(lt, lums[lums.length - 1][0], 0.05, 0.05, green);
+  for (const [h, dir] of lums) {
+    m.box(
+      [h[0], h[1] - 0.1, h[2]],
+      [0.35, 0.06, 0.15],
+      packMat(CM.lamp, 1),
+      Math.atan2(dir[1], -dir[0]),
+    );
+  }
+  // A regulatory plate strapped to the column, facing the approach.
+  const rh = hash2(name * 4 + Math.round(p[0] * 4), Math.round(p[2] * 4));
+  const kind = [3, 3, 2, 5][rh & 3];
+  const plate =
+    kind === 3
+      ? (rh >>> 3) & 1
+        ? US_SIGN.oneWayRight
+        : US_SIGN.oneWayLeft
+      : kind === 2
+        ? US_SIGN.dontBlock
+        : US_SIGN.doNotEnter;
+  const hh = US_PLATE[plate - US_SIGN.speed][1];
+  const pc: Vec3 = [p[0] + face[0] * 0.15, p[1] + 3.75, p[2] + face[1] * 0.15];
+  usPlate(m, pc, face, plate);
+  for (const dy of [-hh * 0.6, hh * 0.6])
+    m.tube(
+      [
+        [p[0], pc[1] + dy, p[2]],
+        [pc[0] - face[0] * 0.012, pc[1] + dy, pc[2] - face[1] * 0.012],
+      ],
+      0.02,
+      packMat(CM.paint, 0x90),
+    );
+}
+
+/**
+ * New York regulatory signs (CM.roadSign kinds; city-materials.wgsl
+ * roadSignMat draws them in the New York locale): white SPEED LIMIT 25,
+ * red-on-white NO PARKING and NO STANDING ANYTIME, black ONE WAY arrows,
+ * DON'T BLOCK THE BOX and DO NOT ENTER.
+ */
+const US_SIGN = {
+  speed: 6,
+  noParking: 7,
+  oneWayRight: 8,
+  oneWayLeft: 9,
+  doNotEnter: 10,
+  noStanding: 11,
+  dontBlock: 12,
+} as const;
+/** Half width and height (m) of each US_SIGN plate, from US_SIGN.speed. */
+const US_PLATE: [number, number][] = [
+  [0.3, 0.375],
+  [0.3, 0.45],
+  [0.45, 0.15],
+  [0.45, 0.15],
+  [0.3, 0.3],
+  [0.3, 0.45],
+  [0.3, 0.375],
+];
+
+/** A flat US sign plate of kind `kind` (US_SIGN) centred at c facing f. */
+function usPlate(m: CMesh, c: Vec3, f: Vec2, kind: number) {
+  const [hw, hh] = US_PLATE[kind - US_SIGN.speed];
+  // (uv mirrored: signBoard's u runs right to left as the reader sees it.)
+  signBoard(
+    m,
+    c,
+    f,
+    hw,
+    hh,
+    0.006,
+    packMat(CM.roadSign, kind),
+    packMat(CM.roadSign, kind | 0x100),
+    [1, 0, 0, 1],
+  );
+}
+
+/**
+ * New York sign post at p facing f (regSign()'s spot): a galvanised
+ * square post with SPEED LIMIT 25 (kinds 0, 1) or NO PARKING (2) at
+ * height h and, where Tokyo hangs the crossing square, NO STANDING ANYTIME
+ * under it.
+ */
+function usRegSign(
+  m: CMesh,
+  p: Vec3,
+  f: Vec2,
+  kind: number,
+  second: boolean,
+  h: number,
+) {
+  const plate = kind <= 1 ? US_SIGN.speed : US_SIGN.noParking;
+  const hh = US_PLATE[plate - US_SIGN.speed][1];
+  const top = h + hh + 0.05;
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.03,
+    top + SINK,
+    4,
+    packMat(CM.paint, 0x90),
+    true,
+  );
+  usPlate(m, [p[0] + f[0] * 0.04, p[1] + h, p[2] + f[1] * 0.04], f, plate);
+  if (second) {
+    const h2 = h - hh - 0.5;
+    usPlate(
+      m,
+      [p[0] + f[0] * 0.04, p[1] + h2, p[2] + f[1] * 0.04],
+      f,
+      US_SIGN.noStanding,
+    );
+  }
+}
+
+/**
  * Overhead guide sign (案内標識) on an F-type pole at `p`: column, arm at
  * 7.2 m reaching `reach` toward the road (`inward`), a panel of half size
  * hw x hh (bottom at 5 m, centred `at` metres out) facing traffic `f`. The
@@ -7992,7 +8253,8 @@ function guideSign(
     0.18,
     7.6 + SINK,
     lod === 0 ? 8 : 4,
-    packMat(CM.paint, POLE_PAINT),
+    // (New York: a galvanised column, as its arms.)
+    nyc() ? packMat(CM.metal, LAMP_METAL) : packMat(CM.paint, POLE_PAINT),
     lod === 0,
   );
   const pc: Vec3 = [
@@ -9622,7 +9884,8 @@ export function buildTile(
       const side = hash2(ci, 3) % 2 ? 1 : -1;
       const off = (ROAD_WIDTH[c.kind] / 2 + 0.4) * side;
       let prev: Vec3 | null = null;
-      for (let s = s0 + 4; s < total - s1 - 4; s += 28) {
+      // (New York's power and phone lines run under the street.)
+      for (let s = s0 + 4; !nyc() && s < total - s1 - 4; s += 28) {
         const q = chainAt(c, arc, s);
         const l: Vec2 = [-q.d[1], q.d[0]];
         const x = q.p[0] + l[0] * off;
@@ -9772,9 +10035,10 @@ export function buildTile(
       // Junctions on avenues and arterials only (the ones read from afar).
       if (j.arms.every(a => L.chains[a.chain].kind < Road.avenue)) continue;
       const spots: [Vec3, Vec2, number][] = [];
+      const us = nyc();
       signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach, k) => {
         spots.push([p, armDir, k]);
-        const y = p[1] + 5.8;
+        const y = p[1] + (us ? US_ARM_Y : 5.8);
         m.tube(
           [
             [p[0], p[1] - SINK, p[2]],
@@ -9782,16 +10046,20 @@ export function buildTile(
             [p[0] + armDir[0] * reach, y - 0.15, p[2] + armDir[1] * reach],
           ],
           0.16,
-          packMat(CM.paint, 0x90),
+          packMat(CM.paint, us ? NYC_GREEN : 0x90),
         );
-        // The head as a plain dark slab (its backplate's size) hanging
-        // under the arm end, facing the approach and back: 8 vertices.
+        // The head as a plain dark slab (its backplate's size; New York's
+        // upright head) hanging under the arm end, facing the approach and
+        // back: 8 vertices.
         const hx = p[0] + armDir[0] * (reach - 0.7);
         const hz = p[2] + armDir[1] * (reach - 0.7);
+        const hw = us ? 0.2 : 0.76;
+        const hh = us ? 0.55 : 0.34;
+        const hy = us ? y - 0.85 : y - 0.12;
         const H = (u: number, v: number, f: number): Vec3 => [
-          hx + armDir[0] * u * 0.76 + armDir[1] * f,
-          y - 0.12 + v * 0.34,
-          hz + armDir[1] * u * 0.76 - armDir[0] * f,
+          hx + armDir[0] * u * hw + armDir[1] * f,
+          hy + v * hh,
+          hz + armDir[1] * u * hw - armDir[0] * f,
         ];
         for (const f of [0.1, -0.1])
           m.quad(
@@ -9826,7 +10094,8 @@ export function buildTile(
         signalLums(L, ji, p, armDir, k, (h, d, r, pool) =>
           lums.push([h, d, r, pool]),
         );
-        signal(m, p, armDir, reach, phase, group, ji, lums);
+        if (nyc()) usSignal(m, p, armDir, reach, phase, group, ji, lums);
+        else signal(m, p, armDir, reach, phase, group, ji, lums);
         // Pedestrian signals across this arm's crossing: one on the signal
         // pole, one on its own pole at the far corner, each facing across.
         const l: Vec2 = [-a.dir[1], a.dir[0]];
@@ -9864,7 +10133,7 @@ export function buildTile(
             0.07,
             3.4 + SINK,
             6,
-            packMat(CM.paint, 0x90),
+            packMat(CM.paint, nyc() ? NYC_GREEN : 0x90),
             true,
           );
           pedSignal(
@@ -9889,7 +10158,7 @@ export function buildTile(
         const rx = j.p[0] + a.dir[0] * rs - l[0] * (a.width / 2 + 0.5);
         const rz = j.p[1] + a.dir[1] * rs - l[1] * (a.width / 2 + 0.5);
         if (hs % 3 !== 0 && land.ok(rx, rz, a.chain)) {
-          regSign(
+          (nyc() ? usRegSign : regSign)(
             m,
             [rx, sidewalkY(hf, rx, rz, j.h), rz],
             a.dir,
@@ -9948,7 +10217,7 @@ export function buildTile(
         c = b.footprint[(b.front + 1) % b.footprint.length];
       const n = edgeNormal(b.footprint, b.front);
       const h = hash2(b.id, 55);
-      if (h % 3 === 0) {
+      if (h % 3 === 0 && !nyc()) {
         const count = 1 + ((h >> 4) % 3);
         for (let k = 0; k < count; k++) {
           const t = 0.15 + k * 0.09;
@@ -10002,7 +10271,8 @@ export function buildTile(
       for (const side of [-1, 1]) {
         const off = (W / 2 + 0.3) * side;
         let prev: Vec3 | null = null;
-        for (let s = s0 + 6; s < total - s1 - 6; s += 2) {
+        // (Tokyo's white pedestrian guardrails; none on a New York kerb.)
+        for (let s = s0 + 6; !nyc() && s < total - s1 - 6; s += 2) {
           const q = chainAt(c, arc, s);
           const l: Vec2 = [-q.d[1], q.d[0]];
           const x = q.p[0] + l[0] * off;

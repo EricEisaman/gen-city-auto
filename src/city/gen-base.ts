@@ -33,6 +33,7 @@ import {
   type Elevated,
 } from './layout.ts';
 import {chainAt, computeRoadGeom, type RoadGeom} from './roadgeom.ts';
+import {signLocaleOf} from './signs.ts';
 import {Heightfield, SEA_LEVEL} from './terrain.ts';
 
 export const LIGHT_FLOATS = 8;
@@ -1964,6 +1965,12 @@ function frames(pts: Vec2[]) {
   });
 }
 
+/**
+ * New York platforms (the city's sign locale, set by elevatedStructures):
+ * no drinks machines, one litter bin instead of the recycling trio.
+ */
+let platformNyc = false;
+
 function elevatedStructures(
   L: CityLayout,
   mask: Uint8Array,
@@ -1971,6 +1978,7 @@ function elevatedStructures(
   lights: LightList,
   solid: Solid,
 ) {
+  platformNyc = signLocaleOf(L.params.type) === 'nyc';
   const hf = L.terrain.heights;
   const onRoad = (q: Vec2) => {
     const S = hf.size / 2;
@@ -4869,7 +4877,7 @@ function railViaduct(
           // platform), and a recycling-bin trio beside them.
           const fs = k >= si ? -1 : 1;
           const fd: Vec3 = [fr[k].d[0] * fs, 0, fr[k].d[1] * fs];
-          for (const v of [0, 1]) {
+          for (const v of platformNyc ? [] : [0, 1]) {
             const c = mid(k, 0.45, o(9.05 - v * 0.92), PL + 0.9);
             const vm = packMat(CM.vending, (k + v + (side > 0 ? 1 : 0)) % 3);
             const vy = Math.atan2(-fd[2], fd[0]);
@@ -4935,6 +4943,7 @@ function railViaduct(
           // coloured lid bands, against the fence 3 m in front of the machines.
           const lenB = dist2(pts[k], pts[W(k + 1)]) || 1;
           [0x92, 0x0c, 0x90].forEach((lid, q) => {
+            if (platformNyc && q !== 2) return;
             const t = 0.45 + (fs * (3.0 + q * 0.44)) / lenB;
             m.box(
               mid(k, t, o(9.28), PL + 0.45),
