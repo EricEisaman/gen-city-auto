@@ -35,6 +35,8 @@ interface TileState {
   pending0: boolean;
   pending1: boolean;
   pending2: boolean;
+  /** A LOD0 upload found the pool full: not asked for again before this (ms). */
+  retry0: number;
 }
 
 /**
@@ -95,6 +97,14 @@ export class City {
   /** Show every tile at LOD2 (asset lab). */
   forceLod2 = false;
   stats = {lod0: 0, lod1: 0, lod2: 0, queue: 0};
+  /**
+   * Extra places to stream around besides the camera (the showcase director's
+   * next location, game/showcase.ts): LOD0 within r0 and a shell at LOD1 (or
+   * LOD0) within r1, so a cut there shows neither missing tiles nor LOD2.
+   */
+  prefetch: {p: Vec3; r0: number; r1: number}[] = [];
+  /** Land use raster (gen-base.ts landUse: 0 natural, 1 urban, 2 park, 3 road). */
+  landUse: Uint8Array | null = null;
   /** Until this time (ms) the shell band has no prefetch (pool was full). */
   private tightUntil = 0;
   private lab?: LabSpec;
@@ -313,6 +323,7 @@ export class City {
     landUse: Uint8Array,
   ) {
     this.summary = summary;
+    this.landUse = landUse;
     const L = summary.layout;
     this.heights = new Heightfield(L.params.size, L.cell, L.heights);
     this.tilesPerSide = Math.ceil(L.params.size / TILE_SIZE);
@@ -327,6 +338,7 @@ export class City {
       pending0: false,
       pending1: false,
       pending2: false,
+      retry0: 0,
     }));
     timed('setTerrain', () =>
       this.renderer.setTerrain(
@@ -392,6 +404,9 @@ export class City {
       console.warn(`city: cluster pool full, tile ${tile} LOD${lod} dropped`);
     // (Uploaded, the pool frees the arrays once written.)
     if (!h) release(clusters.vertices, clusters.tris, clusters.clusters);
+    // (A tile that did not fit is not rebuilt at once, over and over.)
+    if (!h && clusters.clusterCount > 0 && lod === 0)
+      s.retry0 = performance.now() + 4000;
     if (lod === 2) {
       s.pending2 = false;
       if (s.lod2) this.renderer.freeClusters(s.lod2);
@@ -459,25 +474,44 @@ export class City {
     if (!this.tiles.length) return;
     this.updateShells(p, initial);
     const want = new Set(this.nearTiles(p, this.lod0Radius));
-    // Prioritize LOD0 jobs by distance (they jump ahead of LOD1 jobs).
+    // Prioritize LOD0 jobs by distance (they jump ahead of LOD1 jobs); the
+    // prefetch places' tiles follow the camera's.
     const add: number[] = [];
+    const extra: number[] = [];
+    const now = performance.now();
     for (const t of want) {
       const s = this.tiles[t];
-      if (!s.lod0 && !s.pending0) {
+      if (!s.lod0 && !s.pending0 && now >= s.retry0) {
         s.pending0 = true;
         add.push(t);
       }
     }
     add.sort((a, b) => this.tileDist(a, p) - this.tileDist(b, p));
-    if (add.length) this.queue.unshift(...add.map(tile => ({tile, lod: 0})));
+    for (const f of this.prefetch)
+      for (const t of this.nearTiles(f.p, f.r0)) {
+        const s = this.tiles[t];
+        if (!s.lod0 && !s.pending0 && now >= s.retry0) {
+          s.pending0 = true;
+          extra.push(t);
+        }
+      }
+    if (add.length || extra.length)
+      this.queue.unshift(...[...add, ...extra].map(tile => ({tile, lod: 0})));
     let lod0 = 0;
     let lod1 = 0;
     let lod2 = 0;
     const forced = this.forceLod1 || this.forceLod2;
+    // LOD0 tiles are large (~15 LOD1 shells each): while a prefetch place
+    // streams in, the camera's ring keeps no band past its radius.
+    const keep = this.prefetch.some(f => f.r0 > 0) ? 40 : this.lod0Keep;
     for (let t = 0; t < this.tiles.length; t++) {
       const s = this.tiles[t];
       const d = this.tileDist(t, p);
-      if (s.lod0 && d > this.lod0Radius + this.lod0Keep) {
+      if (
+        s.lod0 &&
+        d > this.lod0Radius + keep &&
+        !this.prefetch.some(f => this.tileDist(t, f.p) < f.r0 + 60)
+      ) {
         this.renderer.freeClusters(s.lod0);
         s.lod0 = null;
         s.lights0 = new Float32Array(0);
@@ -503,6 +537,35 @@ export class City {
   }
 
   /**
+   * True once a cut to `p` would show finished geometry: every tile within
+   * r0 has its LOD0 and every tile within r1 a resident shell it would show
+   * there (LOD1, or LOD0).
+   */
+  readyAt(p: Vec3, r0: number, r1: number) {
+    if (!this.tiles.length) return false;
+    for (let t = 0; t < this.tiles.length; t++) {
+      const d = this.tileDist(t, p);
+      if (d >= Math.max(r0, r1)) continue;
+      const s = this.tiles[t];
+      if (d < r0 && !s.lod0) return false;
+      if (d < Math.min(r1, this.lod2Dist) && !s.lod1 && !s.lod0) return false;
+    }
+    return true;
+  }
+
+  /** Positions (x, y, z) of every resident light of one kind (gen-base LightKind). */
+  lightPoints(kind: number): number[] {
+    const out: number[] = [];
+    const scan = (a: Float32Array) => {
+      for (let i = 0; i + 7 < a.length; i += 8)
+        if (a[i + 7] === kind) out.push(a[i], a[i + 1], a[i + 2]);
+    };
+    scan(this.baseLights);
+    for (const s of this.tiles) scan(s.lod0 ? s.lights0 : s.lights1);
+    return out;
+  }
+
+  /**
    * Shell residency: LOD1 within lod2Dist (+ SHELL_PREFETCH), LOD2 beyond
    * (- SHELL_PREFETCH); a shell is freed once the other one is resident and
    * the tile is SHELL_KEEP past the switch. New requests go to the back of
@@ -514,8 +577,13 @@ export class City {
     for (let t = 0; t < this.tiles.length; t++) {
       const s = this.tiles[t];
       const d = this.tileDist(t, p);
+      // A prefetch place keeps the shells it will show (LOD1) resident.
+      const held = this.prefetch.some(
+        f => this.tileDist(t, f.p) < Math.min(f.r1, this.lod2Dist),
+      );
       const want1 =
-        this.forceLod1 || (!this.forceLod2 && d < this.lod2Dist + pre);
+        this.forceLod1 ||
+        (!this.forceLod2 && (d < this.lod2Dist + pre || held));
       const want2 =
         this.forceLod2 || (!this.forceLod1 && d >= this.lod2Dist - pre);
       if (want1 && !s.lod1 && !s.pending1) {
@@ -530,7 +598,7 @@ export class City {
       if (
         s.lod1 &&
         s.lod2 &&
-        (forced ? this.forceLod2 : d > this.lod2Dist + SHELL_KEEP)
+        (forced ? this.forceLod2 : d > this.lod2Dist + SHELL_KEEP && !held)
       ) {
         this.renderer.freeClusters(s.lod1);
         s.lod1 = null;
