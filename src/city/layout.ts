@@ -30,6 +30,7 @@ import {
   type Graph,
   type Polyline,
 } from './graph.ts';
+import {fitPath, fitRises} from './grade.ts';
 import {traceStreets, type Basis} from './streets.ts';
 import {
   generateTerrain,
@@ -799,6 +800,49 @@ function resample(pts: Vec2[], step: number): Vec2[] {
   return out;
 }
 
+/** Steepest grade of a rail line. */
+const RAIL_GRADE = 0.03;
+/** Ground over a buried rail deck (buryRail). */
+const RAIL_COVER = 1;
+
+/**
+ * Lower a rail deck to RAIL_COVER under the ground at the points marked
+ * `bored`, and its approaches to keep RAIL_GRADE.
+ */
+function buryRail(e: Elevated, bored: Uint8Array, hf: Heightfield) {
+  const cap = e.pts.map((q, i) =>
+    bored[i] ? -(hf.sample(q[0], q[1]) - RAIL_COVER) : -Infinity,
+  );
+  const ceil = gradeEnvelope(e.pts, cap, RAIL_GRADE);
+  e.heights = e.heights.map((h, i) => Math.min(h, -ceil[i]));
+}
+
+/**
+ * Raise the ground to RAIL_COVER over a rail deck at the points marked
+ * `bored` where it is not (blending back over 12 m).
+ */
+function coverRail(e: Elevated, bored: Uint8Array, hf: Heightfield) {
+  const {n, cell} = hf;
+  const S = hf.size / 2;
+  const R = 8;
+  const F = R + 12;
+  e.pts.forEach((q, i) => {
+    const top = e.heights[i] + RAIL_COVER + 0.5;
+    if (!bored[i] || hf.sample(q[0], q[1]) >= top - 0.5) return;
+    const x0 = Math.max(0, Math.floor((q[0] - F + S) / cell));
+    const x1 = Math.min(n - 1, Math.ceil((q[0] + F + S) / cell));
+    const z0 = Math.max(0, Math.floor((q[1] - F + S) / cell));
+    const z1 = Math.min(n - 1, Math.ceil((q[1] + F + S) / cell));
+    for (let gz = z0; gz <= z1; gz++)
+      for (let gx = x0; gx <= x1; gx++) {
+        const d = Math.hypot(gx * cell - S - q[0], gz * cell - S - q[1]);
+        const w = 1 - smoothstep(R, F, d);
+        const k = gz * n + gx;
+        if (w > 0 && hf.data[k] < top) hf.data[k] = lerp(hf.data[k], top, w);
+      }
+  });
+}
+
 function railLines(
   p: CityParams,
   rng: Rng,
@@ -806,6 +850,8 @@ function railLines(
   hubs: Hub[],
   center: Vec2,
   hf: Heightfield,
+  /** Receives each line's deck clearance. */
+  clearances: number[] = [],
 ): Elevated[] {
   const out: Elevated[] = [];
   if (p.railLines <= 0) return out;
@@ -834,25 +880,28 @@ function railLines(
     if (!wet) {
       out.push({
         pts,
-        heights: elevateProfile(pts, hf, 9, 0.03, true),
+        heights: elevateProfile(pts, hf, 9, RAIL_GRADE, true),
         kind: 'rail',
         loop: true,
         stations: [],
       });
+      clearances.push(9);
     } else {
       // The loop would cross open water: keep the longest stretch on land.
       const piece =
         clipToLand(pts, hf, 350).sort((a, b) => b.length - a.length)[0] ?? [];
       // Bridges over narrow water (rivers) keep it in one piece: then it is
       // still a loop, not a line with two dead ends side by side.
-      if (piece.length > 20)
+      if (piece.length > 20) {
         out.push({
           pts: piece,
-          heights: elevateProfile(piece, hf, 9, 0.03, true),
+          heights: elevateProfile(piece, hf, 9, RAIL_GRADE, true),
           kind: 'rail',
           loop: piece.length === pts.length,
           stations: [],
         });
+        clearances.push(9);
+      }
     }
   }
   // Cross-town lines from edge to edge through the center.
@@ -874,14 +923,16 @@ function railLines(
       (x, y) => y.length - x.length,
     );
     const pts = pieces[0] ?? [];
-    if (pts.length > 10)
+    if (pts.length > 10) {
       out.push({
         pts,
-        heights: elevateProfile(pts, hf, 9 + k * 3, 0.03, true),
+        heights: elevateProfile(pts, hf, 9 + k * 3, RAIL_GRADE, true),
         kind: 'rail',
         loop: false,
         stations: [],
       });
+      clearances.push(9 + k * 3);
+    }
   }
   // Stations near hubs.
   for (const line of out) {
@@ -1073,70 +1124,17 @@ export function generateLayout(
     : chainsBefore;
 
   progress?.('Grading roads', 0.35);
-  // Smooth the road heights and carve the terrain so roads sit on it.
-  const nodeH = g.nodes.map(n =>
-    Math.max(hf.sample(n.p[0], n.p[1]), SEA_LEVEL + 1.2),
-  );
-  const chains: RoadChain[] = [];
-  for (const c of chainsG) {
-    const raw = c.nodes.map(n => g.nodes[n].p);
-    const pts = resample(raw, 8);
-    // Keep exact endpoints so junctions line up.
-    pts[0] = raw[0];
-    pts[pts.length - 1] = raw[raw.length - 1];
-    const L: number[] = [0];
-    for (let i = 1; i < pts.length; i++)
-      L.push(L[i - 1] + dist2(pts[i - 1], pts[i]));
-    const total = L[L.length - 1];
-    const h0 = nodeH[c.nodes[0]];
-    const h1 = nodeH[c.nodes[c.nodes.length - 1]];
-    const bridge = pts.map(q => !isLand(q));
-    let heights = pts.map((q, i) => {
-      const t = total > 0 ? L[i] / total : 0;
-      const terrainH = Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 1.2);
-      // Bridges span between the banks with a gentle arch.
-      if (bridge[i])
-        return (
-          lerp(h0, h1, t) +
-          Math.sin(Math.PI * t) * Math.min(12, total * 0.03) +
-          2
-        );
-      const blend = smoothstep(0, 40, Math.min(L[i], total - L[i]));
-      return lerp(lerp(h0, h1, t), terrainH, blend);
-    });
-    for (let it = 0; it < 6; it++) {
-      const h = heights.slice();
-      for (let i = 1; i + 1 < pts.length; i++)
-        heights[i] = (h[i - 1] + 2 * h[i] + h[i + 1]) / 4;
-    }
-    heights[0] = h0;
-    heights[heights.length - 1] = h1;
-    if (bridge.some(b => b)) {
-      // Raise the bridge deck clear of the water.
-      const wetLen = bridge.filter(b => b).length * 8;
-      const clearance = wetLen > 500 ? 28 : 7;
-      heights = heights.map((h, i) =>
-        bridge[i] ? Math.max(h, SEA_LEVEL + clearance) : h,
-      );
-      for (let it = 0; it < (wetLen > 500 ? 60 : 8); it++) {
-        const h = heights.slice();
-        for (let i = 1; i + 1 < pts.length; i++)
-          heights[i] = Math.max(
-            h[i],
-            (h[i - 1] + 2 * h[i] + h[i + 1]) / 4 - 0.02,
-          );
-      }
-    }
-    chains.push({
-      pts,
-      heights,
-      kind: c.kind,
-      start: c.nodes[0],
-      end: c.nodes[c.nodes.length - 1],
-      bridge,
-    });
-  }
-  const flooded = carveRoads(hf, chains);
+  const {chains, nodeH} = gradeRoads(g, chainsG, hf, isLand);
+  // Every seeded choice from here on (what is land, which rail runs in a
+  // tunnel and so which lots stay) is made on the ground as the old
+  // per-chain grading carved it, so saved views keep their roads and lots;
+  // the real ground is carved to the graded network.
+  const hfSeed = new Heightfield(hf.size, hf.cell, hf.data.slice());
+  const flooded = carveGraded(hf, chains, {
+    hf: hfSeed,
+    heights: seedHeights(chains, hfSeed),
+  });
+  const isLandSeed = (q: Vec2) => hfSeed.sample(q[0], q[1]) > SEA_LEVEL + 0.5;
 
   // Junctions.
   const junctionOf = new Map<number, number>();
@@ -1174,7 +1172,26 @@ export function generateLayout(
   }
 
   progress?.('Elevated rail and expressways', 0.45, {chains});
-  const elevated = railLines(params, rng, noise, hubs, center, hf);
+  // Rail lines are laid out on the seed terrain (where they run, and which
+  // lots stay clear of them), then their decks are graded again over the
+  // real ground; the stations are those that fit there.
+  const clearances: number[] = [];
+  const seedRails = railLines(
+    params,
+    rng,
+    noise,
+    hubs,
+    center,
+    hfSeed,
+    clearances,
+  );
+  const candidates = seedRails.map(e => e.stations.slice());
+  separateCrossings(seedRails);
+  const elevated: Elevated[] = seedRails.map((e, i) => ({
+    ...e,
+    heights: elevateProfile(e.pts, hf, clearances[i], RAIL_GRADE, true),
+    stations: candidates[i],
+  }));
   elevated.push(...expressways(params, rng, chains, hf));
   separateCrossings(elevated);
   for (const e of elevated) e.stations = clearStations(e, hf);
@@ -1189,18 +1206,21 @@ export function generateLayout(
   // in a tunnel are left out.
   const railGrid = new Map<number, [Vec2, Vec2][]>();
   const railKey = (cx: number, cz: number) => (cz + 2048) * 4096 + cx + 2048;
-  for (const e of elevated) {
-    if (e.kind !== 'rail') continue;
+  // Which rail points the seed has in a tunnel (buildings may stand over).
+  const bored = seedRails.map(e =>
+    Uint8Array.from(e.pts, (_, i) => (inTunnel(e, i, hfSeed) ? 1 : 0)),
+  );
+  seedRails.forEach((e, li) => {
     for (let i = 0; i + 1 < e.pts.length; i++) {
       // Buildings may stand over a tunnel.
-      if (inTunnel(e, i, hf) && inTunnel(e, i + 1, hf)) continue;
+      if (bored[li][i] && bored[li][i + 1]) continue;
       const a = e.pts[i];
       const k = railKey(Math.floor(a[0] / 60), Math.floor(a[1] / 60));
       let l = railGrid.get(k);
       if (!l) railGrid.set(k, (l = []));
       l.push([a, e.pts[i + 1]]);
     }
-  }
+  });
   const nearRail = (q: Vec2, pad: number) => {
     const x0 = Math.floor((q[0] - 60) / 60);
     const x1 = Math.floor((q[0] + 60) / 60);
@@ -1273,8 +1293,8 @@ export function generateLayout(
       cz /= curb.length;
       if (
         a > 60 &&
-        isLand([cx, cz]) &&
-        wetFraction(curb, hf) <= 0.02 &&
+        isLandSeed([cx, cz]) &&
+        wetFraction(curb, hfSeed) <= 0.02 &&
         !overlapsRoad(curb)
       ) {
         const thin = insetPolygon(
@@ -1294,8 +1314,8 @@ export function generateLayout(
     }
     cx /= inner.length;
     cz /= inner.length;
-    if (!isLand([cx, cz])) continue;
-    if (wetFraction(curb, hf) > 0.02) continue;
+    if (!isLandSeed([cx, cz])) continue;
+    if (wetFraction(curb, hfSeed) > 0.02) continue;
     if (overlapsRoad(curb)) continue;
     const dens = densityAt(hubs, noise, cx, cz);
     const area = polygonArea(inner);
@@ -1353,9 +1373,35 @@ export function generateLayout(
   progress?.('Grading blocks', 0.55);
   blocks.push(...slivers);
   gradeBlocks(hf, blocks);
+  // Rail lines stay underground wherever the seed had them in a tunnel (the
+  // lots over them were kept), however far the graded ground came down.
+  seedRails.forEach((_, li) => buryRail(elevated[li], bored[li], hf));
+  separateCrossings(elevated);
+  // Where one line lifted over another came up, heap the ground over it.
+  seedRails.forEach((_, li) => coverRail(elevated[li], bored[li], hf));
+  for (const e of elevated) e.stations = clearStations(e, hf);
+  // The seed ground too, where the choices below read it (they were made on
+  // graded blocks): blocks that may grade down to the water line, and those
+  // under a rail line (which runs in a tunnel where the ground is over it).
+  const railPts: Vec2[] = [];
+  for (const e of seedRails) railPts.push(...e.pts);
+  const pad = hf.cell * 2;
+  gradeBlocks(
+    hfSeed,
+    blocks,
+    (box, low) =>
+      low <= SEA_LEVEL + 0.6 ||
+      railPts.some(
+        q =>
+          q[0] > box[0] - pad &&
+          q[0] < box[2] + pad &&
+          q[1] > box[1] - pad &&
+          q[1] < box[3] + pad,
+      ),
+  );
 
   progress?.('Designing buildings', 0.6, {blocks});
-  const railSegs = binRailSegments(elevated, hf);
+  const railSegs = binRailSegments(seedRails, hfSeed);
   const buildings: Building[] = [];
   // Buildings standing on each block, for the open-ground pass.
   const onBlock: number[][] = blocks.map(() => []);
@@ -1373,7 +1419,7 @@ export function generateLayout(
     cx /= fp.length;
     cz /= fp.length;
     if (nearRail([cx, cz], 14) || fp.some(q => nearRail(q, 7))) continue;
-    if (fp.some(q => !isLand(q))) continue;
+    if (fp.some(q => !isLandSeed(q))) continue;
     const brng = new Rng(
       hash2(Math.round(cx * 10), Math.round(cz * 10)) ^ seed,
     );
@@ -1480,7 +1526,7 @@ export function generateLayout(
     });
   }
   progress?.('Open ground', 0.68);
-  fillOpenGround(blocks, onBlock, buildings, elevated, hf);
+  fillOpenGround(blocks, onBlock, buildings, seedRails, hfSeed);
   // Every seeded decision is made: give the river back the cells the road
   // carve heaped up around bridge ends (see carveRoads).
   restoreChannels(hf, flooded, buildings);
@@ -1785,7 +1831,16 @@ function fillOpenGround(
  * Grade each block to a plane fitted through the road heights at its curb, so
  * sidewalks meet the roads with a constant curb instead of sloping wedges.
  */
-function gradeBlocks(hf: Heightfield, blocks: Block[]) {
+function gradeBlocks(
+  hf: Heightfield,
+  blocks: Block[],
+  /**
+   * Grade only the blocks this keeps, given the block's bounds (x0, z0, x1,
+   * z1) and the lowest height its grading can leave (the least of its
+   * plane at the corners and the ground around it).
+   */
+  keep?: (box: number[], low: number) => boolean,
+) {
   const n = hf.n;
   const cell = hf.cell;
   const S = hf.size / 2;
@@ -1850,6 +1905,20 @@ function gradeBlocks(hf: Heightfield, blocks: Block[]) {
       c = (czh * cxx - cxh * cxz) / det;
     }
     const plane = (x: number, z: number) => mh + a * (x - mx) + c * (z - mz);
+    if (keep) {
+      // Relaxing averages, so nothing ends below the start values (the
+      // plane, least at a corner) or the cells around the block.
+      let low = Infinity;
+      for (const q of poly) low = Math.min(low, plane(q[0], q[1]));
+      const bx0 = Math.max(0, Math.floor((x0 + S) / cell) - 1);
+      const bx1 = Math.min(n - 1, Math.ceil((x1 + S) / cell) + 1);
+      const bz0 = Math.max(0, Math.floor((z0 + S) / cell) - 1);
+      const bz1 = Math.min(n - 1, Math.ceil((z1 + S) / cell) + 1);
+      for (let gz = bz0; gz <= bz1; gz++)
+        for (let gx = bx0; gx <= bx1; gx++)
+          low = Math.min(low, data[gz * n + gx]);
+      if (!keep([x0, z0, x1, z1], low)) continue;
+    }
     // Interior cells start on the plane, then relax as a membrane whose edge is
     // held by the surrounding road heights, so the block meets every road.
     const gx0 = Math.max(1, Math.floor((x0 + S) / cell));
@@ -2067,15 +2136,553 @@ function wetFraction(poly: Vec2[], hf: Heightfield) {
   return total ? wet / total : 0;
 }
 
-/** Carve the terrain to match road surfaces so roads never float or sink. */
-function carveRoads(hf: Heightfield, chains: RoadChain[]) {
+/** Steepest grade per road class (lane, street, avenue, boulevard). */
+export const MAX_GRADE = [0.15, 0.13, 0.1, 0.08];
+/** Grade over a junction's pad: the first metres of each of its arms. */
+export const PAD_GRADE = 0.03;
+/** Pad length past half the widest road at a junction. */
+const PAD_MARGIN = 8;
+/** Roads whose sidewalks come this close are graded together. */
+const NEIGHBOUR_GAP = 12;
+/**
+ * Roads near a river or the sea stay within this grade of the water line
+ * (measured from the edge of their sidewalks) unless the terrain there is
+ * higher: filling a valley for the grade would leave its river at the
+ * bottom of a trench.
+ */
+const WATER_BANK = 0.5;
+
+/**
+ * Distance (m) to the nearest water from each cell of a grid of `cell`
+ * metres laid over the heightfield, up to `reach` (chamfer distance).
+ */
+function waterDistance(hf: Heightfield, cell: number, reach: number) {
+  const m = Math.ceil(hf.size / cell) + 1;
+  const S = hf.size / 2;
+  const d = new Float32Array(m * m);
+  for (let j = 0; j < m; j++)
+    for (let i = 0; i < m; i++)
+      d[j * m + i] =
+        hf.sample(i * cell - S, j * cell - S) < SEA_LEVEL + 0.5 ? 0 : reach;
+  const a = cell;
+  const b = cell * Math.SQRT2;
+  for (let j = 0; j < m; j++)
+    for (let i = 0; i < m; i++) {
+      const k = j * m + i;
+      let v = d[k];
+      if (i > 0) v = Math.min(v, d[k - 1] + a);
+      if (j > 0) {
+        v = Math.min(v, d[k - m] + a);
+        if (i > 0) v = Math.min(v, d[k - m - 1] + b);
+        if (i + 1 < m) v = Math.min(v, d[k - m + 1] + b);
+      }
+      d[k] = v;
+    }
+  for (let j = m - 1; j >= 0; j--)
+    for (let i = m - 1; i >= 0; i--) {
+      const k = j * m + i;
+      let v = d[k];
+      if (i + 1 < m) v = Math.min(v, d[k + 1] + a);
+      if (j + 1 < m) {
+        v = Math.min(v, d[k + m] + a);
+        if (i + 1 < m) v = Math.min(v, d[k + m + 1] + b);
+        if (i > 0) v = Math.min(v, d[k + m - 1] + b);
+      }
+      d[k] = v;
+    }
+  // Bilinear.
+  return (x: number, z: number) => {
+    const gx = clamp((x + S) / cell, 0, m - 1.001);
+    const gz = clamp((z + S) / cell, 0, m - 1.001);
+    const i = Math.floor(gx);
+    const j = Math.floor(gz);
+    const k = j * m + i;
+    return lerp(
+      lerp(d[k], d[k + 1], gx - i),
+      lerp(d[k + m], d[k + m + 1], gx - i),
+      gz - j,
+    );
+  };
+}
+
+/**
+ * Road heights for the whole network at once: every segment within its
+ * class's MAX_GRADE, junctions on near-flat pads (PAD_GRADE), as close to the
+ * terrain as that allows (least squares: hills cut and valleys filled), and
+ * bridge decks clear of the water. Grading each chain on its own from
+ * terrain samples left roads on 50-80% grades in the hilly cities, and
+ * neighbouring roads and junction arms at different heights. carveGraded
+ * and gradeBlocks then shape the ground to these heights.
+ *
+ * In three steps: the junctions first, as a graph whose edges are the
+ * chains (each node standing for itself and the near half of its chains),
+ * so the earth moves across whole hills in few sweeps; then each chain
+ * between its graded ends; then everything at once with roads that run side
+ * by side held together (a short local correction).
+ */
+function gradeRoads(
+  g: Graph,
+  chainsG: Chain[],
+  hf: Heightfield,
+  isLand: (q: Vec2) => boolean,
+): {chains: RoadChain[]; nodeH: number[]} {
+  const nn = g.nodes.length;
+  const ground = (q: Vec2) => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 1.2);
+  const toWater = waterDistance(hf, 8, 200);
+
+  const band = (kind: number) => ROAD_WIDTH[kind] / 2 + SIDEWALK[kind];
+  const nearWater = (q: Vec2, kind: number) =>
+    Math.max(
+      ground(q),
+      SEA_LEVEL +
+        1.2 +
+        WATER_BANK * Math.max(0, toWater(q[0], q[1]) - band(kind)),
+    );
+  const arms = new Int32Array(nn);
+  const wide = new Float32Array(nn);
+  for (const c of chainsG)
+    for (const n of [c.nodes[0], c.nodes[c.nodes.length - 1]]) {
+      arms[n]++;
+      wide[n] = Math.max(wide[n], ROAD_WIDTH[c.kind]);
+    }
+  const geo = chainsG.map(c => {
+    const raw = c.nodes.map(n => g.nodes[n].p);
+    const pts = resample(raw, 8);
+    // Keep exact endpoints so junctions line up.
+    pts[0] = raw[0];
+    pts[pts.length - 1] = raw[raw.length - 1];
+    const n = pts.length;
+    const L: number[] = [0];
+    for (let i = 1; i < n; i++) L.push(L[i - 1] + dist2(pts[i - 1], pts[i]));
+    const bridge = pts.map(q => !isLand(q));
+    // Target: the terrain along the road, smoothed over ~25 m.
+    let t = pts.map((q, i) => (bridge[i] ? NaN : ground(q)));
+    for (let it = 0; it < 6; it++) {
+      const h = t.slice();
+      for (let i = 1; i + 1 < n; i++)
+        if (!bridge[i - 1] && !bridge[i] && !bridge[i + 1])
+          t[i] = (h[i - 1] + 2 * h[i] + h[i + 1]) / 4;
+    }
+    t = t.map((v, i) => (i === 0 || i === n - 1 ? ground(pts[i]) : v));
+    // Over a bridge, the straight line between its banks, weighted lightly:
+    // the deck is set by its clearance and approach grades.
+    const weight = new Float64Array(n).fill(1);
+    for (let i = 1; i + 1 < n; i++) {
+      if (!Number.isNaN(t[i])) continue;
+      let j = i;
+      while (Number.isNaN(t[j])) j++;
+      for (let k = i; k < j; k++) {
+        t[k] = lerp(t[i - 1], t[j], (L[k] - L[i - 1]) / (L[j] - L[i - 1]));
+        weight[k] = 0.01;
+      }
+      i = j;
+    }
+    const wetLen = bridge.filter(w => w).length * 8;
+    const clearance = wetLen > 500 ? 28 : 7;
+    const floor = Float64Array.from(
+      bridge,
+      w => SEA_LEVEL + (w ? clearance : 1.2),
+    );
+    // (A bridge's own approaches climb from the bank to its deck.)
+    const wet = wetLen > 0;
+    const ceil = Float64Array.from(pts, q =>
+      wet ? NaN : nearWater(q, c.kind),
+    );
+    const a = c.nodes[0];
+    const b = c.nodes[c.nodes.length - 1];
+    const padA = arms[a] >= 3 ? wide[a] / 2 + PAD_MARGIN : 0;
+    const padB = arms[b] >= 3 ? wide[b] / 2 + PAD_MARGIN : 0;
+    const rise = new Float32Array(n - 1);
+    for (let i = 0; i + 1 < n; i++) {
+      const mid = (L[i] + L[i + 1]) / 2;
+      const pad = mid < padA || L[n - 1] - mid < padB;
+      rise[i] = (pad ? PAD_GRADE : MAX_GRADE[c.kind]) * (L[i + 1] - L[i]);
+    }
+    return {pts, L, bridge, t: Float64Array.from(t), weight, floor, ceil, rise};
+  });
+
+  // Junction level.
+  const nodeT = new Float64Array(nn);
+  const nodeW = new Float64Array(nn);
+  for (let k = 0; k < nn; k++) {
+    nodeT[k] = ground(g.nodes[k].p);
+    nodeW[k] = 1;
+  }
+  const ea: number[] = [];
+  const eb: number[] = [];
+  const er: number[] = [];
+  chainsG.forEach((c, ci) => {
+    const {L, t, weight, rise} = geo[ci];
+    const n = L.length;
+    const a = c.nodes[0];
+    const b = c.nodes[c.nodes.length - 1];
+    for (let i = 1; i + 1 < n; i++) {
+      const k = L[i] * 2 < L[n - 1] ? a : b;
+      nodeT[k] += t[i] * weight[i];
+      nodeW[k] += weight[i];
+    }
+    if (a === b) return;
+    let r = 0;
+    for (const v of rise) r += v;
+    ea.push(a);
+    eb.push(b);
+    er.push(r);
+  });
+  for (let k = 0; k < nn; k++) nodeT[k] /= nodeW[k];
+  // A junction high enough for each of its chains to reach its floor (a
+  // bridge deck's clearance) within the grade.
+  // Likewise low enough for each to reach its ceiling (near the water).
+  const nodeFloor = new Float64Array(nn).fill(SEA_LEVEL + 1.2);
+  const nodeCeil = new Float64Array(nn).fill(NaN);
+  chainsG.forEach((c, ci) => {
+    const {floor, ceil, rise} = geo[ci];
+    const n = floor.length;
+    for (const [end, k, step] of [
+      [c.nodes[0], 0, 1],
+      [c.nodes[c.nodes.length - 1], n - 1, -1],
+    ]) {
+      let r = 0;
+      let need = -Infinity;
+      let cap = Infinity;
+      for (let i = k; i >= 0 && i < n; i += step) {
+        if (i !== k) r += rise[step > 0 ? i - 1 : i];
+        need = Math.max(need, floor[i] - r);
+        if (!Number.isNaN(ceil[i])) cap = Math.min(cap, ceil[i] + r);
+      }
+      nodeFloor[end] = Math.max(nodeFloor[end], need);
+      if (cap < Infinity)
+        nodeCeil[end] = Number.isNaN(nodeCeil[end])
+          ? cap
+          : Math.min(nodeCeil[end], cap);
+    }
+  });
+  const nodeH = fitRises(
+    {
+      n: nn,
+      a: Int32Array.from(ea),
+      b: Int32Array.from(eb),
+      rise: Float32Array.from(er),
+    },
+    nodeT,
+    nodeW,
+    {floor: nodeFloor, ceil: nodeCeil},
+    200,
+  );
+
+  // Each chain between its graded ends.
+  const first = chainsG.map((c, ci) => {
+    const {t, weight, floor, ceil, rise} = geo[ci];
+    const n = t.length;
+    const tt = Float64Array.from(t);
+    const w = Float64Array.from(weight);
+    tt[0] = nodeH[c.nodes[0]];
+    tt[n - 1] = nodeH[c.nodes[c.nodes.length - 1]];
+    w[0] = w[n - 1] = 1e6;
+    return fitPath(tt, w, {floor, ceil}, rise, Math.min(200, 2 * n + 20));
+  });
+
+  // Then all together with roads that run side by side: where their carved
+  // bands (road and sidewalks) come within NEIGHBOUR_GAP of each other they
+  // may differ by at most BANK_SLOPE times the gap between them, or the
+  // ground between them would be a cliff. Each fitted from the heights so
+  // far (only near such pairs does anything move).
+  let nv = nn;
+  const idx = geo.map(({pts}) => {
+    const ix = new Int32Array(pts.length);
+    for (let i = 1; i + 1 < pts.length; i++) ix[i] = nv++;
+    return ix;
+  });
+  const target = new Float64Array(nv);
+  const weight = new Float64Array(nv).fill(1);
+  const floor = new Float64Array(nv);
+  const ceil = new Float64Array(nv).fill(NaN);
+  const ga: number[] = [];
+  const gb: number[] = [];
+  const gr: number[] = [];
+  target.set(nodeH.subarray(0, nn));
+  floor.set(nodeFloor);
+  ceil.set(nodeCeil);
+  chainsG.forEach((c, ci) => {
+    const ix = idx[ci];
+    const n = ix.length;
+    ix[0] = c.nodes[0];
+    ix[n - 1] = c.nodes[c.nodes.length - 1];
+    for (let i = 1; i + 1 < n; i++) {
+      target[ix[i]] = first[ci][i];
+      weight[ix[i]] = geo[ci].weight[i];
+      floor[ix[i]] = geo[ci].floor[i];
+      ceil[ix[i]] = geo[ci].ceil[i];
+    }
+    for (let i = 0; i + 1 < n; i++) {
+      ga.push(ix[i]);
+      gb.push(ix[i + 1]);
+      gr.push(geo[ci].rise[i]);
+    }
+  });
+  // Chain points (not on bridges) binned in CELL m cells: the chain and
+  // point index of each, cell by cell (CSR).
+  const CELL = 16;
+  const G = Math.ceil(hf.size / CELL) + 1;
+  const half = hf.size / 2;
+  const cellOf = (x: number, z: number) =>
+    clamp(Math.floor((z + half) / CELL), 0, G - 1) * G +
+    clamp(Math.floor((x + half) / CELL), 0, G - 1);
+  const binAt = new Int32Array(G * G + 1);
+  for (const {pts, bridge} of geo)
+    pts.forEach((q, i) => {
+      if (!bridge[i]) binAt[cellOf(q[0], q[1]) + 1]++;
+    });
+  for (let k = 0; k < G * G; k++) binAt[k + 1] += binAt[k];
+  const binFill = binAt.slice(0, G * G);
+  const binC = new Int32Array(binAt[G * G]);
+  const binI = new Int32Array(binAt[G * G]);
+  geo.forEach(({pts, bridge}, ci) =>
+    pts.forEach((q, i) => {
+      if (bridge[i]) return;
+      const k = binFill[cellOf(q[0], q[1])]++;
+      binC[k] = ci;
+      binI[k] = i;
+    }),
+  );
+  const nearest = new Map<number, [number, number]>();
+  chainsG.forEach((c, ci) => {
+    const {pts, bridge} = geo[ci];
+    const reach = band(c.kind) + band(Road.boulevard) + NEIGHBOUR_GAP;
+    const r = Math.ceil(reach / CELL);
+    pts.forEach((q, i) => {
+      if (bridge[i]) return;
+      const v = idx[ci][i];
+      // The nearest point of each other chain in reach.
+      nearest.clear();
+      const cx = clamp(Math.floor((q[0] + half) / CELL), 0, G - 1);
+      const cz = clamp(Math.floor((q[1] + half) / CELL), 0, G - 1);
+      for (let gz = Math.max(0, cz - r); gz <= Math.min(G - 1, cz + r); gz++)
+        for (
+          let gx = Math.max(0, cx - r);
+          gx <= Math.min(G - 1, cx + r);
+          gx++
+        ) {
+          const cell = gz * G + gx;
+          for (let k = binAt[cell]; k < binAt[cell + 1]; k++) {
+            const cj = binC[k];
+            if (cj === ci) continue;
+            const u = idx[cj][binI[k]];
+            if (u <= v) continue;
+            const p = geo[cj].pts[binI[k]];
+            const lim = band(c.kind) + band(chainsG[cj].kind) + NEIGHBOUR_GAP;
+            const ex = Math.abs(p[0] - q[0]);
+            const ez = Math.abs(p[1] - q[1]);
+            if (ex > lim || ez > lim) continue;
+            const d = Math.hypot(ex, ez);
+            if (d > lim) continue;
+            const was = nearest.get(cj);
+            if (!was || d < was[1]) nearest.set(cj, [u, d]);
+          }
+        }
+      for (const [cj, [u, d]] of nearest) {
+        const gap = d - band(c.kind) - band(chainsG[cj].kind);
+        ga.push(v);
+        gb.push(u);
+        gr.push(Math.max(PAD_GRADE * d, BANK_SLOPE * gap));
+      }
+    });
+  });
+  const h = fitRises(
+    {
+      n: nv,
+      a: Int32Array.from(ga),
+      b: Int32Array.from(gb),
+      rise: Float32Array.from(gr),
+    },
+    target,
+    weight,
+    {floor, ceil},
+    40,
+  );
+  const chains: RoadChain[] = chainsG.map((c, ci) => ({
+    pts: geo[ci].pts,
+    heights: Array.from(idx[ci], v => h[v]),
+    kind: c.kind,
+    start: c.nodes[0],
+    end: c.nodes[c.nodes.length - 1],
+    bridge: geo[ci].bridge,
+  }));
+  return {chains, nodeH: Array.from(h.subarray(0, nn))};
+}
+
+/**
+ * The road heights of the old per-chain grading (terrain samples smoothed
+ * along each chain, ends at the terrain under the junction). Only for the
+ * seed terrain (see generateLayout): every seeded choice after grading was
+ * tuned on the ground this carved, so saved views keep their lots.
+ */
+function seedHeights(chains: RoadChain[], hf: Heightfield): number[][] {
+  const ground = (q: Vec2) => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 1.2);
+  return chains.map(({pts, bridge}) => {
+    const L: number[] = [0];
+    for (let i = 1; i < pts.length; i++)
+      L.push(L[i - 1] + dist2(pts[i - 1], pts[i]));
+    const total = L[L.length - 1];
+    const h0 = ground(pts[0]);
+    const h1 = ground(pts[pts.length - 1]);
+    let heights = pts.map((q, i) => {
+      const t = total > 0 ? L[i] / total : 0;
+      const terrainH = ground(q);
+      if (bridge[i])
+        return (
+          lerp(h0, h1, t) +
+          Math.sin(Math.PI * t) * Math.min(12, total * 0.03) +
+          2
+        );
+      const blend = smoothstep(0, 40, Math.min(L[i], total - L[i]));
+      return lerp(lerp(h0, h1, t), terrainH, blend);
+    });
+    for (let it = 0; it < 6; it++) {
+      const h = heights.slice();
+      for (let i = 1; i + 1 < pts.length; i++)
+        heights[i] = (h[i - 1] + 2 * h[i] + h[i + 1]) / 4;
+    }
+    heights[0] = h0;
+    heights[heights.length - 1] = h1;
+    if (bridge.some(b => b)) {
+      const wetLen = bridge.filter(b => b).length * 8;
+      const clearance = wetLen > 500 ? 28 : 7;
+      heights = heights.map((h, i) =>
+        bridge[i] ? Math.max(h, SEA_LEVEL + clearance) : h,
+      );
+      for (let it = 0; it < (wetLen > 500 ? 60 : 8); it++) {
+        const h = heights.slice();
+        for (let i = 1; i + 1 < pts.length; i++)
+          heights[i] = Math.max(
+            h[i],
+            (h[i - 1] + 2 * h[i] + h[i + 1]) / 4 - 0.02,
+          );
+      }
+    }
+    return heights;
+  });
+}
+
+/** Steepest the cut and fill banks beside a road may be (rise / run). */
+const BANK_SLOPE = 0.7;
+/** How far from a road its banks may reach (they fade out over the last 20 m). */
+const BANK_REACH = 120;
+
+/**
+ * Carve the terrain to the graded roads: carveRoads (the road's height under
+ * it and its sidewalks, blended back to the terrain over 10 m), then banks:
+ * near a road (up to BANK_REACH) no ground stands higher above, or lower
+ * below, any road surface than BANK_SLOPE times its distance from it, and no
+ * higher above the water than that either. Cut and fill of tens of metres
+ * on the hills would otherwise leave walls beside the roads. Returns the
+ * water cells it raised (see restoreChannels).
+ */
+function carveGraded(hf: Heightfield, chains: RoadChain[], seed: SeedCarve) {
+  const n = hf.n;
+  const N = n * n;
+  const data = hf.data;
+  const road = new Uint8Array(N);
+  const flooded = carveRoads(hf, chains, road, seed);
+
+  // Distance-weighted envelopes on the grid (two-pass chamfer): the least
+  // of source + step * distance over the sources (sign 1), or the most of
+  // source - step * distance (sign -1).
+  const chamfer = (v: Float32Array, step: number, sign: 1 | -1) => {
+    const a = step;
+    const b = step * Math.SQRT2;
+    if (sign < 0) for (let k = 0; k < N; k++) v[k] = -v[k];
+    // Forward: left, and the row above; the edge cells of each row apart.
+    for (let j = 0; j < n; j++) {
+      const r = j * n;
+      for (let i = 0; i < n; i++) {
+        const k = r + i;
+        let x = v[k];
+        if (i > 0) x = Math.min(x, v[k - 1] + a);
+        if (j > 0) {
+          x = Math.min(x, v[k - n] + a);
+          if (i > 0) x = Math.min(x, v[k - n - 1] + b);
+          if (i < n - 1) x = Math.min(x, v[k - n + 1] + b);
+        }
+        v[k] = x;
+      }
+    }
+    // Backward: right, and the row below.
+    for (let j = n - 1; j >= 0; j--) {
+      const r = j * n;
+      for (let i = n - 1; i >= 0; i--) {
+        const k = r + i;
+        let x = v[k];
+        if (i < n - 1) x = Math.min(x, v[k + 1] + a);
+        if (j < n - 1) {
+          x = Math.min(x, v[k + n] + a);
+          if (i < n - 1) x = Math.min(x, v[k + n + 1] + b);
+          if (i > 0) x = Math.min(x, v[k + n - 1] + b);
+        }
+        v[k] = x;
+      }
+    }
+    if (sign < 0) for (let k = 0; k < N; k++) v[k] = -v[k];
+    return v;
+  };
+  const wet = (k: number) => data[k] < SEA_LEVEL + 0.5;
+  // Distance to the nearest road surface, for the reach.
+  const far = chamfer(
+    Float32Array.from(road, r => (r ? 0 : Infinity)),
+    hf.cell,
+    1,
+  );
+  const fade = (k: number) =>
+    1 - smoothstep(BANK_REACH - 20, BANK_REACH, far[k]);
+  const step = BANK_SLOPE * hf.cell;
+  // Ceiling: roads and the water line.
+  const env = new Float32Array(N);
+  for (let k = 0; k < N; k++)
+    env[k] = road[k] ? data[k] : wet(k) ? SEA_LEVEL + 0.5 : Infinity;
+  chamfer(env, step, 1);
+  for (let k = 0; k < N; k++) {
+    if (road[k] || wet(k) || far[k] >= BANK_REACH) continue;
+    if (data[k] > env[k]) data[k] = lerp(data[k], env[k], fade(k));
+  }
+  // Floor: roads.
+  for (let k = 0; k < N; k++) env[k] = road[k] ? data[k] : -Infinity;
+  chamfer(env, step, -1);
+  for (let k = 0; k < N; k++) {
+    if (road[k] || wet(k) || far[k] >= BANK_REACH) continue;
+    if (data[k] < env[k]) data[k] = lerp(data[k], env[k], fade(k));
+  }
+  return flooded;
+}
+
+/**
+ * A second terrain (a copy of the first) carved in the same pass to other
+ * road heights (per chain and point): the seed terrain (see generateLayout).
+ */
+interface SeedCarve {
+  hf: Heightfield;
+  heights: number[][];
+}
+
+/**
+ * Carve the terrain to match road surfaces so roads never float or sink:
+ * their heights under them and their sidewalks, blended back to the
+ * terrain over 10 m. Marks the cells under a road in `under`, and carves
+ * `seed` too.
+ */
+function carveRoads(
+  hf: Heightfield,
+  chains: RoadChain[],
+  under: Uint8Array,
+  seed: SeedCarve,
+) {
   const n = hf.n;
   const cell = hf.cell;
   const S = hf.size / 2;
   const target = new Float32Array(n * n).fill(NaN);
   const weight = new Float32Array(n * n);
   const dist = new Float32Array(n * n).fill(Infinity);
-  for (const c of chains) {
+  const seedTarget = new Float32Array(n * n);
+  chains.forEach((c, ci) => {
+    const sh = seed.heights[ci];
     const half = ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] + 1;
     const falloff = half + 10;
     for (let i = 0; i + 1 < c.pts.length; i++) {
@@ -2116,11 +2723,12 @@ function carveRoads(hf: Heightfield, chains: RoadChain[]) {
             weight[k] = w;
             target[k] = h;
             dist[k] = d;
+            seedTarget[k] = lerp(sh[i], sh[i + 1], t);
           }
         }
       }
     }
-  }
+  });
   // Original heights of river/sea cells the carve raised. Bridge approaches
   // climb to deck height over the last stretch of bank, and their falloff
   // band would heap an earth mound out into the water (clipping piers). The
@@ -2128,8 +2736,10 @@ function carveRoads(hf: Heightfield, chains: RoadChain[]) {
   // restoreChannels() digs these cells back out once layout is done, and the
   // road deck builder spans them as bridge.
   const flooded = new Map<number, number>();
+  const sd = seed.hf.data;
   for (let k = 0; k < n * n; k++) {
     if (weight[k] > 0) {
+      sd[k] = lerp(sd[k], seedTarget[k] - 0.05, weight[k]);
       const h = lerp(hf.data[k], target[k] - 0.05, weight[k]);
       // Only where the road stands high enough for gen-base to give it a
       // deck (> 2.5 m above the water); low riverside roads keep their bank.
@@ -2140,6 +2750,7 @@ function carveRoads(hf: Heightfield, chains: RoadChain[]) {
       )
         flooded.set(k, hf.data[k]);
       hf.data[k] = h;
+      if (weight[k] === 1) under[k] = 1;
     }
   }
   return flooded;
