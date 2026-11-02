@@ -8568,6 +8568,9 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         s = roadPole(world, n, uv, paintColor(select(0x90u, 0x96u, signLocale() == 1u)), 0.08);
       } else if (param == CABINET || param == UTIL_POLE || (param >= SIGNAL_BORDER && param <= UTIL_PLATE)) {
         s = roadFurniture(world, n, uv, param, aux);
+      } else if (param == 0x97u) {
+        // New York fire escapes (gen-tile FIRE_ESCAPE): black paint over rust.
+        s = paintedSteelC(world, n, 0x97u, vec3f(0.022, 0.022, 0.024));
       } else if ((param & ~0xffu) == PAINT_STEEL) {
         s = paintedSteel(world, n, param);
       } else if ((param & ~0xffu) == RAIL_GIRDER) {

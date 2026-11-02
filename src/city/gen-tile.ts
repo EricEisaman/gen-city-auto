@@ -2061,6 +2061,178 @@ const PAINT_STEEL = 0x300;
 const steelPaint = (seed: number) =>
   packMat(CM.paint, PAINT_STEEL | (seed & 0xff));
 
+/** CM.paint param of a fire escape: black paint over rust (paintedSteelC). */
+const FIRE_ESCAPE = 0x97;
+
+/**
+ * New York fire escape on facade edge `e` from s0 to s1 (LOD0): a black
+ * iron landing at each of `levels` (floor heights, the second floor up),
+ * 0.8 m deep: its grating plate on two brackets, a pipe top rail round it
+ * over a mid rail and bar balusters, and a flight zig-zagging up to the
+ * next landing (stringer, handrail, open treads); a counterweighted drop
+ * ladder hangs under the lowest. The thin parts are single quads facing
+ * the street (it is seen from below and in front); about 70 triangles a
+ * landing.
+ */
+function fireEscape(
+  m: CMesh,
+  e: FacadeEdge,
+  s0: number,
+  s1: number,
+  levels: number[],
+  mat: number,
+) {
+  const D = 0.8;
+  const P = (s: number, out: number, y: number) => edgeAt(e, s, out, y);
+  const down: Vec3 = [0, -1, 0];
+  // A bar from a to b as a flat strip 2 hw wide facing n.
+  const strip = (a: Vec3, b: Vec3, hw: number, n: Vec3) => {
+    const d: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const c: Vec3 = [
+      n[1] * d[2] - n[2] * d[1],
+      n[2] * d[0] - n[0] * d[2],
+      n[0] * d[1] - n[1] * d[0],
+    ];
+    const k = hw / (Math.hypot(c[0], c[1], c[2]) || 1);
+    const o: Vec3 = [c[0] * k, c[1] * k, c[2] * k];
+    m.quad(
+      [
+        [a[0] - o[0], a[1] - o[1], a[2] - o[2]],
+        [b[0] - o[0], b[1] - o[1], b[2] - o[2]],
+        [b[0] + o[0], b[1] + o[1], b[2] + o[2]],
+        [a[0] + o[0], a[1] + o[1], a[2] + o[2]],
+      ],
+      n,
+      uv01,
+      mat,
+    );
+  };
+  const plate = (sa: number, sb: number, o0: number, o1: number, y: number) => {
+    const q = [P(sa, o0, y), P(sb, o0, y), P(sb, o1, y), P(sa, o1, y)];
+    m.quad(q, UP, uv01, mat);
+    m.quad(
+      q.map(v => [v[0], v[1] - 0.03, v[2]] as Vec3),
+      down,
+      uv01,
+      mat,
+    );
+  };
+  const W = s1 - s0;
+  const nBal = Math.max(2, Math.round(W / 0.55));
+  // Brackets face out and down (seen from the pavement under them).
+  const braceN: Vec3 = [e.n[0] * 0.6, -0.8, e.n[2] * 0.6];
+  levels.forEach((y, i) => {
+    // Grating plate and its front edge, on two brackets.
+    plate(s0, s1, 0, D, y);
+    m.quad(
+      [P(s0, D, y - 0.05), P(s1, D, y - 0.05), P(s1, D, y), P(s0, D, y)],
+      e.n,
+      uv01,
+      mat,
+    );
+    for (const s of [s0 + 0.3, s1 - 0.3])
+      strip(P(s, 0, y - 0.65), P(s, D - 0.05, y - 0.04), 0.02, braceN);
+    // Top rail round the front, mid rail, balusters.
+    m.tube(
+      [
+        P(s0, 0.02, y + 0.95),
+        P(s0, D, y + 0.95),
+        P(s1, D, y + 0.95),
+        P(s1, 0.02, y + 0.95),
+      ],
+      0.018,
+      mat,
+    );
+    strip(P(s0, D, y + 0.45), P(s1, D, y + 0.45), 0.012, e.n);
+    for (let k = 0; k <= nBal; k++) {
+      const s = lerp(s0, s1, k / nBal);
+      strip(P(s, D, y), P(s, D, y + 0.95), k % nBal ? 0.008 : 0.016, e.n);
+    }
+    for (const [s, sg] of [
+      [s0, -1],
+      [s1, 1],
+    ] as const) {
+      const n: Vec3 = [e.along[0] * sg, 0, e.along[2] * sg];
+      strip(P(s, D * 0.5, y), P(s, D * 0.5, y + 0.95), 0.008, n);
+      strip(P(s, 0.02, y + 0.45), P(s, D, y + 0.45), 0.012, n);
+    }
+    // The flight up to the next landing, alternating direction.
+    if (i + 1 < levels.length) {
+      const y2 = levels[i + 1];
+      const [sa, sb] = i % 2 ? [s1 - 0.35, s0 + 0.35] : [s0 + 0.35, s1 - 0.35];
+      strip(P(sa, 0.75, y), P(sb, 0.75, y2), 0.035, e.n);
+      strip(P(sa, 0.75, y + 0.9), P(sb, 0.75, y2 + 0.9), 0.015, e.n);
+      strip(P(sa, 0.35, y), P(sb, 0.35, y2), 0.03, e.n);
+      const T = 4;
+      for (let k = 1; k <= T; k++) {
+        const t = k / (T + 1);
+        const s = lerp(sa, sb, t);
+        plate(s - 0.09, s + 0.09, 0.35, 0.75, lerp(y, y2, t));
+      }
+    } else {
+      // Gooseneck ladder rails up over the coping from the top landing.
+      for (const d of [-0.2, 0.2]) {
+        const s = (s0 + s1) / 2 + d;
+        strip(P(s, 0.12, y + 0.95), P(s, 0.12, y + 2.2), 0.012, e.n);
+      }
+    }
+  });
+  // Drop ladder (counterweighted, raised) under the lowest landing.
+  const y = levels[0];
+  const sl = s0 + 0.45;
+  for (const d of [-0.2, 0.2])
+    strip(P(sl + d, 0.7, y - 0.03), P(sl + d, 0.7, y - 1.5), 0.014, e.n);
+  for (let k = 1; k <= 4; k++)
+    strip(
+      P(sl - 0.2, 0.7, y - k * 0.3),
+      P(sl + 0.2, 0.7, y - k * 0.3),
+      0.01,
+      e.n,
+    );
+}
+
+/**
+ * Fire escape stacks for a New York walk-up's front `e` (edge `ei`): one
+ * two bays wide on the middle of the window field, or two on a wide front,
+ * clear of the core strip; floors from the second up to `topF` where the
+ * wall is open: above the solid plinth and clear of any neighbour standing
+ * in front (`open`).
+ */
+function fireEscapes(
+  m: CMesh,
+  e: FacadeEdge,
+  bay: number,
+  base: number,
+  H: number,
+  topF: number,
+  open: (y: number) => boolean,
+  mat: number,
+) {
+  const bw = bay / e.k;
+  const W = clamp(2 * bw, 2.6, 4.4);
+  const span = e.f1 - e.f0;
+  if (span < W + 0.4) return;
+  const ts = span > 15 ? [0.3, 0.7] : [0.5];
+  const levels: number[] = [];
+  for (let f = 1; f <= topF; f++) {
+    const y = base + GROUND_H + (f - 1) * H;
+    if (open(y)) levels.push(y);
+  }
+  if (levels.length < 2) return;
+  for (const t of ts) {
+    // On a bay line, inside the window field.
+    const mid = e.f0 + Math.round((span * t) / bw) * bw;
+    let s0 = clamp(mid - W / 2, e.f0 + 0.2, e.f1 - 0.2 - W);
+    if (!isNaN(e.core)) {
+      const c0 = e.core - 0.3;
+      const c1 = e.core + CORE_W + 0.3;
+      if (s0 < c1 && s0 + W > c0) s0 = c0 - W >= e.f0 + 0.2 ? c0 - W : c1;
+      if (s0 + W > e.f1 - 0.2) continue;
+    }
+    fireEscape(m, e, s0, s0 + W, levels, mat);
+  }
+}
+
 /**
  * Open steel switchback fire stair on a wall (LOD0): floor landings at
  * `levels` (the first is grade) at end A with a steel door and a lamp each,
@@ -3526,9 +3698,35 @@ export function building(
     }
   }
 
+  // New York: no balconies; black iron fire escapes on the front of the
+  // residential walk-ups (up to eight storeys: the balconied ones and half
+  // the rest, by hash), LOD0 only; taller blocks keep a plain front. (`ar`
+  // is drawn only for the balconies.)
+  const topF = bodyFloors - setF;
+  if (
+    nyc() &&
+    b.kind === 'midrise' &&
+    !office &&
+    topF >= 2 &&
+    topF <= 7 &&
+    (frontBalc || hash2(b.seed, 0xf1e5) % 2 === 0)
+  ) {
+    const ei = Math.max(0, roles.indexOf(ROLE.front));
+    if (lod === 0 && edges[ei].count > 0)
+      fireEscapes(
+        m,
+        edges[ei],
+        bay,
+        base,
+        H,
+        topF,
+        y => y >= solidTo[ei] && !hid(ei, y + 1.2),
+        packMat(CM.paint, FIRE_ESCAPE),
+      );
+  }
   // Balconies with solid upstands across the front of residential midrises
   // (deep shadow bands that read from afar): one slab and panel per floor.
-  if (frontBalc) {
+  if (frontBalc && !nyc()) {
     const e = edges[Math.max(0, roles.indexOf(ROLE.front))];
     const trim = fmat(e, FZ.trim, true);
     for (let f = 1; f <= bodyFloors - setF && e.count > 0; f++) {
@@ -3804,8 +4002,8 @@ export function building(
     });
   }
 
-  // Balconies on apartments.
-  if (b.kind === 'apartment' && lod === 0) {
+  // Balconies on apartments (none on New York's).
+  if (b.kind === 'apartment' && lod === 0 && !nyc()) {
     for (let i = 0; i < fp.length; i++) {
       if (!b.frontage[i]) continue;
       const a = fp[i],
@@ -5900,7 +6098,7 @@ export function building(
         }
       }
     });
-    if (rearBalc) {
+    if (rearBalc && !nyc()) {
       // Rear balconies: a slab per upper floor, a balustrade panel (homes:
       // solid upstand in the trim tone, with frosted partitions between
       // flats; offices: ribbed steel sheet) under a pipe rail, end panels,
