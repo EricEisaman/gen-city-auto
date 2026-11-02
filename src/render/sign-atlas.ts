@@ -743,8 +743,9 @@ const MTA_LINES: Record<string, string> = {
  * MTA-style station name board, one 2.4 x 0.6 m board unit per cell (213
  * px/m; railNameBoard in city-materials.wgsl shows it in its own colours on
  * the 'nyc' locale): a black band with a thin white rule along the top, the
- * station name in white Helvetica centred (the departure boards sample it
- * at 0.385 m), and the coloured round line bullets under it.
+ * station name in white Helvetica set flush left as on the real signs (the
+ * departure boards sample it at 0.385 m, from 0.15 m in), and the coloured
+ * round line bullets under it.
  */
 function paintMtaBoard(
   g: OffscreenCanvasRenderingContext2D,
@@ -762,17 +763,19 @@ function paintMtaBoard(
   g.fillRect(x, y, w, h);
   g.fillStyle = '#f2f2f0';
   g.fillRect(x, Y(0.56), w, 0.02 * ppm);
-  g.textAlign = 'center';
+  g.textAlign = 'left';
   g.textBaseline = 'middle';
-  const size = fitSize(g, name, 0.2 * ppm, w * 0.9);
+  const x0 = x + 0.15 * ppm;
+  const size = fitSize(g, name, 0.2 * ppm, w - 0.3 * ppm);
   g.font = `bold ${size}px ${FONT}`;
-  g.fillText(name, x + w / 2, Y(0.385));
+  g.fillText(name, x0, Y(0.385));
+  g.textAlign = 'center';
   const lines = [...(MTA_LINES[name] ?? '')];
   const r = 0.058 * ppm;
   const pitch = 0.15 * ppm;
   const by = Y(0.13);
   lines.forEach((ln, i) => {
-    const bx = x + w / 2 + (i - (lines.length - 1) / 2) * pitch;
+    const bx = x0 + r + i * pitch;
     g.fillStyle = MTA_LINE[ln] ?? '#808183';
     g.beginPath();
     g.arc(bx, by, r, 0, Math.PI * 2);

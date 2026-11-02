@@ -50,7 +50,7 @@ import {
   SIGN_SETS,
   SIGN_STRIPES,
   SIGN_STYLE,
-  SIGN_WAYS,
+  SIGN_WAY_SETS,
   SIGNS_TOKYO,
   TENANT_NOBORI,
   SIGN_WAY_SHIFT,
@@ -241,7 +241,7 @@ function nyc() {
 
 /** Colourway offset that paints shop sign `id` in the first SIGN_WAYS scheme of `style`. */
 function wayBits(id: number, style: number) {
-  const way = SIGN_WAYS.findIndex(w => w[3] === style);
+  const way = SIGN_WAY_SETS[S.locale].findIndex(w => w[3] === style);
   return (way - id * 5) & 15;
 }
 
@@ -4155,7 +4155,7 @@ export function building(
         lights.add(
           wallAt(t, 1.95, lightY),
           8,
-          signGlow(id, signVariant),
+          signGlow(id, signVariant, S.locale),
           LightKind.sign,
         );
     }
@@ -4189,7 +4189,7 @@ export function building(
         // Each sign lights the wall around it in its own colour: a small,
         // dim light just in front of it (tight falloff, so the brick still
         // reads under the tint). Same at every LOD, so shells match.
-        const c = signGlow(id, signVariant);
+        const c = signGlow(id, signVariant, S.locale);
         lights.add(
           wallAt(t, 1.0, yc),
           3.5,
@@ -4382,7 +4382,7 @@ export function building(
       lights.add(
         wallAt((main.s0 + main.s1) / 2 / len, 1.8, y - 0.8),
         7,
-        signGlow(main.id, signVariant),
+        signGlow(main.id, signVariant, S.locale),
         LightKind.sign,
       );
       if (lod === 0) {

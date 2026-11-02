@@ -5495,11 +5495,22 @@ fn shopSign(
   rect: vec4f, id: u32, param: u32, fabric: bool,
 ) -> Surf {
   var s = s0;
+  // (Each locale's 16 colourways, signs.ts SIGN_WAY_SETS.)
+  let wo = signLocale() * 16u;
   var wi = (id * 5u + ((param >> 10u) & 15u)) & 15u;
   // Cloth is printed: the lit-letter looks (channel, neon) become light-box
   // colourways, so a white-on-white scheme never blanks a banner.
-  if (fabric && SIGN_WAYS[wi].style != 0u && SIGN_WAYS[wi].style != 3u) { wi = (wi + 4u) & 15u; }
-  let w = SIGN_WAYS[wi];
+  if (fabric && SIGN_WAYS[wo + wi].style != 0u && SIGN_WAYS[wo + wi].style != 3u) { wi = (wi + 4u) & 15u; }
+  var w = SIGN_WAYS[wo + wi];
+  if (fabric && wo != 0u) {
+    // New York's cloth is the awning valance: the name printed straight on
+    // the canvas (gen-tile: the awning is the shop id's stripe colour), in
+    // white, or black on a pale canvas.
+    let canvas = signPalette((id * 3u + 1u) & 0xffu) * 0.66;
+    w.bg = canvas;
+    w.fg = select(vec3f(0.86, 0.86, 0.83), vec3f(0.02), dot(canvas, vec3f(0.3, 0.59, 0.11)) > 0.4);
+    w.edge = w.bg;
+  }
   var col = mix(w.bg, w.edge, m.g);
   col = mix(col, w.fg, m.r);
   if (fabric) {
@@ -5705,7 +5716,8 @@ fn depGlyph(dc: vec2f, si: u32, t: f32) -> vec4f {
       let cell = (hr >> 4u) & 3u;
       let ax = (x - 0.7) / 0.5;
       if (ax > 0.0 && ax < 1.0) {
-        let a = vec2f(1.2 + (ax - 0.5) * 1.0, 0.385 - ly * 0.24);
+        // (New York's names are flush left, from 0.15 m.)
+        let a = vec2f(select(1.2 + (ax - 0.5) * 1.0, 0.15 + ax * 1.0, signLocale() == 1u), 0.385 - ly * 0.24);
         let px = vec2f(f32(cell) * 512.0 + a.x / 2.4 * 512.0, 1408.0 + (1.0 - a.y / 0.6) * 128.0);
         let tx = textureSampleLevel(signAtlas, linearSampler, px / vec2f(2048.0, 2560.0), 0.0).rgb;
         let lum = dot(tx, vec3f(0.2126, 0.7152, 0.0722));
