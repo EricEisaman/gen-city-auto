@@ -2053,6 +2053,51 @@ function acUnit(
 }
 
 /**
+ * New York window air conditioner in the window at `s` on facade edge `e`
+ * (LOD0), sat on its sill at `y`: a 0.64 x 0.4 m beige case from inside
+ * the window reveal to 0.42 m out (its underside drawn: it is seen from
+ * the street), a dark grille on its face and two angle struts under it to
+ * the wall. 16 triangles.
+ */
+function windowAC(m: CMesh, e: FacadeEdge, s: number, y: number) {
+  const yaw = yawOf(e);
+  m.box(
+    edgeAt(e, s, 0.13, y + 0.2),
+    [0.32, 0.2, 0.29],
+    packMat(CM.paint, 0xe0),
+    yaw,
+    0,
+    false,
+    true,
+  );
+  const g = (ds: number, dy: number) => edgeAt(e, s + ds, 0.425, y + dy);
+  m.quad(
+    [g(-0.28, 0.04), g(0.28, 0.04), g(0.28, 0.34), g(-0.28, 0.34)],
+    e.n,
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+    packMat(CM.frame),
+  );
+  const b = (ds: number, o: number, dy: number) => edgeAt(e, s + ds, o, y + dy);
+  for (const ds of [-0.22, 0.22])
+    m.quad(
+      [
+        b(ds - 0.015, 0, -0.32),
+        b(ds + 0.015, 0, -0.32),
+        b(ds + 0.015, 0.36, 0),
+        b(ds - 0.015, 0.36, 0),
+      ],
+      [e.n[0] * 0.7, -0.7, e.n[2] * 0.7],
+      uv01,
+      packMat(CM.paint, 0x90),
+    );
+}
+
+/**
  * Painted steel (fire stairs, ad frames, sign lattices): CM.paint with param
  * PAINT_STEEL | seed (city-materials.wgsl paintedSteel: chipped paint, rust
  * at joints, streaks; world-space patterns). `seed & 3` picks the colour
@@ -3971,7 +4016,14 @@ export function building(
             if (s < 0.6 || s > e.len - 0.6 || signSlot(s)) continue;
             const y = win.strip ? y0 + sillY - 0.75 : y0 + sillY + 0.05;
             if (y < y0 + 0.1) continue;
-            acUnit(m, e, s, 0.3, y, true, true);
+            if (!nyc()) acUnit(m, e, s, 0.3, y, true, true);
+            else if (!win.strip) {
+              // New York: a window unit in the next window instead (none
+              // in ribbon glazing), sat on the sill.
+              const ws = e.f0 + (j + 0.5) * bw;
+              if (ws > 0.6 && ws < e.len - 0.6 && !signSlot(ws))
+                windowAC(m, e, ws, y0 + sillY);
+            }
             units++;
           }
         }
@@ -5386,7 +5438,8 @@ export function building(
           )
             acS = c;
         }
-        if (acS >= 0) {
+        // (New York's party walls stay blank: same draws, no bank.)
+        if (acS >= 0 && !nyc()) {
           let topY = -Infinity;
           const sD = acS + span - 0.1;
           for (let r = 0; r < rows; r++)
@@ -9663,6 +9716,292 @@ function treePit(m: CMesh, p: Vec3, d: Vec2, l: Vec2, kerbV: number) {
   }
 }
 
+/**
+ * Spots (arc length s, and a seed) of New York side-street trees on side
+ * `side` of chain `ci`: 15-22 m apart with gaps, from a hash of the chain
+ * and side.
+ */
+function nycStreetTreeS(ctx: TileContext, ci: number, side: number) {
+  const arc = ctx.geom.arc[ci];
+  const total = arc[arc.length - 1];
+  const [s0, s1] = ctx.geom.setbacks[ci];
+  const hs = hash2(ci * 2 + (side > 0 ? 1 : 0), 0x57ee);
+  const out: {s: number; h: number}[] = [];
+  for (
+    let s = s0 + 9 + (hs % 9), k = 0;
+    s < total - s1 - 9;
+    s += 15 + (hash2(hs, k) % 8), k++
+  )
+    if (hash2(hs, k + 101) % 10 >= 3) out.push({s, h: hash2(hs, k + 211)});
+  return out;
+}
+
+/** Avenue tree spots (arc length) on side `side` of chain `ci` near s. */
+function avenuePits(ctx: TileContext, ci: number, side: number, s: number) {
+  const arc = ctx.geom.arc[ci];
+  const total = arc[arc.length - 1];
+  const [s0, s1] = ctx.geom.setbacks[ci];
+  const out: number[] = [];
+  for (let s0t = s0 + 10; s0t < total - s1 - 8; s0t += 13)
+    if (Math.abs(s0t - s) < 20) {
+      const st = avenueTreeS(ctx.layout, ctx.geom, ci, side, s0t);
+      if (!Number.isNaN(st)) out.push(st);
+    }
+  return out;
+}
+
+/** CM.paint params of New York stoops: brownstone, and the door's wood. */
+const BROWNSTONE = 0x9a;
+const DOOR_WOOD = 0x9b;
+/** CM.paint param of low black ironwork: tree guards, stoop railings. */
+const RAIL_IRON = 0x9c;
+
+/**
+ * New York stoops (LOD0): on about six in ten of the homes (houses, and
+ * three-to-five storey residential midrises with no shop or office below)
+ * whose front leaves room, a brownstone stoop of 6-10 steps (0.28 m
+ * goings) rising square off the front wall to a 0.8 m landing at a raised
+ * parlour door, black iron railings both sides (handrail, newel and wall
+ * posts, balusters), the door in dark wood under a stone hood and a small
+ * lamp beside it. It stands a quarter or three quarters along the front
+ * and leaves a clear walk to the kerb (1.6 m, or past the tree pits on
+ * avenues); clear of street lights and other buildings. Placement is a
+ * hash of the building seed (no draws). About 250 triangles.
+ */
+function stoops(
+  ctx: TileContext,
+  tile: number,
+  m: CMesh,
+  land: ReturnType<typeof landing>,
+  poles: Vec2[],
+) {
+  const L = ctx.layout;
+  const hf = L.terrain.heights;
+  const grid = neighbourGrid(L);
+  const T = 0.26;
+  const W = 0.8;
+  const L0 = 0.65;
+  const stone = packMat(CM.paint, BROWNSTONE);
+  const iron = packMat(CM.paint, RAIL_IRON);
+  for (const bi of ctx.tileBuildings[tile] ?? []) {
+    const b = L.buildings[bi];
+    if (b.front < 0) continue;
+    const h = hash2(b.seed, 0x5700);
+    if (h % 10 >= 6) continue;
+    const floors = Math.round(b.height / b.floorH);
+    const home =
+      b.kind === 'house' ||
+      (b.kind === 'midrise' &&
+        floors >= 3 &&
+        floors <= 5 &&
+        b.density <= 0.15 &&
+        hashuf(b.style & 0x1fff) < 0.4 &&
+        !new Rng(hash2(b.seed, 0x5409)).chance(0.5));
+    if (!home) continue;
+    const fp = b.footprint;
+    const a = fp[b.front];
+    const c = fp[(b.front + 1) % fp.length];
+    const len = dist2(a, c);
+    if (len < 2 * W + 1.6) continue;
+    const u: Vec2 = [(c[0] - a[0]) / len, (c[1] - a[1]) / len];
+    const n3 = edgeNormal(fp, b.front);
+    const n: Vec2 = [n3[0], n3[2]];
+    const sa = Math.min(
+      Math.max(len * ((h >> 4) & 1 ? 0.25 : 0.75), W + 0.6),
+      len - W - 0.6,
+    );
+    const at = (s: number, o: number): Vec2 => [
+      a[0] + u[0] * s + n[0] * o,
+      a[1] + u[1] * s + n[1] * o,
+    ];
+    // Kerb straight ahead (the first carriageway point out from the
+    // wall, 0.1 m steps), and whose kerb it is.
+    let kd = -1;
+    for (let o = 0.5; o < 8 && kd < 0; o += 0.1) {
+      const q = at(sa, o);
+      if (land.onCarriageway(q[0], q[1], -1)) kd = o - 0.25;
+    }
+    if (kd < 0) continue;
+    const kq = at(sa, kd + 0.3);
+    const near = land.nearest(kq[0], kq[1], 0.5);
+    if (!near) continue;
+    const ch = L.chains[near.ci];
+    const clear = 1.3;
+    // Clear of the street trees' pits on this kerb.
+    const pits =
+      ch.kind >= Road.avenue
+        ? avenuePits(ctx, near.ci, near.side, near.s)
+        : ch.kind === Road.street
+          ? nycStreetTreeS(ctx, near.ci, near.side).map(t => t.s)
+          : [];
+    if (pits.some(ps => Math.abs(ps - near.s) < W + 0.85)) continue;
+    // And of New York's short avenue planters (hedges(): one 2.6 m step
+    // just past some driveway gaps).
+    if (ch.kind >= Road.avenue) {
+      const total = ctx.geom.arc[near.ci].at(-1)!;
+      const [s0, s1] = ctx.geom.setbacks[near.ci];
+      const hk = near.ci * 2 + near.side;
+      let gapAt = s0 + 8 + 35 + (hash2(hk, 0x4ed) % 16);
+      let hit = false;
+      while (gapAt < total - s1 && gapAt < near.s + 10 && !hit) {
+        const g = gapAt + 2;
+        if (
+          hash2(hk, Math.floor(g) ^ 0x91a7) % 10 < 3 &&
+          near.s + W + 0.6 > g - 0.3 &&
+          near.s - W - 0.6 < g + 2.9
+        )
+          hit = true;
+        gapAt += 35 + (hash2(hk, Math.floor(g)) % 16);
+      }
+      if (hit) continue;
+    }
+    const N = Math.min(10, Math.floor((kd - clear - L0) / T));
+    if (N < 6) continue;
+    const D = L0 + N * T;
+    // Ground at the foot, and the parlour floor about 0.17 m a step up.
+    const foot = at(sa, D);
+    const y0 = sidewalkY(hf, foot[0], foot[1], b.base);
+    const yTop = b.base + N * 0.17;
+    const rise = (yTop - y0) / N;
+    if (rise < 0.13 || rise > 0.21) continue;
+    // Clear of other buildings, the carriageway and street lights.
+    const corners = [
+      at(sa - W, D),
+      at(sa + W, D),
+      at(sa - W, 0.3),
+      at(sa + W, 0.3),
+    ];
+    const blocked = corners.some(q => {
+      if (!land.ok(q[0], q[1], near.ci)) return true;
+      const k = Math.floor(q[0] / NB_CELL) * 65536 + Math.floor(q[1] / NB_CELL);
+      return (grid.get(k) ?? []).some(
+        j => j !== bi && pointInPolygon(q, L.buildings[j].footprint),
+      );
+    });
+    if (blocked) continue;
+    const fc = at(sa, D / 2);
+    if (
+      poles.some(
+        q =>
+          Math.hypot(q[0] - fc[0], q[1] - fc[1]) < Math.hypot(W, D / 2) + 0.5,
+      )
+    )
+      continue;
+    const P = (s: number, o: number, y: number): Vec3 => {
+      const q = at(sa + s, o);
+      return [q[0], y, q[1]];
+    };
+    const N3: Vec3 = [n[0], 0, n[1]];
+    const U3: Vec3 = [u[0], 0, u[1]];
+    const quad = (q: Vec3[], nn: Vec3, w: number, hh: number) =>
+      m.quad(
+        q,
+        nn,
+        [
+          [0, 0],
+          [w, 0],
+          [w, hh],
+          [0, hh],
+        ],
+        stone,
+      );
+    const yBot = Math.min(y0, b.base) - SINK;
+    // Treads, risers and the cheek faces of each step, then the landing.
+    for (let k = 0; k < N; k++) {
+      const oOut = D - k * T;
+      const oIn = oOut - T;
+      const yk = y0 + (k + 1) * rise;
+      const yp = y0 + k * rise;
+      quad(
+        [P(-W, oOut, yk), P(W, oOut, yk), P(W, oIn, yk), P(-W, oIn, yk)],
+        UP,
+        2 * W,
+        T,
+      );
+      quad(
+        [P(-W, oOut, yp), P(W, oOut, yp), P(W, oOut, yk), P(-W, oOut, yk)],
+        N3,
+        2 * W,
+        rise,
+      );
+      for (const f of [-1, 1])
+        quad(
+          [
+            P(f * W, oIn, yBot),
+            P(f * W, oOut, yBot),
+            P(f * W, oOut, yk),
+            P(f * W, oIn, yk),
+          ],
+          [U3[0] * f, 0, U3[2] * f],
+          T,
+          yk - yBot,
+        );
+    }
+    quad(
+      [P(-W, L0, yTop), P(W, L0, yTop), P(W, 0, yTop), P(-W, 0, yTop)],
+      UP,
+      2 * W,
+      L0,
+    );
+    for (const f of [-1, 1])
+      quad(
+        [
+          P(f * W, 0, yBot),
+          P(f * W, L0, yBot),
+          P(f * W, L0, yTop),
+          P(f * W, 0, yTop),
+        ],
+        [U3[0] * f, 0, U3[2] * f],
+        L0,
+        yTop - yBot,
+      );
+    // Railings: handrail down the flight and along the landing, newel,
+    // landing and wall posts, balusters about every 0.56 m.
+    for (const f of [-1, 1]) {
+      const x = f * (W - 0.05);
+      const rail = (o: number) =>
+        o <= L0 ? yTop + 0.9 : y0 + 0.9 + ((D - o) / (D - L0)) * (yTop - y0);
+      m.tube(
+        [
+          P(x, D - 0.12, rail(D - 0.12)),
+          P(x, L0, rail(L0)),
+          P(x, 0.04, rail(0.04)),
+        ],
+        0.022,
+        iron,
+      );
+      m.tube(
+        [P(x, D - 0.12, y0 + rise), P(x, D - 0.12, rail(D - 0.12) + 0.08)],
+        0.04,
+        iron,
+      );
+      for (const o of [L0, 0.04])
+        m.tube([P(x, o, yTop), P(x, o, rail(o))], 0.02, iron);
+      for (let o = L0 + 0.56; o < D - 0.3; o += 0.56) {
+        const k = Math.floor((D - o) / T);
+        m.tube([P(x, o, y0 + (k + 1) * rise), P(x, o, rail(o))], 0.011, iron);
+      }
+    }
+    // Parlour door in a stone surround (jambs and hood), and a lamp.
+    const yaw = Math.atan2(n[0], n[1]);
+    m.box(
+      P(0, 0.03, yTop + 1.1),
+      [0.5, 1.1, 0.03],
+      packMat(CM.paint, DOOR_WOOD),
+      yaw,
+    );
+    for (const f of [-1, 1])
+      m.box(P(f * 0.6, 0.05, yTop + 1.15), [0.1, 1.15, 0.05], stone, yaw);
+    m.box(P(0, 0.09, yTop + 2.38), [0.78, 0.09, 0.09], stone, yaw, 0, false);
+    m.box(
+      P(0.85, 0.06, yTop + 1.9),
+      [0.06, 0.1, 0.06],
+      packMat(CM.lamp, 1),
+      yaw,
+    );
+  }
+}
+
 /** CM.hedge param of New York's open tree pits (soil and leaf litter). */
 const TREE_PIT_SOIL = 3;
 
@@ -9677,7 +10016,7 @@ function treeGuard(
   P: (u: number, v: number, r?: number, y?: number) => Vec3,
   kerbV: number,
 ) {
-  const iron = packMat(CM.paint, FIRE_ESCAPE);
+  const iron = packMat(CM.paint, RAIL_IRON);
   const r = 0.64;
   const H = 0.46;
   for (const [u, v] of [
@@ -10255,14 +10594,8 @@ export function buildTile(
       // nothing else moves.
       if (nyc() && c.kind === Road.street)
         for (const side of [-1, 1]) {
-          const hs = hash2(ci * 2 + (side > 0 ? 1 : 0), 0x57ee);
           const off = (ROAD_WIDTH[c.kind] / 2 + 0.8) * side;
-          for (
-            let s = s0 + 9 + (hs % 9), k = 0;
-            s < total - s1 - 9;
-            s += 15 + (hash2(hs, k) % 8), k++
-          ) {
-            if (hash2(hs, k + 101) % 10 < 3) continue;
+          for (const {s, h: th0} of nycStreetTreeS(ctx, ci, side)) {
             const q = chainAt(c, arc, s);
             const l: Vec2 = [-q.d[1], q.d[0]];
             const x = q.p[0] + l[0] * off;
@@ -10270,7 +10603,7 @@ export function buildTile(
             if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
             if (poles.some(o => Math.hypot(o[0] - x, o[1] - z) < 2.5)) continue;
             const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
-            const tr = new Rng(hash2(hs, k + 211));
+            const tr = new Rng(th0);
             const th = tr.range(5.5, 8.5);
             if (deckClearance(ctx, x, z, p[1]) < th + 1) continue;
             tree(m, p, th, lod, tr);
@@ -10531,6 +10864,9 @@ export function buildTile(
     );
   }
 
+  // New York brownstone stoops on the low-rise homes (LOD0).
+  if (lod === 0 && nyc()) stoops(ctx, tile, m, land, poles);
+
   // Shop-front clutter (LOD0): vending machine clusters, parked bicycles.
   if (lod === 0) {
     for (const bi of ctx.tileBuildings[tile] ?? []) {
@@ -10557,10 +10893,10 @@ export function buildTile(
         lights.add(p0, 5, [0.9, 0.95, 1.0], LightKind.vending);
       }
       if (h % 5 === 1 && dist2(a, c) > 6 && nyc()) {
-        // New York: a bike-share dock on about one in three of these
+        // New York: a bike-share dock on about one in eight of these
         // frontages (dock posts against the wall, blue bikes in most, a
         // pay kiosk at the end); no private bike rows.
-        if ((h >> 9) % 3 === 0) {
+        if ((h >> 9) % 8 === 0) {
           const count = 5 + ((h >> 12) % 4);
           const t0 = 0.5 - (count * 0.31) / dist2(a, c);
           if (t0 > 0.1) bikeDock(m, hf, b.base, a, c, n, t0, count, h);

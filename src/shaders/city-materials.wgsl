@@ -161,6 +161,10 @@ fn paintColor(p: u32) -> vec3f {
   if (p == 0x98u) { return vec3f(0.24, 0.215, 0.18); }
   // Citi Bike blue (bike-share frames and docks).
   if (p == 0x99u) { return vec3f(0.02, 0.27, 0.62); }
+  // New York stoops (gen-tile BROWNSTONE, DOOR_WOOD): brown sandstone,
+  // and a dark stained door.
+  if (p == 0x9au) { return vec3f(0.3, 0.19, 0.14); }
+  if (p == 0x9bu) { return vec3f(0.15, 0.075, 0.04); }
   // Rail line colour (station bands): JR-style green; New York's el
   // stations a dark steel grey-green.
   if (p == 0x0cu) { return select(vec3f(0.06, 0.46, 0.26), vec3f(0.1, 0.13, 0.115), signLocale() == 1u); }
@@ -8597,11 +8601,15 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       // units): weathered, matte paint. At 0.5 a grazing golden-hour sun lit
       // them up near-white against the wall.
       if (param == 0x90u || param == 0x91u || param == 0x96u || (param >= 0xd0u && param < 0xf0u)) { s.rough = 0.7; }
+      if (param == 0x9au) { s.rough = 0.88; s.metal = 0.0; }
       if (param == POLE_PAINT) {
         // (Grey in Tokyo, New York's dark green.)
         s = roadPole(world, n, uv, paintColor(select(0x90u, 0x96u, signLocale() == 1u)), 0.08);
       } else if (param == CABINET || param == UTIL_POLE || (param >= SIGNAL_BORDER && param <= UTIL_PLATE)) {
         s = roadFurniture(world, n, uv, param, aux);
+      } else if (param == 0x9cu) {
+        // New York tree guards and stoop railings (gen-tile RAIL_IRON).
+        s = paintedSteelC(world, n, 0x9cu, vec3f(0.03, 0.03, 0.032));
       } else if (param == 0x97u) {
         // New York fire escapes (gen-tile FIRE_ESCAPE): black paint over rust.
         s = paintedSteelC(world, n, 0x97u, vec3f(0.022, 0.022, 0.024));
