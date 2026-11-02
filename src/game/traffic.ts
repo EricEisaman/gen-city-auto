@@ -617,6 +617,28 @@ export class Traffic {
     });
   }
 
+  /**
+   * Remove and return a moving car between `minD` and `maxD` metres of
+   * `focus` (the auto director hands it to the player), or null.
+   */
+  take(
+    focus: Vec3,
+    minD: number,
+    maxD: number,
+    pick: (n: number) => number,
+    not = -1,
+  ): {f: LaneFollower; variant: number; color: Vec3; color2: Vec3} | null {
+    const ok: number[] = [];
+    this.cars.forEach((c, i) => {
+      const d = Math.hypot(c.f.pos[0] - focus[0], c.f.pos[2] - focus[2]);
+      if (c.f.speed > 4 && d >= minD && d <= maxD && c.variant !== not)
+        ok.push(i);
+    });
+    if (!ok.length) return null;
+    const [c] = this.cars.splice(ok[pick(ok.length)], 1);
+    return c;
+  }
+
   update(dt: number, time: number, focus: Vec3, extra: LaneFollower[] = []) {
     // Despawn far cars, spawn new ones (out of the camera's immediate area).
     this.cars = this.cars

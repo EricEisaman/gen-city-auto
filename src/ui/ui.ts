@@ -27,6 +27,7 @@ export class UI {
   private weatherSel!: HTMLSelectElement;
   private camSel!: HTMLSelectElement;
   private perf = document.getElementById('perf')!;
+  private vehBtn = document.getElementById('btn-veh')!;
   /** Graphics setting selects, refreshed when a preset changes others. */
   private gfxSels = new Map<keyof Settings, HTMLSelectElement>();
   showStats = false;
@@ -38,7 +39,7 @@ export class UI {
     for (const b of document.querySelectorAll<HTMLElement>('#toolbar button'))
       b.onmousedown = e => e.preventDefault(); // keep keyboard focus on the canvas
     document.getElementById('btn-cam')!.onclick = () => g.cycleCamera();
-    document.getElementById('btn-veh')!.onclick = () => g.nextVehicle();
+    document.getElementById('btn-veh')!.onclick = () => g.toggleHeli();
     document.getElementById('btn-menu')!.onclick = () => this.toggleMenu();
     this.help.innerHTML =
       '<b>WASD</b> drive / fly &nbsp; <b>Space</b> handbrake / climb &nbsp; <b>Shift</b> descend &nbsp; <b>Q/E</b> yaw<br>' +
@@ -217,6 +218,8 @@ export class UI {
       this.camSel.value = g.freeMode ? 'free' : g.camera.mode;
     this.stats.style.display = this.showStats ? '' : 'none';
     this.help.style.display = g.settings.help ? '' : 'none';
+    const vehIcon = g.player.kind === 'car' ? '🚁' : '🚗';
+    if (this.vehBtn.textContent !== vehIcon) this.vehBtn.textContent = vehIcon;
     this.perf.style.display = g.settings.readout ? '' : 'none';
     if (g.settings.readout) {
       const r = g.renderer;

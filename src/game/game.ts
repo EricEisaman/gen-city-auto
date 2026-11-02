@@ -54,6 +54,8 @@ export interface GameOptions {
   weather: WeatherKind;
   camera?: CameraMode;
   director: boolean;
+  /** The director swaps the filmed vehicle between shots (off with ?vehicle=, ?shot=, ?swap=0). */
+  swap?: boolean;
   vehicle: string;
   spawn?: [number, number];
   shot?: string;
@@ -109,6 +111,13 @@ export class Game {
   private opts: GameOptions;
   private loading = false;
   private frames = 0;
+  /** Car variant to return to from the helicopter. */
+  private lastCar = -1;
+  /** Director vehicle swaps: shots left before the next one. */
+  private swapIn = 3;
+  private swapRng = new Rng(9137);
+  /** Seconds the player's car has been (nearly) stopped. */
+  private stoppedFor = 0;
   private fpsAvg = 60;
   private carLights = new Float32Array(64 * 8);
   /** Free-fly inspection camera (the vehicle keeps driving itself). */
@@ -323,6 +332,7 @@ export class Game {
     await nextPaint();
     timed('setupWorld', () => this.setupWorld());
     this.ui = new UI(this);
+    if (this.opts.swap) this.camera.beforeCut = () => this.directorSwap();
     if (this.opts.camera) {
       this.camera.mode = this.opts.camera;
       this.camera.directorEnabled = this.opts.director;
@@ -720,7 +730,77 @@ export class Game {
     };
   }
 
-  /** Vehicle button / B key: next variant of the same family (car or heli). */
+  /** Vehicle button / V key: helicopter <-> the car driven last. */
+  toggleHeli() {
+    const pl = this.player;
+    if (pl.kind === 'car') {
+      this.lastCar = pl.variant;
+      pl.spawnHeli(this.pickVariant('helicopter'));
+    } else {
+      this.spawnCarBelow(
+        this.lastCar >= 0 ? this.lastCar : this.pickVariant('car', 'sports'),
+      );
+    }
+  }
+
+  /** A car on the road nearest the player (the spawn point if none is near). */
+  private spawnCarBelow(variant: number) {
+    const pl = this.player;
+    pl.spawnCar(pl.pos[0], pl.pos[2], variant);
+    if (!pl.follower) {
+      const sp = this.spawnPoint();
+      pl.spawnCar(sp[0], sp[2], variant);
+    }
+  }
+
+  /**
+   * Director: every few shots, film another vehicle. Called as a planned shot
+   * ends, so the swap happens on the cut. Mostly a different road vehicle in
+   * place; the helicopter gets about one shot in five (runs of two or three).
+   */
+  private directorSwap() {
+    const pl = this.player;
+    // Waiting at lights or in a jam makes dull footage: move on sooner.
+    if (pl.kind === 'car' && this.stoppedFor > 8) this.swapIn = 1;
+    if (--this.swapIn > 0) return;
+    const r = this.swapRng;
+    const pick = (n: number) => r.int(0, n);
+    if (pl.kind === 'car' && r.chance(0.3)) {
+      this.lastCar = pl.variant;
+      pl.spawnHeli(this.pickVariant('helicopter'));
+      this.swapIn = r.int(2, 4);
+      return;
+    }
+    // Another vehicle: a moving one from traffic nearby, else a different
+    // model in place.
+    const near = pl.kind === 'heli' ? [0, 300] : [25, 250];
+    const ground: Vec3 = [pl.pos[0], 0, pl.pos[2]];
+    const c = this.traffic?.take(ground, near[0], near[1], pick, pl.variant);
+    if (c) pl.takeOver(c);
+    else if (pl.kind === 'heli')
+      this.spawnCarBelow(this.randomRoadVehicle(r, pl.variant));
+    else
+      pl.spawnCar(pl.pos[0], pl.pos[2], this.randomRoadVehicle(r, pl.variant));
+    this.stoppedFor = 0;
+    this.swapIn = r.int(2, 5);
+  }
+
+  /** A road vehicle variant other than `not` (cars more often than trucks and buses). */
+  private randomRoadVehicle(r: Rng, not: number): number {
+    const v = this.vehicles.variants;
+    const ids: number[] = [];
+    const w: number[] = [];
+    v.forEach((x, i) => {
+      const k = x.info.kind;
+      if (i === not || !['car', 'taxi', 'van', 'truck', 'bus'].includes(k))
+        return;
+      ids.push(i);
+      w.push(k === 'car' ? 3 : k === 'taxi' ? 1.5 : 0.6);
+    });
+    return ids.length ? r.weighted(ids, w) : not;
+  }
+
+  /** B key: next variant of the same family (car or heli). */
   nextVehicle() {
     const v = this.vehicles.variants;
     const kinds =
@@ -805,16 +885,7 @@ export class Game {
     if (i.hit('KeyM')) this.ui.toggleMenu();
     if (i.hit('KeyH')) this.ui.toggleHelp();
     if (i.hit('KeyF')) this.ui.showStats = !this.ui.showStats;
-    if (i.hit('KeyV')) {
-      if (this.player.kind === 'car')
-        this.player.spawnHeli(this.pickVariant('helicopter'));
-      else
-        this.player.spawnCar(
-          this.player.pos[0],
-          this.player.pos[2],
-          this.pickVariant('car', 'sports'),
-        );
-    }
+    if (i.hit('KeyV')) this.toggleHeli();
     if (i.hit('KeyB')) this.nextVehicle();
   }
 
@@ -829,6 +900,8 @@ export class Game {
     this.time += dt;
     this.hour = (this.hour + dt * this.timeSpeed + 24) % 24;
     this.weather.update(dt, dt * this.timeSpeed);
+    this.stoppedFor =
+      Math.abs(this.player.speed) < 1 ? this.stoppedFor + dt : 0;
     // The asset lab shows its asset alone: no player, traffic, trains,
     // helicopters or pedestrians.
     const frozen = this.freeze && !!this.lastCam;

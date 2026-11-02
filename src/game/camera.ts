@@ -49,14 +49,14 @@ const SHOTS = [
   'wheel',
 ] as const;
 const WEIGHTS: Record<string, number> = {
-  chase: 2,
+  chase: 3.5,
   bumper: 1.2,
   flyby: 2.5,
   telephoto: 2,
   orbit: 1.5,
   aerial: 1.2,
   side: 1.5,
-  interior: 0.8,
+  interior: 0.3,
   train: 1.5,
   wheel: 0,
 };
@@ -932,6 +932,8 @@ export class CameraSystem {
 
   /** Forced shots (tests, URL ?shot=) skip the automatic cut-away checks. */
   locked = false;
+  /** Called just before a planned cut picks the next shot. */
+  beforeCut?: () => void;
   private losTimer = 0;
   private blockedFor = 0;
 
@@ -995,7 +997,11 @@ export class CameraSystem {
   }
 
   private directedRaw(dt: number, pl: Player): CamOut {
-    if (!this.shot || this.shot.t > this.shot.dur) this.shot = this.newShot(pl);
+    if (!this.shot || this.shot.t > this.shot.dur) {
+      // A planned cut (not a cut-away): the game may change the subject.
+      if (this.shot && !this.locked) this.beforeCut?.();
+      this.shot = this.newShot(pl);
+    }
     const s = this.shot;
     s.t += dt;
     s.shown = (s.shown ?? 0) + dt;

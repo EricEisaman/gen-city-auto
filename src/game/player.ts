@@ -73,6 +73,23 @@ export class Player {
     this.prev.set(this.model);
   }
 
+  /** Drive a traffic car from where it is (Traffic.take). */
+  takeOver(c: {f: LaneFollower; variant: number; color: Vec3; color2: Vec3}) {
+    this.kind = 'car';
+    this.variant = c.variant;
+    this.color = c.color;
+    this.color2 = c.color2;
+    c.f.preferBig = true;
+    this.follower = c.f;
+    this.speed = c.f.speed;
+    this.vel = [0, 0, 0];
+    this.autopilot = true;
+    this.pos = [...c.f.pos];
+    this.yaw = Math.atan2(c.f.dir[0], -c.f.dir[1]);
+    modelMatrix(this.model, this.pos, this.forward, 0);
+    this.prev.set(this.model);
+  }
+
   spawnHeli(variant: number) {
     this.kind = 'heli';
     this.variant = variant;

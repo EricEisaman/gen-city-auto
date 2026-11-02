@@ -70,6 +70,12 @@ async function main() {
     weather: (params.get('weather') ?? 'sunny') as WeatherKind,
     camera: (params.get('cam') as CameraMode | null) ?? undefined,
     director: params.get('director') !== '0',
+    swap:
+      !params.has('vehicle') &&
+      !params.has('shot') &&
+      !params.has('freecam') &&
+      !params.has('probe') &&
+      params.get('swap') !== '0',
     vehicle: params.get('vehicle') ?? 'sports',
     spawn,
     shot: params.get('shot') ?? undefined,
