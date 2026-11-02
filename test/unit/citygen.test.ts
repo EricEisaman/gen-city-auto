@@ -11,11 +11,19 @@ import {
   MAT_GROUPS,
   type ClusterData,
 } from '../../src/city/cmesh.ts';
-import {buildTile, makeTileContext} from '../../src/city/gen-tile.ts';
+import {
+  buildTile,
+  edgeCover,
+  exposedFlushWalls,
+  makeTileContext,
+  solidTop,
+} from '../../src/city/gen-tile.ts';
 import {baseFarOf, LEAF_SOLID} from '../../src/city/lod.ts';
 import {
   generateLayout,
   inTunnel,
+  type Building,
+  type CityLayout,
   MAX_DECK_RISE,
   simplePolygon,
   stableOrder,
@@ -276,4 +284,43 @@ void test('building plans do not cross themselves', () => {
       `${type} ${seed}: towers ${towers.map(b => b.id)}`,
     );
   }
+});
+
+// A midrise's party wall against a tower used to be left out up to the
+// tower's roof, but the tower stands back from its podium edge, so the wall
+// went missing in plain view (harbour seed 1, building 207).
+void test('walls flush against a tower are drawn above its podium', () => {
+  const mk = (
+    id: number,
+    kind: Building['kind'],
+    footprint: Vec2[],
+    height: number,
+  ): Building => ({
+    id,
+    kind,
+    footprint,
+    base: 10,
+    low: 9,
+    height,
+    floorH: 3.3,
+    style: 1234,
+    front: 0,
+    frontage: footprint.map((_, i) => i === 0),
+    seed: 0x9e3779b9 + id,
+    density: 0.5,
+  });
+  const sq = (x0: number, z0: number, x1: number, z1: number): Vec2[] => [
+    [x0, z0],
+    [x1, z0],
+    [x1, z1],
+    [x0, z1],
+  ];
+  const mid = mk(1, 'midrise', sq(0, 0, 20, 20), 66);
+  const tower = mk(2, 'tower', sq(20, -10, 60, 30), 220);
+  const L = {buildings: [mid, tower]} as unknown as CityLayout;
+  assert.ok(solidTop(tower) < tower.base + 30);
+  assert.ok(exposedFlushWalls(L, 0, b => b.base + b.height) > 500);
+  assert.equal(exposedFlushWalls(L, 0, solidTop), 0);
+  // The shared wall is covered to the podium top only.
+  assert.equal(edgeCover(L, 0, 0.3)[1], solidTop(tower));
 });

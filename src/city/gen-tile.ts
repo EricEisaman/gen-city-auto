@@ -2578,6 +2578,80 @@ function tenantKit(
   }
 }
 
+/**
+ * Massing of a midrise, pencil, apartment or station: storeys, edge roles,
+ * the stair core, and a set-back or stepped top (the storeys above
+ * `mainTop` stand inset from the footprint). Draws from `rng` (the
+ * building's stream) and `fr` exactly as building() always has.
+ */
+function midriseMassing(b: Building, rng: Rng, fr: Rng) {
+  const fp = b.footprint;
+  const H = b.floorH;
+  const floors = Math.max(1, Math.round(b.height / H));
+  const bodyFloors = floors - 1;
+  const roles = edgeRoles(b);
+  const edgeLen = (i: number) => dist2(fp[i], fp[(i + 1) % fp.length]);
+  // Stair / elevator core expressed on the front (or a street side), ending
+  // in a penthouse at the roof edge.
+  let core: {edge: number; atEnd: boolean} | null = null;
+  if (
+    (b.kind === 'pencil' || (b.kind === 'midrise' && fr.chance(0.8))) &&
+    floors >= 3
+  ) {
+    const ok = (i: number) => edgeLen(i) >= CORE_W + 2.4;
+    const front = roles.findIndex((r, i) => r === ROLE.front && ok(i));
+    const sides = roles
+      .map((r, i) => (r === ROLE.street && ok(i) ? i : -1))
+      .filter(i => i >= 0);
+    const useSide =
+      b.kind !== 'pencil' && sides.length > 0 && (front < 0 || fr.chance(0.5));
+    const edge = useSide ? sides[fr.int(0, sides.length)] : front;
+    if (edge >= 0) core = {edge, atEnd: fr.chance(0.5)};
+  }
+  const setbackTop =
+    !core && b.kind !== 'apartment' && b.height > 20 && rng.chance(0.35);
+  // Stepped top floor on some midrises (with or without a core): the last
+  // storey stands 1.6-2.6 m back behind a railed terrace, so the building
+  // is not a sheer box from behind and above. Own stream; the building
+  // stream is drawn exactly as before.
+  const stepR = new Rng(hash2(b.seed, 0x57ea));
+  const stepPoly =
+    !setbackTop && b.kind === 'midrise' && bodyFloors >= 3 && stepR.chance(0.35)
+      ? inset(fp, stepR.range(1.6, 2.6))
+      : null;
+  const setF = setbackTop
+    ? Math.min(bodyFloors - 1, rng.int(1, 3))
+    : stepPoly
+      ? 1
+      : 0;
+  const mainTop = b.base + GROUND_H + (bodyFloors - setF) * H;
+  return {floors, bodyFloors, roles, core, stepPoly, setF, mainTop};
+}
+
+/** Storeys in a tower's podium (the first draw of the building stream). */
+const podiumFloors = (rng: Rng) => rng.int(2, 5);
+const PODIUM_H = 4.6;
+
+const solidTops = new WeakMap<Building, number>();
+
+/**
+ * The height up to which building `b` fills its whole footprint (absolute
+ * y): a neighbour's wall against it is hidden up to here, not up to its
+ * roof. Towers stand inset above their podium, set-back and stepped
+ * midrises above `mainTop`, houses have a gable over their eaves.
+ */
+export function solidTop(b: Building): number {
+  let y = solidTops.get(b);
+  if (y !== undefined) return y;
+  const rng = new Rng(b.seed);
+  if (b.kind === 'house') y = b.base + b.height - 1.6;
+  else if (b.kind === 'glass' || b.kind === 'tower')
+    y = b.base + podiumFloors(rng) * PODIUM_H;
+  else y = midriseMassing(b, rng, new Rng(hash2(b.seed, 0xfa5))).mainTop;
+  solidTops.set(b, y);
+  return y;
+}
+
 export function building(
   b: Building,
   m: CMesh,
@@ -2694,8 +2768,7 @@ export function building(
   }
 
   if (b.kind === 'glass' || b.kind === 'tower') {
-    const podFloors = rng.int(2, 5);
-    const podTop = base + podFloors * 4.6;
+    const podTop = base + podiumFloors(rng) * PODIUM_H;
     const towerFp = inset(fp, rng.range(3, 8)) ?? shrink(fp, 0.7);
     walls(
       m,
@@ -2857,10 +2930,12 @@ export function building(
   // side, party wall, rear), and window fields hold whole bays between corner
   // piers. New choices come from local streams.
   const H = b.floorH;
-  const floors = Math.max(1, Math.round(b.height / H));
-  const bodyFloors = floors - 1;
   const fr = new Rng(hash2(b.seed, 0xfa5));
-  const roles = edgeRoles(b);
+  const {bodyFloors, roles, core, stepPoly, setF, mainTop} = midriseMassing(
+    b,
+    rng,
+    fr,
+  );
   const bay = facadeBay(b.style);
   const office = b.kind === 'midrise' && hashuf(b.style & 0x1fff) >= 0.4;
   // On quiet streets too, about half the midrises and pencils let the ground
@@ -2874,41 +2949,6 @@ export function building(
     shop = true;
   const roofMat = packMat(CM.roof, b.style & 0xffff);
   const metal = packMat(CM.metal);
-  const edgeLen = (i: number) => dist2(fp[i], fp[(i + 1) % fp.length]);
-  // Stair / elevator core expressed on the front (or a street side), ending
-  // in a penthouse at the roof edge.
-  let core: {edge: number; atEnd: boolean} | null = null;
-  if (
-    (b.kind === 'pencil' || (b.kind === 'midrise' && fr.chance(0.8))) &&
-    floors >= 3
-  ) {
-    const ok = (i: number) => edgeLen(i) >= CORE_W + 2.4;
-    const front = roles.findIndex((r, i) => r === ROLE.front && ok(i));
-    const sides = roles
-      .map((r, i) => (r === ROLE.street && ok(i) ? i : -1))
-      .filter(i => i >= 0);
-    const useSide =
-      b.kind !== 'pencil' && sides.length > 0 && (front < 0 || fr.chance(0.5));
-    const edge = useSide ? sides[fr.int(0, sides.length)] : front;
-    if (edge >= 0) core = {edge, atEnd: fr.chance(0.5)};
-  }
-  const setbackTop =
-    !core && b.kind !== 'apartment' && b.height > 20 && rng.chance(0.35);
-  // Stepped top floor on some midrises (with or without a core): the last
-  // storey stands 1.6-2.6 m back behind a railed terrace, so the building
-  // is not a sheer box from behind and above. Own stream; the building
-  // stream is drawn exactly as before.
-  const stepR = new Rng(hash2(b.seed, 0x57ea));
-  const stepPoly =
-    !setbackTop && b.kind === 'midrise' && bodyFloors >= 3 && stepR.chance(0.35)
-      ? inset(fp, stepR.range(1.6, 2.6))
-      : null;
-  const setF = setbackTop
-    ? Math.min(bodyFloors - 1, rng.int(1, 3))
-    : stepPoly
-      ? 1
-      : 0;
-  const mainTop = base + GROUND_H + (bodyFloors - setF) * H;
   // Top of the stepped / set-back upper storeys.
   const upperTop = mainTop + setF * H;
   // Body uv.y starts at one floor height, so the shader's floor 1 begins on
@@ -8805,16 +8845,19 @@ function neighbourGrid(L: CityLayout) {
  * How high each footprint edge of building `bi` is hidden by neighbours
  * standing against it (absolute y; -Infinity where any of it is open):
  * samples `off` metres in front of the edge at fractions `ts`, each
- * covered to the top of the building it falls in, the edge to the lowest
- * of them. 1 m out: a gap too narrow to see into, where service kit would
- * never be seen (or would stick into the neighbour); 0.3 m out, sampled
- * to the corners: walls flush against a neighbour, not drawn at all.
+ * covered to the height the building it falls in fills its footprint to
+ * (`topOf`; not its roof: a tower's shaft stands back from its podium edge),
+ * the edge to the lowest of them. 1 m out: a gap too narrow to see into,
+ * where service kit would never be seen (or would stick into the
+ * neighbour); 0.3 m out, sampled to the corners: walls flush against a
+ * neighbour, not drawn at all.
  */
-function edgeCover(
+export function edgeCover(
   L: CityLayout,
   bi: number,
   off = 1.0,
-  ts = [0.15, 0.5, 0.85],
+  ts = FLUSH_TS,
+  topOf: (b: Building) => number = solidTop,
 ): number[] {
   const b = L.buildings[bi];
   const fp = b.footprint;
@@ -8833,13 +8876,56 @@ function edgeCover(
       for (const j of g.get(k) ?? []) {
         const o = L.buildings[j];
         if (j !== bi && pointInPolygon(q, o.footprint))
-          top = Math.max(top, o.base + o.height);
+          top = Math.max(top, topOf(o));
       }
       cover = Math.min(cover, top);
       if (cover === -Infinity) break;
     }
     return cover;
   });
+}
+
+const FLUSH_OFF = 0.3;
+const FLUSH_TS = [0.02, 0.25, 0.5, 0.75, 0.98];
+
+/**
+ * Wall area (m^2) of building `bi` that building() would leave out as flush
+ * against a neighbour, with neighbours taken to fill their footprints up to
+ * `topOf`, but that stands clear of what they really fill (solidTop): walls
+ * missing in plain view. Zero by construction for topOf = solidTop; with
+ * the old roof heights (b => b.base + b.height) it counts the walls lost
+ * beside towers above their podium and set-back tops.
+ */
+export function exposedFlushWalls(
+  L: CityLayout,
+  bi: number,
+  topOf: (b: Building) => number,
+): number {
+  const b = L.buildings[bi];
+  if (b.kind === 'house' || b.kind === 'glass' || b.kind === 'tower') return 0;
+  const {roles, mainTop} = midriseMassing(
+    b,
+    new Rng(b.seed),
+    new Rng(hash2(b.seed, 0xfa5)),
+  );
+  const flush = edgeCover(L, bi, FLUSH_OFF, FLUSH_TS, topOf);
+  const truth = edgeCover(L, bi, FLUSH_OFF, FLUSH_TS);
+  const fp = b.footprint;
+  // building()'s wall bands on the footprint: base, body, crown.
+  const bands = [
+    [b.low, b.base + GROUND_H],
+    [b.base + GROUND_H, mainTop],
+    [mainTop, mainTop + CROWN_H],
+  ];
+  let area = 0;
+  fp.forEach((a, i) => {
+    if (roles[i] < ROLE.party) return;
+    const len = dist2(a, fp[(i + 1) % fp.length]);
+    for (const [y0, y1] of bands)
+      if (y1 > y0 && flush[i] >= y1 + 0.05 && truth[i] < y1 - 0.5)
+        area += len * (y1 - Math.max(y0, truth[i]));
+  });
+  return area;
 }
 
 const DECK_CELL = 8;
@@ -9512,9 +9598,7 @@ export function buildTile(
       hf,
       poles,
       lod === 0 ? edgeCover(L, bi) : undefined,
-      lod === 0
-        ? edgeCover(L, bi, 0.3, [0.02, 0.25, 0.5, 0.75, 0.98])
-        : undefined,
+      lod === 0 ? edgeCover(L, bi, FLUSH_OFF, FLUSH_TS) : undefined,
     );
 
   // Street faces of this tile's buildings, for the poles' service drops.
