@@ -244,6 +244,11 @@ export class Renderer {
    * (frame.off.w) for the locale's procedural lettering and boards.
    */
   private signLocale: SignLocale = 'tokyo';
+  /**
+   * Facade colour palette of the city shown (config.ts facadePaletteOf),
+   * passed to the city shader in frame.off.w bits 8-15.
+   */
+  facadePalette = 0;
   /** Pending setSignLocale() repaint, if any. */
   private signRepaint: Promise<void> | null = null;
   private leafTex: GPUTexture;
@@ -1681,7 +1686,12 @@ export class Renderer {
     ]);
     const [offLo, offHi] = offWords(this.bits);
     new Uint32Array(fd.f.buffer).set(
-      [offLo, this.offMats, offHi, SIGN_LOCALES.indexOf(this.signLocale)],
+      [
+        offLo,
+        this.offMats,
+        offHi,
+        SIGN_LOCALES.indexOf(this.signLocale) | (this.facadePalette << 8),
+      ],
       F.off,
     );
     d.queue.writeBuffer(this.frameBuffer, 0, fd.f);

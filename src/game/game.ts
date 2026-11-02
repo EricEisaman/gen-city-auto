@@ -2,7 +2,11 @@
 // render loop.
 
 import {lowMemory} from '../caps.ts';
-import {PRESETS as PRESETS_CITY, type CityType} from '../city/config.ts';
+import {
+  PRESETS as PRESETS_CITY,
+  type CityType,
+  facadePaletteOf,
+} from '../city/config.ts';
 import {signLocaleOf} from '../city/signs.ts';
 import {reportError, resizeToCss, type Gpu} from '../gpu/device.ts';
 import {Rng} from '../math/random.ts';
@@ -361,6 +365,7 @@ export class Game {
     const city = this.city;
     // A city of another preset repaints the sign atlas in its locale
     // (in the texture worker, while the city loads).
+    this.renderer.facadePalette = facadePaletteOf(type);
     const signs = this.renderer.setSignLocale(signLocaleOf(type));
     signs.catch(() => {}); // (awaited below)
     // The asset lab knows its focus as soon as the layout arrives.

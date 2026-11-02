@@ -127,28 +127,66 @@ fn gloomLight() -> f32 {
   return max(nightLight(), min(gloom, 0.55));
 }
 
-fn wallPalette(i: u32) -> vec3f {
-  return wallPaletteRaw(i) * 0.68;
+// City preset of the facade palette (frame.off.w bits 8-15; config.ts
+// facadePaletteOf): 0 Tokyo, 1 New York, 2 Hong Kong, 3 Chongqing.
+fn facadeCity() -> u32 { return min((frame.off.w >> 8u) & 0xffu, 3u); }
+
+// Facade body colours (albedo): muted, never saturated, from white render
+// to near-black panel. Picked per building by facadeColorIdx.
+const FACADE_COLS = array<vec3f, 15>(
+  vec3f(0.66, 0.65, 0.62),   // 0 white render / tile
+  vec3f(0.58, 0.56, 0.51),   // 1 off-white
+  vec3f(0.56, 0.5, 0.35),    // 2 cream, yellowish
+  vec3f(0.5, 0.43, 0.33),    // 3 beige tile
+  vec3f(0.36, 0.27, 0.19),   // 4 tan / brown tile
+  vec3f(0.47, 0.31, 0.245),  // 5 salmon brick
+  vec3f(0.27, 0.105, 0.075), // 6 dark red brick
+  vec3f(0.44, 0.44, 0.43),   // 7 light grey
+  vec3f(0.3, 0.3, 0.295),    // 8 mid grey
+  vec3f(0.15, 0.15, 0.155),  // 9 dark grey
+  vec3f(0.05, 0.05, 0.055),  // 10 near-black
+  vec3f(0.24, 0.32, 0.26),   // 11 muted green
+  vec3f(0.32, 0.36, 0.41),   // 12 blue-grey
+  vec3f(0.55, 0.5, 0.41),    // 13 limestone
+  vec3f(0.25, 0.15, 0.11),   // 14 brownstone
+);
+// Weights (percent) of each colour per preset: x Tokyo (the photo: mostly
+// white / off-white / beige tile, some grey, a little brick, one green),
+// y New York (brick and limestone), z Hong Kong (white and pastel tile
+// slabs), w Chongqing (off-white and grey concrete).
+const FACADE_WEIGHTS = array<vec4u, 15>(
+  vec4u(16u, 5u, 18u, 10u),
+  vec4u(14u, 6u, 14u, 14u),
+  vec4u(8u, 5u, 10u, 8u),
+  vec4u(12u, 6u, 10u, 10u),
+  vec4u(7u, 5u, 5u, 8u),
+  vec4u(5u, 12u, 6u, 6u),
+  vec4u(4u, 14u, 2u, 5u),
+  vec4u(10u, 6u, 10u, 12u),
+  vec4u(7u, 6u, 6u, 10u),
+  vec4u(6u, 5u, 5u, 8u),
+  vec4u(3u, 3u, 2u, 2u),
+  vec4u(2u, 1u, 4u, 2u),
+  vec4u(3u, 2u, 6u, 3u),
+  vec4u(2u, 14u, 1u, 1u),
+  vec4u(1u, 10u, 1u, 1u),
+);
+
+// Facade colour index for a uniform random r in [0, 1).
+fn facadeColorIdx(r: f32) -> u32 {
+  let city = facadeCity();
+  let t = u32(r * 100.0);
+  var acc = 0u;
+  for (var i = 0u; i < 14u; i++) {
+    acc += FACADE_WEIGHTS[i][city];
+    if (t < acc) { return i; }
+  }
+  return 14u;
 }
 
-fn wallPaletteRaw(i: u32) -> vec3f {
-  // Tokyo midrises are mostly pale: 7 of 12 light (white, beige, pale grey),
-  // 3 mid and 2 dark (brown tile, charcoal).
-  switch (i % 12u) {
-    case 0u: { return vec3f(0.78, 0.76, 0.72); }  // off-white tile
-    case 1u: { return vec3f(0.72, 0.72, 0.7); }   // light grey
-    case 2u: { return vec3f(0.45, 0.33, 0.25); }  // brown tile
-    case 3u: { return vec3f(0.7, 0.72, 0.74); }   // pale blue grey
-    case 4u: { return vec3f(0.7, 0.66, 0.56); }   // beige
-    case 5u: { return vec3f(0.55, 0.58, 0.6); }   // blue grey
-    case 6u: { return vec3f(0.82, 0.8, 0.78); }   // white
-    case 7u: { return vec3f(0.8, 0.76, 0.66); }   // cream
-    case 8u: { return vec3f(0.3, 0.29, 0.29); }   // charcoal
-    case 9u: { return vec3f(0.66, 0.52, 0.42); }  // terracotta-ish
-    case 10u: { return vec3f(0.74, 0.71, 0.66); } // warm light grey
-    default: { return vec3f(0.6, 0.59, 0.56); }   // mid concrete
-  }
-}
+// Colours that read as fired clay: tile or brick cladding even on the
+// pier family, and wrapped round the rear and party walls.
+fn facadeClayIdx(i: u32) -> bool { return i >= 3u && i <= 6u; }
 
 fn paintColor(p: u32) -> vec3f {
   if (p == 0x90u) { return vec3f(0.45, 0.46, 0.45); }
@@ -782,6 +820,12 @@ struct FacadeStyle {
   strip: bool,
   /** 0 tile, 1 ribbon, 2 piers, 3 metal panel, 4 fair-face concrete. */
   family: u32,
+  /** Tile / brick cladding (the tile bond): families 0-1, clay-coloured piers. */
+  clad: bool,
+  /** Brick / clay-tile colour (facadeClayIdx). */
+  clay: bool,
+  /** The street faces' wall colour (before role and zone changes). */
+  body: vec3f,
 };
 
 fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
@@ -796,16 +840,27 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   s.winH = mix(0.42, 0.66, hashuf(h ^ 0x33u));
   s.strip = hashuf(h ^ 0x44u) < select(0.28, 0.6, kind == 0u);
   if (s.strip) { s.winW = 1.0; }
-  s.wall = wallPalette(hashu(h ^ 0x55u));
-  // Hue jitter so neighbours with the same palette entry never match.
+  // Weighted per-preset palette (facadeColorIdx), then a +-8 % value and
+  // a slight warm / cool jitter so neighbours with one entry never match.
+  let ci = facadeColorIdx(hashuf(h ^ 0x55u));
+  s.wall = FACADE_COLS[ci] * mix(0.92, 1.08, hashuf(h ^ 0x57u));
   s.wall *= 1.0 + vec3f(0.04, 0.0, -0.04) * (hashuf(h ^ 0x56u) - 0.5) * 2.0;
   let fam = hashuf(h ^ 0x66u);
   s.family = select(select(select(select(0u, 1u, fam < 0.62), 2u, fam < 0.44), 3u, fam < 0.28), 4u, fam < 0.12);
   if (s.strip) { s.family = 1u; }
+  s.clay = facadeClayIdx(ci);
+  s.clad = s.family <= 1u || (s.family == 2u && s.clay);
   if (s.family == 2u) { s.winW = 0.62; s.winH = 0.72; }
-  if (s.family == 3u) { s.wall = mix(vec3f(0.42, 0.44, 0.47), vec3f(0.25, 0.26, 0.28), hashuf(h ^ 0x77u)); s.winW = min(s.winW, 0.5); }
-  if (s.family == 4u) { s.wall = vec3f(0.36, 0.355, 0.34) * mix(0.85, 1.1, hashuf(h ^ 0x88u)); }
+  // Metal panels: the palette colour, greyed (painted / anodised panel).
+  if (s.family == 3u) { s.wall = mix(s.wall, mix(vec3f(0.42, 0.44, 0.47), vec3f(0.25, 0.26, 0.28), hashuf(h ^ 0x77u)), 0.5); s.winW = min(s.winW, 0.5); }
+  // Fair-face concrete is its own grey; brick-coloured ones stay brick
+  // (clad), so the clay shares hold.
+  if (s.family == 4u) {
+    if (s.clay) { s.clad = true; }
+    else { s.wall = vec3f(0.36, 0.355, 0.34) * mix(0.85, 1.1, hashuf(h ^ 0x88u)); }
+  }
   if (podium) { s.wall = mix(s.wall, vec3f(0.35, 0.33, 0.3), 0.5); }
+  s.body = s.wall;
   return s;
 }
 
@@ -826,6 +881,9 @@ fn frameFinish(style: u32, wall: vec3f) -> vec4f {
   if (k >= 0.8) { c = vec4f(0.06, 0.32, 0.32, 0.0); }
   if (k >= 0.9) { c = vec4f(0.45, 0.11, 0.07, 0.0); }
   if (luminance(wall) < 0.2 && ((k >= 0.28 && k < 0.6) || k >= 0.8)) { c = vec4f(0.62, 0.62, 0.6, 1.0); }
+  // Near-black bodies mostly get white frames: the white lattice on a
+  // black tower.
+  if (luminance(wall) < 0.07 && k < 0.7) { c = vec4f(0.78, 0.78, 0.76, 0.0); }
   return c;
 }
 
@@ -891,8 +949,18 @@ fn facadeRole(st: ptr<function, FacadeStyle>, z: ptr<function, FacadeZone>, uv: 
     return;
   }
   if (role >= 2u) {
-    // Party walls and the rear: painted render / ALC, few small windows.
-    (*st).wall = vec3f(0.47, 0.46, 0.43) * mix(0.85, 1.12, hashuf(aux ^ 0x4e1u));
+    // Party walls and the rear: few small windows. Cladding wraps round
+    // the rear, and brick / clay tile round the party walls too (the body
+    // colour and tile bond carry on); other party walls stay weathered
+    // blockwork and rendered rears painted render / ALC, both tinted toward
+    // the body colour, so a white building is white from behind too.
+    if (role == 2u && !(*st).clay) { (*st).clad = false; }
+    let j = mix(0.85, 1.12, hashuf(aux ^ 0x4e1u));
+    if ((*st).clad && zone != FZ_CROWN) {
+      (*st).wall *= mix(0.94, 1.0, j - 0.85);
+    } else {
+      (*st).wall = mix(vec3f(0.47, 0.46, 0.43), (*st).body, 0.6) * j;
+    }
     (*st).family = 5u;
     (*st).strip = false;
     if (role == 3u) {
@@ -1265,7 +1333,7 @@ fn baseCladding(uv: vec2f, granite: vec3f, aux: u32, bay: f32) -> vec4f {
 
 // Surface overrides once the wall material is done: the granite finish on
 // the base, the lobby, and solid walls (no windows). True: `s` is final.
-fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32, bodyH: f32, fin: vec4f, bay: f32) -> bool {
+fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32, bodyH: f32, fin: vec4f, bay: f32, clad: bool) -> bool {
   if (z.zone == FZ_LOBBY) {
     *s = facadeLobby(uv, n, T, V, fin);
     return true;
@@ -1276,8 +1344,9 @@ fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f,
     (*s).rough = c.a;
     (*s).normal = n;
   }
-  if (z.role == 2u && z.zone != FZ_CROWN ) { partyWall(s, uv, aux, bodyH, z.zone == FZ_BASE); }
-  if (z.role == 3u && z.zone != FZ_CROWN) {
+  // (Clad walls keep the tile: no blockwork, ALC joints or paint.)
+  if (z.role == 2u && z.zone != FZ_CROWN && !clad) { partyWall(s, uv, aux, bodyH, z.zone == FZ_BASE); }
+  if (z.role == 3u && z.zone != FZ_CROWN && !clad) {
     // Render and ALC panels: no ledges to cast floor shadows; ALC shows a
     // joint every 0.6 m.
     (*s).sunVis = 1.0;
@@ -1288,7 +1357,12 @@ fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f,
       (*s).albedo *= 1.0 - 0.35 * joint;
     }
   }
-  if (z.zone == FZ_CROWN || z.zone == FZ_CORE || z.zone == FZ_TRIM) { (*s).sunVis = 1.0; }
+  if (z.zone == FZ_CROWN || z.zone == FZ_CORE || z.zone == FZ_TRIM || (clad && z.role >= 2u)) { (*s).sunVis = 1.0; }
+  // (As partyWall: a clad blank wall over low roofs keeps the city glow at
+  // night.)
+  if (clad && z.role == 2u && z.zone != FZ_CROWN) {
+    (*s).emissive += (*s).albedo * (frame.cityGlow.rgb * 0.4 + vec3f(0.001, 0.0013, 0.002)) * nightLight();
+  }
   return z.solid;
 }
 // ---- end facade programs ---------------------------------------------------
@@ -1498,12 +1572,15 @@ fn vinylMean(size: vec2f, bayIdx: f32, floorIdx: f32, bay: f32, aux: u32, kind: 
 // damp rises and in the odd patch higher up, showing the grey render
 // beneath with a pale lip of lifted paint. Patches are 0.2-1 m so they read
 // across a back street; their edges fade by footprint.
-fn paintedRender(s: ptr<function, Surf>, uv: vec2f, style: u32, foot: f32) {
+fn paintedRender(s: ptr<function, Surf>, uv: vec2f, style: u32, foot: f32, body: vec3f) {
   let h = hashu(style * 2246822519u + 0x9a7u);
   // (Weathered exterior paint sits at 0.35-0.5 albedo: brighter pastels
-  // blow out to white in a low golden-hour sun.)
-  let paint = array<vec3f, 5>(vec3f(0.74, 0.69, 0.57), vec3f(0.6, 0.67, 0.58), vec3f(0.6, 0.65, 0.7), vec3f(0.78, 0.77, 0.73), vec3f(0.74, 0.6, 0.52))[h % 5u] * 0.7;
-  let base = (*s).albedo / 0.47;
+  // blow out to white in a low golden-hour sun.) Mostly the body colour,
+  // so the building reads as one colour from behind.
+  let paint = mix(array<vec3f, 5>(vec3f(0.74, 0.69, 0.57), vec3f(0.6, 0.67, 0.58), vec3f(0.6, 0.65, 0.7), vec3f(0.78, 0.77, 0.73), vec3f(0.74, 0.6, 0.52))[h % 5u] * 0.7, body, 0.7);
+  // (facadeRole tinted the rear wall toward the body already: undo that,
+  // keeping its grime and patching.)
+  let base = (*s).albedo / max(mix(vec3f(0.47, 0.46, 0.43), body, 0.6), vec3f(0.03));
   // (The 0.17 m flake noise is lost in the footprint-wide edge past 0.3 m.)
   var fine = 0.5;
   if (foot < 0.3) { fine = mix(valueNoise(uv * 6.0), 0.5, smoothstep(0.15, 0.3, foot)); }
@@ -2212,7 +2289,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let cellSeed = hashu(aux ^ hashu((u32(bayIdx + 1000.0) * 73856093u) ^ (u32(floorIdx + 1000.0) * 19349663u)));
   // Wall: glazed tile (tile and ribbon styles) or concrete render, with
   // grime streaks.
-  let tiled = st.family <= 1u;
+  let tiled = st.clad;
   var tb: TileBond;
   if (tiled) { tb = tileBond(uv, aux); }
   // (Tile: an analytic bond; wd then carries only its joint cavity.)
@@ -2434,8 +2511,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   }
 
   let fin = frameFinish(style, st.wall);
-  let zoneDone = facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux, bodyH, fin, st.bay);
-  if (fz.role == 3u && fz.zone != FZ_CROWN) { paintedRender(&s, uv, style, foot); }
+  let zoneDone = facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux, bodyH, fin, st.bay, tiled);
+  if (fz.role == 3u && fz.zone != FZ_CROWN && !tiled) { paintedRender(&s, uv, style, foot, st.body); }
   if (fz.zone == FZ_BASE) { s.albedo *= groundGrime(uv, foot); }
   if (fz.zone != FZ_LOBBY) { facadeRain(&s, uv, n, T, washAmt, underSill, select(0.6, 0.3, tiled)); }
   if (zoneDone) { return s; }
@@ -5627,7 +5704,7 @@ fn signPalette(id: u32) -> vec3f {
 
 // City sign locale (frame.off.w; src/city/signs.ts SIGN_LOCALES): 0 Tokyo,
 // 1 New York.
-fn signLocale() -> u32 { return frame.off.w; }
+fn signLocale() -> u32 { return frame.off.w & 0xffu; }
 
 // A Latin capital (p in -0.5..0.5, 1 = stroke), one of 16 picked by h,
 // built from 14 segments (sides, halves of the middle bar, centre

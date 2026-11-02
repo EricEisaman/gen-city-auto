@@ -3,6 +3,15 @@
 
 export type CityType = 'neon' | 'metro' | 'harbour' | 'river';
 
+/**
+ * Facade colour palette of a city preset: its index, which the city shader
+ * reads in frame.off.w bits 8-15 (city-materials.wgsl facadeCity /
+ * FACADE_WEIGHTS).
+ */
+export function facadePaletteOf(type: CityType): number {
+  return {neon: 0, metro: 1, harbour: 2, river: 3}[type] ?? 0;
+}
+
 export interface CityParams {
   type: CityType;
   name: string;
