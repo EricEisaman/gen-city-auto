@@ -37,6 +37,18 @@ export interface CityParams {
   /** Elevated expressways. */
   expressways: number;
   parkFraction: number;
+  /**
+   * Which side of the road traffic keeps to (Tokyo, Hong Kong: left; New
+   * York: right). Lanes, trains, the road paint (stop lines, arrows, turn
+   * guides) and the drivers' seats follow it; the layout does not depend
+   * on it (gen-base signalSpots: the junction furniture needs no change).
+   */
+  drive: 'left' | 'right';
+}
+
+/** +1 where traffic keeps left, -1 where it keeps right. */
+export function keepLeft(p: Pick<CityParams, 'drive'>): 1 | -1 {
+  return p.drive === 'right' ? -1 : 1;
 }
 
 export const PRESETS: Record<CityType, CityParams> = {
@@ -61,6 +73,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     railLines: 3,
     expressways: 5,
     parkFraction: 0.05,
+    drive: 'left',
   },
   metro: {
     type: 'metro',
@@ -83,6 +96,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     railLines: 1,
     expressways: 4,
     parkFraction: 0.07,
+    drive: 'right',
   },
   harbour: {
     type: 'harbour',
@@ -105,6 +119,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     railLines: 2,
     expressways: 3,
     parkFraction: 0.04,
+    drive: 'left',
   },
   river: {
     type: 'river',
@@ -127,5 +142,6 @@ export const PRESETS: Record<CityType, CityParams> = {
     railLines: 2,
     expressways: 3,
     parkFraction: 0.04,
+    drive: 'left',
   },
 };

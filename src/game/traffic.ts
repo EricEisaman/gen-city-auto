@@ -1,6 +1,7 @@
-// Traffic: cars follow lanes (driving on the left), obey the same signal
-// timing the shaders display, keep distance with IDM, and pick turns at
-// junctions. The player's car uses the same LaneFollower on autopilot.
+// Traffic: cars follow lanes (on the city's side of the road, RoadNet.side),
+// obey the same signal timing the shaders display, keep distance with IDM,
+// and pick turns at junctions. The player's car uses the same LaneFollower
+// on autopilot.
 
 import {mat4, type Mat4} from '../math/mat4.ts';
 import {Rng} from '../math/random.ts';

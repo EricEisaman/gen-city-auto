@@ -32,6 +32,7 @@ import {
   type CityLayout,
   type Elevated,
 } from './layout.ts';
+import {keepLeft} from './config.ts';
 import {chainAt, computeRoadGeom, type RoadGeom} from './roadgeom.ts';
 import {signLocaleOf} from './signs.ts';
 import {Heightfield, SEA_LEVEL} from './terrain.ts';
@@ -560,7 +561,10 @@ function junctionMarkings(
       const [s0, s1] = geom.setbacks[a.chain];
       const q = chainAt(c, arc, a.end === 0 ? s0 : total - s1);
       const dir: Vec2 = a.end === 0 ? q.d : [-q.d[0], -q.d[1]];
-      const l: Vec2 = [-dir[1], dir[0]];
+      // (Mirrored where traffic keeps right: the approach lanes stay on +l
+      // and the crossing turn, toward -l, becomes the left turn.)
+      const sd = keepLeft(L.params);
+      const l: Vec2 = [-dir[1] * sd, dir[0] * sd];
       const hw = ROAD_WIDTH[c.kind] / 2;
       const per = Math.max(1, Math.floor(LANES[c.kind] / 2));
       // Lateral `lat` (+ approach side), `inset` metres into the box.
@@ -787,12 +791,15 @@ function roads(
       (endSignal ? 8 : 0) |
       (Math.min(65535, Math.round(len)) << 4);
     const mat = packMat(CM.road, param);
+    // The shader's x < 0 half carries the traffic toward the strip's end:
+    // mirrored across the chain where traffic keeps right.
+    const ux = (w / 2) * keepLeft(L.params);
     strip(
       m,
       left.map((q, i) => [q[0], hs[i], q[1]] as Vec3),
       right.map((q, i) => [q[0], hs[i], q[1]] as Vec3),
-      along.map(a => [w / 2, a] as Vec2),
-      along.map(a => [-w / 2, a] as Vec2),
+      along.map(a => [ux, a] as Vec2),
+      along.map(a => [-ux, a] as Vec2),
       mat,
       // Lanes, and the chain seed for the shader's resurfacing sections.
       LANES[c.kind] | ((hash2(ci, 0x5eed) & 0xffffff) << 8),
@@ -6247,6 +6254,14 @@ export function streetLightSpots(
  * over the approach), shared by the tile props (pole, heads, luminaire) and
  * the base light list (the junction luminaire's light). `arm` indexes
  * geom.junctions[ji].arms.
+ *
+ * The pole stands on +l of its arm (the approach lanes' side where traffic
+ * keeps left), so for the traffic its heads face (crossing the box toward
+ * this arm) it is the far right-hand corner whichever side traffic keeps
+ * to: in Tokyo the heads hang over the oncoming lanes; in New York (keep
+ * right, config.ts drive) over the approach's own lanes, as US mast arms
+ * do. The same holds for the regulatory signs and guide signs (gen-tile),
+ * which stand on the right-hand kerb of the traffic they face.
  */
 export function signalSpots(
   L: CityLayout,

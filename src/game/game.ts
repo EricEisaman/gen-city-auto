@@ -379,7 +379,11 @@ export class Game {
     this.traffic = new Traffic(net, this.vehicles);
     this.buildLightSprites();
     this.traffic.target = this.trafficTarget();
-    this.trains = new Trains(city.summary.layout.elevated, this.vehicles);
+    this.trains = new Trains(
+      city.summary.layout.elevated,
+      this.vehicles,
+      net.side,
+    );
     // The rail lab parks one train at the site for scale.
     const labTrain = city.summary.lab?.train;
     if (labTrain !== undefined) this.trains.park(labTrain);
@@ -665,8 +669,8 @@ export class Game {
       // The asset lab has no traffic.
       if (c.kind < 1 || this.opts.lab) return;
       const pts = c.pts.map((q, i): Vec3 => [q[0], c.heights[i], q[1]]);
-      const offs = [...Array(net.lanesPerDir(ci)).keys()].map(k =>
-        net.laneOffset(ci, k),
+      const offs = [...Array(net.lanesPerDir(ci)).keys()].map(
+        k => net.laneOffset(ci, k) * net.side,
       );
       // City traffic: 30-50 km/h.
       both(pts, offs, c.kind >= 2 ? 12 : 10, 30);
@@ -675,7 +679,7 @@ export class Game {
       if (e.kind !== 'expressway' || this.opts.lab) continue;
       const pts = e.pts.map((q, i): Vec3 => [q[0], e.heights[i], q[1]]);
       // Shuto expressway: ~70 km/h.
-      both(pts, [2.2, 5.6], 19, 40);
+      both(pts, [2.2 * net.side, 5.6 * net.side], 19, 40);
     }
     const lamps: number[] = [];
     streetLightSpots(

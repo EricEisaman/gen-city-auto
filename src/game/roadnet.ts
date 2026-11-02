@@ -16,6 +16,7 @@ import {pointSegment, type Vec2, type Vec3} from '../math/vec.ts';
 import type {LayoutSummary} from '../workers/city-worker.ts';
 import {streetLightSpots} from '../city/gen-base.ts';
 import type {CityLayout} from '../city/layout.ts';
+import {keepLeft} from '../city/config.ts';
 
 export const SPEED_LIMIT = [8.5, 11.5, 15, 18];
 
@@ -62,6 +63,8 @@ export class RoadNet {
   private bldGrid = new Map<number, number[]>();
   private readonly cell = 32;
   readonly size: number;
+  /** +1: traffic keeps left (lanes on the left of travel); -1: keeps right. */
+  readonly side: 1 | -1;
   private poleGrid = new Map<number, Vec3[]>();
   private junctionGrid = new Map<number, number[]>();
   /** Fillet half-length per chain vertex (lazily built). */
@@ -76,6 +79,7 @@ export class RoadNet {
     this.buildings = L.buildings;
     this.hf = hf;
     this.size = L.params.size;
+    this.side = keepLeft(L.params);
     L.junctions.forEach((j, ji) => {
       for (const a of j.arms) {
         const c = L.chains[a.chain];
@@ -323,8 +327,9 @@ export class RoadNet {
     // Lanes follow the rounded centerline (heights from the road's grade).
     const sm = this.smoothAt(chain, a);
     const d: Vec2 = dir === 1 ? sm.d : [-sm.d[0], -sm.d[1]];
-    const off = this.laneOffset(chain, lane);
-    // Drive on the left (Japan): left of travel direction is (dz, -dx).
+    // Lanes are on the kerb side: the left of the travel direction (dz,
+    // -dx) where traffic keeps left (Tokyo), the right where it keeps right.
+    const off = this.laneOffset(chain, lane) * this.side;
     const left: Vec2 = [d[1], -d[0]];
     const q2 = chainAt(c, arc, a + dir * 2);
     const slope = (q2.h - q.h) / 2;
