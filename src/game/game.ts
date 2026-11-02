@@ -823,15 +823,16 @@ export class Game {
   }
 
   /**
-   * Switch to the free camera, starting where the current camera is: same
-   * eye, direction and field of view, so the view doesn't jump.
+   * Switch to the free camera, starting where the current camera is (same
+   * eye and direction) at the free camera's normal field of view: flying a
+   * telephoto lens is twitchy.
    */
   enterFreeCam() {
     if (this.freeMode) return;
     const c = this.lastCam;
     if (c) {
       const [yaw, pitch] = yawPitch(c.eye, c.target);
-      this.freeCam.setPose(c.eye, yaw, pitch, c.fov);
+      this.freeCam.setPose(c.eye, yaw, pitch);
     }
     this.freeMode = true;
   }
