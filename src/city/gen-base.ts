@@ -1966,8 +1966,10 @@ function frames(pts: Vec2[]) {
 }
 
 /**
- * New York platforms (the city's sign locale, set by elevatedStructures):
- * no drinks machines, one litter bin instead of the recycling trio.
+ * New York rail (the city's sign locale, set by elevatedStructures): third
+ * rail instead of overhead wires and masts; platforms without drinks
+ * machines or car-position squares, one litter bin instead of the
+ * recycling trio.
  */
 let platformNyc = false;
 
@@ -2377,6 +2379,10 @@ export const VENDING_DOOR = 0x100;
 export const VENDING_HEADER = 0x200;
 /** Railhead top above the deck top (trains.ts sits cars on it). */
 export const RAIL_TOP = 0.37;
+/** CM.paint param of New York's third-rail cover boards (fibreglass). */
+const THIRD_RAIL_BOARD = 0x98;
+/** CM.paint param of New York's bike-share blue (city-materials.wgsl). */
+export const CITI_BLUE = 0x99;
 
 /** common.wgsl hashu / hashuf, so geometry can sit where a shader hash puts a stain. */
 function wgslHashu(x: number) {
@@ -2549,6 +2555,15 @@ function railViaduct(
         E(L(0.9, 0.15), L(3.3, 0.15), 0, 1, bed, 'bed');
         E(L(3.3, 0.15), L(4.05, -0.17), s * 0.392, 0.92, bed, 'bed');
         E(L(4.05, -0.17), L(4.3, -0.17), 0, 1, conc(RC_PARAPET), 'h');
+      }
+      // New York: a third rail inboard of each track (its head a tube, see
+      // the railheads below) under a cover board on brackets: the board's
+      // top and its two edges.
+      if (platformNyc) {
+        const cb = packMat(CM.paint, THIRD_RAIL_BOARD);
+        E(L(0.72, 0.52), L(0.98, 0.52), 0, 1, cb, 'h');
+        E(L(0.72, 0.52), L(0.72, 0.48), -s, 0, cb, 'v');
+        E(L(0.98, 0.52), L(0.98, 0.48), s, 0, cb, 'v');
       }
       // Rail webs (the heads are continuous tubes).
       for (const r of [-0.53, 0.53]) {
@@ -3622,8 +3637,8 @@ function railViaduct(
     }
   }
 
-  // Continuous lines through every point: railheads, catenary wires, the
-  // cable conduit.
+  // Continuous lines through every point: railheads, catenary wires (third
+  // rails in New York), the cable conduit.
   const line = (f: (k: number) => Vec3, r: number, mat: number, step = 1) => {
     const ps: Vec3[] = [];
     for (let k = 0; k <= segs; k += step) ps.push(f(k));
@@ -3637,6 +3652,9 @@ function railViaduct(
         0.035,
         packMat(CM.metal, RAIL_STEEL),
       );
+  if (platformNyc)
+    for (const c of [-0.85, 0.85])
+      line(k => P(k, c, RAIL_TOP + 0.03), 0.04, packMat(CM.metal, RAIL_STEEL));
   // Gantries every 4th point (48 bent units) and at the line's ends.
   const isGantry = (k: number) => k % 4 === 0 || (!e.loop && k === n - 1);
   // Contact wire stagger: +-0.2 m alternating at gantries, linear between.
@@ -3653,7 +3671,7 @@ function railViaduct(
   };
   const CW = 5.4 + RAIL_TOP;
   const MW = 6.4 + RAIL_TOP;
-  for (const c of [-2.1, 2.1]) {
+  for (const c of platformNyc ? [] : [-2.1, 2.1]) {
     line(k => P(k, c + stag(k), CW), 0.007, packMat(CM.wire, 1));
     line(k => P(k, c + stag(k), MW - 0.5 * sag(k)), 0.008, packMat(CM.wire, 2));
     // Droppers every 6 m (two a bay, none at the gantries), on the
@@ -3712,7 +3730,8 @@ function railViaduct(
   // One feeder, on the -1 masts (a point every 2nd bent is enough for its
   // sag): with one each side the line carried six parallel wires, which
   // at mid / far range merged into a grey hatch over the deck.
-  line(k => P(k, -4.8, 9.0 - 0.6 * sag(k)), 0.012, packMat(CM.wire, 2), 2);
+  if (!platformNyc)
+    line(k => P(k, -4.8, 9.0 - 0.6 * sag(k)), 0.012, packMat(CM.wire, 2), 2);
 
   // OHLE structures every 4th point. Most are the light Warren-truss
   // portal; per gantry (a hash of the line and point, not the layout RNG)
@@ -3778,7 +3797,32 @@ function railViaduct(
   // the canopy with no mast.
   const midSt = (k: number) =>
     k % 4 === 2 && k < segs && station[k] === 1 && station[W(k - 1) % segs];
-  for (let i = 0; i < n; i++) {
+  // New York: no overhead line, so no masts; the signals stand on a short
+  // post between the tracks (clear of both trains), a head with an aspect
+  // for each direction.
+  for (let i = 0; platformNyc && i < n; i += 24) {
+    const d = fr[i].d;
+    const yaw = Math.atan2(d[0], d[1]);
+    const pp = P(i, 0, 0.24);
+    m.tube([pp, [pp[0], pp[1] + 2.0, pp[2]]], 0.05, packMat(CM.paint, 0x91));
+    const hp = P(i, 0, 2.6);
+    m.box(hp, [0.16, 0.42, 0.08], packMat(CM.frame), yaw);
+    for (const f of [-1, 1]) {
+      const a = railHash(ei * 3 + (f < 0 ? 1 : 2), i);
+      const [up, lo] = a < 0.7 ? [4, 5] : a < 0.9 ? [5, 5] : [3, 3];
+      for (const [dy, asp] of [
+        [0.18, up],
+        [-0.18, lo],
+      ] as [number, number][])
+        m.box(
+          [hp[0] + d[0] * f * 0.1, hp[1] + dy, hp[2] + d[1] * f * 0.1],
+          [0.1, 0.1, 0.04],
+          packMat(CM.lamp, asp),
+          yaw,
+        );
+    }
+  }
+  for (let i = 0; !platformNyc && i < n; i++) {
     const ms = midSt(i);
     if (!isGantry(i) && !ms) continue;
     const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
@@ -4293,14 +4337,14 @@ function railViaduct(
   // A parked city bicycle at p (ground), nose along `dir`: two 6-sided
   // tyres, a step-through frame in a faded colour, bars and saddle.
   const BIKE = [0xd5, 0x91, 0x5a, 0xa4, 0x79, 0x30, 0x9c, 0xc4];
-  function railBike(p: Vec3, dir: Vec3, k: number) {
+  function railBike(p: Vec3, dir: Vec3, k: number, share = false) {
     const sd: Vec3 = [dir[2], 0, -dir[0]];
     const B = (x: number, y: number, s = 0): Vec3 => [
       p[0] + dir[0] * x + sd[0] * s,
       p[1] + y,
       p[2] + dir[2] * x + sd[2] * s,
     ];
-    const col = packMat(CM.paint, BIKE[k % BIKE.length]);
+    const col = packMat(CM.paint, share ? CITI_BLUE : BIKE[k % BIKE.length]);
     for (const wx of [-0.52, 0.52]) {
       const ring: Vec3[] = [];
       for (let q = 0; q <= 6; q++) {
@@ -4961,8 +5005,9 @@ function railViaduct(
         }
         // Car-position floor markers behind the tactile strip, every 6 m:
         // 0.45 m line-colour squares painted on the paving (4 mm proud),
-        // where the doors stop; not over the stair well.
-        if (!(stairOf[W(k) % segs] & (side < 0 ? 1 : 2))) {
+        // where the doors stop; not over the stair well. (None in New
+        // York.)
+        if (!platformNyc && !(stairOf[W(k) % segs] & (side < 0 ? 1 : 2))) {
           const len = dist2(pts[k], pts[W(k + 1)]) || 1;
           for (const t of [0.25, 0.75]) {
             const F = (x: number, a: number) =>
@@ -5319,14 +5364,32 @@ function railViaduct(
                 k === 1,
               );
           // Bike parking on the +1 side: a rack rail and a row of bikes.
+          // New York: a bike-share dock instead, a blue bike in each dock
+          // post, about one in four empty, and a pay kiosk at the end.
           if (s > 0) {
             const a0 = 3.2;
             const a1 = Math.min(half - 2.0, a0 + 6.0);
-            m.tube([f(10.15, 0.42, a0), f(10.15, 0.42, a1)], 0.025, metal);
+            if (!platformNyc)
+              m.tube([f(10.15, 0.42, a0), f(10.15, 0.42, a1)], 0.025, metal);
             let b = 0;
             for (let a = a0 + 0.3; a < a1; a += 0.62, b++) {
               const p = f(10.8, 0, a);
-              railBike(p, out, b + si);
+              if (!platformNyc) railBike(p, out, b + si);
+              else {
+                m.box(f(10.2, 0.45, a), [0.06, 0.45, 0.09], metal, yaw);
+                if (railHash(ei + 811, si * 16 + b) >= 0.25)
+                  railBike(p, [-out[0], 0, -out[2]], 0, true);
+              }
+            }
+            if (platformNyc) {
+              const kiosk = packMat(CM.paint, CITI_BLUE);
+              m.box(f(10.25, 0.95, a1 + 0.5), [0.16, 0.95, 0.3], kiosk, yaw);
+              m.box(
+                f(10.42, 1.3, a1 + 0.5),
+                [0.015, 0.45, 0.24],
+                packMat(CM.frame),
+                yaw,
+              );
             }
           }
         }

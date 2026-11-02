@@ -156,8 +156,14 @@ fn paintColor(p: u32) -> vec3f {
   if (p == 0x92u) { return vec3f(0.8, 0.55, 0.04); }
   // New York's dark green signal and lamp-post paint (gen-tile NYC_GREEN).
   if (p == 0x96u) { return vec3f(0.03, 0.085, 0.05); }
-  // Rail line colour (station bands): JR-style green.
-  if (p == 0x0cu) { return vec3f(0.06, 0.46, 0.26); }
+  // New York's third-rail cover boards (gen-base THIRD_RAIL_BOARD):
+  // weathered brown-grey fibreglass.
+  if (p == 0x98u) { return vec3f(0.24, 0.215, 0.18); }
+  // Citi Bike blue (bike-share frames and docks).
+  if (p == 0x99u) { return vec3f(0.02, 0.27, 0.62); }
+  // Rail line colour (station bands): JR-style green; New York's el
+  // stations a dark steel grey-green.
+  if (p == 0x0cu) { return select(vec3f(0.06, 0.46, 0.26), vec3f(0.1, 0.13, 0.115), signLocale() == 1u); }
   if (p == 0x80u) { return vec3f(0.5, 0.5, 0.5); }
   if (p >= 0xd0u && p < 0xf0u) { return vec3f(0.62, 0.62, 0.6); }
   let h = hashu(p * 2654435761u);
@@ -7523,19 +7529,22 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       a = mix(a, vec3f(0.37, 0.365, 0.35) * tex * (1.0 - 0.5 * cj) * (1.0 - 0.15 * smoothstep(0.5, 0.8, valueNoise(vec2f(x * 3.0, uy * 0.7)))), cope);
       a *= 1.0 - 0.45 * bandF(x, 0.39, 0.42, fu.x);
       // White edge line, 15 cm, fresh paint (a little worn at the joints).
-      let wl = bandF(x, 0.05, 0.2, fu.x);
+      // New York: none; its yellow warning strip runs along the edge.
+      let ny = signLocale() == 1u;
+      let wl = bandF(x, 0.05, 0.2, fu.x) * select(1.0, 0.0, ny);
       a = mix(a, vec3f(0.9, 0.9, 0.87) * mix(0.9, 1.0, d.a) * (1.0 - 0.25 * cj), wl);
       s.rough = mix(s.rough, 0.5, wl);
       // Yellow tactile warning strip (0.3 m blocks of domed dots on a 75 mm
       // grid). The dots are drawn into the albedo too (dark gaps, lit caps)
       // so they read in canopy shade, and keep a speckled mean tone and the
       // block joints out to the far end.
-      let tk = bandF(x, 0.8, 1.1, fu.x);
+      let tx0 = select(0.8, 0.0, ny);
+      let tk = bandF(x, tx0, select(1.1, 0.6, ny), fu.x);
       if (tk > 0.0) {
         var tu: vec3f;
         var tv: vec3f;
         uvDirs(&tu, &tv);
-        let q = fract(vec2f(x - 0.8, uy) / 0.075) - 0.5;
+        let q = fract(vec2f(x - tx0, uy) / 0.075) - 0.5;
         let r = length(q);
         let vis = 1.0 - smoothstep(0.03, 0.065, fp);
         let w = min(fp / 0.075 * 0.6, 0.3);
@@ -7544,23 +7553,26 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         s.normal = normalize(mix(s.normal, normalize(n + (tu * q.x + tv * q.y) / max(r, 1e-3) * slope * 1.6), vis * tk));
         let ring = smoothstep(0.28, 0.33, r) * (1.0 - smoothstep(0.36, 0.46, r));
         let cap = 1.0 - smoothstep(0.0, 0.16, r);
-        let tb = vec2f(floor((x - 0.8) / 0.3), floor(uy / 0.3));
+        let tb = vec2f(floor((x - tx0) / 0.3), floor(uy / 0.3));
         let ht = hash21(tb + 3.7);
         // Blocks: most a faded ochre, a few fresh replacements.
         var ya = select(vec3f(0.8, 0.6, 0.06), vec3f(0.92, 0.72, 0.04), ht < 0.15) * mix(0.88, 1.05, d.a);
         ya *= mix(0.78, 1.0 - 0.65 * ring - 0.5 * (1.0 - dome) + 0.25 * cap, vis);
-        ya *= 1.0 - 0.6 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.012 / 0.3), jointCov((x - 0.8) / 0.3, fu.x / 0.3, 0.012 / 0.3));
+        ya *= 1.0 - 0.6 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.012 / 0.3), jointCov((x - tx0) / 0.3, fu.x / 0.3, 0.012 / 0.3));
         // Boot-scuffed grey wear on the dots, black tyre / sole marks.
         ya = mix(ya, vec3f(0.4, 0.38, 0.33), 0.4 * smoothstep(0.55, 0.8, valueNoise(vec2f(x * 4.0, uy * 0.6))));
         a = mix(a, ya, tk);
         s.ao = mix(s.ao, mix(0.9, 1.0 - 0.4 * ring, vis), tk);
         s.rough = mix(s.rough, 0.55, tk);
       }
-      // Car-stop marks every 20 m: a white triangle and a numeral plate.
-      let ay = (fract(uy / 20.0) - 0.5) * 20.0;
-      let tri = step(0.25, x) * step(x, 0.6) * step(abs(ay), 0.15 * (x - 0.25) / 0.35);
-      let num = bandF(x, 0.65, 0.8, fu.x) * bandF(ay, -0.08, 0.08, fu.y);
-      a = mix(a, vec3f(0.82, 0.82, 0.8), max(tri * fine, num * (1.0 - smoothstep(0.03, 0.06, fp))));
+      // Car-stop marks every 20 m: a white triangle and a numeral plate
+      // (Tokyo).
+      if (!ny) {
+        let ay = (fract(uy / 20.0) - 0.5) * 20.0;
+        let tri = step(0.25, x) * step(x, 0.6) * step(abs(ay), 0.15 * (x - 0.25) / 0.35);
+        let num = bandF(x, 0.65, 0.8, fu.x) * bandF(ay, -0.08, 0.08, fu.y);
+        a = mix(a, vec3f(0.82, 0.82, 0.8), max(tri * fine, num * (1.0 - smoothstep(0.03, 0.06, fp))));
+      }
       // The slab is laid nearly flat: it ponds in the rain.
       flat = 0.75;
       porous = 0.4;
@@ -8109,9 +8121,12 @@ fn galvSteel(world: vec3f, n: vec3f, uv: vec2f, aux: u32) -> Surf {
 // road-facing web (seed bit 0x80), a yellow clearance board.
 fn railGirder(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
   let seed = param & 0x7fu;
-  // Blue-grey, JR teal or rust-brown (oxide primer showing through).
+  // Blue-grey, JR teal or rust-brown (oxide primer showing through); New
+  // York's els dark green or dark grey.
   let pal = array<vec3f, 3>(vec3f(0.36, 0.42, 0.5), vec3f(0.2, 0.4, 0.37), vec3f(0.28, 0.13, 0.065));
-  var s = paintedSteelC(world, n, seed, pal[seed % 3u] * mix(0.94, 1.06, hashuf(seed * 0x9e37u)));
+  let palNy = array<vec3f, 3>(vec3f(0.11, 0.17, 0.13), vec3f(0.2, 0.21, 0.22), vec3f(0.09, 0.14, 0.11));
+  let pc = select(pal[seed % 3u], palNy[seed % 3u], signLocale() == 1u);
+  var s = paintedSteelC(world, n, seed, pc * mix(0.94, 1.06, hashuf(seed * 0x9e37u)));
   if (abs(n.y) > 0.5) { return s; }
   let fp = railFoot();
   let fu = uvFoot();
