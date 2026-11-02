@@ -9,7 +9,8 @@ struct Patch { origin: vec2f, size: f32, pad: f32 };
 
 const GRID = 32u;
 
-fn heightAt(xz: vec2f) -> f32 {
+// Bilinear height of the map, its edge rows extended outward.
+fn heightMap(xz: vec2f) -> f32 {
   let n = i32(frame.world.z);
   let g = (xz + frame.world.x * 0.5) / frame.world.y;
   let i = vec2i(floor(g));
@@ -19,12 +20,26 @@ fn heightAt(xz: vec2f) -> f32 {
   let b = textureLoad(heightTex, clamp(i + vec2i(1, 0), vec2i(0), c), 0).r;
   let d = textureLoad(heightTex, clamp(i + vec2i(0, 1), vec2i(0), c), 0).r;
   let e = textureLoad(heightTex, clamp(i + vec2i(1, 1), vec2i(0), c), 0).r;
-  var h = mix(mix(a, b, f.x), mix(d, e, f.x), f.y);
+  return mix(mix(a, b, f.x), mix(d, e, f.x), f.y);
+}
+
+fn heightAt(xz: vec2f) -> f32 {
+  var h = heightMap(xz);
   // Outside the generated world: land continues as a gentle plain, sea stays sea.
   let edge = max(abs(xz.x), abs(xz.y)) - frame.world.x * 0.5;
   if (edge > 0.0) {
     if (h < 1.0) { h = mix(h, -20.0, clamp(edge / 400.0, 0.0, 1.0)); }
-    else { h = h + (valueNoise(xz * 0.002) - 0.5) * 20.0 * clamp(edge / 1500.0, 0.0, 1.0); }
+    else {
+      // The edge row's dents (road troughs, kerbs) blur out along the edge
+      // over the first 300 m instead of running to the horizon as grooves
+      // (never down into the water: banks stay put).
+      // (gen-base.ts outskirts places its blocks on the same ground.)
+      let t = select(vec2f(1.0, 0.0), vec2f(0.0, 1.0), abs(xz.x) >= abs(xz.y));
+      var acc = 0.0;
+      for (var k = -2; k <= 2; k++) { acc += heightMap(xz + t * (f32(k) * 40.0)); }
+      h = max(mix(h, acc * 0.2, clamp(edge / 300.0, 0.0, 1.0)), min(h, 1.5));
+      h = h + (valueNoise(xz * 0.002) - 0.5) * 20.0 * clamp(edge / 1500.0, 0.0, 1.0);
+    }
   }
   return h;
 }
@@ -34,6 +49,45 @@ fn landAt(xz: vec2f) -> u32 {
   let g = vec2i(round((xz + frame.world.x * 0.5) / frame.world.y));
   if (any(g < vec2i(0)) || any(g >= vec2i(n))) { return 1u; }
   return u32(textureLoad(landTex, g, 0).r * 255.0 + 0.5);
+}
+
+// Beyond the generated world: the ground of the outskirts (gen-base.ts
+// outskirts), a street grid on its 75 m block cells (lines at -size / 2 +
+// 75 k): 10 m of asphalt on each line, 2 m of pavement either side, paved
+// lots in between. Patterns fade to the cell's mean once a pixel covers a
+// few metres, so the grid never aliases toward the horizon.
+const OUT_CELL = 75.0;
+fn outskirtsGround(xz: vec2f, foot: f32) -> vec3f {
+  let q = (xz + frame.world.x * 0.5) / OUT_CELL;
+  let cellId = floor(q);
+  let l = (q - cellId) * OUT_CELL;
+  let d = min(l, vec2f(OUT_CELL) - l);
+  let dl = min(d.x, d.y);
+  let w = max(foot, 0.05);
+  let road = 1.0 - smoothstep(5.0 - w, 5.0 + w, dl);
+  let walk = 1.0 - smoothstep(7.0 - w, 7.0 + w, dl);
+  // 6 % of the blocks are parks (gen-base.ts outskirtsPark leaves them
+  // unbuilt): lawn under clumps of tree canopy.
+  let ci = vec2u(vec2i(cellId) + 4096);
+  let park = (hashu((ci.x * 73856093u) ^ (ci.y * 19349663u)) & 0xffffu) < 3932u;
+  var lot = vec3f(0.25, 0.245, 0.235) * (0.85 + 0.3 * hash21(cellId));
+  var lotMean = vec3f(0.25, 0.245, 0.235);
+  if (park) {
+    let canopy = smoothstep(0.42, 0.62, valueNoise(xz * 0.12));
+    lotMean = vec3f(0.08, 0.12, 0.05);
+    lot = mix(mix(vec3f(0.11, 0.16, 0.06), vec3f(0.045, 0.075, 0.035), canopy), lotMean, smoothstep(2.0, 6.0, foot));
+  }
+  let asph = vec3f(0.1, 0.1, 0.102);
+  let pave = vec3f(0.34, 0.33, 0.31);
+  // Dashed centre line (6 m dashes) while it is wider than a pixel.
+  let along = select(l.y, l.x, d.y < d.x);
+  let dash = step(fract(along / 12.0), 0.5) * (1.0 - smoothstep(0.08, 0.2, dl)) * (1.0 - smoothstep(0.1, 0.25, foot));
+  var c = mix(mix(lot, pave, walk), asph, road);
+  c = mix(c, vec3f(0.45, 0.44, 0.4), dash * 0.6);
+  // Area mean of a cell: 25 % asphalt, 9 % pavement, 66 % lot.
+  let mean = asph * 0.249 + pave * 0.09 + lotMean * 0.661;
+  c = mix(c, mean, smoothstep(2.0, 8.0, foot));
+  return c * (0.9 + 0.2 * valueNoise(xz * 0.02));
 }
 
 struct VOut {
@@ -64,6 +118,9 @@ struct VOut {
   let hx = heightAt(xz + vec2f(e, 0.0)) - heightAt(xz - vec2f(e, 0.0));
   let hz = heightAt(xz + vec2f(0.0, e)) - heightAt(xz - vec2f(0.0, e));
   let n = normalize(vec3f(-hx, 2.0 * e, -hz));
+  // Ground footprint of the pixel (filters the outskirts street grid).
+  let foot = max(length(dpdx(xz)), length(dpdy(xz)));
+  let outside = max(abs(xz.x), abs(xz.y)) > frame.world.x * 0.5;
   var s = defaultSurf(n);
   let land = landAt(xz);
   let h = i.world.y;
@@ -77,6 +134,7 @@ struct VOut {
   s.rough = 0.95;
   if (land == 1u) {
     s.albedo = vec3f(0.3, 0.29, 0.27) * (0.8 + 0.3 * valueNoise(xz * 0.5));
+    if (outside) { s.albedo = outskirtsGround(xz, foot); }
     s.cls = CLASS_GROUND;
   } else if (land == 2u) {
     s.albedo = grass;
@@ -89,9 +147,11 @@ struct VOut {
     s.cls = CLASS_GROUND;
   }
   // Beaches and river banks: concrete embankment in the city, sand elsewhere.
-  if (h < 2.2 && land != 3u) {
+  // (Beyond the world the outskirts run down to a narrow strand.)
+  let sandTop = select(2.2, 1.5, outside);
+  if (h < sandTop && land != 3u) {
     let sand = vec3f(0.5, 0.45, 0.36) * (0.85 + 0.15 * valueNoise(xz));
-    s.albedo = mix(s.albedo, sand, smoothstep(2.2, 1.0, h));
+    s.albedo = mix(s.albedo, sand, smoothstep(sandTop, 1.0, h));
   }
   if (h < frame.world.w) {
     s.albedo = mix(vec3f(0.18, 0.17, 0.14), vec3f(0.08, 0.1, 0.09), clamp(-h / 8.0, 0.0, 1.0));

@@ -5424,6 +5424,42 @@ fn roofMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
   return s;
 }
 
+// Roof of an outskirts block (gen-base outskirts: facade zone 7, upward
+// face): a flat finish per building from roofMat's palette, picked with
+// the box's hash, with a few dark plant boxes and soft stains so it reads
+// as a roof from the air. uv: metres across the roof.
+fn outskirtsRoof(world: vec3f, n: vec3f, uv: vec2f, aux: u32) -> Surf {
+  var s = defaultSurf(n);
+  let h = hashu(aux * 31u + 5u);
+  let k = hashuf(h ^ 41u);
+  // Light grey, dark grey and black membrane, tan coat, sandy concrete,
+  // grey concrete; a few green urethane and white reflective roofs.
+  var base = vec3f(0.38, 0.39, 0.38);
+  if (k >= 0.3) { base = vec3f(0.19, 0.19, 0.2); }
+  if (k >= 0.5) { base = vec3f(0.075, 0.07, 0.068); }
+  if (k >= 0.58) { base = vec3f(0.42, 0.385, 0.32); }
+  if (k >= 0.68) { base = vec3f(0.37, 0.345, 0.29); }
+  if (k >= 0.74) { base = vec3f(0.31, 0.305, 0.29); }
+  if (k >= 0.86) { base = vec3f(0.2, 0.27, 0.22); }
+  if (k >= 0.93) { base = vec3f(0.66, 0.66, 0.63); }
+  let foot = max(max(length(dUvX), length(dUvY)), 1e-4);
+  let fine = 1.0 - smoothstep(1.0, 3.0, foot);
+  // Rooftop plant (stair houses, condensers) on a 7 m grid: dark grey
+  // boxes, fading to their mean once a cell is a few pixels.
+  let c = floor(uv / 7.0);
+  let f = fract(uv / 7.0);
+  let unit = select(0.0, 1.0, hash21(c + f32(h & 255u)) < 0.18 && all(f > vec2f(0.2)) && all(f < vec2f(0.75)));
+  let plant = mix(0.18 * 0.3, unit, fine);
+  var a = mix(base, vec3f(0.3, 0.3, 0.29), plant * 0.6);
+  a *= 0.88 + 0.24 * valueNoise(world.xz * 0.12 + f32(h & 63u));
+  // (Darker than the palette: roofMat's sheet pattern, stains and detail
+  // map take about as much off the city's roofs.)
+  s.albedo = a * mix(0.72, 0.94, hashuf(h ^ 9u));
+  s.rough = 0.9;
+  applyWetness(&s, world, 0.0, 0.4);
+  return s;
+}
+
 // Surface car park: asphalt with 2.5 x 5 m stalls in back-to-back rows along
 // uv.x (16 m period: row, 6 m aisle, row), oil drips mid-stall.
 fn carParkMat(world: vec3f, n: vec3f, uv: vec2f) -> Surf {
@@ -8440,7 +8476,11 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
     case M_ROADSIGN: { if (!matOn(M_ROADSIGN)) { s.albedo = flatMat(M_ROADSIGN); break; } s = roadSignMat(world, n, uv, param); }
     case M_HEDGE: { if (!matOn(M_HEDGE)) { s.albedo = flatMat(M_HEDGE); break; } s = hedgeMat(world, n, uv, param, aux); }
     case M_FACADE: { if (!matOn(M_FACADE)) { s.albedo = flatMat(M_FACADE); break; }
-      s = facadeMat(world, n, uv, param, aux);
+      // Outskirts blocks (zone 7, no city building uses it): their roofs
+      // get a roof finish; their walls are plain body facade (zone 0).
+      let outsk = ((param >> 13u) & 7u) == 7u;
+      if (outsk && n.y > 0.5) { s = outskirtsRoof(world, n, uv, aux); break; }
+      s = facadeMat(world, n, uv, select(param, param & ~0xe000u, outsk), aux);
       // Rain soaks the wall: porous render and granite darken more than
       // glazed tile; metal sashes and glass only get the water film.
       if (s.cls != CLASS_GLASS && frame.weather.z > 0.001) {

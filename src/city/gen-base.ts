@@ -11,6 +11,7 @@ import {
   pointSegment,
   polygonArea,
   rowCrossings,
+  smoothstep,
   type Vec2,
   type Vec3,
 } from '../math/vec.ts';
@@ -5749,40 +5750,163 @@ function expressway(
   }
 }
 
+/** terrain.wgsl hash21 (in doubles: close enough to place boxes on). */
+function shaderHash21(x: number, y: number) {
+  const fr = (v: number) => v - Math.floor(v);
+  let a = fr(x * 0.1031);
+  let b = fr(y * 0.1031);
+  let c = a;
+  const d = a * (b + 33.33) + b * (c + 33.33) + c * (a + 33.33);
+  a += d;
+  b += d;
+  c += d;
+  return fr((a + b) * c);
+}
+
+/** terrain.wgsl valueNoise. */
+function shaderValueNoise(x: number, z: number) {
+  const i = Math.floor(x);
+  const j = Math.floor(z);
+  const fx = x - i;
+  const fz = z - j;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uz = fz * fz * (3 - 2 * fz);
+  const a = shaderHash21(i, j);
+  const b = shaderHash21(i + 1, j);
+  const c = shaderHash21(i, j + 1);
+  const d = shaderHash21(i + 1, j + 1);
+  return lerp(lerp(a, b, ux), lerp(c, d, ux), uz);
+}
+
+/** Outskirts block cell (m); terrain.wgsl OUT_CELL draws its streets. */
+const OUT_CELL = 75;
+
+/**
+ * Whether outskirts block (i, j) (cells counted from the world's -x / -z
+ * edge) is a park: terrain.wgsl outskirtsPark, in exact u32 arithmetic so
+ * both sides agree.
+ */
+function outskirtsPark(i: number, j: number) {
+  let v = (Math.imul(i + 4096, 73856093) ^ Math.imul(j + 4096, 19349663)) >>> 0;
+  // The shaders' hashu.
+  v = (v ^ 61 ^ (v >>> 16)) >>> 0;
+  v = Math.imul(v, 9);
+  v ^= v >>> 4;
+  v = Math.imul(v, 0x27d4eb2d);
+  v ^= v >>> 15;
+  return ((v >>> 0) & 0xffff) < 3932; // 6 %
+}
+/**
+ * Building line of an outskirts block: metres in from the cell's grid
+ * lines (5 m of roadway and 2 m of pavement, terrain.wgsl outskirtsGround,
+ * then a 0.5 m margin).
+ */
+const OUT_SETBACK = 7.5;
+
 /**
  * Outskirts: the city continues past the generated world as low-detail
  * buildings (an HLOD skyline) so the horizon reads as an endless metropolis.
+ * The band is a grid of 75 m blocks whose streets the terrain shader draws
+ * (outskirtsGround); each block is built up to its building line as one
+ * slab or as 2-6 lots with 3 m between them. Dense next to the world's
+ * edge, thinning out (more empty blocks, more single slabs) toward the
+ * horizon. `settled`: the terrain heights as rendered.
  */
-function outskirts(L: CityLayout, m: CMesh) {
-  const hf = L.terrain.heights;
+function outskirts(L: CityLayout, m: CMesh, settled: Float32Array) {
+  const hf0 = L.terrain.heights;
+  const hf = new Heightfield(hf0.size, hf0.cell, settled);
   const S = L.params.size / 2;
   const band = 3600;
-  const cell = 75;
+  const cell = OUT_CELL;
   const rng = new Rng(L.seed ^ 0x51ced);
+  // Ground as terrain.wgsl heightAt draws it beyond the edge; NaN on water.
+  const groundAt = (x: number, z: number) => {
+    const raw = hf.sample(x, z);
+    if (raw < 1.2) return NaN;
+    const edge = Math.max(Math.abs(x), Math.abs(z)) - S;
+    const alongZ = Math.abs(x) >= Math.abs(z);
+    let acc = 0;
+    for (let k = -2; k <= 2; k++)
+      acc += alongZ ? hf.sample(x, z + k * 40) : hf.sample(x + k * 40, z);
+    const h = Math.max(
+      lerp(raw, acc * 0.2, Math.min(1, edge / 300)),
+      Math.min(raw, 1.5),
+    );
+    return (
+      h +
+      (shaderValueNoise(x * 0.002, z * 0.002) - 0.5) *
+        20 *
+        Math.min(1, Math.max(0, edge / 1500))
+    );
+  };
+  const box = (x0: number, z0: number, x1: number, z1: number, h: number) => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const [x, z] of [
+      [x0, z0],
+      [x1, z0],
+      [x0, z1],
+      [x1, z1],
+      [(x0 + x1) / 2, (z0 + z1) / 2],
+    ]) {
+      const g = groundAt(x, z);
+      if (!(g === g)) return;
+      lo = Math.min(lo, g);
+      hi = Math.max(hi, g);
+    }
+    const y0 = lo - 4;
+    const y1 = hi + h;
+    const style = rng.int(0, 1 << 16);
+    m.box(
+      [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2],
+      [(x1 - x0) / 2, (y1 - y0) / 2, (z1 - z0) / 2],
+      // Zone 7: city-materials.wgsl shades the top as a roof.
+      packMat(CM.facade, (style & 0x1fff) | (7 << 13) | (2 << 16)),
+      0,
+      rng.nextU32(),
+    );
+  };
+  const height = (lo: number, hi: number) =>
+    Math.min(160, rng.range(lo, hi) * (rng.chance(0.08) ? 3 : 1));
+  // Split [a, b] into n parts at jittered points, gap metres between them.
+  const split = (a: number, b: number, n: number, gap: number) => {
+    const cuts = [a];
+    for (let i = 1; i < n; i++)
+      cuts.push(a + ((b - a) * (i + rng.range(-0.2, 0.2))) / n);
+    cuts.push(b);
+    const out: [number, number][] = [];
+    for (let i = 0; i < n; i++)
+      out.push([
+        cuts[i] + (i > 0 ? gap / 2 : 0),
+        cuts[i + 1] - (i < n - 1 ? gap / 2 : 0),
+      ]);
+    return out;
+  };
   for (let z = -S - band; z < S + band; z += cell) {
     for (let x = -S - band; x < S + band; x += cell) {
-      const dOut = Math.max(Math.abs(x), Math.abs(z)) - S;
-      if (dOut < 60) continue;
-      const ex = Math.max(-S, Math.min(S, x));
-      const ez = Math.max(-S, Math.min(S, z));
-      const ground = hf.sample(ex, ez);
-      if (ground < 1) continue;
-      if (rng.next() > 0.9 * Math.exp(-dOut / 2600)) continue;
-      const n = rng.int(1, 3);
-      for (let k = 0; k < n; k++) {
-        const w = rng.range(14, 34);
-        const d = rng.range(14, 34);
-        const h = Math.min(160, rng.range(9, 40) * (rng.chance(0.08) ? 3 : 1));
-        const cx = x + rng.range(w / 2, cell - w / 2);
-        const cz = z + rng.range(d / 2, cell - d / 2);
-        const style = rng.int(0, 1 << 16);
-        m.box(
-          [cx, ground + h / 2 - 2, cz],
-          [w / 2, h / 2 + 2, d / 2],
-          packMat(CM.facade, (style & 0x1fff) | (2 << 16)),
-          0,
-          rng.nextU32(),
-        );
+      // How far the block lies outside the world (< 0: inside).
+      const dOut = Math.max(x - S, -S - x - cell, z - S, -S - z - cell);
+      if (dOut < 0) continue;
+      if (outskirtsPark(Math.round((x + S) / cell), Math.round((z + S) / cell)))
+        continue;
+      const t = smoothstep(0, 1000, dOut);
+      if (rng.chance(0.04 + 0.56 * t)) continue;
+      const bx0 = x + OUT_SETBACK;
+      const bx1 = x + cell - OUT_SETBACK;
+      const bz0 = z + OUT_SETBACK;
+      const bz1 = z + cell - OUT_SETBACK;
+      if (rng.chance(lerp(0.9, 0.05, t))) {
+        // Lots: 2-3 by 1-2, every lot on the building line.
+        const nx = rng.int(1, 4);
+        const nz = nx === 1 ? rng.int(2, 4) : rng.int(1, 3);
+        const occ = lerp(0.95, 0.6, t);
+        for (const [x0, x1] of split(bx0, bx1, nx, 3))
+          for (const [z0, z1] of split(bz0, bz1, nz, 3))
+            if (rng.chance(occ)) box(x0, z0, x1, z1, height(9, 40));
+      } else {
+        // One slab over the block, a little in from the building line.
+        const i = rng.range(0, 6);
+        box(bx0 + i, bz0 + i, bx1 - i, bz1 - i, height(9, 30));
       }
     }
   }
@@ -5966,7 +6090,7 @@ export function assembleBase(
   piers.append(r.pierWords!, r.pierIdx!);
   if (!bandTrisOf.has(geom)) attachBand(geom, of('blocks').band!);
   // The asset lab shows its subject alone, without the distant skyline.
-  if (!L.hidden) outskirts(L, m);
+  if (!L.hidden) outskirts(L, m, r.settled!);
   return {
     mesh: m,
     piers,
