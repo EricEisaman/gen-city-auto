@@ -40,8 +40,9 @@ export interface CityParams {
   /**
    * Which side of the road traffic keeps to (Tokyo, Hong Kong: left; New
    * York: right). Lanes, trains, the road paint (stop lines, arrows, turn
-   * guides) and the drivers' seats follow it; the layout does not depend
-   * on it (gen-base signalSpots: the junction furniture needs no change).
+   * guides), the drivers' seats and the road furniture that faces one
+   * direction of travel (signals, guide and regulatory signs: nearside())
+   * follow it; the layout does not depend on it.
    */
   drive: 'left' | 'right';
 }
@@ -49,6 +50,23 @@ export interface CityParams {
 /** +1 where traffic keeps left, -1 where it keeps right. */
 export function keepLeft(p: Pick<CityParams, 'drive'>): 1 | -1 {
   return p.drive === 'right' ? -1 : 1;
+}
+
+/**
+ * The nearside of traffic travelling along `d` (x, z): the unit lateral
+ * from the centreline toward the kerb that traffic keeps to. World space
+ * is y up and right-handed (mat4.lookAt), so the left of travel direction
+ * d is (dz, -dx) and its right (-dz, dx); RoadNet.lanePos puts the lanes
+ * on this side. Road furniture for that traffic stands on (regulatory
+ * signs, signal poles on the far corner) or hangs over (guide signs,
+ * signal heads) this side.
+ */
+export function nearside(
+  p: Pick<CityParams, 'drive'>,
+  d: readonly [number, number],
+): [number, number] {
+  const k = keepLeft(p);
+  return [d[1] * k, -d[0] * k];
 }
 
 export const PRESETS: Record<CityType, CityParams> = {

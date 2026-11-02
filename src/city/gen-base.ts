@@ -32,7 +32,7 @@ import {
   type CityLayout,
   type Elevated,
 } from './layout.ts';
-import {keepLeft} from './config.ts';
+import {keepLeft, nearside} from './config.ts';
 import {chainAt, computeRoadGeom, type RoadGeom} from './roadgeom.ts';
 import {signLocaleOf} from './signs.ts';
 import {Heightfield, SEA_LEVEL} from './terrain.ts';
@@ -3950,9 +3950,12 @@ function railViaduct(
       m.tube([P(i, xd, mw), P(i, c + st, mw)], 0.03, galv, F);
       m.tube([P(i, xd, CW + 0.55), P(i, xd, CW + 0.22)], 0.055, ins, F);
       m.tube([P(i, xd, CW + 0.22), P(i, c + st, CW)], 0.025, galv, F);
-      // Signal heads every 24 points (288 bent units), facing the trains
-      // that approach on this track (left-hand running). Both lamps lit
-      // (hash aspect: green over yellow, yellow over yellow, red over red).
+      // Signal heads every 24 points (288 bent units), one face toward
+      // each direction on this track (c < 0 is the left of the line's
+      // direction; f is the face for left-hand running, the back carries
+      // right-hand running's: trains.ts runs New York's on the right, and
+      // both faces draw from the same aspect odds). Both lamps lit (hash
+      // aspect: green over yellow, yellow over yellow, red over red).
       if (i % 24 === 0) {
         const d = fr[i].d;
         const f = c < 0 ? -1 : 1;
@@ -6314,24 +6317,24 @@ export function streetLightSpots(
 
 /**
  * Signal poles of signalized junctions (Japanese horizontal heads on an arm
- * over the approach), shared by the tile props (pole, heads, luminaire) and
- * the base light list (the junction luminaire's light). `arm` indexes
- * geom.junctions[ji].arms.
+ * over the lanes; New York's mast arms), shared by the tile props (pole,
+ * heads, luminaire) and the base light list (the junction luminaire's
+ * light). `arm` indexes geom.junctions[ji].arms.
  *
- * The pole stands on +l of its arm (the approach lanes' side where traffic
- * keeps left), so for the traffic its heads face (crossing the box toward
- * this arm) it is the far right-hand corner whichever side traffic keeps
- * to: in Tokyo the heads hang over the oncoming lanes; in New York (keep
- * right, config.ts drive) over the approach's own lanes, as US mast arms
- * do. The same holds for the regulatory signs and guide signs (gen-tile),
- * which stand on the right-hand kerb of the traffic they face.
+ * Each arm's pole carries the heads for the traffic crossing the box toward
+ * that arm (travelling along arm.dir; `face` = -arm.dir, toward it), and
+ * stands on that traffic's nearside (config.ts nearside()) just past the
+ * box: the far left-hand corner in Tokyo, the far right-hand one in New
+ * York. The arm (`armDir`, from the pole across the road) hangs the heads
+ * over that traffic's own lanes, as Japanese overhang signals and US mast
+ * arms do.
  */
 export function signalSpots(
   L: CityLayout,
   geom: RoadGeom,
   hf: Heightfield,
   ji: number,
-  cb: (p: Vec3, armDir: Vec2, reach: number, arm: number) => void,
+  cb: (p: Vec3, armDir: Vec2, reach: number, arm: number, face: Vec2) => void,
 ) {
   const j = L.junctions[ji];
   if (!j.signal || L.hidden?.junctions[ji]) return;
@@ -6341,9 +6344,7 @@ export function signalSpots(
   const jg = geom.junctions[ji];
   const land = landing(L, geom);
   jg.arms.forEach((a, k) => {
-    const l: Vec2 = [-a.dir[1], a.dir[0]];
-    // Pole on the right corner of the approach (traffic drives on the left in
-    // Tokyo, so oncoming traffic sees the pole on its left/curb side).
+    const l = nearside(L.params, a.dir);
     // Where that corner is not sidewalk (close parallel roads), look a
     // little further out and back for one; the arm reaches further.
     if (geom.absorbed[a.chain]) return;
@@ -6354,7 +6355,10 @@ export function signalSpots(
         const z = j.p[1] + a.dir[1] * (a.setback + back) + l[1] * off;
         if (!land.ok(x, z, a.chain)) continue;
         const p: Vec3 = [x, sidewalkY(hf, x, z, j.h), z];
-        cb(p, [-l[0], -l[1]], Math.min(a.width * 0.45, 6) + extra, k);
+        cb(p, [-l[0], -l[1]], Math.min(a.width * 0.45, 6) + extra, k, [
+          -a.dir[0],
+          -a.dir[1],
+        ]);
         return;
       }
     }

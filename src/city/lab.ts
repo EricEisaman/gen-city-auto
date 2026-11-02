@@ -14,6 +14,7 @@ import {
   type Vec2,
 } from '../math/vec.ts';
 import type {Vec3} from '../math/vec.ts';
+import {keepLeft} from './config.ts';
 import {sidewalkY, signalSpots} from './gen-base.ts';
 import {
   closestOnPolyline,
@@ -865,7 +866,7 @@ export function labInfo(
     const c = L.chains[arm.chain];
     const arc = geom.arc[arm.chain];
     const total = arc[arc.length - 1];
-    /** Point `d` m out along the arm, `lat` m to its left. */
+    /** Point `d` m out along the arm, `lat` m to its right ((-dz, dx)). */
     const P = (d: number, lat: number) => {
       const q = chainAt(c, arc, arm.end === 0 ? d : total - d);
       const dir: Vec2 = arm.end === 0 ? q.d : [-q.d[0], -q.d[1]];
@@ -897,12 +898,15 @@ export function labInfo(
       v3(P(sb, (W / 2) * (ws ? -0.2 : 0.2)).p, j.h + 1.2),
       1.05,
     );
-    // Tokyo drives on the left: the lane heading to the junction is on the
-    // arm's right (as seen from the junction).
-    const lane = P(sb + 32, -W / 4);
+    // In the lane heading to the junction: P's +lat, (-dz, dx) of the arm
+    // direction, is the right of the arm and so the left of the traffic
+    // coming up it, its nearside where traffic keeps left (config.ts
+    // nearside()).
+    const lat0 = (keepLeft(L.params) * W) / 4;
+    const lane = P(sb + 32, lat0);
     views.low = look(
       v3(lane.p, lane.h + 1.2),
-      v3(P(0, -W / 4).p, j.h + 1.0),
+      v3(P(0, lat0).p, j.h + 1.0),
       1.05,
     );
     views.top = look([j.p[0], j.h + 40, j.p[1] + 0.3], J);

@@ -12,6 +12,7 @@ import {
   type Vec3,
 } from '../math/vec.ts';
 import {CM, CMesh, packMat, triangulate} from './cmesh.ts';
+import {keepLeft, nearside} from './config.ts';
 import {
   CITI_BLUE,
   LightKind,
@@ -8078,13 +8079,16 @@ function signBoardFace(
  * above it; the junction luminaire arm at SIGNAL_LUM.h toward the box
  * centre with its head(s) `lums` (signalLums; shared pole); arm-joint
  * collars; one or two regulatory plates on the column. (The controller
- * cabinet stands on the ground: junctionFixtures.)
+ * cabinet stands on the ground: junctionFixtures.) The head and plates
+ * face `face` (signalSpots), the lenses green, yellow, red from the
+ * reader's left to right whichever side the pole stands on.
  */
 function signal(
   m: CMesh,
   p: Vec3,
   armDir: Vec2,
   reach: number,
+  face: Vec2,
   phase: number,
   group: number,
   name: number,
@@ -8133,8 +8137,8 @@ function signal(
     grey,
     true,
   );
-  // Head faces back toward oncoming traffic (perpendicular to the arm).
-  const face: Vec2 = [armDir[1], -armDir[0]];
+  // The reader's right (the reader travels along -face).
+  const across: Vec2 = [face[1], -face[0]];
   const fyaw = Math.atan2(face[0], face[1]);
   const hc: Vec3 = [
     end[0] - armDir[0] * 0.7,
@@ -8165,9 +8169,9 @@ function signal(
   for (let k = 0; k < 3; k++) {
     const off = (k - 1) * 0.4;
     const lp: Vec3 = [
-      hc[0] - armDir[0] * off + face[0] * 0.125,
+      hc[0] + across[0] * off + face[0] * 0.125,
       hc[1],
-      hc[2] - armDir[1] * off + face[1] * 0.125,
+      hc[2] + across[1] * off + face[1] * 0.125,
     ];
     // Lamp 0 green/blue, 1 yellow, 2 red: dark glass unless lit.
     disc(
@@ -8188,9 +8192,9 @@ function signal(
     const y = hc[1] - 0.17 + k * 0.085;
     const b0 = 0.115;
     const P = (u: number, dy: number, back: number): Vec3 => [
-      hc[0] - armDir[0] * u - face[0] * back,
+      hc[0] + across[0] * u - face[0] * back,
       y + dy,
-      hc[2] - armDir[1] * u - face[1] * back,
+      hc[2] + across[1] * u - face[1] * back,
     ];
     m.quad(
       [
@@ -8319,13 +8323,14 @@ const US_ARM_Y = 6.2;
  * from it (one at the end, a second over the near lanes of a wide
  * approach), the green street name sign on the arm by the pole, and a
  * regulatory plate strapped to the column (ONE WAY, DON'T BLOCK THE BOX or
- * DO NOT ENTER).
+ * DO NOT ENTER). Heads and plates face `face` (signalSpots).
  */
 function usSignal(
   m: CMesh,
   p: Vec3,
   armDir: Vec2,
   reach: number,
+  face: Vec2,
   phase: number,
   group: number,
   name: number,
@@ -8366,8 +8371,6 @@ function usSignal(
     green,
     true,
   );
-  // Heads face back toward oncoming traffic (perpendicular to the arm).
-  const face: Vec2 = [armDir[1], -armDir[0]];
   for (const at of reach > 6 ? [reach - 0.6, reach * 0.5] : [reach - 0.6]) {
     const hx = p[0] + armDir[0] * at;
     const hz = p[2] + armDir[1] * at;
@@ -9572,9 +9575,12 @@ function guideJunction(L: CityLayout, ci: number, end: 0 | 1) {
  * Overhead guide sign spots on avenue / arterial chain `ci`: the advance
  * direction signs 60-89 m before a signalized junction, facing the traffic
  * coming up to it, and the direction-and-distance signs 35-50 m past one,
- * facing the traffic leaving it. `s` is the arc position, `side` the kerb
- * (+1: left of the chain direction, the sign facing back along it), `face`
- * the guide face, `dist` a distance sign.
+ * facing the traffic leaving it. `s` is the arc position, `dir` the
+ * reading traffic's direction (+1: along the chain, the sign facing back
+ * along it), `side` the kerb the sign stands on, that traffic's nearside
+ * (config.ts nearside(): +1 is (-dz, dx) of the chain direction d, its
+ * right), so the panel hangs over the lanes of the traffic that reads it;
+ * `face` the guide face, `dist` a distance sign.
  *
  * Both kinds face the same traffic from the same kerb when one junction's
  * departing traffic is the next one's approaching traffic, so on a short
@@ -9582,9 +9588,17 @@ function guideJunction(L: CityLayout, ci: number, end: 0 | 1) {
  * GUIDE_GAP metres clear of it: moved nearer the junction it leaves (at
  * least 20 m past it), else left out.
  */
-function guideSpots(L: CityLayout, geom: RoadGeom, ci: number) {
+export function guideSpots(L: CityLayout, geom: RoadGeom, ci: number) {
   const c = L.chains[ci];
-  const out: {s: number; side: number; face: number; dist: boolean}[] = [];
+  const out: {
+    s: number;
+    dir: 1 | -1;
+    side: number;
+    face: number;
+    dist: boolean;
+  }[] = [];
+  // Nearside of traffic travelling `dir` along the chain (as nearside()).
+  const kerb = (dir: 1 | -1) => -dir * keepLeft(L.params);
   const arc = geom.arc[ci];
   const total = arc[arc.length - 1];
   const [s0, s1] = geom.setbacks[ci];
@@ -9594,31 +9608,31 @@ function guideSpots(L: CityLayout, geom: RoadGeom, ci: number) {
     const ji = guideJunction(L, ci, end);
     return ji >= 0 && L.junctions[ji].signal && !L.hidden?.junctions[ji];
   };
-  // Advance signs: incoming traffic toward this end keeps left; the sign
-  // faces it.
+  // Advance signs: facing the traffic coming up to this end.
   for (const end of [0, 1] as const) {
     if (len < 70) break;
     if (!signal(end)) continue;
     const h = hash2(ci * 2 + end, 0x5197);
     if (c.kind === Road.avenue && h % 2) continue;
     const back = 60 + ((h >>> 4) % 30);
+    const dir = end === 1 ? 1 : -1;
     out.push({
       s: end === 0 ? s0 + back : total - s1 - back,
-      side: end === 1 ? 1 : -1,
+      dir,
+      side: kerb(dir),
       face: (h >>> 8) % GUIDE_DIR,
       dist: false,
     });
   }
-  // Distance signs: departing traffic runs away from this end and keeps
-  // left.
+  // Distance signs: facing the traffic running away from this end.
   for (const end of [0, 1] as const) {
     if (!signal(end)) continue;
     const h = hash2(ci * 2 + end, 0xd157);
     if (c.kind === Road.avenue && h % 3 === 0) continue;
-    const side = end === 0 ? 1 : -1;
+    const dir = end === 0 ? 1 : -1;
     // (Arc distance from the departed junction's end.)
     let fwd = Math.min(35 + ((h >>> 4) % 16), len * 0.5);
-    const adv = out.find(g => !g.dist && g.side === side);
+    const adv = out.find(g => !g.dist && g.dir === dir);
     if (adv) {
       const at = end === 0 ? adv.s - s0 : total - s1 - adv.s;
       if (Math.abs(at - fwd) < GUIDE_GAP) {
@@ -9628,14 +9642,15 @@ function guideSpots(L: CityLayout, geom: RoadGeom, ci: number) {
     }
     out.push({
       s: end === 0 ? s0 + fwd : total - s1 - fwd,
-      side,
+      dir,
+      side: kerb(dir),
       face: GUIDE_DIR + ((h >>> 8) % (GUIDE_FACES.length - GUIDE_DIR)),
       dist: true,
     });
   }
   return out;
 }
-/** Least arc distance between two guide signs on one kerb (guideSpots). */
+/** Least arc distance between two guide signs for one direction (guideSpots). */
 const GUIDE_GAP = 25;
 
 /**
@@ -10666,7 +10681,7 @@ export function buildTile(
     for (const g of guideSpots(L, ctx.geom, ci)) {
       const q = chainAt(c, arc, g.s);
       const l: Vec2 = [-q.d[1], q.d[0]];
-      const f: Vec2 = g.side > 0 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
+      const f: Vec2 = g.dir > 0 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
       const x = q.p[0] + l[0] * off * g.side;
       const z = q.p[1] + l[1] * off * g.side;
       if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
@@ -10741,7 +10756,7 @@ export function buildTile(
       // and the spots for the controller cabinet.
       const jpoles: Vec2[] = [];
       const spots: [Vec3, Vec2, number][] = [];
-      signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach, k) => {
+      signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach, k, face) => {
         jpoles.push([p[0], p[2]]);
         spots.push([p, armDir, k]);
         const a = jg.arms[k];
@@ -10750,11 +10765,12 @@ export function buildTile(
         signalLums(L, ji, p, armDir, k, (h, d, r, pool) =>
           lums.push([h, d, r, pool]),
         );
-        if (nyc()) usSignal(m, p, armDir, reach, phase, group, ji, lums);
-        else signal(m, p, armDir, reach, phase, group, ji, lums);
+        if (nyc()) usSignal(m, p, armDir, reach, face, phase, group, ji, lums);
+        else signal(m, p, armDir, reach, face, phase, group, ji, lums);
         // Pedestrian signals across this arm's crossing: one on the signal
         // pole, one on its own pole at the far corner, each facing across.
-        const l: Vec2 = [-a.dir[1], a.dir[0]];
+        // (l: from the arm's centreline toward the signal pole's kerb.)
+        const l: Vec2 = [-armDir[0], -armDir[1]];
         pedSignal(
           m,
           [p[0] - l[0] * 0.2, p[1] + 2.8, p[2] - l[1] * 0.2],
@@ -10805,14 +10821,16 @@ export function buildTile(
             l,
           );
         }
-        // Regulatory sign beyond the crossing on the approach's kerb side,
-        // facing approaching traffic: speed limit on avenues and up, no
-        // parking on small streets; some also carry the crossing square.
+        // Regulatory sign beyond the crossing on the approach's nearside
+        // kerb, facing approaching traffic (travelling along -a.dir): speed
+        // limit on avenues and up, no parking on small streets; some also
+        // carry the crossing square.
         const hs = hash2(ji * 8 + k, 0x7e9);
         const kind = L.chains[a.chain].kind;
         const rs = a.setback + 7 + (hs % 5);
-        const rx = j.p[0] + a.dir[0] * rs - l[0] * (a.width / 2 + 0.5);
-        const rz = j.p[1] + a.dir[1] * rs - l[1] * (a.width / 2 + 0.5);
+        const rl = nearside(L.params, [-a.dir[0], -a.dir[1]]);
+        const rx = j.p[0] + a.dir[0] * rs + rl[0] * (a.width / 2 + 0.5);
+        const rz = j.p[1] + a.dir[1] * rs + rl[1] * (a.width / 2 + 0.5);
         if (hs % 3 !== 0 && land.ok(rx, rz, a.chain)) {
           (nyc() ? usRegSign : regSign)(
             m,
