@@ -9016,6 +9016,76 @@ function guideJunction(L: CityLayout, ci: number, end: 0 | 1) {
 }
 
 /**
+ * Overhead guide sign spots on avenue / arterial chain `ci`: the advance
+ * direction signs 60-89 m before a signalized junction, facing the traffic
+ * coming up to it, and the direction-and-distance signs 35-50 m past one,
+ * facing the traffic leaving it. `s` is the arc position, `side` the kerb
+ * (+1: left of the chain direction, the sign facing back along it), `face`
+ * the guide face, `dist` a distance sign.
+ *
+ * Both kinds face the same traffic from the same kerb when one junction's
+ * departing traffic is the next one's approaching traffic, so on a short
+ * chain the distance sign stood in the advance sign's panel. It keeps
+ * GUIDE_GAP metres clear of it: moved nearer the junction it leaves (at
+ * least 20 m past it), else left out.
+ */
+function guideSpots(L: CityLayout, geom: RoadGeom, ci: number) {
+  const c = L.chains[ci];
+  const out: {s: number; side: number; face: number; dist: boolean}[] = [];
+  const arc = geom.arc[ci];
+  const total = arc[arc.length - 1];
+  const [s0, s1] = geom.setbacks[ci];
+  const len = total - s0 - s1;
+  if (len < 30) return out;
+  const signal = (end: 0 | 1) => {
+    const ji = guideJunction(L, ci, end);
+    return ji >= 0 && L.junctions[ji].signal && !L.hidden?.junctions[ji];
+  };
+  // Advance signs: incoming traffic toward this end keeps left; the sign
+  // faces it.
+  for (const end of [0, 1] as const) {
+    if (len < 70) break;
+    if (!signal(end)) continue;
+    const h = hash2(ci * 2 + end, 0x5197);
+    if (c.kind === Road.avenue && h % 2) continue;
+    const back = 60 + ((h >>> 4) % 30);
+    out.push({
+      s: end === 0 ? s0 + back : total - s1 - back,
+      side: end === 1 ? 1 : -1,
+      face: (h >>> 8) % GUIDE_DIR,
+      dist: false,
+    });
+  }
+  // Distance signs: departing traffic runs away from this end and keeps
+  // left.
+  for (const end of [0, 1] as const) {
+    if (!signal(end)) continue;
+    const h = hash2(ci * 2 + end, 0xd157);
+    if (c.kind === Road.avenue && h % 3 === 0) continue;
+    const side = end === 0 ? 1 : -1;
+    // (Arc distance from the departed junction's end.)
+    let fwd = Math.min(35 + ((h >>> 4) % 16), len * 0.5);
+    const adv = out.find(g => !g.dist && g.side === side);
+    if (adv) {
+      const at = end === 0 ? adv.s - s0 : total - s1 - adv.s;
+      if (Math.abs(at - fwd) < GUIDE_GAP) {
+        if (at - GUIDE_GAP < 20) continue;
+        fwd = at - GUIDE_GAP;
+      }
+    }
+    out.push({
+      s: end === 0 ? s0 + fwd : total - s1 - fwd,
+      side,
+      face: GUIDE_DIR + ((h >>> 8) % (GUIDE_FACES.length - GUIDE_DIR)),
+      dist: true,
+    });
+  }
+  return out;
+}
+/** Least arc distance between two guide signs on one kerb (guideSpots). */
+const GUIDE_GAP = 25;
+
+/**
  * Paving height `u` metres in from the kerb of chain point `q` on side `l`
  * (unit 2D, away from the road): the curb band (gen-base blocks()) runs
  * from the kerb top (road + 0.17) to the graded ground at its inner edge
@@ -9666,81 +9736,25 @@ export function buildTile(
   }
 
   // Overhead guide signs before signalized junctions (LOD1 keeps panel and
-  // column: the one road prop that must read at 300 m).
+  // column: the one road prop that must read at 300 m), and direction-and-
+  // distance signs past them (guideSpots).
   for (const ci of ctx.tileChains[tile] ?? []) {
     const c = L.chains[ci];
     if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
     const arc = ctx.geom.arc[ci];
-    const total = arc[arc.length - 1];
-    const [s0, s1] = ctx.geom.setbacks[ci];
-    const len = total - s0 - s1;
-    if (len < 30) continue;
-    for (const end of [0, 1] as const) {
-      if (len < 70) break;
-      const ji = guideJunction(L, ci, end);
-      if (ji < 0 || !L.junctions[ji].signal || L.hidden?.junctions[ji])
-        continue;
-      const h = hash2(ci * 2 + end, 0x5197);
-      if (c.kind === Road.avenue && h % 2) continue;
-      const back = 60 + ((h >>> 4) % 30);
-      const s = end === 0 ? s0 + back : total - s1 - back;
-      const q = chainAt(c, arc, s);
+    const W = ROAD_WIDTH[c.kind];
+    const off = W / 2 + 0.6;
+    for (const g of guideSpots(L, ctx.geom, ci)) {
+      const q = chainAt(c, arc, g.s);
       const l: Vec2 = [-q.d[1], q.d[0]];
-      // Incoming traffic toward this end keeps left; the sign faces it.
-      const side = end === 1 ? 1 : -1;
-      const f: Vec2 = end === 1 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
-      const W = ROAD_WIDTH[c.kind];
-      const off = W / 2 + 0.6;
-      const x = q.p[0] + l[0] * off * side;
-      const z = q.p[1] + l[1] * off * side;
+      const f: Vec2 = g.side > 0 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
+      const x = q.p[0] + l[0] * off * g.side;
+      const z = q.p[1] + l[1] * off * g.side;
       if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
       const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
-      const inward: Vec2 = [-l[0] * side, -l[1] * side];
-      guideSign(
-        m,
-        p,
-        inward,
-        f,
-        W / 2 - 0.5,
-        off - W / 4,
-        (h >>> 8) % GUIDE_DIR,
-        lod,
-      );
-    }
-    // Direction-and-distance signs for traffic leaving the junction, 35-50
-    // m past it on the departing side, facing back toward the junction.
-    for (const end of [0, 1] as const) {
-      const ji = guideJunction(L, ci, end);
-      if (ji < 0 || !L.junctions[ji].signal || L.hidden?.junctions[ji])
-        continue;
-      const h = hash2(ci * 2 + end, 0xd157);
-      if (c.kind === Road.avenue && h % 3 === 0) continue;
-      const fwd = Math.min(35 + ((h >>> 4) % 16), len * 0.5);
-      const s = end === 0 ? s0 + fwd : total - s1 - fwd;
-      const q = chainAt(c, arc, s);
-      const l: Vec2 = [-q.d[1], q.d[0]];
-      // Departing traffic runs away from this end and keeps left.
-      const side = end === 0 ? 1 : -1;
-      const f: Vec2 = end === 0 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
-      const W = ROAD_WIDTH[c.kind];
-      const off = W / 2 + 0.6;
-      const x = q.p[0] + l[0] * off * side;
-      const z = q.p[1] + l[1] * off * side;
-      if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
-      const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
-      const inward: Vec2 = [-l[0] * side, -l[1] * side];
-      guideSign(
-        m,
-        p,
-        inward,
-        f,
-        4.3,
-        2.4,
-        GUIDE_DIR + ((h >>> 8) % (GUIDE_FACES.length - GUIDE_DIR)),
-        lod,
-        1.6,
-        0.8,
-      );
+      const inward: Vec2 = [-l[0] * g.side, -l[1] * g.side];
+      if (g.dist) guideSign(m, p, inward, f, 4.3, 2.4, g.face, lod, 1.6, 0.8);
+      else guideSign(m, p, inward, f, W / 2 - 0.5, off - W / 4, g.face, lod);
     }
   }
 
