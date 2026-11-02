@@ -16,6 +16,9 @@ const DRIVE_KEYS = [
   'ControlLeft',
 ];
 
+/** Keys that only toggle overlays (help, stats, menu, copy link): not "taking over". */
+const PASSIVE_KEYS = ['KeyH', 'KeyF', 'KeyM', 'KeyL'];
+
 export class Input {
   private keys = new Set<string>();
   private pressed = new Set<string>();
@@ -25,6 +28,12 @@ export class Input {
   dragging = false;
   /** Virtual joystick from a touch on the left half of the screen (-1..1). */
   touchMove: [number, number] = [0, 0];
+  /**
+   * The user did something this frame (a drive or camera key, a click or
+   * drag on the view, the wheel, a touch, a toolbar button): the showcase
+   * director hands over.
+   */
+  activity = false;
 
   constructor(target: HTMLElement) {
     addEventListener('keydown', e => {
@@ -35,11 +44,13 @@ export class Input {
         return;
       if (!this.keys.has(e.code)) this.pressed.add(e.code);
       this.keys.add(e.code);
+      if (!PASSIVE_KEYS.includes(e.code)) this.activity = true;
       if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
     });
     addEventListener('keyup', e => this.keys.delete(e.code));
     addEventListener('blur', () => this.keys.clear());
     target.addEventListener('mousedown', () => {
+      this.activity = true;
       this.dragging = true;
       target.focus();
     });
@@ -55,6 +66,7 @@ export class Input {
     target.addEventListener(
       'touchstart',
       e => {
+        this.activity = true;
         for (const t of Array.from(e.changedTouches))
           touches.set(t.identifier, {
             x: t.clientX,
@@ -96,6 +108,7 @@ export class Input {
     target.addEventListener('touchend', end);
     target.addEventListener('touchcancel', end);
     target.addEventListener('wheel', e => {
+      this.activity = true;
       this.wheel += Math.sign(e.deltaY);
       e.preventDefault();
     });
@@ -140,6 +153,7 @@ export class Input {
   }
 
   endFrame() {
+    this.activity = false;
     this.pressed.clear();
     this.mouseDX = 0;
     this.mouseDY = 0;

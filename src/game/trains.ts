@@ -124,6 +124,58 @@ export class Trains {
     this.update(0);
   }
 
+  /**
+   * Put a train of `line` `dist` metres short of the station at arc length
+   * `stationArc`, running in at line speed, on a stretch of its track with
+   * no other train (the showcase director films it pulling in). Returns the
+   * train's index, or -1 if none fits.
+   */
+  stage(line: number, stationArc: number, dist: number, prefer = 0): number {
+    const L = this.lines[line];
+    if (!L) return -1;
+    const ids = this.trains
+      .map((t, i) => i)
+      .filter(i => this.trains[i].line === line);
+    // (Rotate so successive stagings use different trains.)
+    for (let k = 0; k < ids.length; k++) {
+      const i = ids[(k + prefer) % ids.length];
+      const tr = this.trains[i];
+      const len = tr.cars.length * this.carLen;
+      let s = stationArc - tr.dir * dist;
+      if (L.e.loop) s = ((s % L.total) + L.total) % L.total;
+      else if (
+        (tr.dir === 1 && s - len < END_GAP) ||
+        (tr.dir === -1 && s + len > L.total - END_GAP)
+      )
+        continue;
+      const clash = this.trains.some((o, j) => {
+        if (j === i || o.line !== line || o.dir !== tr.dir) return false;
+        let d = Math.abs(o.s - s);
+        if (L.e.loop) d = Math.min(d, L.total - d);
+        return d < dist + len * 2;
+      });
+      if (clash) continue;
+      tr.s = s;
+      tr.dwell = 0;
+      tr.speed = Math.min(20, Math.sqrt(2 * 0.9 * dist));
+      this.update(0);
+      for (const c of tr.cars) c.prev.set(c.model);
+      return i;
+    }
+    return -1;
+  }
+
+  /** Speed (m/s) of train i; 0 while it stands at a station. */
+  speedOf(i: number) {
+    const tr = this.trains[i];
+    return tr ? (tr.dwell > 0 ? 0 : tr.speed) : 0;
+  }
+
+  /** Track centerline point of line `line` at arc length `s`. */
+  pointAt(line: number, s: number): Vec3 {
+    return this.at(this.lines[line], s);
+  }
+
   /** Track centerline point at arc length `s`. */
   private at(line: Line, s: number): Vec3 {
     const {e, arc, total} = line;

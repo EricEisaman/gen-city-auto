@@ -459,6 +459,15 @@ export class RoadNet {
     return push;
   }
 
+  /** The building whose footprint contains (x, z), if any. */
+  buildingAt(x: number, z: number): Building | null {
+    for (const bi of this.bldGrid.get(this.key(x, z)) ?? []) {
+      const b = this.buildings[bi];
+      if (pointInPoly(x, z, b.footprint)) return b;
+    }
+    return null;
+  }
+
   /** Poles within r of a point. */
   polesNear(x: number, z: number, r: number): Vec3[] {
     const out: Vec3[] = [];

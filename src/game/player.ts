@@ -7,7 +7,7 @@ import {clamp, lerp, type Vec2, type Vec3} from '../math/vec.ts';
 import type {VehicleRenderer} from '../render/vehicles.ts';
 import type {Input} from './input.ts';
 import {RoadNet} from './roadnet.ts';
-import {LaneFollower, modelMatrix} from './traffic.ts';
+import {LaneFollower, modelMatrix, type LaneRef} from './traffic.ts';
 
 export type PlayerKind = 'car' | 'heli';
 
@@ -37,6 +37,11 @@ export class Player {
   private rng = new Rng(31337);
   private heliTarget: Vec3 = [0, 200, 0];
   private hubs: Vec2[];
+  /**
+   * Helicopter autopilot: wander within r of c at about h above the ground
+   * (the showcase director's vistas) instead of between the hubs.
+   */
+  heliArea: {c: Vec2; r: number; h: number} | null = null;
 
   constructor(net: RoadNet, vr: VehicleRenderer, hubs: Vec2[]) {
     this.net = net;
@@ -73,6 +78,64 @@ export class Player {
     this.prev.set(this.model);
   }
 
+  /**
+   * A car on lane `ref` at distance `s` along it, already moving at `speed`
+   * (the showcase director starts a scene there).
+   */
+  placeCar(ref: LaneRef, s: number, variant: number, speed: number) {
+    this.kind = 'car';
+    this.variant = variant;
+    const info = this.info;
+    if (info) {
+      this.color = this.rng.pick(info.palette);
+      this.color2 =
+        info.kind === 'taxi' ? (info.palette[1] ?? this.color) : this.color;
+    }
+    const f = new LaneFollower(
+      {...ref},
+      s,
+      info?.size[2] ?? 4.5,
+      1.05,
+      this.rng.nextU32(),
+    );
+    if (info) f.setAxles(info.wheels);
+    f.preferBig = true;
+    f.speed = speed;
+    f.place(this.net);
+    this.follower = f;
+    this.speed = speed;
+    this.vel = [0, 0, 0];
+    this.autopilot = true;
+    this.heliArea = null;
+    this.pos = [...f.pos];
+    this.yaw = Math.atan2(f.dir[0], -f.dir[1]);
+    modelMatrix(this.model, this.pos, f.dir, f.slope);
+    this.prev.set(this.model);
+  }
+
+  /**
+   * A helicopter at `p` heading along `dir` (x, z), flying at `speed`
+   * (the showcase director's vistas; see heliArea).
+   */
+  placeHeli(
+    variant: number,
+    p: Vec3,
+    dir: Vec2,
+    speed: number,
+    area: Player['heliArea'] = null,
+  ) {
+    this.spawnHeli(variant);
+    this.heliArea = area;
+    this.pos = [...p];
+    this.yaw = Math.atan2(dir[0], -dir[1]);
+    const f = this.forward;
+    this.vel = [f[0] * speed, 0, f[1] * speed];
+    this.speed = speed;
+    this.pickHeliTarget();
+    modelMatrix(this.model, this.pos, f, 0);
+    this.prev.set(this.model);
+  }
+
   /** Drive a traffic car from where it is (Traffic.take). */
   takeOver(c: {f: LaneFollower; variant: number; color: Vec3; color2: Vec3}) {
     this.kind = 'car';
@@ -103,6 +166,7 @@ export class Player {
     this.vel = [0, 0, 0];
     this.follower = null;
     this.autopilot = true;
+    this.heliArea = null;
     this.pickHeliTarget();
   }
 
@@ -137,6 +201,21 @@ export class Player {
   }
 
   private pickHeliTarget() {
+    const a = this.heliArea;
+    if (a) {
+      // Ahead of the current heading, so the flight is a gentle curve.
+      const f = this.forward;
+      const ang = Math.atan2(f[1], f[0]) + this.rng.range(-0.8, 0.8);
+      let x = this.pos[0] + Math.cos(ang) * a.r;
+      let z = this.pos[2] + Math.sin(ang) * a.r;
+      // Back toward the area once outside it.
+      if (Math.hypot(x - a.c[0], z - a.c[1]) > a.r * 1.2) {
+        x = a.c[0] + this.rng.range(-0.4, 0.4) * a.r;
+        z = a.c[1] + this.rng.range(-0.4, 0.4) * a.r;
+      }
+      this.heliTarget = [x, Math.max(this.net.hf.sample(x, z), 0) + a.h, z];
+      return;
+    }
     const h = this.rng.pick(this.hubs);
     const ground = this.net.hf.sample(h[0], h[1]);
     this.heliTarget = [

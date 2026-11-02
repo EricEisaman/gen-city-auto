@@ -309,6 +309,28 @@ export class LaneFollower {
     if (!this.turn && !this.plan) this.plan = this.planTurn(net);
   }
 
+  /**
+   * The turn signal of the crossing ahead (or being driven: -1 right, 0
+   * straight, 1 left) and the distance to it (0 while on it).
+   */
+  nextTurn(net: RoadNet): {indicator: number; dist: number} {
+    if (this.turn) return {indicator: this.turn.indicator, dist: 0};
+    return {
+      indicator: this.plan?.indicator ?? 0,
+      dist: Math.max(0, this.sEnd(net) - this.s),
+    };
+  }
+
+  /**
+   * Re-plan the crossing ahead until it is a turn (the showcase director
+   * films a car signalling); keeps the plan if no exit turns.
+   */
+  preferTurn(net: RoadNet) {
+    if (this.turn) return;
+    for (let i = 0; i < 12 && !this.plan?.indicator; i++)
+      this.plan = this.planTurn(net);
+  }
+
   private startTurn(net: RoadNet) {
     this.ensurePlan(net);
     this.turn = this.plan;
@@ -619,7 +641,9 @@ export class Traffic {
 
   /**
    * Remove and return a moving car between `minD` and `maxD` metres of
-   * `focus` (the auto director hands it to the player), or null.
+   * `focus` (the auto director hands it to the player), or null. With
+   * `score`, the best scoring car (among those scoring above 0) instead
+   * of a random one.
    */
   take(
     focus: Vec3,
@@ -627,6 +651,7 @@ export class Traffic {
     maxD: number,
     pick: (n: number) => number,
     not = -1,
+    score?: (f: LaneFollower, variant: number) => number,
   ): {f: LaneFollower; variant: number; color: Vec3; color2: Vec3} | null {
     const ok: number[] = [];
     this.cars.forEach((c, i) => {
@@ -635,8 +660,38 @@ export class Traffic {
         ok.push(i);
     });
     if (!ok.length) return null;
-    const [c] = this.cars.splice(ok[pick(ok.length)], 1);
+    let at = ok[pick(ok.length)];
+    if (score) {
+      let best = 0;
+      for (const i of ok) {
+        const sc = score(this.cars[i].f, this.cars[i].variant);
+        if (sc > best) {
+          best = sc;
+          at = i;
+        }
+      }
+    }
+    const [c] = this.cars.splice(at, 1);
     return c;
+  }
+
+  /**
+   * Start over around `focus` (the showcase director cut to another part of
+   * the city): drop every car, spawn a full set and let it settle for
+   * `warm` seconds so the streets are busy and flowing from the first frame.
+   */
+  refill(focus: Vec3, time: number, extra: LaneFollower[], warm = 5) {
+    this.cars = [];
+    for (let k = 0; k < this.target * 3 && this.cars.length < this.target; k++)
+      this.spawn(focus, 12);
+    // Not on top of the filmed car.
+    this.cars = this.cars.filter(c =>
+      extra.every(
+        f => Math.hypot(c.f.pos[0] - f.pos[0], c.f.pos[2] - f.pos[2]) > 9,
+      ),
+    );
+    for (let t = 0; t < warm; t += 0.25)
+      this.update(0.25, time - warm + t, focus, extra);
   }
 
   update(dt: number, time: number, focus: Vec3, extra: LaneFollower[] = []) {
