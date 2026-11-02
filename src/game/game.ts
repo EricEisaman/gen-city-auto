@@ -376,6 +376,8 @@ export class Game {
   private setupWorld() {
     const city = this.city!;
     const net = this.net!;
+    // Right-hand traffic: left-hand drive road vehicles.
+    this.vehicles.leftHand = net.side < 0;
     this.traffic = new Traffic(net, this.vehicles);
     this.buildLightSprites();
     this.traffic.target = this.trafficTarget();

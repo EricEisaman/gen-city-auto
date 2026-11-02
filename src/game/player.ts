@@ -48,6 +48,11 @@ export class Player {
     return this.vr.variants[this.variant]?.info;
   }
 
+  /** Driver eye in vehicle space (on the left in left-hand drive cities). */
+  get driverEye(): Vec3 | undefined {
+    return this.vr.driverEye(this.variant);
+  }
+
   get forward(): Vec2 {
     return [Math.sin(this.yaw), -Math.cos(this.yaw)];
   }

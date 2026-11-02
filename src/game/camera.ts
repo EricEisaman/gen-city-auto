@@ -864,7 +864,7 @@ export class CameraSystem {
     const info = pl.info;
     switch (this.mode) {
       case 'first': {
-        const e = info?.driverEye ?? [0, 1.2, 0];
+        const e = pl.driverEye ?? [0, 1.2, 0];
         const eye = pl.toWorld([e[0], e[1] + 0.15, e[2]]);
         const look = pl.toWorld([
           e[0] + Math.sin(this.yawOff) * 10,
@@ -1069,7 +1069,7 @@ export class CameraSystem {
         };
       }
       case 'interior': {
-        const e = pl.info?.driverEye ?? [0, 1.2, 0];
+        const e = pl.driverEye ?? [0, 1.2, 0];
         const eye = pl.toWorld([e[0] * 0.15, e[1] + 0.02, e[2] - 0.38]);
         const look = pl.toWorld([e[0] * 0.5, e[1] + 0.02, e[2] + 8]);
         return {eye, target: look, fov: 1.05, near: 0.03, interior: true};
