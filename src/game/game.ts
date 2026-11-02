@@ -822,6 +822,20 @@ export class Game {
     }
   }
 
+  /**
+   * Switch to the free camera, starting where the current camera is: same
+   * eye, direction and field of view, so the view doesn't jump.
+   */
+  enterFreeCam() {
+    if (this.freeMode) return;
+    const c = this.lastCam;
+    if (c) {
+      const [yaw, pitch] = yawPitch(c.eye, c.target);
+      this.freeCam.setPose(c.eye, yaw, pitch, c.fov);
+    }
+    this.freeMode = true;
+  }
+
   /** Camera button / C key: director -> chase -> first -> hood -> orbit -> free. */
   cycleCamera() {
     if (this.freeMode) {
@@ -835,12 +849,7 @@ export class Game {
       return;
     }
     if (this.camera.mode === CAMERA_MODES[CAMERA_MODES.length - 1]) {
-      const c = this.lastCam;
-      if (c) {
-        const [yaw, pitch] = yawPitch(c.eye, c.target);
-        this.freeCam.setPose(c.eye, yaw, pitch);
-      }
-      this.freeMode = true;
+      this.enterFreeCam();
       return;
     }
     this.camera.cycle();

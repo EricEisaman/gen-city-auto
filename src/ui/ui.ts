@@ -101,9 +101,11 @@ export class UI {
     for (const m of [...CAMERA_MODES, 'free'])
       this.camSel.append(el('option', {value: m, textContent: m}));
     this.camSel.onchange = () => {
-      g.freeMode = this.camSel.value === 'free';
-      if (!g.freeMode)
+      if (this.camSel.value === 'free') g.enterFreeCam();
+      else {
+        g.freeMode = false;
         g.camera.mode = this.camSel.value as (typeof CAMERA_MODES)[number];
+      }
     };
     const director = el('input', {
       type: 'checkbox',
