@@ -5,6 +5,7 @@ import {CAMERA_MODES} from '../game/camera.ts';
 import {WEATHER_KINDS} from '../game/weather.ts';
 import type {Game} from '../game/game.ts';
 import {FIELDS, type Settings} from './settings.ts';
+import {MapOverlay} from './minimap.ts';
 
 const el = <K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -28,6 +29,7 @@ export class UI {
   private camSel!: HTMLSelectElement;
   private perf = document.getElementById('perf')!;
   private vehBtn = document.getElementById('btn-veh')!;
+  private map = new MapOverlay();
   /** Graphics setting selects, refreshed when a preset changes others. */
   private gfxSels = new Map<keyof Settings, HTMLSelectElement>();
   showStats = false;
@@ -50,6 +52,8 @@ export class UI {
       g.toggleHeli();
     };
     document.getElementById('btn-menu')!.onclick = () => this.toggleMenu();
+    // (The map doesn't count as input: the showcase carries on under it.)
+    document.getElementById('btn-map')!.onclick = () => this.map.toggle();
     this.help.innerHTML =
       '<b>WASD</b> drive / fly &nbsp; <b>Space</b> handbrake / climb &nbsp; <b>Shift</b> descend &nbsp; <b>Q/E</b> yaw<br>' +
       '<b>C</b> camera (last = free fly: WASD, Space/Shift, drag to look, wheel = speed) &nbsp; <b>L</b> copy link to this view<br>' +
@@ -219,6 +223,12 @@ export class UI {
   toggleHelp() {
     this.game.setSetting('help', !this.game.settings.help);
     this.syncGraphics();
+  }
+
+  /** Every frame: the map overlay's camera arrow (when shown). */
+  updateMap() {
+    const g = this.game;
+    this.map.update(`${g.cityType}#${g.seed}`, g.loading ? null : g.lastCam);
   }
 
   update(fps: number) {

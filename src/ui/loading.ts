@@ -445,6 +445,27 @@ class LoadingScreen implements LoadListener {
     }
   }
 
+  /**
+   * The finished map of the current city (terrain, blocks, buildings, roads,
+   * rail) as one canvas, for the in-game map; null before the layout has
+   * drawn. `size` is the world size it spans (centred on the origin).
+   */
+  mapSnapshot(): {img: HTMLCanvasElement; size: number} | null {
+    const t = this.layers.get('terrain');
+    if (!t || !this.size) return null;
+    const n = t.width;
+    const c = document.createElement('canvas');
+    c.width = c.height = n;
+    const g = c.getContext('2d')!;
+    g.fillStyle = COLORS.bg;
+    g.fillRect(0, 0, n, n);
+    for (const name of ['terrain', 'blocks', 'buildings', 'roads', 'rail']) {
+      const l = this.layers.get(name);
+      if (l) g.drawImage(l, 0, 0, n, n);
+    }
+    return {img: c, size: this.size};
+  }
+
   /** Composite the layers (only when something changed or is fading). */
   private compose(t: number) {
     const c = this.canvas();

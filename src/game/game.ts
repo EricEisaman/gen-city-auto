@@ -154,7 +154,7 @@ export class Game {
   time = 0;
   private gpu: Gpu;
   private opts: GameOptions;
-  private loading = false;
+  loading = false;
   private frames = 0;
   /** Car variant to return to from the helicopter. */
   private lastCar = -1;
@@ -1630,6 +1630,7 @@ export class Game {
     this.fpsAvg = this.fpsAvg * 0.95 + (1 / Math.max(dt, 1e-3)) * 0.05;
     this.frames++;
     if (this.frames % 10 === 0) this.ui.update(this.fpsAvg);
+    this.ui.updateMap();
     window.__stats = {
       ...this.renderer.stats,
       ...this.city.stats,
