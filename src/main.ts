@@ -105,6 +105,9 @@ async function main() {
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
+  // probe=1: on-device performance probe (game/probe.ts).
+  if (params.get('probe') === '1')
+    void import('./game/probe.ts').then(m => m.runProbe(game));
 }
 
 main().catch(e => reportError(`[main] ${e instanceof Error ? e.stack : e}`));
