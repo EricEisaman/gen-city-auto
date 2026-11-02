@@ -210,6 +210,7 @@ export class Game {
     if (!s.contact) off.push('contact');
     if (!s.godrays) off.push('godrays');
     if (!s.taa) off.push('taa');
+    if (s.lean) off.push('c3');
     r.userOff = parseOff(off.join(','));
     r.bloom = s.bloom;
     r.sharpen = s.sharpen;
@@ -219,6 +220,32 @@ export class Game {
     if (this.city && this.opts.lod2 === undefined)
       this.city.lod2Dist = s.drawDist > 0 ? s.drawDist : Infinity;
     if (this.traffic) this.traffic.target = this.trafficTarget();
+    this.applyBudget(s.lean);
+  }
+
+  /**
+   * The mobile geometry budget (settings.lean), measured with ?probe=1 at
+   * 852x393: the frame's triangles were mostly vehicles (5k-triangle LOD2
+   * cars out to 900 m, drawn again into three shadow cascades) and the
+   * terrain. Off restores the default look exactly.
+   */
+  private applyBudget(lean: boolean) {
+    const r = this.renderer;
+    const v = this.vehicles;
+    // Terrain: 128 m patches near the eye still sample every 4 m height
+    // cell; far patches grow sooner.
+    r.terrainSplit = lean ? 0.8 : 1.4;
+    r.terrainMinPatch = lean ? 128 : 64;
+    if (v) {
+      // A ~400-triangle far LOD past ~60 m (a car is ~20 px tall there at
+      // phone resolution), LOD switches 40% nearer, no traffic beyond 600 m,
+      // and vehicle shadows in the two nearest cascades only.
+      v.farLod = lean ? 60 : Infinity;
+      v.lodScale = lean ? 0.6 : 1;
+      v.maxDist = lean ? 600 : 900;
+      v.shadowCascades = lean ? 2 : 3;
+    }
+    if (this.peds) this.peds.target = lean ? 200 : 420;
   }
 
   private trafficTarget() {
@@ -270,6 +297,10 @@ export class Game {
       'rgba16float',
     );
     this.renderer.hooks.push(this.vehicles, this.rain, this.sprites);
+    // (sprites.wgsl lightsOn(): zero at night <= 0.25 and rain <= 0.3; the
+    // renderer's sky is this frame's by the time hooks draw.)
+    this.sprites.lightsOn = () =>
+      this.renderer.sky.night > 0.25 || this.weather.state.rain > 0.3;
     this.rain.density = this.settings.rain;
     const gpuReady = Promise.all([
       this.renderer.ready,
@@ -353,6 +384,7 @@ export class Game {
       this.vehicles,
       city.summary.layout.hubs.map(h => h.p),
     );
+    this.applyBudget(this.settings.lean);
     this.player = new Player(
       net,
       this.vehicles,

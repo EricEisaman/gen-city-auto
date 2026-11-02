@@ -7,6 +7,14 @@ import {person} from '../vehicles/person.ts';
 import type {VehicleDesign} from '../vehicles/types.ts';
 
 export const VEHICLE_LODS = [1, 0.45, 0.2];
+/**
+ * A fourth, far LOD (index VEHICLE_LODS.length): the coarsest one
+ * simplified by vertex clustering on a grid of size / FAR_CELLS. Coarser
+ * tessellation cannot get there: every NURBS patch keeps at least 2 x 2
+ * segments, so LOD2 stays at ~5k triangles for a car. Only drawn where the
+ * renderer asks for it (VehicleRenderer.farLod; the phone tier).
+ */
+const FAR_CELLS = 12;
 export const VARIANTS_PER_DESIGN = 2;
 
 export interface PackedMesh {
@@ -36,6 +44,62 @@ export interface VehicleVariant {
     rotors: PackedMesh[];
     steering: PackedMesh | null;
   }[];
+}
+
+/**
+ * Vertex-clustering simplification of a packed mesh: vertices snap to the
+ * mean of their grid cell (per material, so colours do not bleed), and the
+ * triangles that collapse or repeat are dropped. Null when nothing useful
+ * is left (the caller keeps the finer mesh).
+ */
+function simplify(pm: PackedMesh, cell: number): PackedMesh | null {
+  const f = new Float32Array(pm.vertices);
+  const u = new Uint32Array(pm.vertices);
+  const n = f.length / 7;
+  const ids = new Map<string, number>();
+  const remap = new Uint32Array(n);
+  const acc: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const key = `${Math.floor(f[i * 7] / cell)},${Math.floor(f[i * 7 + 1] / cell)},${Math.floor(f[i * 7 + 2] / cell)},${u[i * 7 + 6]}`;
+    let id = ids.get(key);
+    if (id === undefined) {
+      id = ids.size;
+      ids.set(key, id);
+      acc.push(0, 0, 0, 0, 0, 0, 0, u[i * 7 + 6]);
+    }
+    remap[i] = id;
+    for (let k = 0; k < 6; k++) acc[id * 8 + k] += f[i * 7 + k];
+    acc[id * 8 + 6]++;
+  }
+  const seen = new Set<string>();
+  const idx: number[] = [];
+  const tri = pm.indices;
+  for (let t = 0; t < tri.length; t += 3) {
+    const a = remap[tri[t]];
+    const b = remap[tri[t + 1]];
+    const c = remap[tri[t + 2]];
+    if (a === b || b === c || a === c) continue;
+    // (Both windings kept: thin parts are double-sided.)
+    const key = `${a},${b},${c}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    seen.add(`${b},${c},${a}`);
+    seen.add(`${c},${a},${b}`);
+    idx.push(a, b, c);
+  }
+  if (idx.length < 36 || idx.length >= tri.length * 0.8) return null;
+  const m = ids.size;
+  const buf = new ArrayBuffer(m * 28);
+  const of = new Float32Array(buf);
+  const ou = new Uint32Array(buf);
+  for (let i = 0; i < m; i++) {
+    const w = acc[i * 8 + 6];
+    for (let k = 0; k < 3; k++) of[i * 7 + k] = acc[i * 8 + k] / w;
+    const l = Math.hypot(acc[i * 8 + 3], acc[i * 8 + 4], acc[i * 8 + 5]) || 1;
+    for (let k = 3; k < 6; k++) of[i * 7 + k] = acc[i * 8 + k] / l;
+    ou[i * 7 + 6] = acc[i * 8 + 7];
+  }
+  return {vertices: buf, indices: new Uint32Array(idx)};
 }
 
 function pack(m: Mesh): PackedMesh {
@@ -104,7 +168,24 @@ self.onmessage = (e: MessageEvent<{names?: string[]}>) => {
           }
           variant.lods.push(lod);
         }
-        if (variant) out.push(variant);
+        if (variant) {
+          // The far LOD from the coarsest (meshes the clustering cannot
+          // reduce stay as they are).
+          const last = variant.lods[variant.lods.length - 1];
+          const cell = Math.max(...variant.size) / FAR_CELLS;
+          const far = (pm: PackedMesh) => {
+            const s = simplify(pm, cell);
+            if (s) transfer.push(s.vertices, s.indices.buffer);
+            return s ?? pm;
+          };
+          variant.lods.push({
+            body: far(last.body),
+            wheel: last.wheel && far(last.wheel),
+            rotors: last.rotors.map(far),
+            steering: null,
+          });
+          out.push(variant);
+        }
       } catch (e) {
         errors.push(`${name}#${seed}: ${e instanceof Error ? e.message : e}`);
       }

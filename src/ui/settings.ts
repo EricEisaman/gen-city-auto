@@ -1,5 +1,5 @@
 // Graphics settings: persisted in localStorage, overridable from the URL
-// (?scale=, ?gfx=, ?clouds=, ?shadows=; tests and the profiler rely on URL
+// (?scale=, ?gfx=, ?clouds=, ?shadows=, ?phone=; tests and the profiler rely on URL
 // params, which are applied on top and never saved), applied live.
 
 export const RENDER_SCALES = ['auto', 'dynamic', 50, 67, 75, 85, 100] as const;
@@ -39,6 +39,12 @@ export interface Settings {
   readout: boolean;
   /** Controls help overlay (H toggles it). */
   help: boolean;
+  /**
+   * Mobile geometry budget (on by default on phones and tablets): far
+   * vehicle LOD, fewer vehicle shadows and pedestrians, a coarser terrain,
+   * no farthest shadow cascade (see Game.applySettings).
+   */
+  lean: boolean;
 }
 
 export const DEFAULTS: Settings = {
@@ -63,14 +69,18 @@ export const DEFAULTS: Settings = {
   fov: 1,
   readout: false,
   help: false,
+  lean: false,
 };
 
 /**
- * The defaults on this device: the low preset on low-memory devices (caps.ts:
- * phones, tablets), DEFAULTS elsewhere.
+ * The defaults on this device: on low-memory devices (caps.ts: phones,
+ * tablets) the low preset, the mobile geometry budget and half the traffic;
+ * DEFAULTS elsewhere.
  */
 export function deviceDefaults(lowMemory: boolean): Settings {
-  return lowMemory ? {...DEFAULTS, preset: 'low', ...PRESETS.low} : DEFAULTS;
+  return lowMemory
+    ? {...DEFAULTS, preset: 'low', ...PRESETS.low, lean: true, traffic: 0.5}
+    : DEFAULTS;
 }
 
 type PresetKeys =
@@ -325,6 +335,14 @@ export const FIELDS: Field[] = [
     ],
   },
   {
+    key: 'lean',
+    label: 'Mobile geometry budget',
+    options: [
+      ['Off', false],
+      ['On', true],
+    ],
+  },
+  {
     key: 'readout',
     label: 'FPS / GPU readout',
     options: [
@@ -409,6 +427,8 @@ export function urlOverrides(params: URLSearchParams): Partial<Settings> {
   for (const f of FIELDS)
     if (f.key !== 'scale' && f.key in o && !valid(f, o[f.key])) delete o[f.key];
   if (params.get('readout') === '1') o.readout = true;
+  const phone = params.get('phone');
+  if (phone === '1' || phone === '0') o.lean = phone === '1';
   return o;
 }
 

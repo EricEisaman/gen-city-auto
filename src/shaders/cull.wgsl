@@ -20,7 +20,8 @@ struct CullView {
   params: vec4u,       // cluster count, use occlusion, plane count, count triangles
   hiz: vec4f,          // hiz width, height, mip count, fine-detail distance scale (0 = off)
   // far-shading view depth (0 = off), material-group binning (0 = off),
-  // lists in `visible` (segments of equal size), -
+  // lists in `visible` (segments of equal size), city draw distance
+  // (m; 0 = unlimited)
   far: vec4f,
 };
 
@@ -102,6 +103,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Small details vanish at distance (flags bit 0 = detail).
   let dist = distance(center, view.camPos.xyz);
   if ((flags & 1u) != 0u && c.radius < dist * view.camPos.w) { return; }
+  if (view.far.w > 0.0 && dist - c.radius > view.far.w) { return; }
   // Fine detail with a cull distance (cmesh.ts CLUSTER_FAR_SHIFT), jittered
   // per cluster (+-20 %, hashed from its centre) so it thins out over a band.
   let farD = f32(c.packed >> 20u) * view.hiz.w;
