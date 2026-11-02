@@ -74,12 +74,22 @@ export const DEFAULTS: Settings = {
 
 /**
  * The defaults on this device: on low-memory devices (caps.ts: phones,
- * tablets) the low preset, the mobile geometry budget and half the traffic;
- * DEFAULTS elsewhere.
+ * tablets) the low preset at a dynamic render scale, the mobile geometry
+ * budget and half the traffic; DEFAULTS elsewhere.
  */
 export function deviceDefaults(lowMemory: boolean): Settings {
   return lowMemory
-    ? {...DEFAULTS, preset: 'low', ...PRESETS.low, lean: true, traffic: 0.5}
+    ? {
+        ...DEFAULTS,
+        preset: 'low',
+        ...PRESETS.low,
+        // Phones are geometry-bound, not pixel-bound (an iPhone 15 Pro probe:
+        // 8.8 ms GPU at 67%, 8.1 ms at 25%), so render as sharp as the frame
+        // budget allows; the dynamic scale also backs off when it throttles.
+        scale: 'dynamic',
+        lean: true,
+        traffic: 0.5,
+      }
     : DEFAULTS;
 }
 
