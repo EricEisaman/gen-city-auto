@@ -4385,7 +4385,8 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   let foot = max(length(dWorldX), length(dWorldY));
   let kind = aux & 3u;
   let apron = (aux & 4u) != 0u;
-  let plant = (aux & 8u) != 0u;
+  // (New York has no hedge strip: paved, its planters stand on the walk.)
+  let plant = (aux & 8u) != 0u && signLocale() != 1u;
   let bw = select(f32((aux >> 8u) & 0xffu) * 0.02, 2.5, ((aux >> 8u) & 0xffu) == 0u);
   let dist = distance(world, frame.camPos.xyz);
   let y = uv.y;
@@ -4817,6 +4818,24 @@ fn coverMat(world: vec3f, n: vec3f, uv: vec2f, span: f32, aux: u32) -> Surf {
 fn hedgeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
   if (param == 2u) { return coverMat(world, n, uv, 1.0, aux); }
+  if (param == 3u) {
+    // New York's open tree pit (gen-tile TREE_PIT_SOIL): dark loam, lumps
+    // and pebbles, scattered leaf litter, a ring of bare earth round the
+    // trunk.
+    let q = world.xz;
+    let lump = valueNoise(q * 9.0) * 0.6 + valueNoise(q * 31.0) * 0.4;
+    var a = mix(vec3f(0.085, 0.065, 0.045), vec3f(0.16, 0.125, 0.09), lump);
+    let peb = step(0.82, valueNoise(q * 55.0));
+    a = mix(a, vec3f(0.3, 0.28, 0.25), peb * 0.6);
+    let lit = smoothstep(0.62, 0.7, valueNoise(q * 14.0 + 7.0));
+    a = mix(a, vec3f(0.32, 0.24, 0.1), lit * 0.7);
+    let r = length(uv - 0.5);
+    if (r < 0.12) { a = vec3f(0.12, 0.09, 0.07); }
+    s.albedo = a;
+    s.rough = 0.95;
+    applyWetness(&s, world, 0.3, 0.6);
+    return s;
+  }
   if (param == 1u) {
     let p = (uv - 0.5) * 1.2;
     let r = length(p);

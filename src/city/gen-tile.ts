@@ -13,6 +13,7 @@ import {
 } from '../math/vec.ts';
 import {CM, CMesh, packMat, triangulate} from './cmesh.ts';
 import {
+  CITI_BLUE,
   LightKind,
   LightList,
   SIGNAL_LUM,
@@ -2564,6 +2565,45 @@ function take(
 const BIKE_COLS = [0xd5, 0x91, 0x5a, 0xa4, 0x79, 0x30, 0x9c, 0xc4];
 
 /**
+ * New York bike-share dock along a frontage a -> c (outward normal `n`),
+ * from fraction t0 (LOD0): `count` dock posts 0.62 m apart 0.35 m off the
+ * wall, a blue bike nose-in at about three in four (hash `h`), and a blue
+ * pay kiosk with a dark screen at the far end.
+ */
+function bikeDock(
+  m: CMesh,
+  hf: Heightfield,
+  base: number,
+  a: Vec2,
+  c: Vec2,
+  n: Vec3,
+  t0: number,
+  count: number,
+  h: number,
+) {
+  const len = dist2(a, c);
+  const yaw = Math.atan2(n[0], n[2]);
+  const at = (t: number, out: number, y: number): Vec3 => {
+    const x = lerp(a[0], c[0], t) + n[0] * out;
+    const z = lerp(a[1], c[1], t) + n[2] * out;
+    return [x, sidewalkY(hf, x, z, base) + y, z];
+  };
+  const post = packMat(CM.metal);
+  for (let k = 0; k < count; k++) {
+    const t = t0 + (k * 0.62) / len;
+    m.box(at(t, 0.35, 0.42), [0.09, 0.42, 0.06], post, yaw);
+    if (hash2(h, k + 7) % 4 === 0) continue;
+    const g = at(t, 1.25, 0);
+    bicycle(m, g, [-n[0], 0, -n[2]], CITI_BLUE, false);
+  }
+  const tk = t0 + (count * 0.62 + 0.3) / len;
+  const kiosk = packMat(CM.paint, CITI_BLUE);
+  m.box(at(tk, 0.4, 0.95), [0.3, 0.95, 0.16], kiosk, yaw);
+  const sc = at(tk, 0.57, 1.3);
+  m.box(sc, [0.24, 0.42, 0.012], packMat(CM.frame), yaw);
+}
+
+/**
  * Street kit in front of one ground-floor tenant (`t`: its type, extent
  * [s0, s1] along the front edge and fascia sign id). `gy` is the pavement
  * and `head` the shopfront head; `pv` hands out pavement slots.
@@ -2609,7 +2649,9 @@ function tenantKit(
     }
   };
   const bikes = (n: number) => {
-    // Parked bicycles side by side, nose to the shop.
+    // Parked bicycles side by side, nose to the shop. (New York: the same
+    // draws and pavement slots, but only about one bike in eight is left
+    // there, and no basket.)
     const s0 = at(rng.range(0.1, 0.6));
     for (let j = 0; j < n; j++) {
       const s = s0 + j * 0.62;
@@ -2620,13 +2662,11 @@ function tenantKit(
         0,
         -e.n[2] * Math.cos(lean) + e.along[2] * Math.sin(lean),
       ];
-      bicycle(
-        m,
-        P(s, 0.95, gy),
-        dir,
-        BIKE_COLS[rng.int(0, BIKE_COLS.length)],
-        rng.chance(0.8),
-      );
+      const col = BIKE_COLS[rng.int(0, BIKE_COLS.length)];
+      const basket = rng.chance(0.8);
+      if (!nyc()) bicycle(m, P(s, 0.95, gy), dir, col, basket);
+      else if (hash2(t.id, Math.round(s * 16)) % 8 === 0)
+        bicycle(m, P(s, 0.95, gy), dir, col, false);
     }
   };
   const plants = () => {
@@ -9578,11 +9618,95 @@ function bandY(
 }
 
 /**
+ * Tree pit at `p` (LOD0), square to the kerb (`d` along the road, `l`
+ * across it, the kerb on side `kerbV` of l): a cast-iron grate in its
+ * 1.2 m pit, set in a 9 cm precast frame standing 2.5 cm proud of the
+ * paving. New York: an open soil pit behind a low iron guard on its three
+ * walk sides (open to the kerb).
+ */
+function treePit(m: CMesh, p: Vec3, d: Vec2, l: Vec2, kerbV: number) {
+  const [x, , z] = p;
+  const P = (u: number, v: number, r = 0.6, y = 0.02): Vec3 => [
+    x + d[0] * u * r + l[0] * v * r,
+    p[1] + y,
+    z + d[1] * u * r + l[1] * v * r,
+  ];
+  m.quad(
+    [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)],
+    [0, 1, 0],
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+    packMat(CM.hedge, nyc() ? TREE_PIT_SOIL : 1),
+  );
+  if (nyc()) treeGuard(m, P, kerbV);
+  const fr = packMat(CM.curb, 1);
+  const C: [number, number][] = [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ];
+  const inner = C.map(([u, v]) =>
+    m.vertex(P(u, v, 0.6, 0.025), UP, u * 0.6, v * 0.6, fr),
+  );
+  const outer = C.map(([u, v]) =>
+    m.vertex(P(u, v, 0.69, 0.025), UP, u * 0.69, v * 0.69, fr),
+  );
+  for (let k = 0; k < 4; k++) {
+    const k1 = (k + 1) & 3;
+    m.triFacing(inner[k], outer[k], outer[k1], UP);
+    m.triFacing(inner[k], outer[k1], inner[k1], UP);
+  }
+}
+
+/** CM.hedge param of New York's open tree pits (soil and leaf litter). */
+const TREE_PIT_SOIL = 3;
+
+/**
+ * Low iron guard round a tree pit (LOD0): four posts and a top rail round
+ * the three sides away from the kerb. `P(u, v, r, y)` maps the pit's unit
+ * square (u along the road, v across it) scaled by r to world space at
+ * height y over the paving; `kerbV` is the kerb's side (+-1 in v).
+ */
+function treeGuard(
+  m: CMesh,
+  P: (u: number, v: number, r?: number, y?: number) => Vec3,
+  kerbV: number,
+) {
+  const iron = packMat(CM.paint, FIRE_ESCAPE);
+  const r = 0.64;
+  const H = 0.46;
+  for (const [u, v] of [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ])
+    m.tube([P(u, v, r, 0), P(u, v, r, H + 0.02)], 0.018, iron);
+  m.tube(
+    [
+      P(-1, kerbV, r, H),
+      P(-1, -kerbV, r, H),
+      P(1, -kerbV, r, H),
+      P(1, kerbV, r, H),
+    ],
+    0.014,
+    iron,
+  );
+}
+
+/**
  * Planting-strip hedges along avenues and arterials, both sides, both LODs
  * (hedgeRun): the planter's road-side face 0.38 m behind the kerb (behind
  * the fence), sampled every 2.6 m (LOD0) or 26 m (LOD1); gaps at bus
  * stops, a 2 m driveway gap every 35-50 m, none within 8 m of a junction
  * mouth. Runs belong to the tile of their samples' start points.
+ * New York has no continuous hedges: only a short planter (one 2.6 m
+ * step) just past about three driveway gaps in ten, LOD0 only.
  */
 function hedges(
   ctx: TileContext,
@@ -9595,6 +9719,8 @@ function hedges(
   const L = ctx.layout;
   const hf = L.terrain.heights;
   const step = lod === 0 ? 2.6 : 26;
+  const ny = nyc();
+  if (ny && lod !== 0) return;
   for (const ci of ctx.tileChains[tile] ?? []) {
     const c = L.chains[ci];
     if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
@@ -9603,6 +9729,8 @@ function hedges(
     const [s0, s1] = ctx.geom.setbacks[ci];
     const W = ROAD_WIDTH[c.kind];
     for (const side of [-1, 1]) {
+      // New York: samples left in the current planter.
+      let left = 0;
       // Bus stops (as buildTile places them).
       const stops: number[] = [];
       for (
@@ -9644,6 +9772,13 @@ function hedges(
           flush();
           s = gapAt + 2;
           gapAt += 35 + (hash2(ci * 2 + side, Math.floor(s)) % 16);
+          if (ny)
+            left =
+              hash2(ci * 2 + side, Math.floor(s) ^ 0x91a7) % 10 < 3 ? 2 : 0;
+        }
+        if (ny && left <= 0) {
+          flush();
+          continue;
         }
         if (stops.some(b => Math.abs(b - s) < 4.8)) {
           flush();
@@ -9664,6 +9799,7 @@ function hedges(
           o: l,
           mine: inTile(x, z),
         });
+        left--;
       }
       flush();
     }
@@ -10113,6 +10249,34 @@ export function buildTile(
         }
         prev = p;
       }
+      // New York side streets are planted instead: street trees in pits
+      // 0.8 m in from the kerb, 15-22 m apart with gaps, both LODs (pits
+      // LOD0). Their own streams (hash of chain, side and spot), so
+      // nothing else moves.
+      if (nyc() && c.kind === Road.street)
+        for (const side of [-1, 1]) {
+          const hs = hash2(ci * 2 + (side > 0 ? 1 : 0), 0x57ee);
+          const off = (ROAD_WIDTH[c.kind] / 2 + 0.8) * side;
+          for (
+            let s = s0 + 9 + (hs % 9), k = 0;
+            s < total - s1 - 9;
+            s += 15 + (hash2(hs, k) % 8), k++
+          ) {
+            if (hash2(hs, k + 101) % 10 < 3) continue;
+            const q = chainAt(c, arc, s);
+            const l: Vec2 = [-q.d[1], q.d[0]];
+            const x = q.p[0] + l[0] * off;
+            const z = q.p[1] + l[1] * off;
+            if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
+            if (poles.some(o => Math.hypot(o[0] - x, o[1] - z) < 2.5)) continue;
+            const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
+            const tr = new Rng(hash2(hs, k + 211));
+            const th = tr.range(5.5, 8.5);
+            if (deckClearance(ctx, x, z, p[1]) < th + 1) continue;
+            tree(m, p, th, lod, tr);
+            if (lod === 0) treePit(m, p, q.d, l, -side);
+          }
+        }
     } else {
       for (const side of [-1, 1]) {
         const off = (ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] * 0.55) * side;
@@ -10150,46 +10314,7 @@ export function buildTile(
             continue;
           }
           tree(m, p, th, lod, rng);
-          if (lod === 0) {
-            // Cast-iron grate in its 1.2 m pit, square to the kerb.
-            // Cast-iron grate in its 1.2 m pit, square to the kerb, set in
-            // a 9 cm precast frame standing 2.5 cm proud of the paving.
-            const d = q.d;
-            const P = (u: number, v: number, r = 0.6, y = 0.02): Vec3 => [
-              x + d[0] * u * r + l[0] * v * r,
-              p[1] + y,
-              z + d[1] * u * r + l[1] * v * r,
-            ];
-            m.quad(
-              [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)],
-              [0, 1, 0],
-              [
-                [0, 0],
-                [1, 0],
-                [1, 1],
-                [0, 1],
-              ],
-              packMat(CM.hedge, 1),
-            );
-            const fr = packMat(CM.curb, 1);
-            const C: [number, number][] = [
-              [-1, -1],
-              [1, -1],
-              [1, 1],
-              [-1, 1],
-            ];
-            const inner = C.map(([u, v]) =>
-              m.vertex(P(u, v, 0.6, 0.025), UP, u * 0.6, v * 0.6, fr),
-            );
-            const outer = C.map(([u, v]) =>
-              m.vertex(P(u, v, 0.69, 0.025), UP, u * 0.69, v * 0.69, fr),
-            );
-            for (let k = 0; k < 4; k++) {
-              const k1 = (k + 1) & 3;
-              m.triFacing(inner[k], outer[k], outer[k1], UP);
-              m.triFacing(inner[k], outer[k1], inner[k1], UP);
-            }
-          }
+          if (lod === 0) treePit(m, [x, p[1], z], q.d, l, -side);
         }
       }
     }
@@ -10431,7 +10556,16 @@ export function buildTile(
         ];
         lights.add(p0, 5, [0.9, 0.95, 1.0], LightKind.vending);
       }
-      if (h % 5 === 1 && dist2(a, c) > 6) {
+      if (h % 5 === 1 && dist2(a, c) > 6 && nyc()) {
+        // New York: a bike-share dock on about one in three of these
+        // frontages (dock posts against the wall, blue bikes in most, a
+        // pay kiosk at the end); no private bike rows.
+        if ((h >> 9) % 3 === 0) {
+          const count = 5 + ((h >> 12) % 4);
+          const t0 = 0.5 - (count * 0.31) / dist2(a, c);
+          if (t0 > 0.1) bikeDock(m, hf, b.base, a, c, n, t0, count, h);
+        }
+      } else if (h % 5 === 1 && dist2(a, c) > 6) {
         // A row of parked bicycles against the frontage.
         const count = 2 + ((h >> 6) % 2);
         for (let k = 0; k < count; k++) {
