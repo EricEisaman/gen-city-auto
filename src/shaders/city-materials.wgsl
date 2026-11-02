@@ -134,8 +134,8 @@ fn facadeCity() -> u32 { return min((frame.off.w >> 8u) & 0xffu, 3u); }
 // Facade body colours (albedo): muted, never saturated, from white render
 // to near-black panel. Picked per building by facadeColorIdx.
 const FACADE_COLS = array<vec3f, 15>(
-  vec3f(0.66, 0.65, 0.62),   // 0 white render / tile
-  vec3f(0.58, 0.56, 0.51),   // 1 off-white
+  vec3f(0.8, 0.79, 0.76),    // 0 white render / tile
+  vec3f(0.7, 0.68, 0.62),    // 1 off-white
   vec3f(0.56, 0.5, 0.35),    // 2 cream, yellowish
   vec3f(0.5, 0.43, 0.33),    // 3 beige tile
   vec3f(0.36, 0.27, 0.19),   // 4 tan / brown tile
@@ -146,7 +146,7 @@ const FACADE_COLS = array<vec3f, 15>(
   vec3f(0.15, 0.15, 0.155),  // 9 dark grey
   vec3f(0.05, 0.05, 0.055),  // 10 near-black
   vec3f(0.24, 0.32, 0.26),   // 11 muted green
-  vec3f(0.32, 0.36, 0.41),   // 12 blue-grey
+  vec3f(0.34, 0.36, 0.385),  // 12 blue-grey (only a hint: a blue sky's fill tints it more)
   vec3f(0.55, 0.5, 0.41),    // 13 limestone
   vec3f(0.25, 0.15, 0.11),   // 14 brownstone
 );
@@ -155,14 +155,14 @@ const FACADE_COLS = array<vec3f, 15>(
 // y New York (brick and limestone), z Hong Kong (white and pastel tile
 // slabs), w Chongqing (off-white and grey concrete).
 const FACADE_WEIGHTS = array<vec4u, 15>(
-  vec4u(16u, 5u, 18u, 10u),
+  vec4u(18u, 5u, 18u, 10u),
   vec4u(14u, 6u, 14u, 14u),
-  vec4u(8u, 5u, 10u, 8u),
+  vec4u(6u, 5u, 10u, 8u),
   vec4u(12u, 6u, 10u, 10u),
-  vec4u(7u, 5u, 5u, 8u),
+  vec4u(6u, 5u, 5u, 8u),
   vec4u(5u, 12u, 6u, 6u),
   vec4u(4u, 14u, 2u, 5u),
-  vec4u(10u, 6u, 10u, 12u),
+  vec4u(11u, 6u, 10u, 12u),
   vec4u(7u, 6u, 6u, 10u),
   vec4u(6u, 5u, 5u, 8u),
   vec4u(3u, 3u, 2u, 2u),
@@ -851,12 +851,17 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   s.clay = facadeClayIdx(ci);
   s.clad = s.family <= 1u || (s.family == 2u && s.clay);
   if (s.family == 2u) { s.winW = 0.62; s.winH = 0.72; }
+  // White and off-white keep their colour whatever the finish (white
+  // enamelled panels, white-painted or precast concrete), so the white
+  // share holds.
+  let pale = ci <= 1u;
   // Metal panels: the palette colour, greyed (painted / anodised panel).
-  if (s.family == 3u) { s.wall = mix(s.wall, mix(vec3f(0.42, 0.44, 0.47), vec3f(0.25, 0.26, 0.28), hashuf(h ^ 0x77u)), 0.5); s.winW = min(s.winW, 0.5); }
+  if (s.family == 3u) { s.wall = mix(s.wall, mix(vec3f(0.42, 0.44, 0.47), vec3f(0.25, 0.26, 0.28), hashuf(h ^ 0x77u)), select(0.5, 0.15, pale)); s.winW = min(s.winW, 0.5); }
   // Fair-face concrete is its own grey; brick-coloured ones stay brick
   // (clad), so the clay shares hold.
   if (s.family == 4u) {
     if (s.clay) { s.clad = true; }
+    else if (pale) { s.wall *= 0.94; }
     else { s.wall = vec3f(0.36, 0.355, 0.34) * mix(0.85, 1.1, hashuf(h ^ 0x88u)); }
   }
   if (podium) { s.wall = mix(s.wall, vec3f(0.35, 0.33, 0.3), 0.5); }
@@ -928,7 +933,16 @@ fn facadeAccent(body: vec3f, aux: u32) -> vec3f {
   // (Tile textures darken the palette colour a lot, so most bodies count
   // as dark here.)
   if (l < 0.45) { return vec3f(0.62, 0.6, 0.56) * mix(0.85, 1.05, h); }
+  // (White bodies keep a pale crown: a grey band would grey the building.)
+  if (l > 0.6) { return body * select(0.72, 0.84, h < 0.5); }
   return body * select(0.5, 0.65, h < 0.5);
+}
+
+// Unclad party and rear walls: render / ALC tinted toward the body colour,
+// nearly all the way on white and off-white buildings (white from behind
+// too, as in Tokyo's white slab blocks).
+fn rearTint(body: vec3f) -> vec3f {
+  return mix(vec3f(0.47, 0.46, 0.43), body, select(0.6, 0.85, luminance(body) > 0.5));
 }
 
 // Adjusts the facade style for this wall's role and zone, before the wall
@@ -959,7 +973,7 @@ fn facadeRole(st: ptr<function, FacadeStyle>, z: ptr<function, FacadeZone>, uv: 
     if ((*st).clad && zone != FZ_CROWN) {
       (*st).wall *= mix(0.94, 1.0, j - 0.85);
     } else {
-      (*st).wall = mix(vec3f(0.47, 0.46, 0.43), (*st).body, 0.6) * j;
+      (*st).wall = rearTint((*st).body) * j;
     }
     (*st).family = 5u;
     (*st).strip = false;
@@ -1086,7 +1100,10 @@ fn partyWall(s: ptr<function, Surf>, uvIn: vec2f, auxIn: u32, bodyH: f32, base: 
   let foot = max(length(dWorldX), length(dWorldY));
   let fFine = 1.0 - smoothstep(0.02, 0.06, foot);
   let ab = f32(aux & 255u);
-  var a = (*s).albedo * 0.78;
+  // White and off-white walls (rearTint) weather less: painted over more
+  // often, and their grime would otherwise turn the building grey.
+  let pale = smoothstep(0.42, 0.55, luminance((*s).albedo));
+  var a = (*s).albedo * mix(0.78, 0.9, pale);
   (*s).sunVis = 1.0;
   (*s).rough = 0.88;
   if (hashuf(aux ^ 0x9a1u) < 0.5) {
@@ -1220,9 +1237,9 @@ fn partyWall(s: ptr<function, Surf>, uvIn: vec2f, auxIn: u32, bodyH: f32, base: 
     var body = 1.0 - smoothstep(0.3, 1.0, abs(cx));
     if (fFine > 0.0) { body *= mix(1.0, 0.6 + 0.4 * valueNoise(vec2f(uv.x * 9.0, uv.y * 0.3)), fFine); }
     let streak = body * step(0.5, ch) * mix(0.45, 1.0, fract(ch * 31.0)) * topK * (0.55 + 0.45 * valueNoise(vec2f(uv.x * 0.8, uv.y * 0.12)));
-    a = mix(a, vec3f(0.11, 0.105, 0.1), clamp(streak * 0.65 * (1.0 - 0.8 * ghost), 0.0, 0.65));
+    a = mix(a, vec3f(0.11, 0.105, 0.1), clamp(streak * 0.65 * (1.0 - 0.8 * ghost) * (1.0 - 0.4 * pale), 0.0, 0.65));
     let band = smoothstep(0.9 + 0.4 * valueNoise(vec2f(uv.x * 1.3, 2.0)), 0.0, below) * step(0.0, below);
-    a *= 1.0 - 0.4 * band;
+    a *= 1.0 - 0.4 * band * (1.0 - 0.4 * pale);
     // Rain follows the same paths the soot did: off the coping's drip
     // edge, down each streak (a little longer than its stain), and a wet
     // band right under the coping.
@@ -1580,7 +1597,7 @@ fn paintedRender(s: ptr<function, Surf>, uv: vec2f, style: u32, foot: f32, body:
   let paint = mix(array<vec3f, 5>(vec3f(0.74, 0.69, 0.57), vec3f(0.6, 0.67, 0.58), vec3f(0.6, 0.65, 0.7), vec3f(0.78, 0.77, 0.73), vec3f(0.74, 0.6, 0.52))[h % 5u] * 0.7, body, 0.7);
   // (facadeRole tinted the rear wall toward the body already: undo that,
   // keeping its grime and patching.)
-  let base = (*s).albedo / max(mix(vec3f(0.47, 0.46, 0.43), body, 0.6), vec3f(0.03));
+  let base = (*s).albedo / max(rearTint(body), vec3f(0.03));
   // (The 0.17 m flake noise is lost in the footprint-wide edge past 0.3 m.)
   var fine = 0.5;
   if (foot < 0.3) { fine = mix(valueNoise(uv * 6.0), 0.5, smoothstep(0.15, 0.3, foot)); }
@@ -2307,15 +2324,21 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   // (Terms weighted by fFine / fMid are only evaluated while they show.)
   var streak = 0.125;
   if (fFine > 0.0) { streak = mix(0.125, valueNoise(vec2f(uv.x * 3.0, uv.y * 0.15)) * 0.25, fFine); }
+  // White and off-white walls (glazed white tile, kept-up paint) stay
+  // white: their weathering is about half as heavy, so the 30 % of Tokyo
+  // that is white reads white, not light grey.
+  let paleK = smoothstep(0.5, 0.65, luminance(st.wall));
+  let grimeK = 1.0 - 0.5 * paleK;
   // (The grout cavity darkens ambient light through s.ao below, not the
   // albedo: tile joints then read in shade, where the sun's N.L can't.)
-  var wall = st.wall * (1.0 - streak * 0.5) * mix(1.0, wd.b * 2.0, select(0.6, 1.0, tiled)) * select(mix(0.6, 1.0, wd.a), 1.0, tiled);
+  var wall = st.wall * (1.0 - streak * 0.5 * grimeK) * mix(1.0, wd.b * 2.0, select(0.6, 1.0, tiled) * grimeK) * select(mix(1.0 - 0.4 * grimeK, 1.0, wd.a), 1.0, tiled);
   // Each face of the building has its own tone (sun bleach, a different
   // batch), so corners read even in flat light.
   if (tiled) {
     // Tile faces carry their kiln tone; the recessed cement joints are a
-    // mid grey that holds whatever the tile colour.
-    wall = mix(wall * tb.tone, vec3f(0.22, 0.215, 0.2) * (1.0 - streak * 0.5), tb.mortar);
+    // mid grey that holds whatever the tile colour (pale grout on white
+    // tile).
+    wall = mix(wall * tb.tone, mix(vec3f(0.22, 0.215, 0.2), vec3f(0.5, 0.49, 0.46), paleK) * (1.0 - streak * 0.5), tb.mortar);
   }
   let faceH = hashu(aux ^ (u32(round(atan2(n.z, n.x) * 2.546) + 64.0) * 0x9e3779b1u));
   wall *= mix(0.93, 1.07, hashuf(faceH));
@@ -2334,7 +2357,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let wx0e = (1.0 - st.winW) * 0.5 * st.bay;
     let sillE = (1.0 - st.winH) * st.floorH * 0.55;
     let below = sillE - ly;
-    let dirtAmt = mix(0.75, 1.0, hashuf(aux ^ 0x5151u)) * (1.0 + 0.4 * wet);
+    let dirtAmt = mix(0.75, 1.0, hashuf(aux ^ 0x5151u)) * (1.0 + 0.4 * wet) * mix(1.0, 0.55, paleK);
     // Sill ends: a 0.15 m streak under each end of the sill, 1.5 m long;
     // between them thinner drips of varying length off the sill's drip
     // edge. At a distance, their average darkening over the window width.
@@ -2391,7 +2414,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     // sills and ledges, and on the corner piers.
     if (tiled) {
       let edgeDirt = clamp(washAmt + select(0.0, 0.5, fz.solid) + smoothstep(2.0, 0.0, uv.y), 0.0, 1.0);
-      wall *= mix(1.0, mix(0.6, 1.0, wd.a), edgeDirt * mix(0.5, 1.0, fFine));
+      wall *= mix(1.0, mix(0.6, 1.0, wd.a), edgeDirt * mix(0.5, 1.0, fFine) * grimeK);
       // Efflorescence: white salt bloom in the joints below each slab line,
       // in patches.
       var effN = 0.24;
@@ -5302,20 +5325,31 @@ fn roofMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
   var s = defaultSurf(n);
   let h = hashu(param * 31u + 5u);
   let g = hashuf(h) < 0.12;
-  let membrane = hashuf(h ^ 3u) < 0.4;
-  let panels = !membrane && hashuf(h ^ 77u) < 0.5;
+  // Per building: 56 % sheet membrane or coating, 22 % pressed concrete
+  // panels, 22 % gravel ballast (planted where g).
+  let kind = hashuf(h ^ 3u);
+  let membrane = kind < 0.56;
+  let panels = !membrane && kind < 0.78;
   let foot = max(max(length(dUvX), length(dUvY)), 1e-4);
   // Fine pattern fades to its mean once a pixel covers more than ~1 m.
   let fine = 1.0 - smoothstep(0.6, 1.6, foot);
   let gravel = 0.85 + 0.15 * hash21(floor(world.xz * 20.0));
   let stain = 1.0 - 0.3 * smoothstep(0.55, 0.8, fbm2(world.xz * 0.15));
-  var base = select(mix(vec3f(0.30, 0.29, 0.27), vec3f(0.22, 0.25, 0.27), hashuf(h ^ 21u)), vec3f(0.16, 0.25, 0.1), g);
+  // Ballast: mostly pale washed gravel, some dark aged gravel.
+  let k21 = hashuf(h ^ 21u);
+  var base = select(select(vec3f(0.4, 0.39, 0.37), vec3f(0.25, 0.26, 0.26), k21 > 0.65), vec3f(0.16, 0.25, 0.1), g);
   var pattern = gravel * (0.85 + 0.3 * valueNoise(uv * 0.25));
   if (membrane) {
-    // Light grey sheet, the green urethane coat common on Tokyo roofs, or a
-    // darker aged membrane.
+    // Light or dark grey sheet, black bitumen / asphalt waterproofing, the
+    // green urethane coat common on Tokyo roofs, a tan / beige coat, or a
+    // white reflective (cool roof) coating.
     let k = hashuf(h ^ 41u);
-    base = select(select(vec3f(0.34, 0.35, 0.34), vec3f(0.2, 0.27, 0.22), k < 0.45), vec3f(0.24, 0.24, 0.25), k > 0.8);
+    base = vec3f(0.38, 0.39, 0.38);
+    if (k >= 0.3) { base = vec3f(0.19, 0.19, 0.2); }
+    if (k >= 0.46) { base = vec3f(0.075, 0.07, 0.068); }
+    if (k >= 0.62) { base = vec3f(0.2, 0.27, 0.22); }
+    if (k >= 0.76) { base = vec3f(0.42, 0.385, 0.32); }
+    if (k >= 0.9) { base = vec3f(0.66, 0.66, 0.63); }
     let col = floor(uv.x);
     let sheet = vec2f(col, floor(uv.y / 10.0 + hash21(vec2f(col, 3.1))));
     let lap = abs(fract(uv.x + 0.5) - 0.5);
@@ -5335,7 +5369,8 @@ fn roofMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     let j = abs(fract(uv / 3.0 + 0.5) - 0.5) * 3.0;
     pattern = mix(1.0, 0.93 + 0.14 * hash21(cell + 17.0), fine) * (0.95 + 0.1 * valueNoise(uv * 0.7));
     pattern *= 1.0 - 0.45 * max(paintLine(j.x, 0.03, foot), paintLine(j.y, 0.03, foot));
-    base = mix(base, vec3f(0.36, 0.35, 0.33), 0.5);
+    // Grey or sandy (tan) concrete.
+    base = select(vec3f(0.31, 0.305, 0.29), vec3f(0.37, 0.345, 0.29), k21 < 0.3);
   }
   // Repair patches: newer, darker rectangles of membrane or screed on a
   // 12 m grid, the biggest scale cue on a plain roof.
@@ -7698,7 +7733,8 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         // Box / tower roofs (seen from the train and the air): the building
         // roof shader's urethane membrane, grey or the green Tokyo coat by
         // seed: laps, repair patches, drains with silt rings, ponding.
-        let rm = roofMat(world, n, uv, select(9u, 6u, (seed & 1u) == 1u));
+        // (Params 19 and 24: light grey and green membrane.)
+        let rm = roofMat(world, n, uv, select(19u, 24u, (seed & 1u) == 1u));
         a = rm.albedo;
         s.normal = rm.normal;
         flat = 0.3;
