@@ -411,6 +411,15 @@ async function main() {
       case 'three-quarter':
         eye = [d * 0.7, design.size[1] * 0.9 + 1, d * 0.75];
         break;
+      case 'wheel': {
+        // Close-up of the front right wheel, a little from the front.
+        const w = design.wheels[0].position;
+        target[0] = w[0];
+        target[1] = w[1];
+        target[2] = w[2];
+        eye = [w[0] + 1.6, w[1] + 0.25, w[2] + 0.6];
+        break;
+      }
       case 'interior': {
         eye = [...design.driverEye];
         target[0] = design.driverEye[0] * 0.3;

@@ -4,7 +4,7 @@
 
 import type {Vec3} from '../../math/vec.ts';
 import {Mat, type VehicleDesign, type VehicleKind} from '../types.ts';
-import {dial, steeringWheelMesh, wheelMesh} from '../parts.ts';
+import {brakeCallipers, dial, steeringWheelMesh, wheelMesh} from '../parts.ts';
 import {
   archY,
   buildBody,
@@ -2028,6 +2028,12 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
         steer: false,
       });
   }
+  // Callipers on the outer wheels (a dual rear wheel's is hidden inside).
+  brakeCallipers(
+    kit,
+    wheels.filter(w => Math.abs(w.position[0]) === track),
+    cfg.rimRatio,
+  );
   return {
     name: cfg.name,
     kind: cfg.kind,

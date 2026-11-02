@@ -7,6 +7,28 @@ import {circle, loftPoints, makeCurve, revolve} from '../nurbs/nurbs.ts';
 import {Mat} from './types.ts';
 
 /**
+ * Brake callipers for the body mesh: one per wheel at 12 o'clock over the
+ * disc (wheelMesh), where the wheel's steering doesn't move it off the disc.
+ */
+export function brakeCallipers(
+  kit: Kit,
+  wheels: {position: Vec3; radius: number; width: number}[],
+  rimRatio = 0.66,
+) {
+  for (const w of wheels) {
+    const [x, y, z] = w.position;
+    const rimR = w.radius * rimRatio;
+    blob(
+      kit,
+      [x + Math.sign(x) * (w.width / 2) * 0.05, y + rimR * 0.62, z],
+      [0.035, 0.05, 0.07],
+      Mat.caliper,
+      {n: 4, segU: 8, segV: 3},
+    );
+  }
+}
+
+/**
  * A wheel (tyre + rim) around the origin with its axle along x, built by
  * revolving profiles. The rim face points toward +x (the renderer mirrors the
  * mesh for left-side wheels).
@@ -63,7 +85,9 @@ export function wheelMesh(
     segU: 18,
     segV: N,
   });
-  // Brake disc with hat and a red calliper, behind the spokes.
+  // Brake disc and hat behind the spokes (round, so spinning them with the
+  // wheel doesn't show). The calliper doesn't turn with the wheel, so it is
+  // part of the body (brakeCallipers).
   const bk = new Kit();
   const yaw = (p: Vec3) => place(p, [0, 0, 0], 0, Math.PI / 2);
   blob(bk, [hw * 0.05, 0, 0], [rimR * 0.8, rimR * 0.8, 0.012], Mat.metal, {
@@ -80,13 +104,6 @@ export function wheelMesh(
     segV: 3,
     xf: yaw,
   });
-  blob(
-    bk,
-    [hw * 0.05, rimR * 0.55, -rimR * 0.45],
-    [0.035, 0.07, 0.05],
-    Mat.caliper,
-    {n: 4, segU: 8, segV: 3},
-  );
   mergeMesh(m, bk.mesh);
   // Rim lip: from the tyre bead out to the face.
   const lip = makeCurve(
