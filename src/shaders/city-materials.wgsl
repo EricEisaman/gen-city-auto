@@ -5638,9 +5638,22 @@ fn fauxLatin(p: vec2f, h: u32) -> f32 {
 
 // Distance to the strokes' centre lines of Latin capital `i` (fauxLatin's
 // 0.52 x 0.72 segment letters): A E H I L N O R S T C U P M K Y, then G W
-// D X B F (D drawn as O); 31 or more is a space.
+// D X B F; 31 or more is a space. D has its own strokes: a full stem, the
+// top and bottom bars stopping short and cut corners down to a shortened
+// right side, so it does not read as O.
 fn latinDist(p: vec2f, i: u32) -> f32 {
   if (i >= 22u) { return 1e3; }
+  if (i == 18u) {
+    let W = 0.26;
+    let H = 0.36;
+    let c = 0.2;
+    var d = rdSeg(p, vec2f(-W, H), vec2f(-W, -H));
+    d = min(d, rdSeg(p, vec2f(-W, H), vec2f(W - c, H)));
+    d = min(d, rdSeg(p, vec2f(-W, -H), vec2f(W - c, -H)));
+    d = min(d, rdSeg(p, vec2f(W - c, H), vec2f(W, H - c)));
+    d = min(d, rdSeg(p, vec2f(W - c, -H), vec2f(W, -H + c)));
+    return min(d, rdSeg(p, vec2f(W, H - c), vec2f(W, -H + c)));
+  }
   let letters = array<u32, 22>(247u, 121u, 246u, 777u, 56u, 9270u, 63u, 8435u, 237u, 769u, 57u, 62u, 243u, 3126u, 10352u, 3584u, 189u, 12342u, 63u, 15360u, 255u, 113u);
   let m = letters[i];
   let W = 0.26;
@@ -8611,8 +8624,18 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
         // New York tree guards and stoop railings (gen-tile RAIL_IRON).
         s = paintedSteelC(world, n, 0x9cu, vec3f(0.03, 0.03, 0.032));
       } else if (param == 0x97u) {
-        // New York fire escapes (gen-tile FIRE_ESCAPE): black paint over rust.
-        s = paintedSteelC(world, n, 0x97u, vec3f(0.022, 0.022, 0.024));
+        // New York fire escapes (gen-tile FIRE_ESCAPE): black paint over
+        // rust, a shade off black in a satin coat (its sheen picks up
+        // street and window light). At night a faint warm spill from the
+        // lit windows behind (by floor and bay, not every one), strongest
+        // on the faces turned up and on the edges seen at a grazing angle,
+        // so the ironwork still reads against a dark wall.
+        s = paintedSteelC(world, n, 0x97u, vec3f(0.034, 0.033, 0.034));
+        s.rough = min(s.rough, 0.42);
+        let lit = step(0.4, hash21(floor(world.xz / 2.6) + floor(world.y / 3.2) * 7.3));
+        let vd = normalize(frame.camPos.xyz - world);
+        let rim = pow(1.0 - abs(dot(n, vd)), 2.0);
+        s.emissive += vec3f(1.0, 0.72, 0.42) * nightLight() * mix(0.3, 1.0, lit) * (0.0096 + 0.0064 * max(n.y, 0.0) + 0.024 * rim);
       } else if ((param & ~0xffu) == PAINT_STEEL) {
         s = paintedSteel(world, n, param);
       } else if ((param & ~0xffu) == RAIL_GIRDER) {
