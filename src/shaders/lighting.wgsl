@@ -149,7 +149,9 @@ fn cityReflection(world: vec3f, r: vec3f, spread: vec2f) -> vec4f {
       let far = max(smoothstep(6.0, 40.0, tq), smoothstep(0.4, 1.6, blur / 3.0));
       let winH = step(0.35, fract(along / 3.0)) * step(0.3, fract(q.y / 3.4));
       let win = mix(winH, 0.45, far);
-      let wall = mix(vec3f(0.35, 0.34, 0.32), vec3f(0.05, 0.06, 0.07), win * 0.5);
+      // (The city's mean wall: a third white or off-white, the rest beige
+      // tile, brick and grey.)
+      let wall = mix(vec3f(0.39, 0.37, 0.335), vec3f(0.05, 0.06, 0.07), win * 0.5);
       var c = wall * (frame.skyAmbient.rgb * 0.9 + frame.sunColor.rgb * max(dot(fn_, frame.sunDir.xyz), 0.0) * 0.25);
       let litP = mix(0.05, 0.35, frame.time.w);
       let lit = mix(step(1.0 - litP, hash21(cell + floor(q.xz / 40.0))), litP, far);
