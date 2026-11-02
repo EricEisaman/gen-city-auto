@@ -12,7 +12,9 @@ import {
   type Vec3,
 } from '../math/vec.ts';
 import {CM, CMesh, packMat, triangulate} from './cmesh.ts';
+import {keepLeft, nearside} from './config.ts';
 import {
+  CITI_BLUE,
   LightKind,
   LightList,
   SIGNAL_LUM,
@@ -50,7 +52,7 @@ import {
   SIGN_SETS,
   SIGN_STRIPES,
   SIGN_STYLE,
-  SIGN_WAYS,
+  SIGN_WAY_SETS,
   SIGNS_TOKYO,
   TENANT_NOBORI,
   SIGN_WAY_SHIFT,
@@ -241,7 +243,7 @@ function nyc() {
 
 /** Colourway offset that paints shop sign `id` in the first SIGN_WAYS scheme of `style`. */
 function wayBits(id: number, style: number) {
-  const way = SIGN_WAYS.findIndex(w => w[3] === style);
+  const way = SIGN_WAY_SETS[S.locale].findIndex(w => w[3] === style);
   return (way - id * 5) & 15;
 }
 
@@ -2052,6 +2054,51 @@ function acUnit(
 }
 
 /**
+ * New York window air conditioner in the window at `s` on facade edge `e`
+ * (LOD0), sat on its sill at `y`: a 0.64 x 0.4 m beige case from inside
+ * the window reveal to 0.42 m out (its underside drawn: it is seen from
+ * the street), a dark grille on its face and two angle struts under it to
+ * the wall. 16 triangles.
+ */
+function windowAC(m: CMesh, e: FacadeEdge, s: number, y: number) {
+  const yaw = yawOf(e);
+  m.box(
+    edgeAt(e, s, 0.13, y + 0.2),
+    [0.32, 0.2, 0.29],
+    packMat(CM.paint, 0xe0),
+    yaw,
+    0,
+    false,
+    true,
+  );
+  const g = (ds: number, dy: number) => edgeAt(e, s + ds, 0.425, y + dy);
+  m.quad(
+    [g(-0.28, 0.04), g(0.28, 0.04), g(0.28, 0.34), g(-0.28, 0.34)],
+    e.n,
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+    packMat(CM.frame),
+  );
+  const b = (ds: number, o: number, dy: number) => edgeAt(e, s + ds, o, y + dy);
+  for (const ds of [-0.22, 0.22])
+    m.quad(
+      [
+        b(ds - 0.015, 0, -0.32),
+        b(ds + 0.015, 0, -0.32),
+        b(ds + 0.015, 0.36, 0),
+        b(ds - 0.015, 0.36, 0),
+      ],
+      [e.n[0] * 0.7, -0.7, e.n[2] * 0.7],
+      uv01,
+      packMat(CM.paint, 0x90),
+    );
+}
+
+/**
  * Painted steel (fire stairs, ad frames, sign lattices): CM.paint with param
  * PAINT_STEEL | seed (city-materials.wgsl paintedSteel: chipped paint, rust
  * at joints, streaks; world-space patterns). `seed & 3` picks the colour
@@ -2060,6 +2107,178 @@ function acUnit(
 const PAINT_STEEL = 0x300;
 const steelPaint = (seed: number) =>
   packMat(CM.paint, PAINT_STEEL | (seed & 0xff));
+
+/** CM.paint param of a fire escape: black paint over rust (paintedSteelC). */
+const FIRE_ESCAPE = 0x97;
+
+/**
+ * New York fire escape on facade edge `e` from s0 to s1 (LOD0): a black
+ * iron landing at each of `levels` (floor heights, the second floor up),
+ * 0.8 m deep: its grating plate on two brackets, a pipe top rail round it
+ * over a mid rail and bar balusters, and a flight zig-zagging up to the
+ * next landing (stringer, handrail, open treads); a counterweighted drop
+ * ladder hangs under the lowest. The thin parts are single quads facing
+ * the street (it is seen from below and in front); about 70 triangles a
+ * landing.
+ */
+function fireEscape(
+  m: CMesh,
+  e: FacadeEdge,
+  s0: number,
+  s1: number,
+  levels: number[],
+  mat: number,
+) {
+  const D = 0.8;
+  const P = (s: number, out: number, y: number) => edgeAt(e, s, out, y);
+  const down: Vec3 = [0, -1, 0];
+  // A bar from a to b as a flat strip 2 hw wide facing n.
+  const strip = (a: Vec3, b: Vec3, hw: number, n: Vec3) => {
+    const d: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const c: Vec3 = [
+      n[1] * d[2] - n[2] * d[1],
+      n[2] * d[0] - n[0] * d[2],
+      n[0] * d[1] - n[1] * d[0],
+    ];
+    const k = hw / (Math.hypot(c[0], c[1], c[2]) || 1);
+    const o: Vec3 = [c[0] * k, c[1] * k, c[2] * k];
+    m.quad(
+      [
+        [a[0] - o[0], a[1] - o[1], a[2] - o[2]],
+        [b[0] - o[0], b[1] - o[1], b[2] - o[2]],
+        [b[0] + o[0], b[1] + o[1], b[2] + o[2]],
+        [a[0] + o[0], a[1] + o[1], a[2] + o[2]],
+      ],
+      n,
+      uv01,
+      mat,
+    );
+  };
+  const plate = (sa: number, sb: number, o0: number, o1: number, y: number) => {
+    const q = [P(sa, o0, y), P(sb, o0, y), P(sb, o1, y), P(sa, o1, y)];
+    m.quad(q, UP, uv01, mat);
+    m.quad(
+      q.map(v => [v[0], v[1] - 0.03, v[2]] as Vec3),
+      down,
+      uv01,
+      mat,
+    );
+  };
+  const W = s1 - s0;
+  const nBal = Math.max(2, Math.round(W / 0.55));
+  // Brackets face out and down (seen from the pavement under them).
+  const braceN: Vec3 = [e.n[0] * 0.6, -0.8, e.n[2] * 0.6];
+  levels.forEach((y, i) => {
+    // Grating plate and its front edge, on two brackets.
+    plate(s0, s1, 0, D, y);
+    m.quad(
+      [P(s0, D, y - 0.05), P(s1, D, y - 0.05), P(s1, D, y), P(s0, D, y)],
+      e.n,
+      uv01,
+      mat,
+    );
+    for (const s of [s0 + 0.3, s1 - 0.3])
+      strip(P(s, 0, y - 0.65), P(s, D - 0.05, y - 0.04), 0.02, braceN);
+    // Top rail round the front, mid rail, balusters.
+    m.tube(
+      [
+        P(s0, 0.02, y + 0.95),
+        P(s0, D, y + 0.95),
+        P(s1, D, y + 0.95),
+        P(s1, 0.02, y + 0.95),
+      ],
+      0.018,
+      mat,
+    );
+    strip(P(s0, D, y + 0.45), P(s1, D, y + 0.45), 0.012, e.n);
+    for (let k = 0; k <= nBal; k++) {
+      const s = lerp(s0, s1, k / nBal);
+      strip(P(s, D, y), P(s, D, y + 0.95), k % nBal ? 0.008 : 0.016, e.n);
+    }
+    for (const [s, sg] of [
+      [s0, -1],
+      [s1, 1],
+    ] as const) {
+      const n: Vec3 = [e.along[0] * sg, 0, e.along[2] * sg];
+      strip(P(s, D * 0.5, y), P(s, D * 0.5, y + 0.95), 0.008, n);
+      strip(P(s, 0.02, y + 0.45), P(s, D, y + 0.45), 0.012, n);
+    }
+    // The flight up to the next landing, alternating direction.
+    if (i + 1 < levels.length) {
+      const y2 = levels[i + 1];
+      const [sa, sb] = i % 2 ? [s1 - 0.35, s0 + 0.35] : [s0 + 0.35, s1 - 0.35];
+      strip(P(sa, 0.75, y), P(sb, 0.75, y2), 0.035, e.n);
+      strip(P(sa, 0.75, y + 0.9), P(sb, 0.75, y2 + 0.9), 0.015, e.n);
+      strip(P(sa, 0.35, y), P(sb, 0.35, y2), 0.03, e.n);
+      const T = 4;
+      for (let k = 1; k <= T; k++) {
+        const t = k / (T + 1);
+        const s = lerp(sa, sb, t);
+        plate(s - 0.09, s + 0.09, 0.35, 0.75, lerp(y, y2, t));
+      }
+    } else {
+      // Gooseneck ladder rails up over the coping from the top landing.
+      for (const d of [-0.2, 0.2]) {
+        const s = (s0 + s1) / 2 + d;
+        strip(P(s, 0.12, y + 0.95), P(s, 0.12, y + 2.2), 0.012, e.n);
+      }
+    }
+  });
+  // Drop ladder (counterweighted, raised) under the lowest landing.
+  const y = levels[0];
+  const sl = s0 + 0.45;
+  for (const d of [-0.2, 0.2])
+    strip(P(sl + d, 0.7, y - 0.03), P(sl + d, 0.7, y - 1.5), 0.014, e.n);
+  for (let k = 1; k <= 4; k++)
+    strip(
+      P(sl - 0.2, 0.7, y - k * 0.3),
+      P(sl + 0.2, 0.7, y - k * 0.3),
+      0.01,
+      e.n,
+    );
+}
+
+/**
+ * Fire escape stacks for a New York walk-up's front `e` (edge `ei`): one
+ * two bays wide on the middle of the window field, or two on a wide front,
+ * clear of the core strip; floors from the second up to `topF` where the
+ * wall is open: above the solid plinth and clear of any neighbour standing
+ * in front (`open`).
+ */
+function fireEscapes(
+  m: CMesh,
+  e: FacadeEdge,
+  bay: number,
+  base: number,
+  H: number,
+  topF: number,
+  open: (y: number) => boolean,
+  mat: number,
+) {
+  const bw = bay / e.k;
+  const W = clamp(2 * bw, 2.6, 4.4);
+  const span = e.f1 - e.f0;
+  if (span < W + 0.4) return;
+  const ts = span > 15 ? [0.3, 0.7] : [0.5];
+  const levels: number[] = [];
+  for (let f = 1; f <= topF; f++) {
+    const y = base + GROUND_H + (f - 1) * H;
+    if (open(y)) levels.push(y);
+  }
+  if (levels.length < 2) return;
+  for (const t of ts) {
+    // On a bay line, inside the window field.
+    const mid = e.f0 + Math.round((span * t) / bw) * bw;
+    let s0 = clamp(mid - W / 2, e.f0 + 0.2, e.f1 - 0.2 - W);
+    if (!isNaN(e.core)) {
+      const c0 = e.core - 0.3;
+      const c1 = e.core + CORE_W + 0.3;
+      if (s0 < c1 && s0 + W > c0) s0 = c0 - W >= e.f0 + 0.2 ? c0 - W : c1;
+      if (s0 + W > e.f1 - 0.2) continue;
+    }
+    fireEscape(m, e, s0, s0 + W, levels, mat);
+  }
+}
 
 /**
  * Open steel switchback fire stair on a wall (LOD0): floor landings at
@@ -2392,6 +2611,45 @@ function take(
 const BIKE_COLS = [0xd5, 0x91, 0x5a, 0xa4, 0x79, 0x30, 0x9c, 0xc4];
 
 /**
+ * New York bike-share dock along a frontage a -> c (outward normal `n`),
+ * from fraction t0 (LOD0): `count` dock posts 0.62 m apart 0.35 m off the
+ * wall, a blue bike nose-in at about three in four (hash `h`), and a blue
+ * pay kiosk with a dark screen at the far end.
+ */
+function bikeDock(
+  m: CMesh,
+  hf: Heightfield,
+  base: number,
+  a: Vec2,
+  c: Vec2,
+  n: Vec3,
+  t0: number,
+  count: number,
+  h: number,
+) {
+  const len = dist2(a, c);
+  const yaw = Math.atan2(n[0], n[2]);
+  const at = (t: number, out: number, y: number): Vec3 => {
+    const x = lerp(a[0], c[0], t) + n[0] * out;
+    const z = lerp(a[1], c[1], t) + n[2] * out;
+    return [x, sidewalkY(hf, x, z, base) + y, z];
+  };
+  const post = packMat(CM.metal);
+  for (let k = 0; k < count; k++) {
+    const t = t0 + (k * 0.62) / len;
+    m.box(at(t, 0.35, 0.42), [0.09, 0.42, 0.06], post, yaw);
+    if (hash2(h, k + 7) % 4 === 0) continue;
+    const g = at(t, 1.25, 0);
+    bicycle(m, g, [-n[0], 0, -n[2]], CITI_BLUE, false);
+  }
+  const tk = t0 + (count * 0.62 + 0.3) / len;
+  const kiosk = packMat(CM.paint, CITI_BLUE);
+  m.box(at(tk, 0.4, 0.95), [0.3, 0.95, 0.16], kiosk, yaw);
+  const sc = at(tk, 0.57, 1.3);
+  m.box(sc, [0.24, 0.42, 0.012], packMat(CM.frame), yaw);
+}
+
+/**
  * Street kit in front of one ground-floor tenant (`t`: its type, extent
  * [s0, s1] along the front edge and fascia sign id). `gy` is the pavement
  * and `head` the shopfront head; `pv` hands out pavement slots.
@@ -2437,7 +2695,9 @@ function tenantKit(
     }
   };
   const bikes = (n: number) => {
-    // Parked bicycles side by side, nose to the shop.
+    // Parked bicycles side by side, nose to the shop. (New York: the same
+    // draws and pavement slots, but only about one bike in eight is left
+    // there, and no basket.)
     const s0 = at(rng.range(0.1, 0.6));
     for (let j = 0; j < n; j++) {
       const s = s0 + j * 0.62;
@@ -2448,13 +2708,11 @@ function tenantKit(
         0,
         -e.n[2] * Math.cos(lean) + e.along[2] * Math.sin(lean),
       ];
-      bicycle(
-        m,
-        P(s, 0.95, gy),
-        dir,
-        BIKE_COLS[rng.int(0, BIKE_COLS.length)],
-        rng.chance(0.8),
-      );
+      const col = BIKE_COLS[rng.int(0, BIKE_COLS.length)];
+      const basket = rng.chance(0.8);
+      if (!nyc()) bicycle(m, P(s, 0.95, gy), dir, col, basket);
+      else if (hash2(t.id, Math.round(s * 16)) % 8 === 0)
+        bicycle(m, P(s, 0.95, gy), dir, col, false);
     }
   };
   const plants = () => {
@@ -2578,6 +2836,80 @@ function tenantKit(
   }
 }
 
+/**
+ * Massing of a midrise, pencil, apartment or station: storeys, edge roles,
+ * the stair core, and a set-back or stepped top (the storeys above
+ * `mainTop` stand inset from the footprint). Draws from `rng` (the
+ * building's stream) and `fr` exactly as building() always has.
+ */
+function midriseMassing(b: Building, rng: Rng, fr: Rng) {
+  const fp = b.footprint;
+  const H = b.floorH;
+  const floors = Math.max(1, Math.round(b.height / H));
+  const bodyFloors = floors - 1;
+  const roles = edgeRoles(b);
+  const edgeLen = (i: number) => dist2(fp[i], fp[(i + 1) % fp.length]);
+  // Stair / elevator core expressed on the front (or a street side), ending
+  // in a penthouse at the roof edge.
+  let core: {edge: number; atEnd: boolean} | null = null;
+  if (
+    (b.kind === 'pencil' || (b.kind === 'midrise' && fr.chance(0.8))) &&
+    floors >= 3
+  ) {
+    const ok = (i: number) => edgeLen(i) >= CORE_W + 2.4;
+    const front = roles.findIndex((r, i) => r === ROLE.front && ok(i));
+    const sides = roles
+      .map((r, i) => (r === ROLE.street && ok(i) ? i : -1))
+      .filter(i => i >= 0);
+    const useSide =
+      b.kind !== 'pencil' && sides.length > 0 && (front < 0 || fr.chance(0.5));
+    const edge = useSide ? sides[fr.int(0, sides.length)] : front;
+    if (edge >= 0) core = {edge, atEnd: fr.chance(0.5)};
+  }
+  const setbackTop =
+    !core && b.kind !== 'apartment' && b.height > 20 && rng.chance(0.35);
+  // Stepped top floor on some midrises (with or without a core): the last
+  // storey stands 1.6-2.6 m back behind a railed terrace, so the building
+  // is not a sheer box from behind and above. Own stream; the building
+  // stream is drawn exactly as before.
+  const stepR = new Rng(hash2(b.seed, 0x57ea));
+  const stepPoly =
+    !setbackTop && b.kind === 'midrise' && bodyFloors >= 3 && stepR.chance(0.35)
+      ? inset(fp, stepR.range(1.6, 2.6))
+      : null;
+  const setF = setbackTop
+    ? Math.min(bodyFloors - 1, rng.int(1, 3))
+    : stepPoly
+      ? 1
+      : 0;
+  const mainTop = b.base + GROUND_H + (bodyFloors - setF) * H;
+  return {floors, bodyFloors, roles, core, stepPoly, setF, mainTop};
+}
+
+/** Storeys in a tower's podium (the first draw of the building stream). */
+const podiumFloors = (rng: Rng) => rng.int(2, 5);
+const PODIUM_H = 4.6;
+
+const solidTops = new WeakMap<Building, number>();
+
+/**
+ * The height up to which building `b` fills its whole footprint (absolute
+ * y): a neighbour's wall against it is hidden up to here, not up to its
+ * roof. Towers stand inset above their podium, set-back and stepped
+ * midrises above `mainTop`, houses have a gable over their eaves.
+ */
+export function solidTop(b: Building): number {
+  let y = solidTops.get(b);
+  if (y !== undefined) return y;
+  const rng = new Rng(b.seed);
+  if (b.kind === 'house') y = b.base + b.height - 1.6;
+  else if (b.kind === 'glass' || b.kind === 'tower')
+    y = b.base + podiumFloors(rng) * PODIUM_H;
+  else y = midriseMassing(b, rng, new Rng(hash2(b.seed, 0xfa5))).mainTop;
+  solidTops.set(b, y);
+  return y;
+}
+
 export function building(
   b: Building,
   m: CMesh,
@@ -2694,8 +3026,7 @@ export function building(
   }
 
   if (b.kind === 'glass' || b.kind === 'tower') {
-    const podFloors = rng.int(2, 5);
-    const podTop = base + podFloors * 4.6;
+    const podTop = base + podiumFloors(rng) * PODIUM_H;
     const towerFp = inset(fp, rng.range(3, 8)) ?? shrink(fp, 0.7);
     walls(
       m,
@@ -2857,10 +3188,12 @@ export function building(
   // side, party wall, rear), and window fields hold whole bays between corner
   // piers. New choices come from local streams.
   const H = b.floorH;
-  const floors = Math.max(1, Math.round(b.height / H));
-  const bodyFloors = floors - 1;
   const fr = new Rng(hash2(b.seed, 0xfa5));
-  const roles = edgeRoles(b);
+  const {bodyFloors, roles, core, stepPoly, setF, mainTop} = midriseMassing(
+    b,
+    rng,
+    fr,
+  );
   const bay = facadeBay(b.style);
   const office = b.kind === 'midrise' && hashuf(b.style & 0x1fff) >= 0.4;
   // On quiet streets too, about half the midrises and pencils let the ground
@@ -2874,41 +3207,6 @@ export function building(
     shop = true;
   const roofMat = packMat(CM.roof, b.style & 0xffff);
   const metal = packMat(CM.metal);
-  const edgeLen = (i: number) => dist2(fp[i], fp[(i + 1) % fp.length]);
-  // Stair / elevator core expressed on the front (or a street side), ending
-  // in a penthouse at the roof edge.
-  let core: {edge: number; atEnd: boolean} | null = null;
-  if (
-    (b.kind === 'pencil' || (b.kind === 'midrise' && fr.chance(0.8))) &&
-    floors >= 3
-  ) {
-    const ok = (i: number) => edgeLen(i) >= CORE_W + 2.4;
-    const front = roles.findIndex((r, i) => r === ROLE.front && ok(i));
-    const sides = roles
-      .map((r, i) => (r === ROLE.street && ok(i) ? i : -1))
-      .filter(i => i >= 0);
-    const useSide =
-      b.kind !== 'pencil' && sides.length > 0 && (front < 0 || fr.chance(0.5));
-    const edge = useSide ? sides[fr.int(0, sides.length)] : front;
-    if (edge >= 0) core = {edge, atEnd: fr.chance(0.5)};
-  }
-  const setbackTop =
-    !core && b.kind !== 'apartment' && b.height > 20 && rng.chance(0.35);
-  // Stepped top floor on some midrises (with or without a core): the last
-  // storey stands 1.6-2.6 m back behind a railed terrace, so the building
-  // is not a sheer box from behind and above. Own stream; the building
-  // stream is drawn exactly as before.
-  const stepR = new Rng(hash2(b.seed, 0x57ea));
-  const stepPoly =
-    !setbackTop && b.kind === 'midrise' && bodyFloors >= 3 && stepR.chance(0.35)
-      ? inset(fp, stepR.range(1.6, 2.6))
-      : null;
-  const setF = setbackTop
-    ? Math.min(bodyFloors - 1, rng.int(1, 3))
-    : stepPoly
-      ? 1
-      : 0;
-  const mainTop = base + GROUND_H + (bodyFloors - setF) * H;
   // Top of the stepped / set-back upper storeys.
   const upperTop = mainTop + setF * H;
   // Body uv.y starts at one floor height, so the shader's floor 1 begins on
@@ -3526,9 +3824,35 @@ export function building(
     }
   }
 
+  // New York: no balconies; black iron fire escapes on the front of the
+  // residential walk-ups (up to eight storeys: the balconied ones and half
+  // the rest, by hash), LOD0 only; taller blocks keep a plain front. (`ar`
+  // is drawn only for the balconies.)
+  const topF = bodyFloors - setF;
+  if (
+    nyc() &&
+    b.kind === 'midrise' &&
+    !office &&
+    topF >= 2 &&
+    topF <= 7 &&
+    (frontBalc || hash2(b.seed, 0xf1e5) % 2 === 0)
+  ) {
+    const ei = Math.max(0, roles.indexOf(ROLE.front));
+    if (lod === 0 && edges[ei].count > 0)
+      fireEscapes(
+        m,
+        edges[ei],
+        bay,
+        base,
+        H,
+        topF,
+        y => y >= solidTo[ei] && !hid(ei, y + 1.2),
+        packMat(CM.paint, FIRE_ESCAPE),
+      );
+  }
   // Balconies with solid upstands across the front of residential midrises
   // (deep shadow bands that read from afar): one slab and panel per floor.
-  if (frontBalc) {
+  if (frontBalc && !nyc()) {
     const e = edges[Math.max(0, roles.indexOf(ROLE.front))];
     const trim = fmat(e, FZ.trim, true);
     for (let f = 1; f <= bodyFloors - setF && e.count > 0; f++) {
@@ -3733,7 +4057,14 @@ export function building(
             if (s < 0.6 || s > e.len - 0.6 || signSlot(s)) continue;
             const y = win.strip ? y0 + sillY - 0.75 : y0 + sillY + 0.05;
             if (y < y0 + 0.1) continue;
-            acUnit(m, e, s, 0.3, y, true, true);
+            if (!nyc()) acUnit(m, e, s, 0.3, y, true, true);
+            else if (!win.strip) {
+              // New York: a window unit in the next window instead (none
+              // in ribbon glazing), sat on the sill.
+              const ws = e.f0 + (j + 0.5) * bw;
+              if (ws > 0.6 && ws < e.len - 0.6 && !signSlot(ws))
+                windowAC(m, e, ws, y0 + sillY);
+            }
             units++;
           }
         }
@@ -3804,8 +4135,8 @@ export function building(
     });
   }
 
-  // Balconies on apartments.
-  if (b.kind === 'apartment' && lod === 0) {
+  // Balconies on apartments (none on New York's).
+  if (b.kind === 'apartment' && lod === 0 && !nyc()) {
     for (let i = 0; i < fp.length; i++) {
       if (!b.frontage[i]) continue;
       const a = fp[i],
@@ -4155,7 +4486,7 @@ export function building(
         lights.add(
           wallAt(t, 1.95, lightY),
           8,
-          signGlow(id, signVariant),
+          signGlow(id, signVariant, S.locale),
           LightKind.sign,
         );
     }
@@ -4189,7 +4520,7 @@ export function building(
         // Each sign lights the wall around it in its own colour: a small,
         // dim light just in front of it (tight falloff, so the brick still
         // reads under the tint). Same at every LOD, so shells match.
-        const c = signGlow(id, signVariant);
+        const c = signGlow(id, signVariant, S.locale);
         lights.add(
           wallAt(t, 1.0, yc),
           3.5,
@@ -4382,7 +4713,7 @@ export function building(
       lights.add(
         wallAt((main.s0 + main.s1) / 2 / len, 1.8, y - 0.8),
         7,
-        signGlow(main.id, signVariant),
+        signGlow(main.id, signVariant, S.locale),
         LightKind.sign,
       );
       if (lod === 0) {
@@ -5148,7 +5479,8 @@ export function building(
           )
             acS = c;
         }
-        if (acS >= 0) {
+        // (New York's party walls stay blank: same draws, no bank.)
+        if (acS >= 0 && !nyc()) {
           let topY = -Infinity;
           const sD = acS + span - 0.1;
           for (let r = 0; r < rows; r++)
@@ -5900,7 +6232,7 @@ export function building(
         }
       }
     });
-    if (rearBalc) {
+    if (rearBalc && !nyc()) {
       // Rear balconies: a slab per upper floor, a balustrade panel (homes:
       // solid upstand in the trim tone, with frosted partitions between
       // flats; offices: ribbed steel sheet) under a pipe rail, end panels,
@@ -7581,7 +7913,9 @@ const PUSH_FACE = 0xea;
  * plate (PUSH_FACE) 1.5 mm proud of the front.
  */
 function pushButton(m: CMesh, c: Vec3, f: Vec2) {
-  m.box(c, [0.1, 0.15, 0.06], packMat(CM.paint, 0x92), Math.atan2(f[0], f[1]));
+  // (Yellow in Tokyo; New York's are dark green, as the poles.)
+  const housing = packMat(CM.paint, nyc() ? NYC_GREEN : 0x92);
+  m.box(c, [0.1, 0.15, 0.06], housing, Math.atan2(f[0], f[1]));
   signBoardFace(
     m,
     [c[0] + f[0] * 0.0615, c[1] + 0.01, c[2] + f[1] * 0.0615],
@@ -7634,6 +7968,15 @@ const STAND: number[][] = [
   [-0.058, -0.03, -0.04, -0.03, -0.04, 0.06, -0.058, 0.055],
   [0.04, -0.03, 0.058, -0.03, 0.058, 0.055, 0.04, 0.06],
 ];
+// New York's upper head: a raised hand (palm, four fingers, thumb).
+const HAND: number[][] = [
+  [-0.05, -0.1, 0.045, -0.1, 0.05, 0.02, -0.05, 0.02],
+  [-0.05, 0.02, -0.028, 0.02, -0.028, 0.085, -0.05, 0.08],
+  [-0.023, 0.02, -0.001, 0.02, -0.001, 0.105, -0.023, 0.105],
+  [0.004, 0.02, 0.026, 0.02, 0.026, 0.1, 0.004, 0.1],
+  [0.031, 0.02, 0.05, 0.02, 0.05, 0.075, 0.031, 0.078],
+  [-0.05, -0.05, -0.05, -0.015, -0.085, 0.025, -0.1, 0.01],
+];
 const WALK: number[][] = [
   [-0.02, -0.03, 0.03, -0.03, 0.045, 0.065, -0.008, 0.065],
   [-0.075, -0.135, -0.05, -0.135, 0.005, -0.025, -0.022, -0.025],
@@ -7651,7 +7994,8 @@ function pictogram(m: CMesh, c: Vec3, f: Vec2, stand: boolean, mat: number) {
     c[2] + rz * u,
   ];
   const uv = (u: number, v: number): Vec2 => [0.5 + u / 0.34, 0.5 - v / 0.34];
-  for (const q of stand ? STAND : WALK) {
+  const hand = stand && nyc();
+  for (const q of hand ? HAND : stand ? STAND : WALK) {
     const pts = [0, 2, 4, 6].map(k => P(q[k], q[k + 1]));
     m.quad(
       pts,
@@ -7660,6 +8004,7 @@ function pictogram(m: CMesh, c: Vec3, f: Vec2, stand: boolean, mat: number) {
       mat,
     );
   }
+  if (hand) return;
   const hc = stand ? [0, 0.105] : [0.025, 0.105];
   const mid = m.vertex(P(hc[0], hc[1]), n, ...uv(hc[0], hc[1]), mat);
   const ring: number[] = [];
@@ -7774,13 +8119,16 @@ function signBoardFace(
  * above it; the junction luminaire arm at SIGNAL_LUM.h toward the box
  * centre with its head(s) `lums` (signalLums; shared pole); arm-joint
  * collars; one or two regulatory plates on the column. (The controller
- * cabinet stands on the ground: junctionFixtures.)
+ * cabinet stands on the ground: junctionFixtures.) The head and plates
+ * face `face` (signalSpots), the lenses green, yellow, red from the
+ * reader's left to right whichever side the pole stands on.
  */
 function signal(
   m: CMesh,
   p: Vec3,
   armDir: Vec2,
   reach: number,
+  face: Vec2,
   phase: number,
   group: number,
   name: number,
@@ -7829,8 +8177,8 @@ function signal(
     grey,
     true,
   );
-  // Head faces back toward oncoming traffic (perpendicular to the arm).
-  const face: Vec2 = [armDir[1], -armDir[0]];
+  // The reader's right (the reader travels along -face).
+  const across: Vec2 = [face[1], -face[0]];
   const fyaw = Math.atan2(face[0], face[1]);
   const hc: Vec3 = [
     end[0] - armDir[0] * 0.7,
@@ -7861,9 +8209,9 @@ function signal(
   for (let k = 0; k < 3; k++) {
     const off = (k - 1) * 0.4;
     const lp: Vec3 = [
-      hc[0] - armDir[0] * off + face[0] * 0.125,
+      hc[0] + across[0] * off + face[0] * 0.125,
       hc[1],
-      hc[2] - armDir[1] * off + face[1] * 0.125,
+      hc[2] + across[1] * off + face[1] * 0.125,
     ];
     // Lamp 0 green/blue, 1 yellow, 2 red: dark glass unless lit.
     disc(
@@ -7884,9 +8232,9 @@ function signal(
     const y = hc[1] - 0.17 + k * 0.085;
     const b0 = 0.115;
     const P = (u: number, dy: number, back: number): Vec3 => [
-      hc[0] - armDir[0] * u - face[0] * back,
+      hc[0] + across[0] * u - face[0] * back,
       y + dy,
-      hc[2] - armDir[1] * u - face[1] * back,
+      hc[2] + across[1] * u - face[1] * back,
     ];
     m.quad(
       [
@@ -7967,6 +8315,253 @@ function signal(
 }
 
 /**
+ * CM.paint param of New York's dark green signal mast arms and sign
+ * brackets (the shader paints POLE_PAINT columns the same green in the New
+ * York locale).
+ */
+const NYC_GREEN = 0x96;
+
+/**
+ * US vehicle signal head centred at c facing `face`: a black housing with
+ * three 30 cm lenses stacked red over yellow over green, a tunnel visor
+ * over each.
+ */
+function usHead(
+  m: CMesh,
+  c: Vec3,
+  face: Vec2,
+  group: number,
+  phase: number,
+  housing: number,
+) {
+  m.box(c, [0.2, 0.55, 0.12], housing, Math.atan2(face[0], face[1]));
+  for (let k = 0; k < 3; k++) {
+    // Lamp 0 green (bottom), 1 yellow, 2 red (top).
+    const lp: Vec3 = [
+      c[0] + face[0] * 0.125,
+      c[1] + (k - 1) * 0.36,
+      c[2] + face[1] * 0.125,
+    ];
+    disc(
+      m,
+      lp,
+      face,
+      0.14,
+      10,
+      packMat(CM.signal, signalParam(k, group, phase)),
+    );
+    hood(m, lp, face, 0.165, 0.165, 0.24, housing, true);
+  }
+}
+
+/** Mast arm height of a New York signal (usSignal). */
+const US_ARM_Y = 6.2;
+
+/**
+ * New York traffic signal on its pole (signal()'s spot and junction
+ * luminaire): a dark green mast arm at US_ARM_Y with vertical heads hung
+ * from it (one at the end, a second over the near lanes of a wide
+ * approach), the green street name sign on the arm by the pole, and a
+ * regulatory plate strapped to the column (ONE WAY, DON'T BLOCK THE BOX or
+ * DO NOT ENTER). Heads and plates face `face` (signalSpots).
+ */
+function usSignal(
+  m: CMesh,
+  p: Vec3,
+  armDir: Vec2,
+  reach: number,
+  face: Vec2,
+  phase: number,
+  group: number,
+  name: number,
+  lums: [Vec3, Vec2, number, boolean][],
+) {
+  const green = packMat(CM.paint, NYC_GREEN);
+  const black = packMat(CM.paint, 0x91);
+  const column = packMat(CM.paint, POLE_PAINT);
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.12,
+    SIGNAL_LUM.h + 0.25 + SINK,
+    12,
+    column,
+    false,
+  );
+  poleFoot(
+    m,
+    p,
+    0.12,
+    column,
+    green,
+    16,
+    [-armDir[0], -armDir[1]],
+    [2.45, 3.15],
+    true,
+  );
+  const y = p[1] + US_ARM_Y;
+  const top: Vec3 = [p[0], y, p[2]];
+  const end: Vec3 = [p[0] + armDir[0] * reach, y, p[2] + armDir[1] * reach];
+  m.beam(top, end, 0.07, 0.07, green);
+  m.cylinder([p[0], y - 0.2, p[2]], 0.17, 0.38, 8, green, false);
+  m.cylinder(
+    [p[0], p[1] + SIGNAL_LUM.h - 0.18, p[2]],
+    0.16,
+    0.45,
+    8,
+    green,
+    true,
+  );
+  for (const at of reach > 6 ? [reach - 0.6, reach * 0.5] : [reach - 0.6]) {
+    const hx = p[0] + armDir[0] * at;
+    const hz = p[2] + armDir[1] * at;
+    m.tube(
+      [
+        [hx, y, hz],
+        [hx, y - 0.3, hz],
+      ],
+      0.03,
+      green,
+    );
+    usHead(m, [hx, y - 0.85, hz], face, group, phase, black);
+  }
+  // Street name sign on the arm near the pole.
+  const nc: Vec3 = [p[0] + armDir[0] * 1.7, y + 0.3, p[2] + armDir[1] * 1.7];
+  signBoard(
+    m,
+    nc,
+    face,
+    0.6,
+    0.15,
+    0.015,
+    packMat(CM.roadSign, 24 + (name & 7)),
+    packMat(CM.roadSign, (24 + (name & 7)) | 0x100),
+  );
+  for (const d of [-0.4, 0.4])
+    m.tube(
+      [
+        [nc[0] + armDir[0] * d, y, nc[2] + armDir[1] * d],
+        [nc[0] + armDir[0] * d, y + 0.16, nc[2] + armDir[1] * d],
+      ],
+      0.015,
+      green,
+    );
+  // Junction luminaires (shared pole).
+  const lt: Vec3 = [p[0], p[1] + SIGNAL_LUM.h, p[2]];
+  m.beam(lt, lums[lums.length - 1][0], 0.05, 0.05, green);
+  for (const [h, dir] of lums) {
+    m.box(
+      [h[0], h[1] - 0.1, h[2]],
+      [0.35, 0.06, 0.15],
+      packMat(CM.lamp, 1),
+      Math.atan2(dir[1], -dir[0]),
+    );
+  }
+  // A regulatory plate strapped to the column, facing the approach.
+  const rh = hash2(name * 4 + Math.round(p[0] * 4), Math.round(p[2] * 4));
+  const kind = [3, 3, 2, 5][rh & 3];
+  const plate =
+    kind === 3
+      ? (rh >>> 3) & 1
+        ? US_SIGN.oneWayRight
+        : US_SIGN.oneWayLeft
+      : kind === 2
+        ? US_SIGN.dontBlock
+        : US_SIGN.doNotEnter;
+  const hh = US_PLATE[plate - US_SIGN.speed][1];
+  const pc: Vec3 = [p[0] + face[0] * 0.15, p[1] + 3.75, p[2] + face[1] * 0.15];
+  usPlate(m, pc, face, plate);
+  for (const dy of [-hh * 0.6, hh * 0.6])
+    m.tube(
+      [
+        [p[0], pc[1] + dy, p[2]],
+        [pc[0] - face[0] * 0.012, pc[1] + dy, pc[2] - face[1] * 0.012],
+      ],
+      0.02,
+      packMat(CM.paint, 0x90),
+    );
+}
+
+/**
+ * New York regulatory signs (CM.roadSign kinds; city-materials.wgsl
+ * roadSignMat draws them in the New York locale): white SPEED LIMIT 25,
+ * red-on-white NO PARKING and NO STANDING ANYTIME, black ONE WAY arrows,
+ * DON'T BLOCK THE BOX and DO NOT ENTER.
+ */
+const US_SIGN = {
+  speed: 6,
+  noParking: 7,
+  oneWayRight: 8,
+  oneWayLeft: 9,
+  doNotEnter: 10,
+  noStanding: 11,
+  dontBlock: 12,
+} as const;
+/** Half width and height (m) of each US_SIGN plate, from US_SIGN.speed. */
+const US_PLATE: [number, number][] = [
+  [0.3, 0.375],
+  [0.3, 0.45],
+  [0.45, 0.15],
+  [0.45, 0.15],
+  [0.3, 0.3],
+  [0.3, 0.45],
+  [0.3, 0.375],
+];
+
+/** A flat US sign plate of kind `kind` (US_SIGN) centred at c facing f. */
+function usPlate(m: CMesh, c: Vec3, f: Vec2, kind: number) {
+  const [hw, hh] = US_PLATE[kind - US_SIGN.speed];
+  // (uv mirrored: signBoard's u runs right to left as the reader sees it.)
+  signBoard(
+    m,
+    c,
+    f,
+    hw,
+    hh,
+    0.006,
+    packMat(CM.roadSign, kind),
+    packMat(CM.roadSign, kind | 0x100),
+    [1, 0, 0, 1],
+  );
+}
+
+/**
+ * New York sign post at p facing f (regSign()'s spot): a galvanised
+ * square post with SPEED LIMIT 25 (kinds 0, 1) or NO PARKING (2) at
+ * height h and, where Tokyo hangs the crossing square, NO STANDING ANYTIME
+ * under it.
+ */
+function usRegSign(
+  m: CMesh,
+  p: Vec3,
+  f: Vec2,
+  kind: number,
+  second: boolean,
+  h: number,
+) {
+  const plate = kind <= 1 ? US_SIGN.speed : US_SIGN.noParking;
+  const hh = US_PLATE[plate - US_SIGN.speed][1];
+  const top = h + hh + 0.05;
+  m.cylinder(
+    [p[0], p[1] - SINK, p[2]],
+    0.03,
+    top + SINK,
+    4,
+    packMat(CM.paint, 0x90),
+    true,
+  );
+  usPlate(m, [p[0] + f[0] * 0.04, p[1] + h, p[2] + f[1] * 0.04], f, plate);
+  if (second) {
+    const h2 = h - hh - 0.5;
+    usPlate(
+      m,
+      [p[0] + f[0] * 0.04, p[1] + h2, p[2] + f[1] * 0.04],
+      f,
+      US_SIGN.noStanding,
+    );
+  }
+}
+
+/**
  * Overhead guide sign (案内標識) on an F-type pole at `p`: column, arm at
  * 7.2 m reaching `reach` toward the road (`inward`), a panel of half size
  * hw x hh (bottom at 5 m, centred `at` metres out) facing traffic `f`. The
@@ -7992,7 +8587,8 @@ function guideSign(
     0.18,
     7.6 + SINK,
     lod === 0 ? 8 : 4,
-    packMat(CM.paint, POLE_PAINT),
+    // (New York: a galvanised column, as its arms.)
+    nyc() ? packMat(CM.metal, LAMP_METAL) : packMat(CM.paint, POLE_PAINT),
     lod === 0,
   );
   const pc: Vec3 = [
@@ -8805,16 +9401,19 @@ function neighbourGrid(L: CityLayout) {
  * How high each footprint edge of building `bi` is hidden by neighbours
  * standing against it (absolute y; -Infinity where any of it is open):
  * samples `off` metres in front of the edge at fractions `ts`, each
- * covered to the top of the building it falls in, the edge to the lowest
- * of them. 1 m out: a gap too narrow to see into, where service kit would
- * never be seen (or would stick into the neighbour); 0.3 m out, sampled
- * to the corners: walls flush against a neighbour, not drawn at all.
+ * covered to the height the building it falls in fills its footprint to
+ * (`topOf`; not its roof: a tower's shaft stands back from its podium edge),
+ * the edge to the lowest of them. 1 m out: a gap too narrow to see into,
+ * where service kit would never be seen (or would stick into the
+ * neighbour); 0.3 m out, sampled to the corners: walls flush against a
+ * neighbour, not drawn at all.
  */
-function edgeCover(
+export function edgeCover(
   L: CityLayout,
   bi: number,
   off = 1.0,
-  ts = [0.15, 0.5, 0.85],
+  ts = FLUSH_TS,
+  topOf: (b: Building) => number = solidTop,
 ): number[] {
   const b = L.buildings[bi];
   const fp = b.footprint;
@@ -8833,13 +9432,56 @@ function edgeCover(
       for (const j of g.get(k) ?? []) {
         const o = L.buildings[j];
         if (j !== bi && pointInPolygon(q, o.footprint))
-          top = Math.max(top, o.base + o.height);
+          top = Math.max(top, topOf(o));
       }
       cover = Math.min(cover, top);
       if (cover === -Infinity) break;
     }
     return cover;
   });
+}
+
+const FLUSH_OFF = 0.3;
+const FLUSH_TS = [0.02, 0.25, 0.5, 0.75, 0.98];
+
+/**
+ * Wall area (m^2) of building `bi` that building() would leave out as flush
+ * against a neighbour, with neighbours taken to fill their footprints up to
+ * `topOf`, but that stands clear of what they really fill (solidTop): walls
+ * missing in plain view. Zero by construction for topOf = solidTop; with
+ * the old roof heights (b => b.base + b.height) it counts the walls lost
+ * beside towers above their podium and set-back tops.
+ */
+export function exposedFlushWalls(
+  L: CityLayout,
+  bi: number,
+  topOf: (b: Building) => number,
+): number {
+  const b = L.buildings[bi];
+  if (b.kind === 'house' || b.kind === 'glass' || b.kind === 'tower') return 0;
+  const {roles, mainTop} = midriseMassing(
+    b,
+    new Rng(b.seed),
+    new Rng(hash2(b.seed, 0xfa5)),
+  );
+  const flush = edgeCover(L, bi, FLUSH_OFF, FLUSH_TS, topOf);
+  const truth = edgeCover(L, bi, FLUSH_OFF, FLUSH_TS);
+  const fp = b.footprint;
+  // building()'s wall bands on the footprint: base, body, crown.
+  const bands = [
+    [b.low, b.base + GROUND_H],
+    [b.base + GROUND_H, mainTop],
+    [mainTop, mainTop + CROWN_H],
+  ];
+  let area = 0;
+  fp.forEach((a, i) => {
+    if (roles[i] < ROLE.party) return;
+    const len = dist2(a, fp[(i + 1) % fp.length]);
+    for (const [y0, y1] of bands)
+      if (y1 > y0 && flush[i] >= y1 + 0.05 && truth[i] < y1 - 0.5)
+        area += len * (y1 - Math.max(y0, truth[i]));
+  });
+  return area;
 }
 
 const DECK_CELL = 8;
@@ -9016,6 +9658,88 @@ function guideJunction(L: CityLayout, ci: number, end: 0 | 1) {
 }
 
 /**
+ * Overhead guide sign spots on avenue / arterial chain `ci`: the advance
+ * direction signs 60-89 m before a signalized junction, facing the traffic
+ * coming up to it, and the direction-and-distance signs 35-50 m past one,
+ * facing the traffic leaving it. `s` is the arc position, `dir` the
+ * reading traffic's direction (+1: along the chain, the sign facing back
+ * along it), `side` the kerb the sign stands on, that traffic's nearside
+ * (config.ts nearside(): +1 is (-dz, dx) of the chain direction d, its
+ * right), so the panel hangs over the lanes of the traffic that reads it;
+ * `face` the guide face, `dist` a distance sign.
+ *
+ * Both kinds face the same traffic from the same kerb when one junction's
+ * departing traffic is the next one's approaching traffic, so on a short
+ * chain the distance sign stood in the advance sign's panel. It keeps
+ * GUIDE_GAP metres clear of it: moved nearer the junction it leaves (at
+ * least 20 m past it), else left out.
+ */
+export function guideSpots(L: CityLayout, geom: RoadGeom, ci: number) {
+  const c = L.chains[ci];
+  const out: {
+    s: number;
+    dir: 1 | -1;
+    side: number;
+    face: number;
+    dist: boolean;
+  }[] = [];
+  // Nearside of traffic travelling `dir` along the chain (as nearside()).
+  const kerb = (dir: 1 | -1) => -dir * keepLeft(L.params);
+  const arc = geom.arc[ci];
+  const total = arc[arc.length - 1];
+  const [s0, s1] = geom.setbacks[ci];
+  const len = total - s0 - s1;
+  if (len < 30) return out;
+  const signal = (end: 0 | 1) => {
+    const ji = guideJunction(L, ci, end);
+    return ji >= 0 && L.junctions[ji].signal && !L.hidden?.junctions[ji];
+  };
+  // Advance signs: facing the traffic coming up to this end.
+  for (const end of [0, 1] as const) {
+    if (len < 70) break;
+    if (!signal(end)) continue;
+    const h = hash2(ci * 2 + end, 0x5197);
+    if (c.kind === Road.avenue && h % 2) continue;
+    const back = 60 + ((h >>> 4) % 30);
+    const dir = end === 1 ? 1 : -1;
+    out.push({
+      s: end === 0 ? s0 + back : total - s1 - back,
+      dir,
+      side: kerb(dir),
+      face: (h >>> 8) % GUIDE_DIR,
+      dist: false,
+    });
+  }
+  // Distance signs: facing the traffic running away from this end.
+  for (const end of [0, 1] as const) {
+    if (!signal(end)) continue;
+    const h = hash2(ci * 2 + end, 0xd157);
+    if (c.kind === Road.avenue && h % 3 === 0) continue;
+    const dir = end === 0 ? 1 : -1;
+    // (Arc distance from the departed junction's end.)
+    let fwd = Math.min(35 + ((h >>> 4) % 16), len * 0.5);
+    const adv = out.find(g => !g.dist && g.dir === dir);
+    if (adv) {
+      const at = end === 0 ? adv.s - s0 : total - s1 - adv.s;
+      if (Math.abs(at - fwd) < GUIDE_GAP) {
+        if (at - GUIDE_GAP < 20) continue;
+        fwd = at - GUIDE_GAP;
+      }
+    }
+    out.push({
+      s: end === 0 ? s0 + fwd : total - s1 - fwd,
+      dir,
+      side: kerb(dir),
+      face: GUIDE_DIR + ((h >>> 8) % (GUIDE_FACES.length - GUIDE_DIR)),
+      dist: true,
+    });
+  }
+  return out;
+}
+/** Least arc distance between two guide signs for one direction (guideSpots). */
+const GUIDE_GAP = 25;
+
+/**
  * Paving height `u` metres in from the kerb of chain point `q` on side `l`
  * (unit 2D, away from the road): the curb band (gen-base blocks()) runs
  * from the kerb top (road + 0.17) to the graded ground at its inner edge
@@ -9048,11 +9772,381 @@ function bandY(
 }
 
 /**
+ * Tree pit at `p` (LOD0), square to the kerb (`d` along the road, `l`
+ * across it, the kerb on side `kerbV` of l): a cast-iron grate in its
+ * 1.2 m pit, set in a 9 cm precast frame standing 2.5 cm proud of the
+ * paving. New York: an open soil pit behind a low iron guard on its three
+ * walk sides (open to the kerb).
+ */
+function treePit(m: CMesh, p: Vec3, d: Vec2, l: Vec2, kerbV: number) {
+  const [x, , z] = p;
+  const P = (u: number, v: number, r = 0.6, y = 0.02): Vec3 => [
+    x + d[0] * u * r + l[0] * v * r,
+    p[1] + y,
+    z + d[1] * u * r + l[1] * v * r,
+  ];
+  m.quad(
+    [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)],
+    [0, 1, 0],
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+    packMat(CM.hedge, nyc() ? TREE_PIT_SOIL : 1),
+  );
+  if (nyc()) treeGuard(m, P, kerbV);
+  const fr = packMat(CM.curb, 1);
+  const C: [number, number][] = [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ];
+  const inner = C.map(([u, v]) =>
+    m.vertex(P(u, v, 0.6, 0.025), UP, u * 0.6, v * 0.6, fr),
+  );
+  const outer = C.map(([u, v]) =>
+    m.vertex(P(u, v, 0.69, 0.025), UP, u * 0.69, v * 0.69, fr),
+  );
+  for (let k = 0; k < 4; k++) {
+    const k1 = (k + 1) & 3;
+    m.triFacing(inner[k], outer[k], outer[k1], UP);
+    m.triFacing(inner[k], outer[k1], inner[k1], UP);
+  }
+}
+
+/**
+ * Spots (arc length s, and a seed) of New York side-street trees on side
+ * `side` of chain `ci`: 15-22 m apart with gaps, from a hash of the chain
+ * and side.
+ */
+function nycStreetTreeS(ctx: TileContext, ci: number, side: number) {
+  const arc = ctx.geom.arc[ci];
+  const total = arc[arc.length - 1];
+  const [s0, s1] = ctx.geom.setbacks[ci];
+  const hs = hash2(ci * 2 + (side > 0 ? 1 : 0), 0x57ee);
+  const out: {s: number; h: number}[] = [];
+  for (
+    let s = s0 + 9 + (hs % 9), k = 0;
+    s < total - s1 - 9;
+    s += 15 + (hash2(hs, k) % 8), k++
+  )
+    if (hash2(hs, k + 101) % 10 >= 3) out.push({s, h: hash2(hs, k + 211)});
+  return out;
+}
+
+/** Avenue tree spots (arc length) on side `side` of chain `ci` near s. */
+function avenuePits(ctx: TileContext, ci: number, side: number, s: number) {
+  const arc = ctx.geom.arc[ci];
+  const total = arc[arc.length - 1];
+  const [s0, s1] = ctx.geom.setbacks[ci];
+  const out: number[] = [];
+  for (let s0t = s0 + 10; s0t < total - s1 - 8; s0t += 13)
+    if (Math.abs(s0t - s) < 20) {
+      const st = avenueTreeS(ctx.layout, ctx.geom, ci, side, s0t);
+      if (!Number.isNaN(st)) out.push(st);
+    }
+  return out;
+}
+
+/** CM.paint params of New York stoops: brownstone, and the door's wood. */
+const BROWNSTONE = 0x9a;
+const DOOR_WOOD = 0x9b;
+/** CM.paint param of low black ironwork: tree guards, stoop railings. */
+const RAIL_IRON = 0x9c;
+
+/**
+ * New York stoops (LOD0): on about six in ten of the homes (houses, and
+ * three-to-five storey residential midrises with no shop or office below)
+ * whose front leaves room, a brownstone stoop of 6-10 steps (0.28 m
+ * goings) rising square off the front wall to a 0.8 m landing at a raised
+ * parlour door, black iron railings both sides (handrail, newel and wall
+ * posts, balusters), the door in dark wood under a stone hood and a small
+ * lamp beside it. It stands a quarter or three quarters along the front
+ * and leaves a clear walk to the kerb (1.6 m, or past the tree pits on
+ * avenues); clear of street lights and other buildings. Placement is a
+ * hash of the building seed (no draws). About 250 triangles.
+ */
+function stoops(
+  ctx: TileContext,
+  tile: number,
+  m: CMesh,
+  land: ReturnType<typeof landing>,
+  poles: Vec2[],
+) {
+  const L = ctx.layout;
+  const hf = L.terrain.heights;
+  const grid = neighbourGrid(L);
+  const T = 0.26;
+  const W = 0.8;
+  const L0 = 0.65;
+  const stone = packMat(CM.paint, BROWNSTONE);
+  const iron = packMat(CM.paint, RAIL_IRON);
+  for (const bi of ctx.tileBuildings[tile] ?? []) {
+    const b = L.buildings[bi];
+    if (b.front < 0) continue;
+    const h = hash2(b.seed, 0x5700);
+    if (h % 10 >= 6) continue;
+    const floors = Math.round(b.height / b.floorH);
+    const home =
+      b.kind === 'house' ||
+      (b.kind === 'midrise' &&
+        floors >= 3 &&
+        floors <= 5 &&
+        b.density <= 0.15 &&
+        hashuf(b.style & 0x1fff) < 0.4 &&
+        !new Rng(hash2(b.seed, 0x5409)).chance(0.5));
+    if (!home) continue;
+    const fp = b.footprint;
+    const a = fp[b.front];
+    const c = fp[(b.front + 1) % fp.length];
+    const len = dist2(a, c);
+    if (len < 2 * W + 1.6) continue;
+    const u: Vec2 = [(c[0] - a[0]) / len, (c[1] - a[1]) / len];
+    const n3 = edgeNormal(fp, b.front);
+    const n: Vec2 = [n3[0], n3[2]];
+    const sa = Math.min(
+      Math.max(len * ((h >> 4) & 1 ? 0.25 : 0.75), W + 0.6),
+      len - W - 0.6,
+    );
+    const at = (s: number, o: number): Vec2 => [
+      a[0] + u[0] * s + n[0] * o,
+      a[1] + u[1] * s + n[1] * o,
+    ];
+    // Kerb straight ahead (the first carriageway point out from the
+    // wall, 0.1 m steps), and whose kerb it is.
+    let kd = -1;
+    for (let o = 0.5; o < 8 && kd < 0; o += 0.1) {
+      const q = at(sa, o);
+      if (land.onCarriageway(q[0], q[1], -1)) kd = o - 0.25;
+    }
+    if (kd < 0) continue;
+    const kq = at(sa, kd + 0.3);
+    const near = land.nearest(kq[0], kq[1], 0.5);
+    if (!near) continue;
+    const ch = L.chains[near.ci];
+    const clear = 1.3;
+    // Clear of the street trees' pits on this kerb.
+    const pits =
+      ch.kind >= Road.avenue
+        ? avenuePits(ctx, near.ci, near.side, near.s)
+        : ch.kind === Road.street
+          ? nycStreetTreeS(ctx, near.ci, near.side).map(t => t.s)
+          : [];
+    if (pits.some(ps => Math.abs(ps - near.s) < W + 0.85)) continue;
+    // And of New York's short avenue planters (hedges(): one 2.6 m step
+    // just past some driveway gaps).
+    if (ch.kind >= Road.avenue) {
+      const total = ctx.geom.arc[near.ci].at(-1)!;
+      const [s0, s1] = ctx.geom.setbacks[near.ci];
+      const hk = near.ci * 2 + near.side;
+      let gapAt = s0 + 8 + 35 + (hash2(hk, 0x4ed) % 16);
+      let hit = false;
+      while (gapAt < total - s1 && gapAt < near.s + 10 && !hit) {
+        const g = gapAt + 2;
+        if (
+          hash2(hk, Math.floor(g) ^ 0x91a7) % 10 < 3 &&
+          near.s + W + 0.6 > g - 0.3 &&
+          near.s - W - 0.6 < g + 2.9
+        )
+          hit = true;
+        gapAt += 35 + (hash2(hk, Math.floor(g)) % 16);
+      }
+      if (hit) continue;
+    }
+    const N = Math.min(10, Math.floor((kd - clear - L0) / T));
+    if (N < 6) continue;
+    const D = L0 + N * T;
+    // Ground at the foot, and the parlour floor about 0.17 m a step up.
+    const foot = at(sa, D);
+    const y0 = sidewalkY(hf, foot[0], foot[1], b.base);
+    const yTop = b.base + N * 0.17;
+    const rise = (yTop - y0) / N;
+    if (rise < 0.13 || rise > 0.21) continue;
+    // Clear of other buildings, the carriageway and street lights.
+    const corners = [
+      at(sa - W, D),
+      at(sa + W, D),
+      at(sa - W, 0.3),
+      at(sa + W, 0.3),
+    ];
+    const blocked = corners.some(q => {
+      if (!land.ok(q[0], q[1], near.ci)) return true;
+      const k = Math.floor(q[0] / NB_CELL) * 65536 + Math.floor(q[1] / NB_CELL);
+      return (grid.get(k) ?? []).some(
+        j => j !== bi && pointInPolygon(q, L.buildings[j].footprint),
+      );
+    });
+    if (blocked) continue;
+    const fc = at(sa, D / 2);
+    if (
+      poles.some(
+        q =>
+          Math.hypot(q[0] - fc[0], q[1] - fc[1]) < Math.hypot(W, D / 2) + 0.5,
+      )
+    )
+      continue;
+    const P = (s: number, o: number, y: number): Vec3 => {
+      const q = at(sa + s, o);
+      return [q[0], y, q[1]];
+    };
+    const N3: Vec3 = [n[0], 0, n[1]];
+    const U3: Vec3 = [u[0], 0, u[1]];
+    const quad = (q: Vec3[], nn: Vec3, w: number, hh: number) =>
+      m.quad(
+        q,
+        nn,
+        [
+          [0, 0],
+          [w, 0],
+          [w, hh],
+          [0, hh],
+        ],
+        stone,
+      );
+    const yBot = Math.min(y0, b.base) - SINK;
+    // Treads, risers and the cheek faces of each step, then the landing.
+    for (let k = 0; k < N; k++) {
+      const oOut = D - k * T;
+      const oIn = oOut - T;
+      const yk = y0 + (k + 1) * rise;
+      const yp = y0 + k * rise;
+      quad(
+        [P(-W, oOut, yk), P(W, oOut, yk), P(W, oIn, yk), P(-W, oIn, yk)],
+        UP,
+        2 * W,
+        T,
+      );
+      quad(
+        [P(-W, oOut, yp), P(W, oOut, yp), P(W, oOut, yk), P(-W, oOut, yk)],
+        N3,
+        2 * W,
+        rise,
+      );
+      for (const f of [-1, 1])
+        quad(
+          [
+            P(f * W, oIn, yBot),
+            P(f * W, oOut, yBot),
+            P(f * W, oOut, yk),
+            P(f * W, oIn, yk),
+          ],
+          [U3[0] * f, 0, U3[2] * f],
+          T,
+          yk - yBot,
+        );
+    }
+    quad(
+      [P(-W, L0, yTop), P(W, L0, yTop), P(W, 0, yTop), P(-W, 0, yTop)],
+      UP,
+      2 * W,
+      L0,
+    );
+    for (const f of [-1, 1])
+      quad(
+        [
+          P(f * W, 0, yBot),
+          P(f * W, L0, yBot),
+          P(f * W, L0, yTop),
+          P(f * W, 0, yTop),
+        ],
+        [U3[0] * f, 0, U3[2] * f],
+        L0,
+        yTop - yBot,
+      );
+    // Railings: handrail down the flight and along the landing, newel,
+    // landing and wall posts, balusters about every 0.56 m.
+    for (const f of [-1, 1]) {
+      const x = f * (W - 0.05);
+      const rail = (o: number) =>
+        o <= L0 ? yTop + 0.9 : y0 + 0.9 + ((D - o) / (D - L0)) * (yTop - y0);
+      m.tube(
+        [
+          P(x, D - 0.12, rail(D - 0.12)),
+          P(x, L0, rail(L0)),
+          P(x, 0.04, rail(0.04)),
+        ],
+        0.022,
+        iron,
+      );
+      m.tube(
+        [P(x, D - 0.12, y0 + rise), P(x, D - 0.12, rail(D - 0.12) + 0.08)],
+        0.04,
+        iron,
+      );
+      for (const o of [L0, 0.04])
+        m.tube([P(x, o, yTop), P(x, o, rail(o))], 0.02, iron);
+      for (let o = L0 + 0.56; o < D - 0.3; o += 0.56) {
+        const k = Math.floor((D - o) / T);
+        m.tube([P(x, o, y0 + (k + 1) * rise), P(x, o, rail(o))], 0.011, iron);
+      }
+    }
+    // Parlour door in a stone surround (jambs and hood), and a lamp.
+    const yaw = Math.atan2(n[0], n[1]);
+    m.box(
+      P(0, 0.03, yTop + 1.1),
+      [0.5, 1.1, 0.03],
+      packMat(CM.paint, DOOR_WOOD),
+      yaw,
+    );
+    for (const f of [-1, 1])
+      m.box(P(f * 0.6, 0.05, yTop + 1.15), [0.1, 1.15, 0.05], stone, yaw);
+    m.box(P(0, 0.09, yTop + 2.38), [0.78, 0.09, 0.09], stone, yaw, 0, false);
+    m.box(
+      P(0.85, 0.06, yTop + 1.9),
+      [0.06, 0.1, 0.06],
+      packMat(CM.lamp, 1),
+      yaw,
+    );
+  }
+}
+
+/** CM.hedge param of New York's open tree pits (soil and leaf litter). */
+const TREE_PIT_SOIL = 3;
+
+/**
+ * Low iron guard round a tree pit (LOD0): four posts and a top rail round
+ * the three sides away from the kerb. `P(u, v, r, y)` maps the pit's unit
+ * square (u along the road, v across it) scaled by r to world space at
+ * height y over the paving; `kerbV` is the kerb's side (+-1 in v).
+ */
+function treeGuard(
+  m: CMesh,
+  P: (u: number, v: number, r?: number, y?: number) => Vec3,
+  kerbV: number,
+) {
+  const iron = packMat(CM.paint, RAIL_IRON);
+  const r = 0.64;
+  const H = 0.46;
+  for (const [u, v] of [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ])
+    m.tube([P(u, v, r, 0), P(u, v, r, H + 0.02)], 0.018, iron);
+  m.tube(
+    [
+      P(-1, kerbV, r, H),
+      P(-1, -kerbV, r, H),
+      P(1, -kerbV, r, H),
+      P(1, kerbV, r, H),
+    ],
+    0.014,
+    iron,
+  );
+}
+
+/**
  * Planting-strip hedges along avenues and arterials, both sides, both LODs
  * (hedgeRun): the planter's road-side face 0.38 m behind the kerb (behind
  * the fence), sampled every 2.6 m (LOD0) or 26 m (LOD1); gaps at bus
  * stops, a 2 m driveway gap every 35-50 m, none within 8 m of a junction
  * mouth. Runs belong to the tile of their samples' start points.
+ * New York has no continuous hedges: only a short planter (one 2.6 m
+ * step) just past about three driveway gaps in ten, LOD0 only.
  */
 function hedges(
   ctx: TileContext,
@@ -9065,6 +10159,8 @@ function hedges(
   const L = ctx.layout;
   const hf = L.terrain.heights;
   const step = lod === 0 ? 2.6 : 26;
+  const ny = nyc();
+  if (ny && lod !== 0) return;
   for (const ci of ctx.tileChains[tile] ?? []) {
     const c = L.chains[ci];
     if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
@@ -9073,6 +10169,8 @@ function hedges(
     const [s0, s1] = ctx.geom.setbacks[ci];
     const W = ROAD_WIDTH[c.kind];
     for (const side of [-1, 1]) {
+      // New York: samples left in the current planter.
+      let left = 0;
       // Bus stops (as buildTile places them).
       const stops: number[] = [];
       for (
@@ -9114,6 +10212,13 @@ function hedges(
           flush();
           s = gapAt + 2;
           gapAt += 35 + (hash2(ci * 2 + side, Math.floor(s)) % 16);
+          if (ny)
+            left =
+              hash2(ci * 2 + side, Math.floor(s) ^ 0x91a7) % 10 < 3 ? 2 : 0;
+        }
+        if (ny && left <= 0) {
+          flush();
+          continue;
         }
         if (stops.some(b => Math.abs(b - s) < 4.8)) {
           flush();
@@ -9134,6 +10239,7 @@ function hedges(
           o: l,
           mine: inTile(x, z),
         });
+        left--;
       }
       flush();
     }
@@ -9512,9 +10618,7 @@ export function buildTile(
       hf,
       poles,
       lod === 0 ? edgeCover(L, bi) : undefined,
-      lod === 0
-        ? edgeCover(L, bi, 0.3, [0.02, 0.25, 0.5, 0.75, 0.98])
-        : undefined,
+      lod === 0 ? edgeCover(L, bi, FLUSH_OFF, FLUSH_TS) : undefined,
     );
 
   // Street faces of this tile's buildings, for the poles' service drops.
@@ -9552,7 +10656,8 @@ export function buildTile(
       const side = hash2(ci, 3) % 2 ? 1 : -1;
       const off = (ROAD_WIDTH[c.kind] / 2 + 0.4) * side;
       let prev: Vec3 | null = null;
-      for (let s = s0 + 4; s < total - s1 - 4; s += 28) {
+      // (New York's power and phone lines run under the street.)
+      for (let s = s0 + 4; !nyc() && s < total - s1 - 4; s += 28) {
         const q = chainAt(c, arc, s);
         const l: Vec2 = [-q.d[1], q.d[0]];
         const x = q.p[0] + l[0] * off;
@@ -9582,6 +10687,28 @@ export function buildTile(
         }
         prev = p;
       }
+      // New York side streets are planted instead: street trees in pits
+      // 0.8 m in from the kerb, 15-22 m apart with gaps, both LODs (pits
+      // LOD0). Their own streams (hash of chain, side and spot), so
+      // nothing else moves.
+      if (nyc() && c.kind === Road.street)
+        for (const side of [-1, 1]) {
+          const off = (ROAD_WIDTH[c.kind] / 2 + 0.8) * side;
+          for (const {s, h: th0} of nycStreetTreeS(ctx, ci, side)) {
+            const q = chainAt(c, arc, s);
+            const l: Vec2 = [-q.d[1], q.d[0]];
+            const x = q.p[0] + l[0] * off;
+            const z = q.p[1] + l[1] * off;
+            if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
+            if (poles.some(o => Math.hypot(o[0] - x, o[1] - z) < 2.5)) continue;
+            const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
+            const tr = new Rng(th0);
+            const th = tr.range(5.5, 8.5);
+            if (deckClearance(ctx, x, z, p[1]) < th + 1) continue;
+            tree(m, p, th, lod, tr);
+            if (lod === 0) treePit(m, p, q.d, l, -side);
+          }
+        }
     } else {
       for (const side of [-1, 1]) {
         const off = (ROAD_WIDTH[c.kind] / 2 + SIDEWALK[c.kind] * 0.55) * side;
@@ -9619,46 +10746,7 @@ export function buildTile(
             continue;
           }
           tree(m, p, th, lod, rng);
-          if (lod === 0) {
-            // Cast-iron grate in its 1.2 m pit, square to the kerb.
-            // Cast-iron grate in its 1.2 m pit, square to the kerb, set in
-            // a 9 cm precast frame standing 2.5 cm proud of the paving.
-            const d = q.d;
-            const P = (u: number, v: number, r = 0.6, y = 0.02): Vec3 => [
-              x + d[0] * u * r + l[0] * v * r,
-              p[1] + y,
-              z + d[1] * u * r + l[1] * v * r,
-            ];
-            m.quad(
-              [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)],
-              [0, 1, 0],
-              [
-                [0, 0],
-                [1, 0],
-                [1, 1],
-                [0, 1],
-              ],
-              packMat(CM.hedge, 1),
-            );
-            const fr = packMat(CM.curb, 1);
-            const C: [number, number][] = [
-              [-1, -1],
-              [1, -1],
-              [1, 1],
-              [-1, 1],
-            ];
-            const inner = C.map(([u, v]) =>
-              m.vertex(P(u, v, 0.6, 0.025), UP, u * 0.6, v * 0.6, fr),
-            );
-            const outer = C.map(([u, v]) =>
-              m.vertex(P(u, v, 0.69, 0.025), UP, u * 0.69, v * 0.69, fr),
-            );
-            for (let k = 0; k < 4; k++) {
-              const k1 = (k + 1) & 3;
-              m.triFacing(inner[k], outer[k], outer[k1], UP);
-              m.triFacing(inner[k], outer[k1], inner[k1], UP);
-            }
-          }
+          if (lod === 0) treePit(m, [x, p[1], z], q.d, l, -side);
         }
       }
     }
@@ -9666,81 +10754,25 @@ export function buildTile(
   }
 
   // Overhead guide signs before signalized junctions (LOD1 keeps panel and
-  // column: the one road prop that must read at 300 m).
+  // column: the one road prop that must read at 300 m), and direction-and-
+  // distance signs past them (guideSpots).
   for (const ci of ctx.tileChains[tile] ?? []) {
     const c = L.chains[ci];
     if (c.kind < Road.avenue || c.bridge.some(b => b)) continue;
     const arc = ctx.geom.arc[ci];
-    const total = arc[arc.length - 1];
-    const [s0, s1] = ctx.geom.setbacks[ci];
-    const len = total - s0 - s1;
-    if (len < 30) continue;
-    for (const end of [0, 1] as const) {
-      if (len < 70) break;
-      const ji = guideJunction(L, ci, end);
-      if (ji < 0 || !L.junctions[ji].signal || L.hidden?.junctions[ji])
-        continue;
-      const h = hash2(ci * 2 + end, 0x5197);
-      if (c.kind === Road.avenue && h % 2) continue;
-      const back = 60 + ((h >>> 4) % 30);
-      const s = end === 0 ? s0 + back : total - s1 - back;
-      const q = chainAt(c, arc, s);
+    const W = ROAD_WIDTH[c.kind];
+    const off = W / 2 + 0.6;
+    for (const g of guideSpots(L, ctx.geom, ci)) {
+      const q = chainAt(c, arc, g.s);
       const l: Vec2 = [-q.d[1], q.d[0]];
-      // Incoming traffic toward this end keeps left; the sign faces it.
-      const side = end === 1 ? 1 : -1;
-      const f: Vec2 = end === 1 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
-      const W = ROAD_WIDTH[c.kind];
-      const off = W / 2 + 0.6;
-      const x = q.p[0] + l[0] * off * side;
-      const z = q.p[1] + l[1] * off * side;
+      const f: Vec2 = g.dir > 0 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
+      const x = q.p[0] + l[0] * off * g.side;
+      const z = q.p[1] + l[1] * off * g.side;
       if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
       const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
-      const inward: Vec2 = [-l[0] * side, -l[1] * side];
-      guideSign(
-        m,
-        p,
-        inward,
-        f,
-        W / 2 - 0.5,
-        off - W / 4,
-        (h >>> 8) % GUIDE_DIR,
-        lod,
-      );
-    }
-    // Direction-and-distance signs for traffic leaving the junction, 35-50
-    // m past it on the departing side, facing back toward the junction.
-    for (const end of [0, 1] as const) {
-      const ji = guideJunction(L, ci, end);
-      if (ji < 0 || !L.junctions[ji].signal || L.hidden?.junctions[ji])
-        continue;
-      const h = hash2(ci * 2 + end, 0xd157);
-      if (c.kind === Road.avenue && h % 3 === 0) continue;
-      const fwd = Math.min(35 + ((h >>> 4) % 16), len * 0.5);
-      const s = end === 0 ? s0 + fwd : total - s1 - fwd;
-      const q = chainAt(c, arc, s);
-      const l: Vec2 = [-q.d[1], q.d[0]];
-      // Departing traffic runs away from this end and keeps left.
-      const side = end === 0 ? 1 : -1;
-      const f: Vec2 = end === 0 ? [-q.d[0], -q.d[1]] : [q.d[0], q.d[1]];
-      const W = ROAD_WIDTH[c.kind];
-      const off = W / 2 + 0.6;
-      const x = q.p[0] + l[0] * off * side;
-      const z = q.p[1] + l[1] * off * side;
-      if (!inTile(x, z) || !land.ok(x, z, ci)) continue;
-      const p: Vec3 = [x, sidewalkY(hf, x, z, q.h), z];
-      const inward: Vec2 = [-l[0] * side, -l[1] * side];
-      guideSign(
-        m,
-        p,
-        inward,
-        f,
-        4.3,
-        2.4,
-        GUIDE_DIR + ((h >>> 8) % (GUIDE_FACES.length - GUIDE_DIR)),
-        lod,
-        1.6,
-        0.8,
-      );
+      const inward: Vec2 = [-l[0] * g.side, -l[1] * g.side];
+      if (g.dist) guideSign(m, p, inward, f, 4.3, 2.4, g.face, lod, 1.6, 0.8);
+      else guideSign(m, p, inward, f, W / 2 - 0.5, off - W / 4, g.face, lod);
     }
   }
 
@@ -9758,9 +10790,10 @@ export function buildTile(
       // Junctions on avenues and arterials only (the ones read from afar).
       if (j.arms.every(a => L.chains[a.chain].kind < Road.avenue)) continue;
       const spots: [Vec3, Vec2, number][] = [];
+      const us = nyc();
       signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach, k) => {
         spots.push([p, armDir, k]);
-        const y = p[1] + 5.8;
+        const y = p[1] + (us ? US_ARM_Y : 5.8);
         m.tube(
           [
             [p[0], p[1] - SINK, p[2]],
@@ -9768,16 +10801,20 @@ export function buildTile(
             [p[0] + armDir[0] * reach, y - 0.15, p[2] + armDir[1] * reach],
           ],
           0.16,
-          packMat(CM.paint, 0x90),
+          packMat(CM.paint, us ? NYC_GREEN : 0x90),
         );
-        // The head as a plain dark slab (its backplate's size) hanging
-        // under the arm end, facing the approach and back: 8 vertices.
+        // The head as a plain dark slab (its backplate's size; New York's
+        // upright head) hanging under the arm end, facing the approach and
+        // back: 8 vertices.
         const hx = p[0] + armDir[0] * (reach - 0.7);
         const hz = p[2] + armDir[1] * (reach - 0.7);
+        const hw = us ? 0.2 : 0.76;
+        const hh = us ? 0.55 : 0.34;
+        const hy = us ? y - 0.85 : y - 0.12;
         const H = (u: number, v: number, f: number): Vec3 => [
-          hx + armDir[0] * u * 0.76 + armDir[1] * f,
-          y - 0.12 + v * 0.34,
-          hz + armDir[1] * u * 0.76 - armDir[0] * f,
+          hx + armDir[0] * u * hw + armDir[1] * f,
+          hy + v * hh,
+          hz + armDir[1] * u * hw - armDir[0] * f,
         ];
         for (const f of [0.1, -0.1])
           m.quad(
@@ -9803,7 +10840,7 @@ export function buildTile(
       // and the spots for the controller cabinet.
       const jpoles: Vec2[] = [];
       const spots: [Vec3, Vec2, number][] = [];
-      signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach, k) => {
+      signalSpots(L, ctx.geom, hf, ji, (p, armDir, reach, k, face) => {
         jpoles.push([p[0], p[2]]);
         spots.push([p, armDir, k]);
         const a = jg.arms[k];
@@ -9812,10 +10849,12 @@ export function buildTile(
         signalLums(L, ji, p, armDir, k, (h, d, r, pool) =>
           lums.push([h, d, r, pool]),
         );
-        signal(m, p, armDir, reach, phase, group, ji, lums);
+        if (nyc()) usSignal(m, p, armDir, reach, face, phase, group, ji, lums);
+        else signal(m, p, armDir, reach, face, phase, group, ji, lums);
         // Pedestrian signals across this arm's crossing: one on the signal
         // pole, one on its own pole at the far corner, each facing across.
-        const l: Vec2 = [-a.dir[1], a.dir[0]];
+        // (l: from the arm's centreline toward the signal pole's kerb.)
+        const l: Vec2 = [-armDir[0], -armDir[1]];
         pedSignal(
           m,
           [p[0] - l[0] * 0.2, p[1] + 2.8, p[2] - l[1] * 0.2],
@@ -9850,7 +10889,7 @@ export function buildTile(
             0.07,
             3.4 + SINK,
             6,
-            packMat(CM.paint, 0x90),
+            packMat(CM.paint, nyc() ? NYC_GREEN : 0x90),
             true,
           );
           pedSignal(
@@ -9866,16 +10905,18 @@ export function buildTile(
             l,
           );
         }
-        // Regulatory sign beyond the crossing on the approach's kerb side,
-        // facing approaching traffic: speed limit on avenues and up, no
-        // parking on small streets; some also carry the crossing square.
+        // Regulatory sign beyond the crossing on the approach's nearside
+        // kerb, facing approaching traffic (travelling along -a.dir): speed
+        // limit on avenues and up, no parking on small streets; some also
+        // carry the crossing square.
         const hs = hash2(ji * 8 + k, 0x7e9);
         const kind = L.chains[a.chain].kind;
         const rs = a.setback + 7 + (hs % 5);
-        const rx = j.p[0] + a.dir[0] * rs - l[0] * (a.width / 2 + 0.5);
-        const rz = j.p[1] + a.dir[1] * rs - l[1] * (a.width / 2 + 0.5);
+        const rl = nearside(L.params, [-a.dir[0], -a.dir[1]]);
+        const rx = j.p[0] + a.dir[0] * rs + rl[0] * (a.width / 2 + 0.5);
+        const rz = j.p[1] + a.dir[1] * rs + rl[1] * (a.width / 2 + 0.5);
         if (hs % 3 !== 0 && land.ok(rx, rz, a.chain)) {
-          regSign(
+          (nyc() ? usRegSign : regSign)(
             m,
             [rx, sidewalkY(hf, rx, rz, j.h), rz],
             a.dir,
@@ -9925,6 +10966,9 @@ export function buildTile(
     );
   }
 
+  // New York brownstone stoops on the low-rise homes (LOD0).
+  if (lod === 0 && nyc()) stoops(ctx, tile, m, land, poles);
+
   // Shop-front clutter (LOD0): vending machine clusters, parked bicycles.
   if (lod === 0) {
     for (const bi of ctx.tileBuildings[tile] ?? []) {
@@ -9934,7 +10978,7 @@ export function buildTile(
         c = b.footprint[(b.front + 1) % b.footprint.length];
       const n = edgeNormal(b.footprint, b.front);
       const h = hash2(b.id, 55);
-      if (h % 3 === 0) {
+      if (h % 3 === 0 && !nyc()) {
         const count = 1 + ((h >> 4) % 3);
         for (let k = 0; k < count; k++) {
           const t = 0.15 + k * 0.09;
@@ -9950,7 +10994,16 @@ export function buildTile(
         ];
         lights.add(p0, 5, [0.9, 0.95, 1.0], LightKind.vending);
       }
-      if (h % 5 === 1 && dist2(a, c) > 6) {
+      if (h % 5 === 1 && dist2(a, c) > 6 && nyc()) {
+        // New York: a bike-share dock on about one in eight of these
+        // frontages (dock posts against the wall, blue bikes in most, a
+        // pay kiosk at the end); no private bike rows.
+        if ((h >> 9) % 8 === 0) {
+          const count = 5 + ((h >> 12) % 4);
+          const t0 = 0.5 - (count * 0.31) / dist2(a, c);
+          if (t0 > 0.1) bikeDock(m, hf, b.base, a, c, n, t0, count, h);
+        }
+      } else if (h % 5 === 1 && dist2(a, c) > 6) {
         // A row of parked bicycles against the frontage.
         const count = 2 + ((h >> 6) % 2);
         for (let k = 0; k < count; k++) {
@@ -9988,7 +11041,8 @@ export function buildTile(
       for (const side of [-1, 1]) {
         const off = (W / 2 + 0.3) * side;
         let prev: Vec3 | null = null;
-        for (let s = s0 + 6; s < total - s1 - 6; s += 2) {
+        // (Tokyo's white pedestrian guardrails; none on a New York kerb.)
+        for (let s = s0 + 6; !nyc() && s < total - s1 - 6; s += 2) {
           const q = chainAt(c, arc, s);
           const l: Vec2 = [-q.d[1], q.d[0]];
           const x = q.p[0] + l[0] * off;

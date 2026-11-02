@@ -2,7 +2,11 @@
 // render loop.
 
 import {lowMemory} from '../caps.ts';
-import {PRESETS as PRESETS_CITY, type CityType} from '../city/config.ts';
+import {
+  PRESETS as PRESETS_CITY,
+  type CityType,
+  facadePaletteOf,
+} from '../city/config.ts';
 import {signLocaleOf} from '../city/signs.ts';
 import {reportError, resizeToCss, type Gpu} from '../gpu/device.ts';
 import {Rng} from '../math/random.ts';
@@ -409,6 +413,7 @@ export class Game {
     const city = this.city;
     // A city of another preset repaints the sign atlas in its locale
     // (in the texture worker, while the city loads).
+    this.renderer.facadePalette = facadePaletteOf(type);
     const signs = this.renderer.setSignLocale(signLocaleOf(type));
     signs.catch(() => {}); // (awaited below)
     // The asset lab knows its focus as soon as the layout arrives.
@@ -424,10 +429,16 @@ export class Game {
   private setupWorld() {
     const city = this.city!;
     const net = this.net!;
+    // Right-hand traffic: left-hand drive road vehicles.
+    this.vehicles.leftHand = net.side < 0;
     this.traffic = new Traffic(net, this.vehicles);
     this.buildLightSprites();
     this.traffic.target = this.trafficTarget();
-    this.trains = new Trains(city.summary.layout.elevated, this.vehicles);
+    this.trains = new Trains(
+      city.summary.layout.elevated,
+      this.vehicles,
+      net.side,
+    );
     // The rail lab parks one train at the site for scale.
     const labTrain = city.summary.lab?.train;
     if (labTrain !== undefined) this.trains.park(labTrain);
@@ -1242,8 +1253,8 @@ export class Game {
       // The asset lab has no traffic.
       if (c.kind < 1 || this.opts.lab) return;
       const pts = c.pts.map((q, i): Vec3 => [q[0], c.heights[i], q[1]]);
-      const offs = [...Array(net.lanesPerDir(ci)).keys()].map(k =>
-        net.laneOffset(ci, k),
+      const offs = [...Array(net.lanesPerDir(ci)).keys()].map(
+        k => net.laneOffset(ci, k) * net.side,
       );
       // City traffic: 30-50 km/h.
       both(pts, offs, c.kind >= 2 ? 12 : 10, 30);
@@ -1252,7 +1263,7 @@ export class Game {
       if (e.kind !== 'expressway' || this.opts.lab) continue;
       const pts = e.pts.map((q, i): Vec3 => [q[0], e.heights[i], q[1]]);
       // Shuto expressway: ~70 km/h.
-      both(pts, [2.2, 5.6], 19, 40);
+      both(pts, [2.2 * net.side, 5.6 * net.side], 19, 40);
     }
     const lamps: number[] = [];
     streetLightSpots(
@@ -1395,6 +1406,21 @@ export class Game {
     }
   }
 
+  /**
+   * Switch to the free camera, starting where the current camera is (same
+   * eye and direction) at the free camera's normal field of view: flying a
+   * telephoto lens is twitchy.
+   */
+  enterFreeCam() {
+    if (this.freeMode) return;
+    const c = this.lastCam;
+    if (c) {
+      const [yaw, pitch] = yawPitch(c.eye, c.target);
+      this.freeCam.setPose(c.eye, yaw, pitch);
+    }
+    this.freeMode = true;
+  }
+
   /** Camera button / C key: director -> chase -> first -> hood -> orbit -> free. */
   cycleCamera() {
     if (this.freeMode) {
@@ -1408,12 +1434,7 @@ export class Game {
       return;
     }
     if (this.camera.mode === CAMERA_MODES[CAMERA_MODES.length - 1]) {
-      const c = this.lastCam;
-      if (c) {
-        const [yaw, pitch] = yawPitch(c.eye, c.target);
-        this.freeCam.setPose(c.eye, yaw, pitch);
-      }
-      this.freeMode = true;
+      this.enterFreeCam();
       return;
     }
     this.camera.cycle();
@@ -1445,7 +1466,10 @@ export class Game {
 
   private handleKeys() {
     const i = this.input;
-    if (i.hit('KeyC')) this.cycleCamera();
+    if (i.hit('KeyC')) {
+      this.ui.closeMenu();
+      this.cycleCamera();
+    }
     if (i.hit('KeyL')) void navigator.clipboard?.writeText(this.shareUrl());
     if (i.hit('KeyK'))
       this.camera.directorEnabled = !this.camera.directorEnabled;
@@ -1459,11 +1483,14 @@ export class Game {
           (WEATHER_KINDS.indexOf(this.weather.kind) + 1) % WEATHER_KINDS.length
         ],
       );
-    if (i.hit('KeyN'))
+    if (i.hit('KeyN')) {
+      this.ui.closeMenu();
       void this.regenerate(this.cityType, Math.floor(Math.random() * 100000));
+    }
     if (i.hit('KeyM')) this.ui.toggleMenu();
     if (i.hit('KeyH')) this.ui.toggleHelp();
     if (i.hit('KeyF')) this.ui.showStats = !this.ui.showStats;
+    if (i.hit('KeyV') || i.hit('KeyB')) this.ui.closeMenu();
     if (i.hit('KeyV')) this.toggleHeli();
     if (i.hit('KeyB')) this.nextVehicle();
   }

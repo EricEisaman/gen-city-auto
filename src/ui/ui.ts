@@ -41,10 +41,12 @@ export class UI {
     // (Toolbar buttons are user input: the showcase director hands over.)
     document.getElementById('btn-cam')!.onclick = () => {
       g.input.activity = true;
+      this.closeMenu();
       g.cycleCamera();
     };
     document.getElementById('btn-veh')!.onclick = () => {
       g.input.activity = true;
+      this.closeMenu();
       g.toggleHeli();
     };
     document.getElementById('btn-menu')!.onclick = () => this.toggleMenu();
@@ -68,11 +70,14 @@ export class UI {
     } as Partial<HTMLInputElement>);
     seed.style.width = '80px';
     const gen = el('button', {textContent: 'Generate'});
-    gen.onclick = () =>
+    gen.onclick = () => {
+      this.closeMenu();
       void g.regenerate(citySel.value as CityType, Number(seed.value) || 1);
+    };
     const rnd = el('button', {textContent: 'Random city'});
     rnd.onclick = () => {
       seed.value = String(Math.floor(Math.random() * 100000));
+      this.closeMenu();
       void g.regenerate(citySel.value as CityType, Number(seed.value));
     };
     this.timeInput = el('input', {
@@ -108,9 +113,12 @@ export class UI {
     for (const m of [...CAMERA_MODES, 'free'])
       this.camSel.append(el('option', {value: m, textContent: m}));
     this.camSel.onchange = () => {
-      g.freeMode = this.camSel.value === 'free';
-      if (!g.freeMode)
+      this.closeMenu();
+      if (this.camSel.value === 'free') g.enterFreeCam();
+      else {
+        g.freeMode = false;
         g.camera.mode = this.camSel.value as (typeof CAMERA_MODES)[number];
+      }
     };
     const director = el('input', {
       type: 'checkbox',
@@ -131,7 +139,10 @@ export class UI {
       });
       vehSel.value = String(g.player.variant);
     };
-    vehSel.onchange = () => g.selectVehicle(Number(vehSel.value));
+    vehSel.onchange = () => {
+      this.closeMenu();
+      g.selectVehicle(Number(vehSel.value));
+    };
     vehSel.append(el('option', {textContent: 'choose…'}));
     const link = el('button', {textContent: 'Copy link to this view'});
     link.onclick = () => {
@@ -198,6 +209,11 @@ export class UI {
 
   toggleMenu() {
     this.menu.classList.toggle('hidden');
+  }
+
+  /** Close the menu (after an action that should show the scene). */
+  closeMenu() {
+    this.menu.classList.add('hidden');
   }
 
   toggleHelp() {

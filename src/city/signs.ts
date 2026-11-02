@@ -668,9 +668,15 @@ const INK: Record<string, Rgb> = {
   neonPink: [1.0, 0.08, 0.42],
   neonCyan: [0.08, 0.75, 1.0],
   steel: [0.3, 0.3, 0.31],
+  gold: [0.72, 0.45, 0.1],
+  deepGreen: [0.006, 0.12, 0.04],
+  burgundy: [0.2, 0.012, 0.025],
+  warmWhite: [1.0, 0.78, 0.5],
 };
 /** [background, lettering, frame/outline, style] */
-export const SIGN_WAYS: [Rgb, Rgb, Rgb, number][] = [
+export type SignWay = [Rgb, Rgb, Rgb, number];
+/** Tokyo's colourways: light boxes in loud primaries, neon, channels. */
+export const SIGN_WAYS: SignWay[] = [
   [INK.yellow, INK.black, INK.black, SIGN_STYLE.box],
   [INK.red, INK.white, INK.white, SIGN_STYLE.box],
   [INK.black, INK.red, INK.red, SIGN_STYLE.box],
@@ -688,6 +694,35 @@ export const SIGN_WAYS: [Rgb, Rgb, Rgb, number][] = [
   [INK.charcoal, INK.neonPink, INK.neonCyan, SIGN_STYLE.neon],
   [INK.charcoal, INK.orange, INK.steel, SIGN_STYLE.channel],
 ];
+/**
+ * New York's: white or gold on black, white on red, deep green, navy and
+ * burgundy, painted boards, channel letters and red-and-blue neon (the two
+ * neon schemes adjacent, as Tokyo's, for the OPEN signs). Index k + 4 of a
+ * channel or neon scheme is a box or painted one (cloth: shopSign).
+ */
+export const SIGN_WAYS_NYC: SignWay[] = [
+  [INK.black, INK.white, INK.white, SIGN_STYLE.box],
+  [INK.black, INK.gold, INK.gold, SIGN_STYLE.painted],
+  [INK.red, INK.white, INK.white, SIGN_STYLE.box],
+  [INK.deepGreen, INK.white, INK.white, SIGN_STYLE.box],
+  [INK.navy, INK.white, INK.white, SIGN_STYLE.box],
+  [INK.unlitWhite, INK.white, INK.steel, SIGN_STYLE.channel],
+  [INK.charcoal, INK.neonRed, INK.neonRed, SIGN_STYLE.neon],
+  [INK.charcoal, INK.neonRed, INK.neonCyan, SIGN_STYLE.neon],
+  [INK.charcoal, INK.warmWhite, INK.steel, SIGN_STYLE.channel],
+  [INK.white, INK.black, INK.black, SIGN_STYLE.painted],
+  [INK.white, INK.red, INK.red, SIGN_STYLE.box],
+  [INK.burgundy, INK.gold, INK.gold, SIGN_STYLE.painted],
+  [INK.deepGreen, INK.gold, INK.gold, SIGN_STYLE.painted],
+  [INK.black, INK.red, INK.white, SIGN_STYLE.box],
+  [INK.navy, INK.gold, INK.gold, SIGN_STYLE.painted],
+  [INK.red, INK.white, INK.white, SIGN_STYLE.painted],
+];
+/** Colourway tables by locale (SIGN_LOCALES order; the shader's too). */
+export const SIGN_WAY_SETS: Record<SignLocale, SignWay[]> = {
+  tokyo: SIGN_WAYS,
+  nyc: SIGN_WAYS_NYC,
+};
 /** Param bits 10-13 of a shop sign: a per-building colourway offset. */
 export const SIGN_WAY_SHIFT = 10;
 
@@ -702,9 +737,13 @@ export function signWay(id: number, bits: number) {
 }
 
 /** Colour a shop sign casts on its surroundings at night (linear RGB). */
-export function signGlow(id: number, bits: number): Rgb {
+export function signGlow(
+  id: number,
+  bits: number,
+  locale: SignLocale = 'tokyo',
+): Rgb {
   if (!isShopSign(id)) return signColor(id);
-  const [bg, fg, , style] = SIGN_WAYS[signWay(id, bits)];
+  const [bg, fg, , style] = SIGN_WAY_SETS[locale][signWay(id, bits)];
   const mix = (a: Rgb, b: Rgb, t: number): Rgb => [
     a[0] + (b[0] - a[0]) * t,
     a[1] + (b[1] - a[1]) * t,
@@ -716,14 +755,18 @@ export function signGlow(id: number, bits: number): Rgb {
   return fg;
 }
 
-/** WGSL table of SIGN_WAYS (prepended to the city shader). */
+/**
+ * WGSL table of the colourways (prepended to the city shader): each
+ * locale's 16 in SIGN_LOCALES order (shopSign indexes 16 * locale + way).
+ */
 export function signWaysWgsl(): string {
   const v = (c: Rgb) => `vec3f(${c.map(x => x.toFixed(3)).join(', ')})`;
-  const rows = SIGN_WAYS.map(
+  const all = SIGN_LOCALES.flatMap(l => SIGN_WAY_SETS[l]);
+  const rows = all.map(
     ([bg, fg, ed, st]) => `  SignWay(${v(bg)}, ${v(fg)}, ${v(ed)}, ${st}u)`,
   );
   return [
     'struct SignWay { bg: vec3f, fg: vec3f, edge: vec3f, style: u32 };',
-    `const SIGN_WAYS = array<SignWay, ${SIGN_WAYS.length}>(\n${rows.join(',\n')}\n);`,
+    `const SIGN_WAYS = array<SignWay, ${all.length}>(\n${rows.join(',\n')}\n);`,
   ].join('\n');
 }

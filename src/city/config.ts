@@ -3,6 +3,15 @@
 
 export type CityType = 'neon' | 'metro' | 'harbour' | 'river';
 
+/**
+ * Facade colour palette of a city preset: its index, which the city shader
+ * reads in frame.off.w bits 8-15 (city-materials.wgsl facadeCity /
+ * FACADE_WEIGHTS).
+ */
+export function facadePaletteOf(type: CityType): number {
+  return {neon: 0, metro: 1, harbour: 2, river: 3}[type] ?? 0;
+}
+
 export interface CityParams {
   type: CityType;
   name: string;
@@ -37,6 +46,36 @@ export interface CityParams {
   /** Elevated expressways. */
   expressways: number;
   parkFraction: number;
+  /**
+   * Which side of the road traffic keeps to (Tokyo, Hong Kong: left; New
+   * York: right). Lanes, trains, the road paint (stop lines, arrows, turn
+   * guides), the drivers' seats and the road furniture that faces one
+   * direction of travel (signals, guide and regulatory signs: nearside())
+   * follow it; the layout does not depend on it.
+   */
+  drive: 'left' | 'right';
+}
+
+/** +1 where traffic keeps left, -1 where it keeps right. */
+export function keepLeft(p: Pick<CityParams, 'drive'>): 1 | -1 {
+  return p.drive === 'right' ? -1 : 1;
+}
+
+/**
+ * The nearside of traffic travelling along `d` (x, z): the unit lateral
+ * from the centreline toward the kerb that traffic keeps to. World space
+ * is y up and right-handed (mat4.lookAt), so the left of travel direction
+ * d is (dz, -dx) and its right (-dz, dx); RoadNet.lanePos puts the lanes
+ * on this side. Road furniture for that traffic stands on (regulatory
+ * signs, signal poles on the far corner) or hangs over (guide signs,
+ * signal heads) this side.
+ */
+export function nearside(
+  p: Pick<CityParams, 'drive'>,
+  d: readonly [number, number],
+): [number, number] {
+  const k = keepLeft(p);
+  return [d[1] * k, -d[0] * k];
 }
 
 export const PRESETS: Record<CityType, CityParams> = {
@@ -61,6 +100,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     railLines: 3,
     expressways: 5,
     parkFraction: 0.05,
+    drive: 'left',
   },
   metro: {
     type: 'metro',
@@ -83,6 +123,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     railLines: 1,
     expressways: 4,
     parkFraction: 0.07,
+    drive: 'right',
   },
   harbour: {
     type: 'harbour',
@@ -105,6 +146,7 @@ export const PRESETS: Record<CityType, CityParams> = {
     railLines: 2,
     expressways: 3,
     parkFraction: 0.04,
+    drive: 'left',
   },
   river: {
     type: 'river',
@@ -127,5 +169,6 @@ export const PRESETS: Record<CityType, CityParams> = {
     railLines: 2,
     expressways: 3,
     parkFraction: 0.04,
+    drive: 'left',
   },
 };

@@ -127,35 +127,85 @@ fn gloomLight() -> f32 {
   return max(nightLight(), min(gloom, 0.55));
 }
 
-fn wallPalette(i: u32) -> vec3f {
-  return wallPaletteRaw(i) * 0.68;
+// City preset of the facade palette (frame.off.w bits 8-15; config.ts
+// facadePaletteOf): 0 Tokyo, 1 New York, 2 Hong Kong, 3 Chongqing.
+fn facadeCity() -> u32 { return min((frame.off.w >> 8u) & 0xffu, 3u); }
+
+// Facade body colours (albedo): muted, never saturated, from white render
+// to near-black panel. Picked per building by facadeColorIdx.
+const FACADE_COLS = array<vec3f, 15>(
+  vec3f(0.66, 0.65, 0.62),   // 0 white render / tile
+  vec3f(0.58, 0.56, 0.51),   // 1 off-white
+  vec3f(0.56, 0.5, 0.35),    // 2 cream, yellowish
+  vec3f(0.5, 0.43, 0.33),    // 3 beige tile
+  vec3f(0.36, 0.27, 0.19),   // 4 tan / brown tile
+  vec3f(0.47, 0.31, 0.245),  // 5 salmon brick
+  vec3f(0.27, 0.105, 0.075), // 6 dark red brick
+  vec3f(0.44, 0.44, 0.43),   // 7 light grey
+  vec3f(0.3, 0.3, 0.295),    // 8 mid grey
+  vec3f(0.15, 0.15, 0.155),  // 9 dark grey
+  vec3f(0.05, 0.05, 0.055),  // 10 near-black
+  vec3f(0.24, 0.32, 0.26),   // 11 muted green
+  vec3f(0.32, 0.36, 0.41),   // 12 blue-grey
+  vec3f(0.55, 0.5, 0.41),    // 13 limestone
+  vec3f(0.25, 0.15, 0.11),   // 14 brownstone
+);
+// Weights (percent) of each colour per preset: x Tokyo (the photo: mostly
+// white / off-white / beige tile, some grey, a little brick, one green),
+// y New York (brick and limestone), z Hong Kong (white and pastel tile
+// slabs), w Chongqing (off-white and grey concrete).
+const FACADE_WEIGHTS = array<vec4u, 15>(
+  vec4u(16u, 5u, 18u, 10u),
+  vec4u(14u, 6u, 14u, 14u),
+  vec4u(8u, 5u, 10u, 8u),
+  vec4u(12u, 6u, 10u, 10u),
+  vec4u(7u, 5u, 5u, 8u),
+  vec4u(5u, 12u, 6u, 6u),
+  vec4u(4u, 14u, 2u, 5u),
+  vec4u(10u, 6u, 10u, 12u),
+  vec4u(7u, 6u, 6u, 10u),
+  vec4u(6u, 5u, 5u, 8u),
+  vec4u(3u, 3u, 2u, 2u),
+  vec4u(2u, 1u, 4u, 2u),
+  vec4u(3u, 2u, 6u, 3u),
+  vec4u(2u, 14u, 1u, 1u),
+  vec4u(1u, 10u, 1u, 1u),
+);
+
+// Facade colour index for a uniform random r in [0, 1).
+fn facadeColorIdx(r: f32) -> u32 {
+  let city = facadeCity();
+  let t = u32(r * 100.0);
+  var acc = 0u;
+  for (var i = 0u; i < 14u; i++) {
+    acc += FACADE_WEIGHTS[i][city];
+    if (t < acc) { return i; }
+  }
+  return 14u;
 }
 
-fn wallPaletteRaw(i: u32) -> vec3f {
-  // Tokyo midrises are mostly pale: 7 of 12 light (white, beige, pale grey),
-  // 3 mid and 2 dark (brown tile, charcoal).
-  switch (i % 12u) {
-    case 0u: { return vec3f(0.78, 0.76, 0.72); }  // off-white tile
-    case 1u: { return vec3f(0.72, 0.72, 0.7); }   // light grey
-    case 2u: { return vec3f(0.45, 0.33, 0.25); }  // brown tile
-    case 3u: { return vec3f(0.7, 0.72, 0.74); }   // pale blue grey
-    case 4u: { return vec3f(0.7, 0.66, 0.56); }   // beige
-    case 5u: { return vec3f(0.55, 0.58, 0.6); }   // blue grey
-    case 6u: { return vec3f(0.82, 0.8, 0.78); }   // white
-    case 7u: { return vec3f(0.8, 0.76, 0.66); }   // cream
-    case 8u: { return vec3f(0.3, 0.29, 0.29); }   // charcoal
-    case 9u: { return vec3f(0.66, 0.52, 0.42); }  // terracotta-ish
-    case 10u: { return vec3f(0.74, 0.71, 0.66); } // warm light grey
-    default: { return vec3f(0.6, 0.59, 0.56); }   // mid concrete
-  }
-}
+// Colours that read as fired clay: tile or brick cladding even on the
+// pier family, and wrapped round the rear and party walls.
+fn facadeClayIdx(i: u32) -> bool { return i >= 3u && i <= 6u; }
 
 fn paintColor(p: u32) -> vec3f {
   if (p == 0x90u) { return vec3f(0.45, 0.46, 0.45); }
   if (p == 0x91u) { return vec3f(0.06, 0.06, 0.06); }
   if (p == 0x92u) { return vec3f(0.8, 0.55, 0.04); }
-  // Rail line colour (station bands): JR-style green.
-  if (p == 0x0cu) { return vec3f(0.06, 0.46, 0.26); }
+  // New York's dark green signal and lamp-post paint (gen-tile NYC_GREEN).
+  if (p == 0x96u) { return vec3f(0.03, 0.085, 0.05); }
+  // New York's third-rail cover boards (gen-base THIRD_RAIL_BOARD):
+  // weathered brown-grey fibreglass.
+  if (p == 0x98u) { return vec3f(0.24, 0.215, 0.18); }
+  // Citi Bike blue (bike-share frames and docks).
+  if (p == 0x99u) { return vec3f(0.02, 0.27, 0.62); }
+  // New York stoops (gen-tile BROWNSTONE, DOOR_WOOD): brown sandstone,
+  // and a dark stained door.
+  if (p == 0x9au) { return vec3f(0.3, 0.19, 0.14); }
+  if (p == 0x9bu) { return vec3f(0.15, 0.075, 0.04); }
+  // Rail line colour (station bands): JR-style green; New York's el
+  // stations a dark steel grey-green.
+  if (p == 0x0cu) { return select(vec3f(0.06, 0.46, 0.26), vec3f(0.1, 0.13, 0.115), signLocale() == 1u); }
   if (p == 0x80u) { return vec3f(0.5, 0.5, 0.5); }
   if (p >= 0xd0u && p < 0xf0u) { return vec3f(0.62, 0.62, 0.6); }
   let h = hashu(p * 2654435761u);
@@ -770,6 +820,12 @@ struct FacadeStyle {
   strip: bool,
   /** 0 tile, 1 ribbon, 2 piers, 3 metal panel, 4 fair-face concrete. */
   family: u32,
+  /** Tile / brick cladding (the tile bond): families 0-1, clay-coloured piers. */
+  clad: bool,
+  /** Brick / clay-tile colour (facadeClayIdx). */
+  clay: bool,
+  /** The street faces' wall colour (before role and zone changes). */
+  body: vec3f,
 };
 
 fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
@@ -784,16 +840,27 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   s.winH = mix(0.42, 0.66, hashuf(h ^ 0x33u));
   s.strip = hashuf(h ^ 0x44u) < select(0.28, 0.6, kind == 0u);
   if (s.strip) { s.winW = 1.0; }
-  s.wall = wallPalette(hashu(h ^ 0x55u));
-  // Hue jitter so neighbours with the same palette entry never match.
+  // Weighted per-preset palette (facadeColorIdx), then a +-8 % value and
+  // a slight warm / cool jitter so neighbours with one entry never match.
+  let ci = facadeColorIdx(hashuf(h ^ 0x55u));
+  s.wall = FACADE_COLS[ci] * mix(0.92, 1.08, hashuf(h ^ 0x57u));
   s.wall *= 1.0 + vec3f(0.04, 0.0, -0.04) * (hashuf(h ^ 0x56u) - 0.5) * 2.0;
   let fam = hashuf(h ^ 0x66u);
   s.family = select(select(select(select(0u, 1u, fam < 0.62), 2u, fam < 0.44), 3u, fam < 0.28), 4u, fam < 0.12);
   if (s.strip) { s.family = 1u; }
+  s.clay = facadeClayIdx(ci);
+  s.clad = s.family <= 1u || (s.family == 2u && s.clay);
   if (s.family == 2u) { s.winW = 0.62; s.winH = 0.72; }
-  if (s.family == 3u) { s.wall = mix(vec3f(0.42, 0.44, 0.47), vec3f(0.25, 0.26, 0.28), hashuf(h ^ 0x77u)); s.winW = min(s.winW, 0.5); }
-  if (s.family == 4u) { s.wall = vec3f(0.36, 0.355, 0.34) * mix(0.85, 1.1, hashuf(h ^ 0x88u)); }
+  // Metal panels: the palette colour, greyed (painted / anodised panel).
+  if (s.family == 3u) { s.wall = mix(s.wall, mix(vec3f(0.42, 0.44, 0.47), vec3f(0.25, 0.26, 0.28), hashuf(h ^ 0x77u)), 0.5); s.winW = min(s.winW, 0.5); }
+  // Fair-face concrete is its own grey; brick-coloured ones stay brick
+  // (clad), so the clay shares hold.
+  if (s.family == 4u) {
+    if (s.clay) { s.clad = true; }
+    else { s.wall = vec3f(0.36, 0.355, 0.34) * mix(0.85, 1.1, hashuf(h ^ 0x88u)); }
+  }
   if (podium) { s.wall = mix(s.wall, vec3f(0.35, 0.33, 0.3), 0.5); }
+  s.body = s.wall;
   return s;
 }
 
@@ -814,6 +881,9 @@ fn frameFinish(style: u32, wall: vec3f) -> vec4f {
   if (k >= 0.8) { c = vec4f(0.06, 0.32, 0.32, 0.0); }
   if (k >= 0.9) { c = vec4f(0.45, 0.11, 0.07, 0.0); }
   if (luminance(wall) < 0.2 && ((k >= 0.28 && k < 0.6) || k >= 0.8)) { c = vec4f(0.62, 0.62, 0.6, 1.0); }
+  // Near-black bodies mostly get white frames: the white lattice on a
+  // black tower.
+  if (luminance(wall) < 0.07 && k < 0.7) { c = vec4f(0.78, 0.78, 0.76, 0.0); }
   return c;
 }
 
@@ -879,8 +949,18 @@ fn facadeRole(st: ptr<function, FacadeStyle>, z: ptr<function, FacadeZone>, uv: 
     return;
   }
   if (role >= 2u) {
-    // Party walls and the rear: painted render / ALC, few small windows.
-    (*st).wall = vec3f(0.47, 0.46, 0.43) * mix(0.85, 1.12, hashuf(aux ^ 0x4e1u));
+    // Party walls and the rear: few small windows. Cladding wraps round
+    // the rear, and brick / clay tile round the party walls too (the body
+    // colour and tile bond carry on); other party walls stay weathered
+    // blockwork and rendered rears painted render / ALC, both tinted toward
+    // the body colour, so a white building is white from behind too.
+    if (role == 2u && !(*st).clay) { (*st).clad = false; }
+    let j = mix(0.85, 1.12, hashuf(aux ^ 0x4e1u));
+    if ((*st).clad && zone != FZ_CROWN) {
+      (*st).wall *= mix(0.94, 1.0, j - 0.85);
+    } else {
+      (*st).wall = mix(vec3f(0.47, 0.46, 0.43), (*st).body, 0.6) * j;
+    }
     (*st).family = 5u;
     (*st).strip = false;
     if (role == 3u) {
@@ -1253,7 +1333,7 @@ fn baseCladding(uv: vec2f, granite: vec3f, aux: u32, bay: f32) -> vec4f {
 
 // Surface overrides once the wall material is done: the granite finish on
 // the base, the lobby, and solid walls (no windows). True: `s` is final.
-fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32, bodyH: f32, fin: vec4f, bay: f32) -> bool {
+fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f, n: vec3f, T: vec3f, V: vec3f, aux: u32, bodyH: f32, fin: vec4f, bay: f32, clad: bool) -> bool {
   if (z.zone == FZ_LOBBY) {
     *s = facadeLobby(uv, n, T, V, fin);
     return true;
@@ -1264,8 +1344,9 @@ fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f,
     (*s).rough = c.a;
     (*s).normal = n;
   }
-  if (z.role == 2u && z.zone != FZ_CROWN ) { partyWall(s, uv, aux, bodyH, z.zone == FZ_BASE); }
-  if (z.role == 3u && z.zone != FZ_CROWN) {
+  // (Clad walls keep the tile: no blockwork, ALC joints or paint.)
+  if (z.role == 2u && z.zone != FZ_CROWN && !clad) { partyWall(s, uv, aux, bodyH, z.zone == FZ_BASE); }
+  if (z.role == 3u && z.zone != FZ_CROWN && !clad) {
     // Render and ALC panels: no ledges to cast floor shadows; ALC shows a
     // joint every 0.6 m.
     (*s).sunVis = 1.0;
@@ -1276,7 +1357,12 @@ fn facadeZoneSurf(s: ptr<function, Surf>, z: FacadeZone, uv: vec2f, wall: vec3f,
       (*s).albedo *= 1.0 - 0.35 * joint;
     }
   }
-  if (z.zone == FZ_CROWN || z.zone == FZ_CORE || z.zone == FZ_TRIM) { (*s).sunVis = 1.0; }
+  if (z.zone == FZ_CROWN || z.zone == FZ_CORE || z.zone == FZ_TRIM || (clad && z.role >= 2u)) { (*s).sunVis = 1.0; }
+  // (As partyWall: a clad blank wall over low roofs keeps the city glow at
+  // night.)
+  if (clad && z.role == 2u && z.zone != FZ_CROWN) {
+    (*s).emissive += (*s).albedo * (frame.cityGlow.rgb * 0.4 + vec3f(0.001, 0.0013, 0.002)) * nightLight();
+  }
   return z.solid;
 }
 // ---- end facade programs ---------------------------------------------------
@@ -1486,12 +1572,15 @@ fn vinylMean(size: vec2f, bayIdx: f32, floorIdx: f32, bay: f32, aux: u32, kind: 
 // damp rises and in the odd patch higher up, showing the grey render
 // beneath with a pale lip of lifted paint. Patches are 0.2-1 m so they read
 // across a back street; their edges fade by footprint.
-fn paintedRender(s: ptr<function, Surf>, uv: vec2f, style: u32, foot: f32) {
+fn paintedRender(s: ptr<function, Surf>, uv: vec2f, style: u32, foot: f32, body: vec3f) {
   let h = hashu(style * 2246822519u + 0x9a7u);
   // (Weathered exterior paint sits at 0.35-0.5 albedo: brighter pastels
-  // blow out to white in a low golden-hour sun.)
-  let paint = array<vec3f, 5>(vec3f(0.74, 0.69, 0.57), vec3f(0.6, 0.67, 0.58), vec3f(0.6, 0.65, 0.7), vec3f(0.78, 0.77, 0.73), vec3f(0.74, 0.6, 0.52))[h % 5u] * 0.7;
-  let base = (*s).albedo / 0.47;
+  // blow out to white in a low golden-hour sun.) Mostly the body colour,
+  // so the building reads as one colour from behind.
+  let paint = mix(array<vec3f, 5>(vec3f(0.74, 0.69, 0.57), vec3f(0.6, 0.67, 0.58), vec3f(0.6, 0.65, 0.7), vec3f(0.78, 0.77, 0.73), vec3f(0.74, 0.6, 0.52))[h % 5u] * 0.7, body, 0.7);
+  // (facadeRole tinted the rear wall toward the body already: undo that,
+  // keeping its grime and patching.)
+  let base = (*s).albedo / max(mix(vec3f(0.47, 0.46, 0.43), body, 0.6), vec3f(0.03));
   // (The 0.17 m flake noise is lost in the footprint-wide edge past 0.3 m.)
   var fine = 0.5;
   if (foot < 0.3) { fine = mix(valueNoise(uv * 6.0), 0.5, smoothstep(0.15, 0.3, foot)); }
@@ -2200,7 +2289,7 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let cellSeed = hashu(aux ^ hashu((u32(bayIdx + 1000.0) * 73856093u) ^ (u32(floorIdx + 1000.0) * 19349663u)));
   // Wall: glazed tile (tile and ribbon styles) or concrete render, with
   // grime streaks.
-  let tiled = st.family <= 1u;
+  let tiled = st.clad;
   var tb: TileBond;
   if (tiled) { tb = tileBond(uv, aux); }
   // (Tile: an analytic bond; wd then carries only its joint cavity.)
@@ -2422,8 +2511,8 @@ fn facadeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   }
 
   let fin = frameFinish(style, st.wall);
-  let zoneDone = facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux, bodyH, fin, st.bay);
-  if (fz.role == 3u && fz.zone != FZ_CROWN) { paintedRender(&s, uv, style, foot); }
+  let zoneDone = facadeZoneSurf(&s, fz, uv, wall, n, T, V, aux, bodyH, fin, st.bay, tiled);
+  if (fz.role == 3u && fz.zone != FZ_CROWN && !tiled) { paintedRender(&s, uv, style, foot, st.body); }
   if (fz.zone == FZ_BASE) { s.albedo *= groundGrime(uv, foot); }
   if (fz.zone != FZ_LOBBY) { facadeRain(&s, uv, n, T, washAmt, underSill, select(0.6, 0.3, tiled)); }
   if (zoneDone) { return s; }
@@ -3511,7 +3600,10 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var track = exp(-pow((abs(o) - 0.85) * 2.8, 2.0));
   track = mix(track, 0.22, smoothstep(0.08, 0.35, foot));
   // Edge line / gutter geometry.
-  let green = kind <= 1u && rdH(seed, 0, 40) < 0.5;
+  // (New York: no green school-route belts; bike lanes white-lined, green
+  // only where they cross a junction approach.)
+  let nycRoad = signLocale() == 1u;
+  let green = kind <= 1u && rdH(seed, 0, 40) < 0.5 && !nycRoad;
   let ec = select(hw - 0.525, hw - 1.175, green);
   let gIn = select(hw - 0.45, hw - 0.4, kind >= 2u);
   let inner = select(0.0, 0.25, kind >= 1u);
@@ -3568,8 +3660,11 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   // Blue bike lane band on 25 % of kind 3 chains.
   let bikeBand = kind == 3u && rdH(seed, 0, 43) < 0.25;
   if (bikeBand && !inCross) {
-    let c = rdCov(abs(ax - (hw - 1.1)) - 0.5, 1.0, foot) * smoothstep(6.0, 7.0, select(a, 1e3, !sig));
-    if (c > surfCov) { surfCol = vec3f(0.08, 0.25, 0.6); surfCov = c; surfRough = 0.8; }
+    var c = rdCov(abs(ax - (hw - 1.1)) - 0.5, 1.0, foot) * smoothstep(6.0, 7.0, select(a, 1e3, !sig));
+    // New York paints its bike lanes green only in the conflict zone
+    // where turning traffic crosses them (the last 25 m to a signal).
+    if (nycRoad) { c *= select(0.0, 1.0, sig && a < 25.0); }
+    if (c > surfCov) { surfCol = select(vec3f(0.08, 0.25, 0.6), vec3f(0.06, 0.3, 0.12), nycRoad); surfCov = c; surfRough = 0.8; }
   }
   // Green school-route belt outside the edge line (kinds 0-1).
   if (green && !inCross) {
@@ -3695,7 +3790,9 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   if (kind == 1u && !inCross) {
     let dash = select(paintLine(rdDash(along, 10.0, 5.0), 5.0, foot), 1.0, sig && a < 30.0);
     let c = paintLine(ax, 0.15, foot) * dash;
-    if (c > covW) { covW = c; bevDir = vec2f(sx, 0.0); }
+    // (US centre lines are yellow.)
+    if (nycRoad) { covY = max(covY, c); }
+    else if (c > covW) { covW = c; bevDir = vec2f(sx, 0.0); }
   }
   if (kind >= 2u && !inCross) {
     let c = paintLine(abs(axw - 0.155), 0.15, foot);
@@ -3767,7 +3864,8 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
         covW = max(covW, rdCov(sd, 0.15, foot));
       }
     }
-    if (a > 33.0) {
+    // (Tokyo's crossing-ahead diamonds.)
+    if (a > 33.0 && !nycRoad) {
       let dc = select(56.0, 36.0, a < 46.0);
       let sd = rdRhombus(vec2f(o, a - dc), vec2f(0.75, 1.5));
       covW = max(covW, paintLine(abs(sd + 0.1), 0.2, foot));
@@ -3775,11 +3873,15 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   }
   // Blue bike marks: arrow + white glyph every 10 m in the curb lane.
   let bc = floor(a / 10.0) * 10.0 + 5.0;
-  if (kind >= 2u && !inCross && !(sig && bc < 14.0)) {
+  // (New York: white bike symbols and chevrons in the bike lanes only.)
+  if (kind >= 2u && !inCross && !(sig && bc < 14.0) && !(nycRoad && !bikeBand)) {
     let p = vec2f(ax - (hw - 1.1), a - bc);
     let arrow = min(rdTri(p - vec2f(0.0, -0.8), vec2f(0.375, 0.7)), rdBox(p - vec2f(0.0, 0.35), vec2f(0.17, 0.45)));
     let bcov = rdCov(arrow, 0.34, foot);
-    if (bcov > 0.0) {
+    if (nycRoad) {
+      let ch = abs(abs(p.x) * 0.9 + (p.y + 0.6)) - 0.07;
+      covW = max(covW, rdCov(max(ch, abs(p.x) - 0.32), 0.14, foot));
+    } else if (bcov > 0.0) {
       s.albedo = mix(s.albedo, mix(vec3f(0.08, 0.25, 0.6), s.albedo, 0.3 * track), bcov);
       s.rough = mix(s.rough, 0.6, bcov);
     }
@@ -3791,8 +3893,8 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
       covW = max(covW, paintLine(abs(ax - (hw - 1.675)), 0.15, foot) * paintLine(rdDash(along, 3.0, 2.0), 2.0, foot));
     }
   }
-  // Fire-hydrant frame every ~110 m near the gutter.
-  {
+  // Fire-hydrant frame every ~110 m near the gutter (Tokyo).
+  if (!nycRoad) {
     let hc = floor(along / 110.0);
     let hp = hc * 110.0 + 15.0 + 80.0 * rdH(seed, i32(hc) * 2 + side, 44);
     let p = vec2f(ax - (ec - 0.75), along - hp);
@@ -4364,7 +4466,8 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   let foot = max(length(dWorldX), length(dWorldY));
   let kind = aux & 3u;
   let apron = (aux & 4u) != 0u;
-  let plant = (aux & 8u) != 0u;
+  // (New York has no hedge strip: paved, its planters stand on the walk.)
+  let plant = (aux & 8u) != 0u && signLocale() != 1u;
   let bw = select(f32((aux >> 8u) & 0xffu) * 0.02, 2.5, ((aux >> 8u) & 0xffu) == 0u);
   let dist = distance(world, frame.camPos.xyz);
   let y = uv.y;
@@ -4437,7 +4540,8 @@ fn sidewalkMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
   }
   let night = nightLight();
   _ = night;
-  if (kind >= 1u) {
+  // (Tokyo's yellow guide line; New York has warning pads at the crossings only.)
+  if (kind >= 1u && signLocale() != 1u) {
     let tcov = rdCov(abs(y - tc) - 0.15, 0.3, foot);
     if (tcov > 0.0) {
       // Four raised linear bars per 300 mm tile, running along the walk.
@@ -4795,6 +4899,24 @@ fn coverMat(world: vec3f, n: vec3f, uv: vec2f, span: f32, aux: u32) -> Surf {
 fn hedgeMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var s = defaultSurf(n);
   if (param == 2u) { return coverMat(world, n, uv, 1.0, aux); }
+  if (param == 3u) {
+    // New York's open tree pit (gen-tile TREE_PIT_SOIL): dark loam, lumps
+    // and pebbles, scattered leaf litter, a ring of bare earth round the
+    // trunk.
+    let q = world.xz;
+    let lump = valueNoise(q * 9.0) * 0.6 + valueNoise(q * 31.0) * 0.4;
+    var a = mix(vec3f(0.085, 0.065, 0.045), vec3f(0.16, 0.125, 0.09), lump);
+    let peb = step(0.82, valueNoise(q * 55.0));
+    a = mix(a, vec3f(0.3, 0.28, 0.25), peb * 0.6);
+    let lit = smoothstep(0.62, 0.7, valueNoise(q * 14.0 + 7.0));
+    a = mix(a, vec3f(0.32, 0.24, 0.1), lit * 0.7);
+    let r = length(uv - 0.5);
+    if (r < 0.12) { a = vec3f(0.12, 0.09, 0.07); }
+    s.albedo = a;
+    s.rough = 0.95;
+    applyWetness(&s, world, 0.3, 0.6);
+    return s;
+  }
   if (param == 1u) {
     let p = (uv - 0.5) * 1.2;
     let r = length(p);
@@ -5049,6 +5171,83 @@ fn roadSignMat(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
     // Route shield.
     let sh = length(q - vec2f(-0.45, 0.33)) - 0.08;
     col = mix(col, white, 1.0 - smoothstep(-aa, aa, sh));
+  } else if (k >= 6u && k < 16u) {
+    // New York regulatory plates (gen-tile US_SIGN, uv in reading order):
+    // in metres about the centre, plate half sizes as US_PLATE.
+    let sz = array<vec2f, 7>(vec2f(0.3, 0.375), vec2f(0.3, 0.45), vec2f(0.45, 0.15), vec2f(0.45, 0.15), vec2f(0.3, 0.3), vec2f(0.3, 0.45), vec2f(0.3, 0.375));
+    let hs = sz[min(k - 6u, 6u)];
+    let q = p * hs * 2.0;
+    let am = max(foot, 0.004) * hs.x * 2.0;
+    let ink = vec3f(0.025);
+    let usRed = vec3f(0.6, 0.03, 0.03);
+    col = white;
+    if (k == 6u) {
+      // SPEED LIMIT 25: black on white, a black rim inset.
+      var c = paintLine(abs(rdBox(q, hs - 0.025)), 0.014, am);
+      c = max(c, usText((q - vec2f(0.0, 0.22)) / 0.11, 18908552u, 0u, 5u, 0.075, am / 0.11));
+      c = max(c, usText((q - vec2f(0.0, 0.1)) / 0.11, 9548900u, 0u, 5u, 0.075, am / 0.11));
+      let d2 = rdDigit((q - vec2f(-0.08, -0.13)) / 0.3, 2u, 0.055);
+      let d5 = rdDigit((q - vec2f(0.08, -0.13)) / 0.3, 5u, 0.055);
+      c = max(c, 1.0 - smoothstep(-am / 0.3, am / 0.3, min(d2, d5)));
+      col = mix(white, ink, c);
+    } else if (k == 7u || k == 11u) {
+      // NO PARKING / NO STANDING ANYTIME: red on white, a double arrow.
+      var c = usText((q - vec2f(0.0, 0.3)) / 0.17, 197u, 0u, 2u, 0.08, am / 0.17);
+      if (k == 7u) {
+        c = max(c, usText((q - vec2f(0.0, 0.11)) / 0.09, 171383820u, 16u, 7u, 0.08, am / 0.09));
+        c = max(c, usText((q - vec2f(0.0, -0.3)) / 0.075, 439663776u, 1u, 7u, 0.08, am / 0.075));
+      } else {
+        c = max(c, usText((q - vec2f(0.0, 0.11)) / 0.08, 119701800u, 517u, 8u, 0.08, am / 0.08));
+        c = max(c, usText((q - vec2f(0.0, -0.04)) / 0.08, 439663776u, 1u, 7u, 0.08, am / 0.08));
+      }
+      let ay = select(-0.22, -0.13, k == 7u) - select(0.0, 0.08, k == 11u);
+      var ad = rdSeg(q, vec2f(-0.18, ay), vec2f(0.18, ay)) - 0.012;
+      ad = min(ad, rdTri(vec2f(q.y - ay, -(q.x - 0.26)), vec2f(0.05, 0.09)));
+      ad = min(ad, rdTri(vec2f(q.y - ay, q.x + 0.26), vec2f(0.05, 0.09)));
+      c = max(c, 1.0 - smoothstep(-am, am, ad));
+      col = mix(white, usRed, c);
+    } else if (k == 8u || k == 9u) {
+      // ONE WAY: a white arrow on black with the words in black.
+      let a = vec2f(select(-q.x, q.x, k == 8u), q.y);
+      var ad = rdBox(a - vec2f(-0.08, 0.0), vec2f(0.3, 0.07));
+      ad = min(ad, rdTri(vec2f(a.y, -(a.x - 0.41)), vec2f(0.12, 0.2)));
+      col = mix(ink, white, 1.0 - smoothstep(-am, am, ad));
+      let t = usText((q - vec2f(select(0.06, -0.06, k == 8u), 0.0)) / 0.085, 18842790u, 15u, 7u, 0.08, am / 0.085);
+      col = mix(col, ink, t);
+      col = mix(col, white, paintLine(abs(rdBox(q, hs - 0.012)), 0.01, am));
+    } else if (k == 10u) {
+      // DO NOT ENTER: red disc, white bar and words.
+      let r2 = length(q);
+      col = mix(white, usRed, 1.0 - smoothstep(0.27 - am, 0.27 + am, r2));
+      var c = 1.0 - smoothstep(-am, am, rdBox(q, vec2f(0.2, 0.035)));
+      c = max(c, usText((q - vec2f(0.0, 0.11)) / 0.075, 308477138u, 0u, 6u, 0.08, am / 0.075));
+      c = max(c, usText((q - vec2f(0.0, -0.11)) / 0.075, 7382177u, 0u, 5u, 0.08, am / 0.075));
+      col = mix(col, white, c);
+    } else {
+      // DON'T BLOCK THE BOX: black words on white in a red rim.
+      var c = usText((q - vec2f(0.0, 0.2)) / 0.13, 300242u, 0u, 4u, 0.08, am / 0.13);
+      c = max(c, usText((q - vec2f(0.0, 0.02)) / 0.13, 15014036u, 0u, 5u, 0.08, am / 0.13));
+      c = max(c, usText((q - vec2f(0.0, -0.16)) / 0.1, 223315017u, 19u, 7u, 0.08, am / 0.1));
+      col = mix(white, ink, c);
+      col = mix(col, usRed, paintLine(abs(rdBox(q, hs - 0.03)), 0.03, am));
+    }
+  } else if (k >= 24u && k < 32u && signAspect() < 2.9 && signLocale() == 1u) {
+    // New York platform sign (gen-base, 1.1 x 0.5 m): MTA black, a white
+    // rule along the top, the line's coloured bullet with its number and
+    // UPTOWN / DOWNTOWN in white.
+    let q = p * vec2f(1.1, 0.5);
+    let am = max(foot, 0.004) * 1.1;
+    col = vec3f(0.02);
+    col = mix(col, white, step(0.19, q.y) * step(q.y, 0.205));
+    let num = (k - 24u) % 7u + 1u;
+    let lines = array<vec3f, 7>(vec3f(0.85, 0.12, 0.1), vec3f(0.85, 0.12, 0.1), vec3f(0.85, 0.12, 0.1), vec3f(0.0, 0.5, 0.2), vec3f(0.0, 0.5, 0.2), vec3f(0.0, 0.5, 0.2), vec3f(0.6, 0.1, 0.6));
+    let bc = q - vec2f(-0.4, -0.03);
+    col = mix(col, lines[num - 1u], 1.0 - smoothstep(0.13 - am, 0.13 + am, length(bc)));
+    let dg = rdDigit(bc / 0.22, num, 0.07);
+    col = mix(col, white, 1.0 - smoothstep(-am / 0.22, am / 0.22, dg));
+    let up = (k & 1u) == 0u;
+    let t = select(usText((q - vec2f(0.13, -0.03)) / 0.1, 210945234u, 177u, 8u, 0.08, am / 0.1), usText((q - vec2f(0.1, -0.03)) / 0.12, 185804171u, 0u, 6u, 0.08, am / 0.12), up);
+    col = mix(col, white, t);
   } else if (k >= 24u && k < 32u && signAspect() < 2.9) {
     // Platform number plate (gen-base, 1.1 x 0.5 m; the road's name plates
     // are 3.6:1): JR-style white plate, the track number in a dark ring on
@@ -5402,11 +5601,22 @@ fn shopSign(
   rect: vec4f, id: u32, param: u32, fabric: bool,
 ) -> Surf {
   var s = s0;
+  // (Each locale's 16 colourways, signs.ts SIGN_WAY_SETS.)
+  let wo = signLocale() * 16u;
   var wi = (id * 5u + ((param >> 10u) & 15u)) & 15u;
   // Cloth is printed: the lit-letter looks (channel, neon) become light-box
   // colourways, so a white-on-white scheme never blanks a banner.
-  if (fabric && SIGN_WAYS[wi].style != 0u && SIGN_WAYS[wi].style != 3u) { wi = (wi + 4u) & 15u; }
-  let w = SIGN_WAYS[wi];
+  if (fabric && SIGN_WAYS[wo + wi].style != 0u && SIGN_WAYS[wo + wi].style != 3u) { wi = (wi + 4u) & 15u; }
+  var w = SIGN_WAYS[wo + wi];
+  if (fabric && wo != 0u) {
+    // New York's cloth is the awning valance: the name printed straight on
+    // the canvas (gen-tile: the awning is the shop id's stripe colour), in
+    // white, or black on a pale canvas.
+    let canvas = signPalette((id * 3u + 1u) & 0xffu) * 0.66;
+    w.bg = canvas;
+    w.fg = select(vec3f(0.86, 0.86, 0.83), vec3f(0.02), dot(canvas, vec3f(0.3, 0.59, 0.11)) > 0.4);
+    w.edge = w.bg;
+  }
   var col = mix(w.bg, w.edge, m.g);
   col = mix(col, w.fg, m.r);
   if (fabric) {
@@ -5494,15 +5704,35 @@ fn signPalette(id: u32) -> vec3f {
 
 // City sign locale (frame.off.w; src/city/signs.ts SIGN_LOCALES): 0 Tokyo,
 // 1 New York.
-fn signLocale() -> u32 { return frame.off.w; }
+fn signLocale() -> u32 { return frame.off.w & 0xffu; }
 
 // A Latin capital (p in -0.5..0.5, 1 = stroke), one of 16 picked by h,
 // built from 14 segments (sides, halves of the middle bar, centre
 // verticals, diagonals) in a 0.6 x 0.8 box.
 fn fauxLatin(p: vec2f, h: u32) -> f32 {
-  // Segment masks of A E H I L N O R S T C U P M K Y.
-  let letters = array<u32, 16>(247u, 121u, 246u, 777u, 56u, 9270u, 63u, 8435u, 237u, 769u, 57u, 62u, 243u, 3126u, 10352u, 3584u);
-  let m = letters[h % 16u];
+  return step(latinDist(p, h % 16u), 0.065);
+}
+
+// Distance to the strokes' centre lines of Latin capital `i` (fauxLatin's
+// 0.52 x 0.72 segment letters): A E H I L N O R S T C U P M K Y, then G W
+// D X B F; 31 or more is a space. D has its own strokes: a full stem, the
+// top and bottom bars stopping short and cut corners down to a shortened
+// right side, so it does not read as O.
+fn latinDist(p: vec2f, i: u32) -> f32 {
+  if (i >= 22u) { return 1e3; }
+  if (i == 18u) {
+    let W = 0.26;
+    let H = 0.36;
+    let c = 0.2;
+    var d = rdSeg(p, vec2f(-W, H), vec2f(-W, -H));
+    d = min(d, rdSeg(p, vec2f(-W, H), vec2f(W - c, H)));
+    d = min(d, rdSeg(p, vec2f(-W, -H), vec2f(W - c, -H)));
+    d = min(d, rdSeg(p, vec2f(W - c, H), vec2f(W, H - c)));
+    d = min(d, rdSeg(p, vec2f(W - c, -H), vec2f(W, -H + c)));
+    return min(d, rdSeg(p, vec2f(W, H - c), vec2f(W, -H + c)));
+  }
+  let letters = array<u32, 22>(247u, 121u, 246u, 777u, 56u, 9270u, 63u, 8435u, 237u, 769u, 57u, 62u, 243u, 3126u, 10352u, 3584u, 189u, 12342u, 63u, 15360u, 255u, 113u);
+  let m = letters[i];
   let W = 0.26;
   let H = 0.36;
   var d = 1e3;
@@ -5514,7 +5744,22 @@ fn fauxLatin(p: vec2f, h: u32) -> f32 {
   for (var k = 0u; k < 14u; k++) {
     if (((m >> k) & 1u) != 0u) { d = min(d, rdSeg(p, pts[k].xy, pts[k].zw)); }
   }
-  return step(d, 0.065);
+  return d;
+}
+
+// Coverage of a word of latinDist capitals: up to 12 letter indices, five
+// bits each, six to a word of (w0, w1), `n` letters centred on the origin
+// of q (in letter units: 0.72 tall, 0.74 pitch); strokes `th` thick, edges
+// antialiased over `aa` (letter units).
+fn usText(q: vec2f, w0: u32, w1: u32, n: u32, th: f32, aa: f32) -> f32 {
+  let P = 0.74;
+  let fx = q.x / P + f32(n) * 0.5;
+  if (fx < 0.0 || fx >= f32(n) || abs(q.y) > 0.6) { return 0.0; }
+  let i = u32(floor(fx));
+  var idx = (w0 >> (5u * min(i, 5u))) & 31u;
+  if (i >= 6u) { idx = (w1 >> (5u * (i - 6u))) & 31u; }
+  let d = latinDist(vec2f((fract(fx) - 0.5) * P, q.y), idx);
+  return 1.0 - smoothstep(th - aa, th + aa, d);
 }
 
 // A kanji-like glyph (p in -0.5..0.5, 1 = stroke): 1-4 horizontal and 1-3
@@ -5590,7 +5835,8 @@ fn depGlyph(dc: vec2f, si: u32, t: f32) -> vec4f {
       let cell = (hr >> 4u) & 3u;
       let ax = (x - 0.7) / 0.5;
       if (ax > 0.0 && ax < 1.0) {
-        let a = vec2f(1.2 + (ax - 0.5) * 1.0, 0.385 - ly * 0.24);
+        // (New York's names are flush left, from 0.15 m.)
+        let a = vec2f(select(1.2 + (ax - 0.5) * 1.0, 0.15 + ax * 1.0, signLocale() == 1u), 0.385 - ly * 0.24);
         let px = vec2f(f32(cell) * 512.0 + a.x / 2.4 * 512.0, 1408.0 + (1.0 - a.y / 0.6) * 128.0);
         let tx = textureSampleLevel(signAtlas, linearSampler, px / vec2f(2048.0, 2560.0), 0.0).rgb;
         let lum = dot(tx, vec3f(0.2126, 0.7152, 0.0722));
@@ -7396,19 +7642,22 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
       a = mix(a, vec3f(0.37, 0.365, 0.35) * tex * (1.0 - 0.5 * cj) * (1.0 - 0.15 * smoothstep(0.5, 0.8, valueNoise(vec2f(x * 3.0, uy * 0.7)))), cope);
       a *= 1.0 - 0.45 * bandF(x, 0.39, 0.42, fu.x);
       // White edge line, 15 cm, fresh paint (a little worn at the joints).
-      let wl = bandF(x, 0.05, 0.2, fu.x);
+      // New York: none; its yellow warning strip runs along the edge.
+      let ny = signLocale() == 1u;
+      let wl = bandF(x, 0.05, 0.2, fu.x) * select(1.0, 0.0, ny);
       a = mix(a, vec3f(0.9, 0.9, 0.87) * mix(0.9, 1.0, d.a) * (1.0 - 0.25 * cj), wl);
       s.rough = mix(s.rough, 0.5, wl);
       // Yellow tactile warning strip (0.3 m blocks of domed dots on a 75 mm
       // grid). The dots are drawn into the albedo too (dark gaps, lit caps)
       // so they read in canopy shade, and keep a speckled mean tone and the
       // block joints out to the far end.
-      let tk = bandF(x, 0.8, 1.1, fu.x);
+      let tx0 = select(0.8, 0.0, ny);
+      let tk = bandF(x, tx0, select(1.1, 0.6, ny), fu.x);
       if (tk > 0.0) {
         var tu: vec3f;
         var tv: vec3f;
         uvDirs(&tu, &tv);
-        let q = fract(vec2f(x - 0.8, uy) / 0.075) - 0.5;
+        let q = fract(vec2f(x - tx0, uy) / 0.075) - 0.5;
         let r = length(q);
         let vis = 1.0 - smoothstep(0.03, 0.065, fp);
         let w = min(fp / 0.075 * 0.6, 0.3);
@@ -7417,23 +7666,26 @@ fn railConcrete(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf
         s.normal = normalize(mix(s.normal, normalize(n + (tu * q.x + tv * q.y) / max(r, 1e-3) * slope * 1.6), vis * tk));
         let ring = smoothstep(0.28, 0.33, r) * (1.0 - smoothstep(0.36, 0.46, r));
         let cap = 1.0 - smoothstep(0.0, 0.16, r);
-        let tb = vec2f(floor((x - 0.8) / 0.3), floor(uy / 0.3));
+        let tb = vec2f(floor((x - tx0) / 0.3), floor(uy / 0.3));
         let ht = hash21(tb + 3.7);
         // Blocks: most a faded ochre, a few fresh replacements.
         var ya = select(vec3f(0.8, 0.6, 0.06), vec3f(0.92, 0.72, 0.04), ht < 0.15) * mix(0.88, 1.05, d.a);
         ya *= mix(0.78, 1.0 - 0.65 * ring - 0.5 * (1.0 - dome) + 0.25 * cap, vis);
-        ya *= 1.0 - 0.6 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.012 / 0.3), jointCov((x - 0.8) / 0.3, fu.x / 0.3, 0.012 / 0.3));
+        ya *= 1.0 - 0.6 * max(jointCov(uy / 0.3, fu.y / 0.3, 0.012 / 0.3), jointCov((x - tx0) / 0.3, fu.x / 0.3, 0.012 / 0.3));
         // Boot-scuffed grey wear on the dots, black tyre / sole marks.
         ya = mix(ya, vec3f(0.4, 0.38, 0.33), 0.4 * smoothstep(0.55, 0.8, valueNoise(vec2f(x * 4.0, uy * 0.6))));
         a = mix(a, ya, tk);
         s.ao = mix(s.ao, mix(0.9, 1.0 - 0.4 * ring, vis), tk);
         s.rough = mix(s.rough, 0.55, tk);
       }
-      // Car-stop marks every 20 m: a white triangle and a numeral plate.
-      let ay = (fract(uy / 20.0) - 0.5) * 20.0;
-      let tri = step(0.25, x) * step(x, 0.6) * step(abs(ay), 0.15 * (x - 0.25) / 0.35);
-      let num = bandF(x, 0.65, 0.8, fu.x) * bandF(ay, -0.08, 0.08, fu.y);
-      a = mix(a, vec3f(0.82, 0.82, 0.8), max(tri * fine, num * (1.0 - smoothstep(0.03, 0.06, fp))));
+      // Car-stop marks every 20 m: a white triangle and a numeral plate
+      // (Tokyo).
+      if (!ny) {
+        let ay = (fract(uy / 20.0) - 0.5) * 20.0;
+        let tri = step(0.25, x) * step(x, 0.6) * step(abs(ay), 0.15 * (x - 0.25) / 0.35);
+        let num = bandF(x, 0.65, 0.8, fu.x) * bandF(ay, -0.08, 0.08, fu.y);
+        a = mix(a, vec3f(0.82, 0.82, 0.8), max(tri * fine, num * (1.0 - smoothstep(0.03, 0.06, fp))));
+      }
       // The slab is laid nearly flat: it ponds in the rain.
       flat = 0.75;
       porous = 0.4;
@@ -7982,9 +8234,12 @@ fn galvSteel(world: vec3f, n: vec3f, uv: vec2f, aux: u32) -> Surf {
 // road-facing web (seed bit 0x80), a yellow clearance board.
 fn railGirder(world: vec3f, n: vec3f, uv: vec2f, param: u32) -> Surf {
   let seed = param & 0x7fu;
-  // Blue-grey, JR teal or rust-brown (oxide primer showing through).
+  // Blue-grey, JR teal or rust-brown (oxide primer showing through); New
+  // York's els dark green or dark grey.
   let pal = array<vec3f, 3>(vec3f(0.36, 0.42, 0.5), vec3f(0.2, 0.4, 0.37), vec3f(0.28, 0.13, 0.065));
-  var s = paintedSteelC(world, n, seed, pal[seed % 3u] * mix(0.94, 1.06, hashuf(seed * 0x9e37u)));
+  let palNy = array<vec3f, 3>(vec3f(0.11, 0.17, 0.13), vec3f(0.2, 0.21, 0.22), vec3f(0.09, 0.14, 0.11));
+  let pc = select(pal[seed % 3u], palNy[seed % 3u], signLocale() == 1u);
+  var s = paintedSteelC(world, n, seed, pc * mix(0.94, 1.06, hashuf(seed * 0x9e37u)));
   if (abs(n.y) > 0.5) { return s; }
   let fp = railFoot();
   let fu = uvFoot();
@@ -8405,16 +8660,25 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       let group = (param >> 2u) & 1u;
       let phase = f32((param >> 3u) & 0xffu);
       let state = signalState(frame.time.x, phase, group);
-      let cols = array<vec3f, 3>(vec3f(0.1, 1.0, 0.75), vec3f(1.0, 0.75, 0.05), vec3f(1.0, 0.08, 0.04));
+      var cols = array<vec3f, 3>(vec3f(0.1, 1.0, 0.75), vec3f(1.0, 0.75, 0.05), vec3f(1.0, 0.08, 0.04));
+      let us = signLocale() == 1u;
+      // (New York: a yellower green than Tokyo's blue-green "ao".)
+      if (us) { cols[0] = vec3f(0.15, 1.0, 0.5); }
       s.albedo = vec3f(0.05);
       s.rough = 0.2;
       if (lamp == 3u) {
         // Pedestrian head (same group/phase as the vehicle head it serves):
         // upper red man, lower green man, which flashes during amber.
+        // New York: upper orange hand (flashing during the clearance),
+        // lower white walking person.
         let upper = (param & 0x800u) != 0u;
         let blink = step(0.5, fract(frame.time.x * 2.0));
-        let on = select(select(0.0, blink, state == 1u) + select(0.0, 1.0, state == 0u), select(0.0, 1.0, state != 0u), upper);
-        let c = select(vec3f(0.1, 1.0, 0.6), vec3f(1.0, 0.12, 0.06), upper);
+        var on = select(select(0.0, blink, state == 1u) + select(0.0, 1.0, state == 0u), select(0.0, 1.0, state != 0u), upper);
+        var c = select(vec3f(0.1, 1.0, 0.6), vec3f(1.0, 0.12, 0.06), upper);
+        if (us) {
+          on = select(select(0.0, 1.0, state == 0u), select(select(0.0, 1.0, state == 2u), blink, state == 1u), upper);
+          c = select(vec3f(0.85, 0.92, 1.0), vec3f(1.0, 0.38, 0.06), upper);
+        }
         s.emissive = c * mix(0.03, mix(5.0, 12.0, night), on);
       } else if (state == lamp) { s.emissive = cols[lamp] * mix(6.0, 14.0, night); } else { s.emissive = cols[lamp] * 0.03; }
     }
@@ -8426,11 +8690,29 @@ fn cityMaterial(world: vec3f, nIn: vec3f, uv: vec2f, matWord: u32, aux: u32) -> 
       // Service fixtures (steel grey, black plates, meters, pipes, AC
       // units): weathered, matte paint. At 0.5 a grazing golden-hour sun lit
       // them up near-white against the wall.
-      if (param == 0x90u || param == 0x91u || (param >= 0xd0u && param < 0xf0u)) { s.rough = 0.7; }
+      if (param == 0x90u || param == 0x91u || param == 0x96u || (param >= 0xd0u && param < 0xf0u)) { s.rough = 0.7; }
+      if (param == 0x9au) { s.rough = 0.88; s.metal = 0.0; }
       if (param == POLE_PAINT) {
-        s = roadPole(world, n, uv, paintColor(0x90u), 0.08);
+        // (Grey in Tokyo, New York's dark green.)
+        s = roadPole(world, n, uv, paintColor(select(0x90u, 0x96u, signLocale() == 1u)), 0.08);
       } else if (param == CABINET || param == UTIL_POLE || (param >= SIGNAL_BORDER && param <= UTIL_PLATE)) {
         s = roadFurniture(world, n, uv, param, aux);
+      } else if (param == 0x9cu) {
+        // New York tree guards and stoop railings (gen-tile RAIL_IRON).
+        s = paintedSteelC(world, n, 0x9cu, vec3f(0.03, 0.03, 0.032));
+      } else if (param == 0x97u) {
+        // New York fire escapes (gen-tile FIRE_ESCAPE): black paint over
+        // rust, a shade off black in a satin coat (its sheen picks up
+        // street and window light). At night a faint warm spill from the
+        // lit windows behind (by floor and bay, not every one), strongest
+        // on the faces turned up and on the edges seen at a grazing angle,
+        // so the ironwork still reads against a dark wall.
+        s = paintedSteelC(world, n, 0x97u, vec3f(0.034, 0.033, 0.034));
+        s.rough = min(s.rough, 0.42);
+        let lit = step(0.4, hash21(floor(world.xz / 2.6) + floor(world.y / 3.2) * 7.3));
+        let vd = normalize(frame.camPos.xyz - world);
+        let rim = pow(1.0 - abs(dot(n, vd)), 2.0);
+        s.emissive += vec3f(1.0, 0.72, 0.42) * nightLight() * mix(0.3, 1.0, lit) * (0.0096 + 0.0064 * max(n.y, 0.0) + 0.024 * rim);
       } else if ((param & ~0xffu) == PAINT_STEEL) {
         s = paintedSteel(world, n, param);
       } else if ((param & ~0xffu) == RAIL_GIRDER) {

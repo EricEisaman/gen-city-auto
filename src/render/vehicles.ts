@@ -205,6 +205,21 @@ function mulInto(d: Float32Array, o: number, a: Mat4, b: Mat4) {
 const localA = new Float32Array(16);
 const localB = new Float32Array(16);
 
+/** Road vehicle kinds, modelled right-hand drive (VehicleRenderer.leftHand). */
+const ROAD_KINDS = new Set(['car', 'taxi', 'van', 'truck', 'bus']);
+const mirrorA = new Float32Array(16);
+const mirrorB = new Float32Array(16);
+
+/** out = m * diag(-1, 1, 1, 1): the model mirrored across its x = 0 plane. */
+function mirrorX(out: Float32Array, m: Mat4) {
+  out.set(m);
+  out[0] = -m[0];
+  out[1] = -m[1];
+  out[2] = -m[2];
+  out[3] = -m[3];
+  return out;
+}
+
 export class VehicleRenderer implements DrawHook {
   readonly name = 'vehicles';
   variants: VariantGpu[] = [];
@@ -250,6 +265,15 @@ export class VehicleRenderer implements DrawHook {
   private contacts: {d: number; v: number[]}[] = [];
   private lodMemory = new WeakMap<Float32Array, number>();
   instanceCount = 0;
+  /**
+   * Left-hand drive: road vehicles (modelled right-hand drive, for Tokyo's
+   * keep-left traffic) are drawn mirrored across their centre plane, so the
+   * driver, steering wheel and the bus's doors change sides. The shader
+   * handles the mirrored winding (outwardFacing); add() flips the steering
+   * and indicator signs to match.
+   */
+  leftHand = false;
+  private mirrorInst = {} as VehicleInstance;
 
   constructor(
     renderer: Renderer,
@@ -445,6 +469,19 @@ export class VehicleRenderer implements DrawHook {
     this.ready = true;
   }
 
+  /** Whether variant `i` is drawn mirrored (leftHand). */
+  mirrored(i: number) {
+    const v = this.variants[i];
+    return this.leftHand && !!v && ROAD_KINDS.has(v.info.kind);
+  }
+
+  /** Driver eye of variant `i` in its (possibly mirrored) vehicle space. */
+  driverEye(i: number): Vec3 | undefined {
+    const e = this.variants[i]?.info.driverEye;
+    if (!e) return undefined;
+    return this.mirrored(i) ? [-e[0], e[1], e[2]] : e;
+  }
+
   variantsOf(kind: string): number[] {
     return this.variants
       .map((v, i) => (v.info.kind === kind ? i : -1))
@@ -544,6 +581,16 @@ export class VehicleRenderer implements DrawHook {
     if (!this.ready || inst.hidden) return;
     const v = this.variants[inst.variant];
     if (!v) return;
+    // (LOD memory keyed by the caller's matrix, not the mirrored scratch.)
+    const memo = inst.model;
+    if (this.mirrored(inst.variant)) {
+      const mi = Object.assign(this.mirrorInst, inst);
+      mi.model = mirrorX(mirrorA, inst.model);
+      mi.prevModel = mirrorX(mirrorB, inst.prevModel);
+      mi.steer = -inst.steer;
+      mi.indicator = -inst.indicator;
+      inst = mi;
+    }
     const m = inst.model;
     const dist = Math.hypot(
       m[12] - this.eye[0],
@@ -554,7 +601,7 @@ export class VehicleRenderer implements DrawHook {
     const size = Math.max(sz[0], sz[1], sz[2]);
     if (dist > this.maxDist * (1 + size / 90)) return;
     // LOD with hysteresis so vehicles near a threshold don't pop every frame.
-    const prevLod = this.lodMemory.get(inst.model);
+    const prevLod = this.lodMemory.get(memo);
     const b0 = (18 + size * 2) * this.lodScale;
     const b1 = (70 + size * 6) * this.lodScale;
     const k = (l: number) =>
@@ -570,7 +617,7 @@ export class VehicleRenderer implements DrawHook {
           : dist < b2 * k(2) || v.lods.length < 4
             ? 2
             : 3);
-    this.lodMemory.set(inst.model, lod);
+    this.lodMemory.set(memo, lod);
     // Bounding sphere for the per-pass culling (prepare): the model's
     // origin sits at the ground, the parts reach about half the diagonal.
     if (this.vehicleCount * 4 >= this.bounds.length) {
@@ -603,8 +650,8 @@ export class VehicleRenderer implements DrawHook {
           m[13],
           m[14],
           0,
-          m[0],
-          m[2],
+          memo[0],
+          memo[2],
           m[8],
           m[10],
           sz[0] / 2,

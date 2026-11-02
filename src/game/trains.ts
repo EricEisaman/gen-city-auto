@@ -37,8 +37,12 @@ export class Trains {
   /** Distance from a car's center to each bogie pivot (6.9 m on the 20 m design). */
   bogie = 6.9;
 
-  constructor(elevated: Elevated[], vr: VehicleRenderer) {
+  /** +1: trains keep to the left-hand track (RoadNet.side); -1: right. */
+  private side: 1 | -1;
+
+  constructor(elevated: Elevated[], vr: VehicleRenderer, side: 1 | -1 = 1) {
     this.vr = vr;
+    this.side = side;
     const variants = vr.variantsOf('train');
     const rng = new Rng(77);
     if (variants.length) {
@@ -242,8 +246,8 @@ export class Trains {
         const dz = qf[2] - qr[2];
         const l = Math.hypot(dx, dz) || 1;
         const d: Vec2 = [dx / l, dz / l];
-        // Run on the left-hand track.
-        const left: Vec2 = [d[1], -d[0]];
+        // Run on the left-hand track (right-hand where traffic keeps right).
+        const left: Vec2 = [d[1] * this.side, -d[0] * this.side];
         const p: Vec3 = [
           (qf[0] + qr[0]) / 2 + left[0] * 2.1,
           (qf[1] + qr[1]) / 2 + 0.37, // RAIL_TOP (gen-base.ts)
