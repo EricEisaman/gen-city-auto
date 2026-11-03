@@ -153,10 +153,29 @@ function clusterTransfer(c: ClusterData): Transferable[] {
 // parts for the loading screen's map.
 let step = '';
 let stepT = 0;
-function progress(msg: string, f: number, partial?: LayoutPartial) {
+/** Last sub-progress posted (value, time): at most ~10 a second. */
+let subSent = 0;
+let subT = 0;
+function progress(
+  msg: string,
+  f: number,
+  partial?: LayoutPartial,
+  sub?: number,
+) {
+  if (sub !== undefined) {
+    // How far the current step has got (generateLayout's long steps).
+    const t = performance.now();
+    if (msg !== step || sub < subSent + 0.01 || t - subT < 100) return;
+    subSent = sub;
+    subT = t;
+    post({type: 'progress', msg, f, sub});
+    return;
+  }
   if (step) span(`layout: ${step}`, stepT);
   step = msg;
   stepT = abs();
+  subSent = 0;
+  subT = performance.now();
   post({type: 'progress', msg, f});
   const pv = partial && packPreview(partial, PRESETS[req0.cityType].size);
   if (pv) post({type: 'preview', preview: pv}, previewTransfer(pv));

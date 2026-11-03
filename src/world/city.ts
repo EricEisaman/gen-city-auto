@@ -50,8 +50,11 @@ const SHELL_KEEP = 150;
 
 /** Loading progress (the loading screen). */
 export interface LoadListener {
-  /** A generation step started (f: the worker's own 0..0.75 estimate). */
-  step(msg: string, f: number): void;
+  /**
+   * A generation step started (f: the worker's own 0..0.75 estimate), or
+   * with `sub` (0..1), how far the step `msg` has got.
+   */
+  step(msg: string, f: number, sub?: number): void;
   /** A finished part of the layout, for the map. */
   preview(p: Preview): void;
   /** Initial tile set: fraction done. */
@@ -159,7 +162,7 @@ export class City {
         const m = e.data;
         switch (m.type) {
           case 'progress':
-            progress.step(m.msg, m.f);
+            progress.step(m.msg, m.f, m.sub);
             break;
           case 'span':
             addSpan(

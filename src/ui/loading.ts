@@ -173,11 +173,15 @@ class LoadingScreen implements LoadListener {
 
   // ---- LoadListener (city workers) ----
 
-  step(msg: string, f: number) {
+  step(msg: string, f: number, sub?: number) {
     const [a, b] = PHASE.layout;
     if (this.phaseName === 'gpu') {
       this.phaseName = 'layout';
       this.layoutT0 = now();
+    }
+    if (sub !== undefined) {
+      this.subStep(msg, sub);
+      return;
     }
     this.phase(msg);
     let i = STEPS.findIndex(s => s[0] === msg);
@@ -200,6 +204,18 @@ class LoadingScreen implements LoadListener {
     this.stepIdx = i;
     this.target = Math.max(this.target, a + (b - a) * start);
     this.ceil = a + (b - a) * end;
+  }
+
+  /** How far the current layout step has got: label and bar move on. */
+  private subStep(msg: string, sub: number) {
+    const i = STEPS.findIndex(s => s[0] === msg);
+    if (i < 0 || i !== this.stepIdx) return;
+    this.phase(`${msg} ${Math.floor(sub * 100)}%`);
+    const [a, b] = PHASE.layout;
+    let cum = 0;
+    for (let k = 0; k < i; k++) cum += STEPS[k][1];
+    const at = (cum + STEPS[i][1] * Math.min(1, sub)) / STEP_TOTAL;
+    this.target = Math.max(this.target, a + (b - a) * at);
   }
 
   preview(p: Preview) {

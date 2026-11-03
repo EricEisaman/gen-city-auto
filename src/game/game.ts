@@ -23,7 +23,7 @@ import {CpuProfiler} from '../render/profiler.ts';
 import {OFF_BITS, parseOff} from '../render/ablation.ts';
 import {UI} from '../ui/ui.ts';
 import {loading as loadScreen, nextPaint} from '../ui/loading.ts';
-import {begin, finish, mark, timed, timedAsync} from '../ui/timeline.ts';
+import {addSpan, begin, finish, mark, timedAsync} from '../ui/timeline.ts';
 import {
   deviceDefaults,
   DynamicScale,
@@ -156,6 +156,12 @@ export class Game {
   private opts: GameOptions;
   loading = false;
   private frames = 0;
+  /**
+   * The loading screen waits for the first frame of a new world: hidden
+   * once the GPU has finished it (frame()), so a slow first frame shows
+   * as such instead of as a frozen 'Starting traffic'.
+   */
+  private revealPending = false;
   /** Car variant to return to from the helicopter. */
   private lastCar = -1;
   /** Director vehicle swaps: shots left before the next one. */
@@ -380,9 +386,7 @@ export class Game {
     await Promise.all([city, vehicles]);
     loadScreen.phase('Compiling shaders', 'finish');
     await timedAsync('wait: pipelines + textures', gpuReady);
-    loadScreen.phase('Starting traffic');
-    await nextPaint();
-    timed('setupWorld', () => this.setupWorld());
+    await timedAsync('setupWorld', this.setupWorld());
     this.ui = new UI(this);
     if (this.opts.swap) this.camera.beforeCut = () => this.directorSwap();
     if (this.opts.camera) {
@@ -426,7 +430,34 @@ export class Game {
     this.loading = false;
   }
 
-  private setupWorld() {
+  /**
+   * Traffic, trains, pedestrians, the player and the showcase for the city
+   * just loaded. Runs in steps, each named on the loading screen with a
+   * paint in between (no frames run meanwhile: `loading` holds them), so a
+   * slow phone shows where it is instead of freezing on one label.
+   */
+  private async setupWorld() {
+    this.loading = true;
+    try {
+      await this.setupSteps();
+    } finally {
+      this.loading = false;
+    }
+    // The loading screen stays up over the first frame (frame()).
+    this.revealPending = true;
+    loadScreen.phase('Drawing the first frame');
+  }
+
+  private async setupSteps() {
+    // Each step a span of the startup timeline (its work, not the paint).
+    const cur = {end: () => {}};
+    const step = async (label: string) => {
+      cur.end();
+      loadScreen.phase(label);
+      await nextPaint();
+      cur.end = begin(label);
+    };
+    await step('Starting traffic');
     const city = this.city!;
     const net = this.net!;
     // Right-hand traffic: left-hand drive road vehicles.
@@ -448,6 +479,7 @@ export class Game {
       this.vehicles,
       (x, z) => city.groundHeight(x, z),
     );
+    await step('Placing pedestrians');
     this.peds = new Pedestrians(
       net,
       this.vehicles,
@@ -588,44 +620,57 @@ export class Game {
     }
     if (this.opts.shot) this.forceShot(this.opts.shot);
     // Warm up traffic so the streets are busy immediately.
-    for (let i = 0; i < (this.opts.lab ? 0 : 40); i++)
+    const warm = this.opts.lab ? 0 : 40;
+    for (let i = 0; i < warm; i++) {
+      if (i % 10 === 0)
+        await step(`Moving traffic ${Math.round((100 * i) / warm)}%`);
       this.traffic.update(
         0.25,
         this.time + i * 0.25,
         this.player.pos,
         this.player.follower ? [this.player.follower] : [],
       );
-    timed('showcase setup', () => this.initShowcase());
-    loadScreen.hide();
+    }
+    await this.initShowcase(step);
+    cur.end();
   }
 
   // -- Showcase director (game/showcase.ts) ---------------------------------
 
   /** Highlights and the programme (once the city's shells and lights are resident). */
-  private initShowcase() {
+  private async initShowcase(step: (label: string) => Promise<void>) {
     this.showcase?.end();
     this.showcase = null;
     this.subjectTrain = -1;
     if (!this.opts.showcase || this.opts.lab) return;
+    await step('Finding showcase scenes');
     const city = this.city!;
     const L = city.summary.layout;
     const signs = new SignGrid(city.lightPoints(LightKind.sign));
     this.camera.signsNear = (x, z, r) => signs.near(x, z, r);
     const trains = this.trains!;
-    const hl = findHighlights({
-      net: this.net!,
-      elevated: L.elevated,
-      rail: trains.lines.map((l, li) => ({
-        e: l.e,
-        arc: l.arc,
-        stationArcs: l.stationArcs,
-        hasTrains: trains.trains.some(t => t.line === li),
-      })),
-      signs,
-      landUse: city.landUse
-        ? {data: city.landUse, n: L.heightN, cell: L.cell, size: L.params.size}
-        : null,
-    });
+    const hl = await findHighlights(
+      {
+        net: this.net!,
+        elevated: L.elevated,
+        rail: trains.lines.map((l, li) => ({
+          e: l.e,
+          arc: l.arc,
+          stationArcs: l.stationArcs,
+          hasTrains: trains.trains.some(t => t.line === li),
+        })),
+        signs,
+        landUse: city.landUse
+          ? {
+              data: city.landUse,
+              n: L.heightN,
+              cell: L.cell,
+              size: L.params.size,
+            }
+          : null,
+      },
+      step,
+    );
     const low = lowMemory();
     const prog = new Programme(hl, (this.seed * 7919 + 17) >>> 0, {
       maxJump: low ? 1600 : Infinity,
@@ -1205,7 +1250,7 @@ export class Game {
     history.replaceState(null, '', url);
     try {
       await this.loadCity(type, seed);
-      this.setupWorld();
+      await this.setupWorld();
     } catch (e) {
       reportError(`[regenerate] ${e instanceof Error ? e.stack : e}`);
     }
@@ -1658,11 +1703,36 @@ export class Game {
         'gpu',
       );
     }
+    if (this.revealPending) {
+      this.revealPending = false;
+      this.reveal();
+    }
     if (this.frames === 20) {
       mark('frame 20 (ready)');
       finish();
       window.__ready = true;
     }
+  }
+
+  /**
+   * Hide the loading screen once the GPU has drawn the frame just
+   * submitted (or after 15 s, whatever the GPU is doing).
+   */
+  private reveal() {
+    const t0 = performance.now();
+    loadScreen.phase('Drawing the first frame (GPU)');
+    let done = false;
+    const hide = (why: string) => {
+      if (done) return;
+      done = true;
+      addSpan(`reveal (${why})`, t0, performance.now(), 'gpu');
+      if (!this.loading) loadScreen.hide();
+    };
+    void this.renderer.device.queue.onSubmittedWorkDone().then(
+      () => hide('GPU done'),
+      () => hide('GPU error'),
+    );
+    setTimeout(() => hide('timeout'), 15000);
   }
 
   get rngSeed() {

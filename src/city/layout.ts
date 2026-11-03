@@ -992,10 +992,22 @@ export interface LayoutPartial {
   buildings?: Building[];
 }
 
+/**
+ * generateLayout's progress callback: a step starting (`msg`, the overall
+ * estimate `f`, any finished `partial`), or with `sub` (0..1) how far the
+ * current step `msg` has got (the long ones report as they go).
+ */
+export type LayoutProgress = (
+  msg: string,
+  f: number,
+  partial?: LayoutPartial,
+  sub?: number,
+) => void;
+
 export function generateLayout(
   params: CityParams,
   seed: number,
-  progress?: (msg: string, f: number, partial?: LayoutPartial) => void,
+  progress?: LayoutProgress,
   /** generateTerrain(params, seed), already made (by several workers). */
   pregenerated?: Terrain,
 ): CityLayout {
@@ -1124,16 +1136,22 @@ export function generateLayout(
     : chainsBefore;
 
   progress?.('Grading roads', 0.35);
-  const {chains, nodeH} = gradeRoads(g, chainsG, hf, isLand);
+  const gradingRoads = (sub: number) =>
+    progress?.('Grading roads', 0.35, undefined, sub);
+  const {chains, nodeH} = gradeRoads(g, chainsG, hf, isLand, gradingRoads);
   // Every seeded choice from here on (what is land, which rail runs in a
   // tunnel and so which lots stay) is made on the ground as the old
   // per-chain grading carved it, so saved views keep their roads and lots;
   // the real ground is carved to the graded network.
   const hfSeed = new Heightfield(hf.size, hf.cell, hf.data.slice());
-  const flooded = carveGraded(hf, chains, {
-    hf: hfSeed,
-    heights: seedHeights(chains, hfSeed),
-  });
+  const heightsSeed = seedHeights(chains, hfSeed);
+  gradingRoads(0.5);
+  const flooded = carveGraded(
+    hf,
+    chains,
+    {hf: hfSeed, heights: heightsSeed},
+    f => gradingRoads(0.5 + f * 0.5),
+  );
   const isLandSeed = (q: Vec2) => hfSeed.sample(q[0], q[1]) > SEA_LEVEL + 0.5;
 
   // Junctions.
@@ -1371,15 +1389,20 @@ export function generateLayout(
   }
 
   progress?.('Grading blocks', 0.55);
+  const gradingBlocks = (sub: number) =>
+    progress?.('Grading blocks', 0.55, undefined, sub);
   blocks.push(...slivers);
-  gradeBlocks(hf, blocks);
+  gradeBlocks(hf, blocks, undefined, f => gradingBlocks(f * 0.72));
   // Rail lines stay underground wherever the seed had them in a tunnel (the
   // lots over them were kept), however far the graded ground came down.
   seedRails.forEach((_, li) => buryRail(elevated[li], bored[li], hf));
+  gradingBlocks(0.74);
   separateCrossings(elevated);
+  gradingBlocks(0.86);
   // Where one line lifted over another came up, heap the ground over it.
   seedRails.forEach((_, li) => coverRail(elevated[li], bored[li], hf));
   for (const e of elevated) e.stations = clearStations(e, hf);
+  gradingBlocks(0.87);
   // The seed ground too, where the choices below read it (they were made on
   // graded blocks): blocks that may grade down to the water line, and those
   // under a rail line (which runs in a tunnel where the ground is over it).
@@ -1398,6 +1421,7 @@ export function generateLayout(
           q[1] > box[1] - pad &&
           q[1] < box[3] + pad,
       ),
+    f => gradingBlocks(0.87 + f * 0.13),
   );
 
   progress?.('Designing buildings', 0.6, {blocks});
@@ -1840,6 +1864,8 @@ function gradeBlocks(
    * plane at the corners and the ground around it).
    */
   keep?: (box: number[], low: number) => boolean,
+  /** Fraction of the blocks done, now and then (progress). */
+  tick?: (f: number) => void,
 ) {
   const n = hf.n;
   const cell = hf.cell;
@@ -1848,7 +1874,9 @@ function gradeBlocks(
   let inside = new Int32Array(4096);
   let rowAt = new Int32Array(256);
   const xs: number[] = [];
-  for (const b of blocks) {
+  for (let bi = 0; bi < blocks.length; bi++) {
+    if (tick && (bi & 63) === 0) tick(bi / blocks.length);
+    const b = blocks[bi];
     const poly = b.curb;
     // Least-squares plane h = a x + c z + d through curb samples.
     let sxx = 0,
@@ -2225,6 +2253,8 @@ function gradeRoads(
   chainsG: Chain[],
   hf: Heightfield,
   isLand: (q: Vec2) => boolean,
+  /** How far it has got (0..0.48 of the Grading roads step). */
+  tick?: (f: number) => void,
 ): {chains: RoadChain[]; nodeH: number[]} {
   const nn = g.nodes.length;
   const ground = (q: Vec2) => Math.max(hf.sample(q[0], q[1]), SEA_LEVEL + 1.2);
@@ -2368,6 +2398,7 @@ function gradeRoads(
     {floor: nodeFloor, ceil: nodeCeil},
     200,
   );
+  tick?.(0.14);
 
   // Each chain between its graded ends.
   const first = chainsG.map((c, ci) => {
@@ -2378,8 +2409,10 @@ function gradeRoads(
     tt[0] = nodeH[c.nodes[0]];
     tt[n - 1] = nodeH[c.nodes[c.nodes.length - 1]];
     w[0] = w[n - 1] = 1e6;
+    if (tick && (ci & 127) === 0) tick(0.14 + (0.09 * ci) / chainsG.length);
     return fitPath(tt, w, {floor, ceil}, rise, Math.min(200, 2 * n + 20));
   });
+  tick?.(0.23);
 
   // Then all together with roads that run side by side: where their carved
   // bands (road and sidewalks) come within NEIGHBOUR_GAP of each other they
@@ -2499,6 +2532,7 @@ function gradeRoads(
     {floor, ceil},
     40,
   );
+  tick?.(0.48);
   const chains: RoadChain[] = chainsG.map((c, ci) => ({
     pts: geo[ci].pts,
     heights: Array.from(idx[ci], v => h[v]),
@@ -2577,12 +2611,19 @@ const BANK_REACH = 120;
  * on the hills would otherwise leave walls beside the roads. Returns the
  * water cells it raised (see restoreChannels).
  */
-function carveGraded(hf: Heightfield, chains: RoadChain[], seed: SeedCarve) {
+function carveGraded(
+  hf: Heightfield,
+  chains: RoadChain[],
+  seed: SeedCarve,
+  /** Progress: 0..1 of the way through. */
+  tick?: (f: number) => void,
+) {
   const n = hf.n;
   const N = n * n;
   const data = hf.data;
   const road = new Uint8Array(N);
   const flooded = carveRoads(hf, chains, road, seed);
+  tick?.(0.6);
 
   // Distance-weighted envelopes on the grid (two-pass chamfer): the least
   // of source + step * distance over the sources (sign 1), or the most of
@@ -2634,6 +2675,7 @@ function carveGraded(hf: Heightfield, chains: RoadChain[], seed: SeedCarve) {
   const fade = (k: number) =>
     1 - smoothstep(BANK_REACH - 20, BANK_REACH, far[k]);
   const step = BANK_SLOPE * hf.cell;
+  tick?.(0.7);
   // Ceiling: roads and the water line.
   const env = new Float32Array(N);
   for (let k = 0; k < N; k++)
@@ -2643,6 +2685,7 @@ function carveGraded(hf: Heightfield, chains: RoadChain[], seed: SeedCarve) {
     if (road[k] || wet(k) || far[k] >= BANK_REACH) continue;
     if (data[k] > env[k]) data[k] = lerp(data[k], env[k], fade(k));
   }
+  tick?.(0.85);
   // Floor: roads.
   for (let k = 0; k < N; k++) env[k] = road[k] ? data[k] : -Infinity;
   chamfer(env, step, -1);

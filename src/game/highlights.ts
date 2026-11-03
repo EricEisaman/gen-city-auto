@@ -143,18 +143,35 @@ const groundAt = (net: RoadNet, x: number, z: number): Vec3 => [
   z,
 ];
 
-export function findHighlights(inp: HighlightInput): Highlights {
+/**
+ * Every kind of highlight in the city. `between(label)` runs before each
+ * kind (the loading screen names it and paints; slow phones spend seconds
+ * here); the kinds don't depend on each other, so the result is the same.
+ */
+export async function findHighlights(
+  inp: HighlightInput,
+  between: (label: string) => Promise<void> = async () => {},
+): Promise<Highlights> {
   const {net} = inp;
   const samples = roadSamples(net, Road.street, 12);
+  const find = async <T>(label: string, fn: () => T): Promise<T> => {
+    await between(label);
+    return fn();
+  };
+  const what = 'Finding showcase scenes';
   return {
-    expressway: expresswayCurves(inp, samples),
-    bridge: bridges(net),
-    station: stations(inp),
-    park: parks(inp, samples),
-    signs: signStreets(inp, samples),
-    towers: towerClusters(net),
-    waterfront: waterfront(net, samples),
-    junction: junctions(inp),
+    expressway: await find(`${what}: expressways`, () =>
+      expresswayCurves(inp, samples),
+    ),
+    bridge: await find(`${what}: bridges`, () => bridges(net)),
+    station: await find(`${what}: stations`, () => stations(inp)),
+    park: await find(`${what}: parks`, () => parks(inp, samples)),
+    signs: await find(`${what}: sign streets`, () => signStreets(inp, samples)),
+    towers: await find(`${what}: towers`, () => towerClusters(net)),
+    waterfront: await find(`${what}: waterfront`, () =>
+      waterfront(net, samples),
+    ),
+    junction: await find(`${what}: junctions`, () => junctions(inp)),
   };
 }
 
