@@ -41,6 +41,11 @@ export function setDetailScale(s: number) {
   detailScale = s;
 }
 
+/** The current global level-of-detail scale (see setDetailScale). */
+export function getDetailScale(): number {
+  return detailScale;
+}
+
 /** Estimate segments for one parameter direction from the control net. */
 function autoSegments(s: NurbsSurface, dirU: boolean, edge: number) {
   const nu = s.points.length;

@@ -33,6 +33,21 @@ import {
   tube,
 } from './kit.ts';
 
+/**
+ * Offsets of the decals on the glass. Decals that overlap sit in layers 3 mm
+ * apart so none is ever coplanar with another (the van's tailgate paint and
+ * black pillars used to z-fight): pillars and frit, then body-coloured
+ * panels, then rails and trims. Inside, the plain skins sit under the rounded
+ * pillar trims. Decals are tessellated to sag well under 3 mm (Kit.decal).
+ */
+export const GLASS_LAYER = {
+  pillar: 0.006,
+  panel: 0.009,
+  trim: 0.012,
+  innerSkin: 0.012,
+  innerTrim: 0.015,
+};
+
 export interface CarConfig {
   name: string;
   kind: VehicleKind;
@@ -323,6 +338,13 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
   };
 
   // --- Pillars, frit and trims on the glass (index space: u column 0..3, v row).
+  const {
+    pillar: GLASS_PILLAR,
+    panel: GLASS_PANEL,
+    trim: GLASS_TRIM,
+    innerSkin: INNER_SKIN,
+    innerTrim: INNER_TRIM,
+  } = GLASS_LAYER;
   const g = gh.glass;
   const nRows = gh.base.length;
   const glassDecal = (
@@ -332,23 +354,25 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     a1: number,
     mat: number,
     inner = true,
-    off = 0.006,
+    off = GLASS_PILLAR,
     trim = false,
   ) => {
     const map = (s: number, t: number): [number, number] => {
       const a = lerp(a0, a1, t);
       return [g.u(1 + a * 3), g.v(clamp(lerp(k0(a), k1(a), s), 0, nRows - 1))];
     };
-    // Enough samples across the rows to follow corners (chords would cut into the glass).
+    // Samples across the rows (Kit.decal adds more where the glass corners).
     const span = Math.max(Math.abs(k1(0) - k0(0)), Math.abs(k1(1) - k0(1)));
-    const ns = Math.min(8, Math.max(3, Math.ceil(span * 1.5) + 1));
+    const ns = Math.min(8, Math.max(3, Math.ceil(span * 0.75) + 1));
+    // Up the glass it is nearly flat: Kit.decal adds rows where it bulges.
+    const segT = Math.max(1, Math.round(Math.abs(a1 - a0) * 4));
     kit.decal(g, map, mat, {
       ns,
       nt: 5,
       offset: off,
       mirror: true,
       segS: ns - 1,
-      segT: 6,
+      segT,
     });
     // The inside trim is a little narrower so its edges never poke through
     // the glass; pillar trims are rounded covers in headliner fabric, a little
@@ -359,11 +383,11 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       kit.decal(g, mapIn, trim ? Mat.headliner : Mat.interior, {
         ns: trim ? Math.max(ns, 6) : ns,
         nt: 5,
-        offset: 0.012,
+        offset: trim ? INNER_TRIM : INNER_SKIN,
         inner: true,
         mirror: true,
         segS: trim ? Math.max(ns, 6) * 2 : ns - 1,
-        segT: 6,
+        segT,
         bump: trim ? s => 0.012 * Math.sin(Math.PI * s) : undefined,
         // Its edges show through the glass from outside: give them a back.
         doubleSided: trim,
@@ -393,7 +417,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     1,
     pillarMat(cfg.aPillar),
     true,
-    0.006,
+    GLASS_PILLAR,
     true,
   );
   // Windshield frit along base and top + header.
@@ -405,30 +429,32 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     Mat.plastic,
     true,
   );
+  // (The top frits need no inside: the greenhouse's headliner trim is there.)
   glassDecal(
     () => gh.iFrontCorner - 0.6,
     () => nRows - 1,
     0.965,
     1,
     Mat.plastic,
-    true,
-  );
-  // Rear window frit.
-  glassDecal(
-    () => 0,
-    () => gh.iRearSeg + 0.5,
-    0,
-    0.06,
-    Mat.plastic,
     false,
   );
+  // Rear window frit (a tailgate's lower panel covers the bottom one).
+  if (!cfg.hatchLower)
+    glassDecal(
+      () => 0,
+      () => gh.iRearSeg + 0.5,
+      0,
+      0.06,
+      Mat.plastic,
+      false,
+    );
   glassDecal(
     () => 0,
     () => gh.iRearSeg + 0.5,
     0.94,
     1,
     Mat.plastic,
-    true,
+    false,
   );
   // Side pillars as straight-edged quads projected onto the side glass.
   const sidePillar = (
@@ -448,7 +474,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       g,
       projected(g, [2, 1], shape, p => p[0]),
       mat,
-      {ns: 3, nt: 4, offset: 0.006, mirror: true, segS: 2, segT: 4},
+      {ns: 3, nt: 4, offset: GLASS_PILLAR, mirror: true, segS: 2, segT: 4},
     );
     const shapeIn = (s2: number, t: number) => shape(lerp(0.06, 0.94, s2), t);
     kit.decal(
@@ -458,7 +484,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       {
         ns: 5,
         nt: 4,
-        offset: 0.012,
+        offset: INNER_TRIM,
         inner: true,
         mirror: true,
         segS: 6,
@@ -471,14 +497,18 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
   const zDoorRear = cfg.doors.length
     ? cfg.doors[cfg.doors.length - 1]
     : gh.base[gh.iRearCorner][2] + 0.3;
-  glassDecal(
-    () => gh.iRearSeg + 0.4,
-    () => gh.iRearCorner + 0.3,
-    0,
-    1,
-    pillarMat(cfg.cPillar),
-  );
-  {
+  // A cargo body paints over the rear side glass and corner (below): no
+  // pillars under its paint.
+  const cargo = cfg.cargoFromZ;
+  const underCargo = (zFront: number) => cargo !== undefined && zFront <= cargo;
+  if (cargo === undefined) {
+    glassDecal(
+      () => gh.iRearSeg + 0.4,
+      () => gh.iRearCorner + 0.3,
+      0,
+      1,
+      pillarMat(cfg.cPillar),
+    );
     const zb = gh.base[gh.iRearCorner][2],
       zt = gh.top[gh.iRearCorner][2];
     if (cfg.rearPillarWidth !== undefined)
@@ -500,13 +530,14 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
   }
   // B pillar.
   for (const bz of cfg.pillars ?? (cfg.doors.length > 2 ? [cfg.doors[1]] : []))
-    sidePillar(
-      bz - 0.045,
-      bz + 0.045,
-      bz - 0.1,
-      bz - 0.03,
-      pillarMat(cfg.bPillar),
-    );
+    if (!underCargo(bz + 0.045))
+      sidePillar(
+        bz - 0.045,
+        bz + 0.045,
+        bz - 0.1,
+        bz - 0.03,
+        pillarMat(cfg.bPillar),
+      );
   if (cfg.hatchLower) {
     // Tailgate: body-coloured lower panel below the rear window, and a frame.
     const pm = cfg.roofMat ?? Mat.paint;
@@ -516,6 +547,8 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       0,
       cfg.hatchLower,
       pm,
+      true,
+      GLASS_PANEL,
     );
     glassDecal(
       () => gh.iRearCorner - 1.3,
@@ -523,13 +556,20 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       cfg.hatchLower,
       1,
       pm,
+      true,
+      GLASS_PANEL,
     );
   }
-  if (cfg.upperBand) {
-    // Body-coloured band between the side windows and the roof edge.
-    const z0 =
-      Math.max(gh.base[gh.iRearCorner][2], gh.top[gh.iRearCorner][2]) + 0.01;
-    const z1 = Math.min(gh.base[gh.iSide][2], gh.top[gh.iSide][2]) - 0.01;
+  // Body-coloured band between the side windows and the roof edge (only in
+  // front of a cargo body, which paints the whole side behind).
+  const bandZ0 = Math.max(
+    Math.max(gh.base[gh.iRearCorner][2], gh.top[gh.iRearCorner][2]) + 0.01,
+    (cargo ?? -Infinity) - 0.01,
+  );
+  const bandZ1 = Math.min(gh.base[gh.iSide][2], gh.top[gh.iSide][2]) - 0.01;
+  if (cfg.upperBand && bandZ1 > bandZ0 + 0.05) {
+    const z0 = bandZ0,
+      z1 = bandZ1;
     const shape = (s2: number, t: number): [number, number] => {
       const z = lerp(z0, z1, s2);
       const yt = roofEdgeY(z) - 0.004;
@@ -541,17 +581,25 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       g,
       projected(g, [2, 1], shape, p => p[0]),
       mat,
-      {ns, nt: 3, offset: 0.009, mirror: true, segS: ns, segT: 2},
+      {ns, nt: 3, offset: GLASS_PANEL, mirror: true, segS: ns, segT: 2},
     );
     kit.decal(
       g,
       projected(g, [2, 1], shape, p => p[0]),
       Mat.interior,
-      {ns, nt: 3, offset: 0.012, inner: true, mirror: true, segS: ns, segT: 2},
+      {
+        ns,
+        nt: 3,
+        offset: INNER_SKIN,
+        inner: true,
+        mirror: true,
+        segS: ns,
+        segT: 2,
+      },
     );
   }
-  if (cfg.cargoFromZ !== undefined) {
-    const zc = cfg.cargoFromZ;
+  if (cargo !== undefined) {
+    const zc = cargo;
     const zEnd = gh.base[gh.iRearCorner][2];
     const yb = (z: number) => edgeAtZ(z)[1] + 0.002;
     const yt = (z: number) => roofEdgeY(z) - 0.002;
@@ -564,13 +612,21 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       g,
       projected(g, [2, 1], shape, p => p[0]),
       paintMat,
-      {ns: 6, nt: 4, offset: 0.01, mirror: true, segS: 6, segT: 4},
+      {ns: 6, nt: 4, offset: GLASS_PANEL, mirror: true, segS: 6, segT: 4},
     );
     kit.decal(
       g,
       projected(g, [2, 1], shape, p => p[0]),
       Mat.interior,
-      {ns: 6, nt: 4, offset: 0.01, inner: true, mirror: true, segS: 6, segT: 4},
+      {
+        ns: 6,
+        nt: 4,
+        offset: INNER_SKIN,
+        inner: true,
+        mirror: true,
+        segS: 6,
+        segT: 4,
+      },
     );
     glassDecal(
       () => gh.iRearSeg - 0.5,
@@ -578,6 +634,8 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       0,
       1,
       paintMat,
+      true,
+      GLASS_PANEL,
     );
   }
   // Roof drip rail / glass top trim and belt trim along the side.
@@ -588,7 +646,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     1,
     Mat.plastic,
     false,
-    0.007,
+    GLASS_TRIM,
   );
   glassDecal(
     () => gh.iRearCorner - 0.5,
@@ -597,7 +655,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
     0.035,
     Mat.chrome,
     false,
-    0.007,
+    GLASS_TRIM,
   );
 
   // --- Front: headlights, grille, intake, plate.
@@ -1169,6 +1227,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
       segS: 3,
       segT: 20,
       bump: u => 0.006 * Math.sin(Math.PI * u),
+      refine: false,
     });
     // Wheel-arch flares: a swelling lip around each opening that blends out.
     if (!cfg.archFlare) {
@@ -1191,6 +1250,7 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
             0.012 *
             Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.6)), 2) *
             (1 - u * 0.5),
+          refine: false,
         });
       }
     }
@@ -1306,7 +1366,15 @@ export function buildCar(cfg: CarConfig): VehicleDesign {
           card,
           (s, t) => [lerp(card.u(0), card.u(2.15), s), lerp(vA, vB, t)],
           Mat.softTouch,
-          {ns: 5, nt: 9, offset: 0.0015, mirror: true, segS: 4, segT: 10},
+          {
+            ns: 5,
+            nt: 9,
+            offset: 0.0015,
+            mirror: true,
+            segS: 4,
+            segT: 10,
+            refine: false,
+          },
         );
         kit.decal(
           card,
