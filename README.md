@@ -47,7 +47,9 @@ URL parameters: `city=neon|metro|harbour|river`, `seed`, `time` (hours),
 `shot=<director shot>`, `spawn=x,z`, `freecam=x,y,z,yaw,pitch`, `quality=low`,
 `debug=1..8` (G-buffer and lighting views), `diag=1` (on-screen diagnostics
 for devices without a console: main-thread stalls, GPU queue latency, errors,
-the adapter and the startup timeline, with a Copy button), `lowmem=0|1`.
+the adapter and the startup timeline, with a Copy button, and where the
+previous load ended if the tab crashed), `lowmem=0|1`, `serial=0|1`
+(memory-saving load order; on with lowmem).
 
 Graphics settings live in the menu (M, under GRAPHICS) and persist in
 localStorage. URL parameters override them for that page load without being
