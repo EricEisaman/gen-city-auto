@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {PRESETS} from '../../src/city/config.ts';
-import {bandTrisData, buildBase, tileGeom} from '../../src/city/gen-base.ts';
+import {
+  bandTrisData,
+  buildBase,
+  carriageway,
+  tileGeom,
+  tunnelPlan,
+} from '../../src/city/gen-base.ts';
 import {
   CLUSTER_ALPHA,
   CLUSTER_GROUP_SHIFT,
@@ -20,6 +26,8 @@ import {
 } from '../../src/city/gen-tile.ts';
 import {baseFarOf, LEAF_SOLID} from '../../src/city/lod.ts';
 import {
+  clearRun,
+  doubledRoads,
   generateLayout,
   inTunnel,
   type Building,
@@ -228,6 +236,70 @@ void test('rail viaducts follow the ground and end at termini', () => {
   }
   // Neon seed 1's loop line crosses a river: it used to be cut open there.
   assert.ok(layoutOf('neon', 1).elevated[0].loop);
+});
+
+// Hong Kong and Chongqing rail lines came out of the hill (or a road cut
+// into it) on the roads themselves: the portal's walls and dark opening
+// stood across the lanes. No headwall stands on a carriageway now (a few
+// mouths with nowhere to move to get none).
+void test('rail tunnel portals stand off the roads', () => {
+  for (const [type, seed] of [
+    ['harbour', 1],
+    ['harbour', 2],
+    ['river', 1],
+  ] as const) {
+    const L = layoutOf(type, seed);
+    const inRoad = carriageway(L, computeRoadGeom(L));
+    for (const e of L.elevated) {
+      if (e.kind !== 'rail') continue;
+      const {under, noPortal} = tunnelPlan(e, L.terrain.heights, inRoad);
+      assert.ok(noPortal.size <= 4, `${type} ${seed}: ${noPortal.size}`);
+      for (let b = 1; b < e.pts.length; b++) {
+        if (under[b] === under[b - 1] || noPortal.has(b)) continue;
+        const a = e.pts[b - 1];
+        const c = e.pts[b];
+        const l = Math.hypot(c[0] - a[0], c[1] - a[1]);
+        const lat = [(a[1] - c[1]) / l, (c[0] - a[0]) / l];
+        for (let s = -7; s <= 7; s += 0.5) {
+          const q: Vec2 = [
+            (a[0] + c[0]) / 2 + lat[0] * s,
+            (a[1] + c[1]) / 2 + lat[1] * s,
+          ];
+          assert.ok(
+            !inRoad(q, 0),
+            `${type} ${seed}: portal on a road at ${q.map(Math.round)}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+// The street tracer sometimes ran a line back alongside itself (or a radial
+// into the ring), and an expressway on one of the two boulevards stood its
+// piers in the other's lanes, or ran its deck on top of its own.
+void test('no carriageway or deck runs on top of an expressway', () => {
+  for (const [type, seed] of [
+    ['harbour', 1],
+    ['harbour', 2],
+    ['river', 1],
+    ['neon', 1],
+  ] as const) {
+    const L = layoutOf(type, seed);
+    const d = doubledRoads(L.chains, L.elevated);
+    assert.equal(d.size, 0, `${type} ${seed}: roads ${[...d]} doubled`);
+    const decks = L.elevated.filter(e => e.kind === 'expressway');
+    decks.forEach((e, k) => {
+      assert.deepEqual(
+        clearRun(
+          e.pts,
+          decks.slice(0, k).map(o => o.pts),
+        ),
+        [0, e.pts.length],
+        `${type} ${seed}: deck ${k} runs on top of a deck`,
+      );
+    });
+  }
 });
 
 void test('simplePolygon keeps the main loop of a self-touching plan', () => {

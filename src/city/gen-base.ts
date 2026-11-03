@@ -2076,7 +2076,7 @@ function elevatedStructures(
       const l0 = lights.data.length;
       railViaduct(e, ei, hf, onRoad, inRoad, pier, m, lights, solid);
       railBufferStops(e, m);
-      railTunnels(e, hf, m, i0, lights, l0);
+      railTunnels(e, hf, m, i0, lights, l0, inRoad);
     } else {
       // Piers on the boulevard's median, out of junction boxes (0); 2
       // clear of the crossings and of any other road beside it, 1 on a
@@ -2104,7 +2104,7 @@ function elevatedStructures(
  * the polylines; the road mask is a 4 m grid). With junctions false, only
  * chains other than those q is on the centerline of.
  */
-function carriageway(L: CityLayout, geom: RoadGeom) {
+export function carriageway(L: CityLayout, geom: RoadGeom) {
   const G = 32;
   const grid = new Map<number, number[]>();
   const key = (x: number, z: number) =>
@@ -2265,8 +2265,109 @@ function railBufferStops(e: Elevated, m: CMesh) {
   }
 }
 
+/** Farthest a tunnel mouth moves along its line off a road (points). */
+const PORTAL_REACH = 40;
 /**
- * Rail lines run through hills in tunnels (layout elevateProfile): leave out
+ * Most a moved mouth leaves the deck over the ground where the tunnel now
+ * runs on, or under it where the cutting now runs on (m).
+ */
+const PORTAL_SLACK = 4;
+
+/**
+ * Which points of a rail line are in a tunnel (its deck under the ground,
+ * layout elevateProfile), and which tunnel mouths get a portal. A mouth
+ * whose headwall or bore would stand on a road (the line comes out of the
+ * hill where a road is cut into it, or runs on under the road) moves along
+ * the line to the nearest spot clear of every road: out over the open
+ * approach (the tunnel runs on under the road, a short open window between
+ * two tunnels closes) or into the hill (the line runs on in a cutting, off
+ * the roads), whichever is nearer and leaves the deck no more than
+ * PORTAL_SLACK over or under the ground. A mouth with nowhere to go gets no
+ * portal: the deck runs into the ground.
+ */
+export function tunnelPlan(
+  e: Elevated,
+  hf: Heightfield,
+  inRoad: (q: Vec2, r: number) => boolean,
+  slack = PORTAL_SLACK,
+  reach = PORTAL_REACH,
+): {under: boolean[]; noPortal: Set<number>} {
+  const n = e.pts.length;
+  const under = e.pts.map((_, i) => inTunnel(e, i, hf));
+  const noPortal = new Set<number>();
+  if (!under.some(u => u)) return {under, noPortal};
+  const fr = frames(e.pts);
+  const over = (i: number) =>
+    e.heights[i] - hf.sample(e.pts[i][0], e.pts[i][1]);
+  // The portal between points i and i + 1 facing out of the hill on side
+  // s (+1: the tunnel is at i + 1): its headwall (14 m wide) and the bore
+  // a few metres in, a metre clear of every carriageway.
+  const clear = (i: number, s: number) => {
+    const a = e.pts[i];
+    const b = e.pts[i + 1];
+    const {d, l} = fr[i];
+    for (let al = -1; al <= 4; al += 1.25)
+      for (let lat = -7.5; lat <= 7.5; lat += 1.5) {
+        const q: Vec2 = [
+          (a[0] + b[0]) / 2 + d[0] * s * al + l[0] * lat,
+          (a[1] + b[1]) / 2 + d[1] * s * al + l[1] * lat,
+        ];
+        if (inRoad(q, 1)) return false;
+      }
+    return true;
+  };
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    for (let b = 1; b < n; b++) {
+      if (under[b] === under[b - 1] || noPortal.has(b)) continue;
+      // Into the tunnel along the index.
+      const t = under[b] ? 1 : -1;
+      const p0 = t > 0 ? b - 1 : b;
+      const p1 = p0 + t;
+      if (clear(Math.min(p0, p1), t)) continue;
+      // Out: hide the open points p0, p0 - t, ...; in: show the tunnel's
+      // p1, p1 + t, ... Stop at a clear spot or the next mouth (the open
+      // run or the tunnel is gone: no portal needed).
+      let best: {toggle: number[]; cost: number} | null = null;
+      for (const way of [-1, 1]) {
+        const start = way < 0 ? p0 : p1;
+        const toggle: number[] = [];
+        let worst = 0;
+        for (let j = 1; j <= reach; j++) {
+          const k = start + way * t * (j - 1);
+          const next = k + way * t;
+          if (next < 0 || next >= n) break;
+          // Shown in a cutting: not over a road (its parapets would stand
+          // across it).
+          if (way > 0 && inRoad(e.pts[k], elevatedHalfWidth(e))) break;
+          worst = Math.max(worst, way < 0 ? over(k) : -over(k));
+          if (worst > slack) break;
+          toggle.push(k);
+          // Merged into the next tunnel / open run.
+          const merged = under[next] === way < 0;
+          const q0 = way < 0 ? next : k;
+          if (merged || clear(Math.min(q0, q0 + t), t)) {
+            const cost = j + (way > 0 ? 0.5 : 0);
+            if (!best || cost < best.cost)
+              best = {toggle: toggle.slice(), cost};
+            break;
+          }
+        }
+      }
+      if (!best) {
+        noPortal.add(b);
+        continue;
+      }
+      for (const k of best.toggle) under[k] = !under[k];
+      moved = true;
+    }
+    if (!moved) break;
+  }
+  return {under, noPortal};
+}
+
+/**
+ * Rail lines run through hills in tunnels (tunnelPlan): leave out
  * everything built (from triangle i0 and light l0 on) nearest a point of the
  * line whose deck is under the ground, and close each tunnel mouth with a
  * portal: a concrete headwall round a dark opening.
@@ -2278,9 +2379,10 @@ function railTunnels(
   i0: number,
   lights: LightList,
   l0: number,
+  inRoad: (q: Vec2, r: number) => boolean,
 ) {
   const n = e.pts.length;
-  const under = e.pts.map((_, i) => inTunnel(e, i, hf));
+  const {under, noPortal} = tunnelPlan(e, hf, inRoad);
   if (!under.some(u => u)) return;
   const G = 16;
   const grid = new Map<number, number[]>();
@@ -2332,7 +2434,7 @@ function railTunnels(
   const conc = packMat(CM.concrete);
   const fr = frames(e.pts);
   for (let i = 0; i + 1 < n; i++) {
-    if (under[i] === under[i + 1]) continue;
+    if (under[i] === under[i + 1] || noPortal.has(i + 1)) continue;
     const a = e.pts[i];
     const b = e.pts[i + 1];
     const mid: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -2346,8 +2448,20 @@ function railTunnels(
       h + y,
       mid[1] + d[1] * s * along + l[1] * lat,
     ];
-    for (const side of [-1, 1])
-      m.box(at(0, side * 5.8, 3.2), [1.2, 5.6, 0.45], conc, yaw, 0, false);
+    for (const side of [-1, 1]) {
+      // Down to the ground where a mouth moved out over the approach
+      // (tunnelPlan) stands above it.
+      const p = at(0, side * 5.8, 0);
+      const drop = Math.max(0, h - 2.4 - (hf.sample(p[0], p[2]) - 0.5));
+      m.box(
+        at(0, side * 5.8, 3.2 - drop / 2),
+        [1.2, 5.6 + drop / 2, 0.45],
+        conc,
+        yaw,
+        0,
+        false,
+      );
+    }
     m.box(at(0, 0, 8.1), [7.0, 0.7, 0.45], conc, yaw, 0, false);
     // Coping along the top.
     m.box(at(-0.1, 0, 8.9), [7.2, 0.1, 0.6], conc, yaw, 0, false);
