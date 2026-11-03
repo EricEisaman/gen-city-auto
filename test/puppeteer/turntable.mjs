@@ -1,5 +1,6 @@
 // Render turntable screenshots of vehicle designs.
 //   node test/puppeteer/turntable.mjs [design ...] [--views=front,side,...] [--seed=1] [--lights=1]
+//   [--zoom=2] [--out=dir]
 // Images go to test/out/vehicles/<design>-<view>.png
 import {ensureDir, sleep, withPage, withServer} from './harness.mjs';
 
@@ -9,7 +10,9 @@ let names = args.filter(a => !a.startsWith('--'));
 const views = (opt('views') ?? 'three-quarter,side,front,rear,top,interior').split(',');
 const seed = opt('seed') ?? '1';
 const lights = opt('lights') ?? '0';
-await ensureDir('test/out/vehicles');
+const zoom = opt('zoom') ?? '1';
+const out = opt('out') ?? 'test/out/vehicles';
+await ensureDir(out);
 
 await withServer(async base => {
   if (!names.length) {
@@ -18,9 +21,9 @@ await withServer(async base => {
   }
   for (const name of names) {
     for (const view of views) {
-      const r = await withPage(`${base}/vehicles.html?design=${name}&view=${view}&seed=${seed}&lights=${lights}`, async page => {
+      const r = await withPage(`${base}/vehicles.html?design=${name}&view=${view}&seed=${seed}&lights=${lights}&zoom=${zoom}`, async page => {
         await sleep(300);
-        const file = `test/out/vehicles/${name}-${view}.png`;
+        const file = `${out}/${name}-${view}${zoom === '1' ? '' : `-z${zoom}`}.png`;
         await page.screenshot({path: file});
         return {file, stats: await page.evaluate(() => window.__stats)};
       }, {width: 960, height: 600});

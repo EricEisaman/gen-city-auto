@@ -141,6 +141,8 @@ async function main() {
   const seed = Number(params.get('seed') ?? 1);
   const view = params.get('view') ?? 'orbit';
   const lights = params.get('lights') === '1' ? 1 : 0;
+  // Narrows the field of view for inspecting details (2 = twice as close).
+  const zoom = Number(params.get('zoom') ?? 1) || 1;
 
   const canvas = document.querySelector('canvas')!;
   resizeToCss(canvas);
@@ -432,7 +434,8 @@ async function main() {
         eye = [Math.sin(a) * d, design.size[1] * 0.8 + 1, Math.cos(a) * d];
       }
     }
-    const fov = view === 'interior' ? 1.4 : 0.6;
+    const fov =
+      2 * Math.atan(Math.tan((view === 'interior' ? 1.4 : 0.6) / 2) / zoom);
     mat4.perspectiveReverseZ(proj, fov, canvas.width / canvas.height, 0.05);
     // Turntable uses a regular depth range: swap to standard perspective.
     const f = 1 / Math.tan(fov / 2);
