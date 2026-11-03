@@ -3,6 +3,13 @@
 A procedurally generated metropolis you can drive and fly around, rendered
 with WebGPU and no libraries. Inspired by GTA V and Marvel's Spider-Man.
 
+Yes, there are lots of issues. Getting procedure generation perfect takes time.
+That's not really the point.
+The point is a giant city with cars, trucks, trains, busses, night,
+headlights, brake lights, turn signals, bridges, sunsets, clouds,
+rain, buildings, windows, signs, and tons more in 500k. Yes, Cyberpunk's
+city is much better. It's also 112000x more memory (56gig).
+
 - **Cities:** Tokyo-like *Neon Sprawl* (the primary target), plus *Metro
   Island* (New York), *Harbour Peaks* (Hong Kong) and *River Mountain*
   (Chongqing). Every city comes from a seed and has hilly terrain, rivers,
