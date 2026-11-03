@@ -26,7 +26,9 @@ import {
 import {
   LANES,
   ROAD_WIDTH,
+  PIER_RADIUS,
   SIDEWALK,
+  chainMedians,
   closestOnPolyline,
   elevatedHalfWidth,
   inTunnel,
@@ -552,6 +554,7 @@ function junctionMarkings(
   yAt: (x: number, z: number) => number | null,
 ) {
   const ji = members[0];
+  const medians = chainMedians(L);
   const F = members
     .flatMap(k => geom.junctions[k].arms)
     .filter(a => !L.hidden?.chains[a.chain] && !geom.absorbed[a.chain])
@@ -568,12 +571,23 @@ function junctionMarkings(
       const l: Vec2 = [-dir[1] * sd, dir[0] * sd];
       const hw = ROAD_WIDTH[c.kind] / 2;
       const per = Math.max(1, Math.floor(LANES[c.kind] / 2));
+      // Pier median: the lanes start this far out (as the road shader).
+      const med = medians[a.chain];
       // Lateral `lat` (+ approach side), `inset` metres into the box.
       const at = (lat: number, inset = 0.4): Vec2 => [
         q.p[0] + l[0] * lat - dir[0] * inset,
         q.p[1] + l[1] * lat - dir[1] * inset,
       ];
-      return {kind: c.kind, dir, l, per, lw: (hw - 0.5) / per, at, o: q.p};
+      return {
+        kind: c.kind,
+        dir,
+        l,
+        per,
+        med,
+        lw: (hw - 0.5 - med) / per,
+        at,
+        o: q.p,
+      };
     });
   if (F.length < 3) return;
   const mat = packMat(CM.paint, BOX_PAINT);
@@ -657,8 +671,8 @@ function junctionMarkings(
     // the box is longer one way), drawn as a rational quadratic Bezier
     // (exact circle) through the corner where the two lanes' lines meet.
     const half = Math.min(A.lw, B.lw) / 2 - 0.1;
-    const P = A.at(0.15 + A.lw / 2, 0.6);
-    const Q = B.at(-0.15 - B.lw / 2, 0.6);
+    const P = A.at(A.med + 0.15 + A.lw / 2, 0.6);
+    const Q = B.at(-B.med - 0.15 - B.lw / 2, 0.6);
     const t1 = B.dir;
     const den = t0[0] * t1[1] - t0[1] * t1[0];
     const dP = ((Q[0] - P[0]) * t1[1] - (Q[1] - P[1]) * t1[0]) / den;
@@ -744,6 +758,7 @@ function roads(
   settled: Float32Array,
 ) {
   const hf = L.terrain.heights;
+  const medians = chainMedians(L);
   // The rendered terrain (lowered under the roads), for keeping plates above.
   const ground = new Heightfield(hf.size, hf.cell, settled);
   const land = landing(L, geom);
@@ -802,8 +817,12 @@ function roads(
       along.map(a => [ux, a] as Vec2),
       along.map(a => [-ux, a] as Vec2),
       mat,
-      // Lanes, and the chain seed for the shader's resurfacing sections.
-      LANES[c.kind] | ((hash2(ci, 0x5eed) & 0xffffff) << 8),
+      // Lanes, the pier median (quarter metres: the shader lays the lanes
+      // out either side of it) and the chain seed for the shader's
+      // resurfacing sections.
+      LANES[c.kind] |
+        (Math.round(medians[ci] * 4) << 4) |
+        ((hash2(ci, 0x5eed) & 0xffffff) << 8),
     );
     roadEdges(L, geom, m, land, ci, pts, hs, along, [
       plateless(ci, 0),
@@ -1983,6 +2002,7 @@ let platformNyc = false;
 
 function elevatedStructures(
   L: CityLayout,
+  geom: RoadGeom,
   mask: Uint8Array,
   m: CMesh,
   lights: LightList,
@@ -1999,8 +2019,12 @@ function elevatedStructures(
         if (mask[(gz + dz) * hf.n + gx + dx]) return true;
     return false;
   };
+  const inRoad = carriageway(L, geom);
   // A pier that would stand on a lower elevated deck becomes a portal frame
-  // straddling that deck.
+  // straddling that deck, its legs out of the carriageways under it (wider
+  // than the deck where that is over a road: an expressway's boulevard);
+  // false (nothing built) where no span up to 20 m wider finds the legs
+  // ground off the roads.
   const pier: Pier = (self, q, top, width, fallback) => {
     for (const o of L.elevated) {
       if (o === self) continue;
@@ -2016,10 +2040,15 @@ function elevatedStructures(
       const nx = -(b[1] - a[1]) / len;
       const nz = (b[0] - a[0]) / len;
       const mid: Vec2 = [lerp(a[0], b[0], c.t), lerp(a[1], b[1], c.t)];
-      const span = hw + 1.6;
-      const legs = [-1, 1].map(
-        s => [mid[0] + nx * span * s, mid[1] + nz * span * s] as Vec2,
-      );
+      const legsAt = (span: number) =>
+        [-1, 1].map(
+          s => [mid[0] + nx * span * s, mid[1] + nz * span * s] as Vec2,
+        );
+      let span = hw + 1.6;
+      while (span < hw + 21.6 && legsAt(span).some(g => inRoad(g, 1.4)))
+        span += 0.5;
+      const legs = legsAt(span);
+      if (legs.some(g => inRoad(g, 1.4))) return false;
       for (const g of legs) {
         const ground = hf.sample(g[0], g[1]);
         m.box(
@@ -2036,19 +2065,161 @@ function elevatedStructures(
         packMat(CM.concrete),
         yaw,
       );
-      return;
+      return true;
     }
     fallback();
+    return true;
   };
   L.elevated.forEach((e, ei) => {
     if (e.kind === 'rail') {
       const i0 = m.icount;
       const l0 = lights.data.length;
-      railViaduct(e, ei, hf, onRoad, pier, m, lights, solid);
+      railViaduct(e, ei, hf, onRoad, inRoad, pier, m, lights, solid);
       railBufferStops(e, m);
       railTunnels(e, hf, m, i0, lights, l0);
-    } else expressway(e, hf, pier, m, lights);
+    } else {
+      // Piers on the boulevard's median, out of junction boxes (0); 2
+      // clear of the crossings and of any other road beside it, 1 on a
+      // crossing or where another carriageway overlaps the boulevard's (a
+      // layout quirk): those only where the deck would otherwise go
+      // unsupported for long.
+      const clear = pierClear(L, geom);
+      const ok = (q: Vec2) => {
+        const c = clear(q);
+        return c === 0
+          ? 0
+          : c === 2 && !inRoad(q, PIER_RADIUS + 0.3, false)
+            ? 2
+            : 1;
+      };
+      const legOk = (g: Vec2) => !inRoad(g, 0.9);
+      expressway(e, hf, pier, m, lights, ok, legOk, solid);
+    }
   });
+}
+
+/**
+ * Whether q is on a carriageway or within r of one: inside a junction plate
+ * or within half the road width plus r of a chain's centerline (exact, on
+ * the polylines; the road mask is a 4 m grid). With junctions false, only
+ * chains other than those q is on the centerline of.
+ */
+function carriageway(L: CityLayout, geom: RoadGeom) {
+  const G = 32;
+  const grid = new Map<number, number[]>();
+  const key = (x: number, z: number) =>
+    (Math.floor(z / G) + 4096) * 8192 + Math.floor(x / G) + 4096;
+  const add = (x0: number, x1: number, z0: number, z1: number, v: number) => {
+    for (let z = Math.floor(z0 / G); z <= Math.floor(z1 / G); z++)
+      for (let x = Math.floor(x0 / G); x <= Math.floor(x1 / G); x++) {
+        const k = (z + 4096) * 8192 + x + 4096;
+        let l = grid.get(k);
+        if (!l) grid.set(k, (l = []));
+        l.push(v);
+      }
+  };
+  // Reach of the queries (half the widest road plus r <= 4 m).
+  const R = ROAD_WIDTH[3] / 2 + 4;
+  L.chains.forEach((c, ci) => {
+    if (L.hidden?.chains[ci]) return;
+    for (let i = 0; i + 1 < c.pts.length; i++) {
+      const a = c.pts[i];
+      const b = c.pts[i + 1];
+      add(
+        Math.min(a[0], b[0]) - R,
+        Math.max(a[0], b[0]) + R,
+        Math.min(a[1], b[1]) - R,
+        Math.max(a[1], b[1]) + R,
+        ci * 65536 + i,
+      );
+    }
+  });
+  geom.junctions.forEach((j, ji) => {
+    if (j.outline.length < 3 || L.hidden?.junctions[ji]) return;
+    let x0 = Infinity,
+      x1 = -Infinity,
+      z0 = Infinity,
+      z1 = -Infinity;
+    for (const q of j.outline) {
+      x0 = Math.min(x0, q[0]);
+      x1 = Math.max(x1, q[0]);
+      z0 = Math.min(z0, q[1]);
+      z1 = Math.max(z1, q[1]);
+    }
+    add(x0 - R, x1 + R, z0 - R, z1 + R, -1 - ji);
+  });
+  return (q: Vec2, r: number, junctions = true) => {
+    const near = grid.get(key(q[0], q[1])) ?? [];
+    // Not junctions: only other roads than those whose centerline q is on.
+    const on = new Set<number>();
+    if (!junctions)
+      for (const v of near) {
+        if (v < 0) continue;
+        const c = L.chains[v >> 16];
+        const i = v & 0xffff;
+        if (pointSegment(q, c.pts[i], c.pts[i + 1])[0] < 0.5) on.add(v >> 16);
+      }
+    for (const v of near) {
+      if (v < 0) {
+        if (!junctions) continue;
+        const o = geom.junctions[-1 - v].outline;
+        if (pointInPolygon(q, o)) return true;
+        for (let i = 0; i < o.length; i++)
+          if (pointSegment(q, o[i], o[(i + 1) % o.length])[0] < r) return true;
+        continue;
+      }
+      if (on.has(v >> 16)) continue;
+      const c = L.chains[v >> 16];
+      const i = v & 0xffff;
+      if (
+        pointSegment(q, c.pts[i], c.pts[i + 1])[0] <
+        ROAD_WIDTH[c.kind] / 2 + r
+      )
+        return true;
+    }
+    return false;
+  };
+}
+
+/**
+ * Where an expressway pier may stand on the boulevard's pier median
+ * (chainMedians): 2 clear of the junctions and the crossings at their
+ * mouths (the plate outline plus the 5 m crosswalk band and the pier's
+ * radius); 1 on the median across a crossing (people walk round it, as at
+ * a median refuge); 0 in a junction box or at its edge, where crossing and
+ * turning traffic would run into it.
+ */
+function pierClear(L: CityLayout, geom: RoadGeom) {
+  const reach = 5 + PIER_RADIUS + 1;
+  const boxes = geom.junctions.map(j => {
+    let x0 = Infinity,
+      x1 = -Infinity,
+      z0 = Infinity,
+      z1 = -Infinity;
+    for (const q of j.outline) {
+      x0 = Math.min(x0, q[0]);
+      x1 = Math.max(x1, q[0]);
+      z0 = Math.min(z0, q[1]);
+      z1 = Math.max(z1, q[1]);
+    }
+    return [x0 - reach, x1 + reach, z0 - reach, z1 + reach];
+  });
+  return (q: Vec2) => {
+    let ok = 2;
+    for (let ji = 0; ji < boxes.length; ji++) {
+      const b = boxes[ji];
+      if (q[0] < b[0] || q[0] > b[1] || q[1] < b[2] || q[1] > b[3]) continue;
+      const o = geom.junctions[ji].outline;
+      if (o.length < 3 || L.hidden?.junctions[ji]) continue;
+      if (pointInPolygon(q, o)) return 0;
+      for (let i = 0; i < o.length; i++) {
+        const d = pointSegment(q, o[i], o[(i + 1) % o.length])[0];
+        if (d < PIER_RADIUS + 0.5) return 0;
+        if (d < reach) ok = 1;
+      }
+    }
+    return ok;
+  };
 }
 
 /**
@@ -2194,7 +2365,7 @@ type Pier = (
   top: number,
   width: number,
   fallback: () => void,
-) => void;
+) => boolean;
 
 function deckBox(
   m: CMesh,
@@ -2420,6 +2591,7 @@ function railViaduct(
   ei: number,
   hf: Heightfield,
   onRoad: (q: Vec2) => boolean,
+  inRoad: (q: Vec2, r: number) => boolean,
   pier: Pier,
   m: CMesh,
   lights: LightList,
@@ -2443,7 +2615,15 @@ function railViaduct(
   const seed = (i: number) => (((ei * 4099 + i) & 0xffff) << 16) >>> 0;
   const conc = (role: number) => packMat(CM.concrete, role);
   const galv = packMat(CM.metal, GALV);
-  const road = pts.map(q => onRoad(q));
+  // Points over a road: the line itself, or a bent column (3.9 m out, 0.6 m
+  // half wide) that would stand in a carriageway.
+  const road = pts.map(
+    (q, i) =>
+      onRoad(q) ||
+      [-3.9, 3.9].some(o =>
+        inRoad([q[0] + fr[i].l[0] * o, q[1] + fr[i].l[1] * o], 0.9),
+      ),
+  );
   // Under-deck fitting light. At stations, where the deck is too high for
   // its radius to reach the ground (the columns were lit and the ground
   // black), a second, low pool light 5.2 m over the ground under it
@@ -3073,7 +3253,8 @@ function railViaduct(
           );
           const o: Vec2 = [q[0] + l[0] * s * 8.2, q[1] + l[1] * s * 8.2];
           const go = hf.sample(o[0], o[1]);
-          if (hs[i] - 2.3 - go > 0.5)
+          // (Not in a carriageway: the cap beam carries the slab there.)
+          if (hs[i] - 2.3 - go > 0.5 && !inRoad(o, 0.6))
             column(
               o,
               go - 1,
@@ -5543,10 +5724,23 @@ function expressway(
   pier: Pier,
   m: CMesh,
   lights: LightList,
+  pierOk: (q: Vec2) => number,
+  legOk: (g: Vec2) => boolean,
+  solid: Solid,
 ) {
   const pts = e.pts;
   const n = pts.length;
   const fr = frames(pts);
+  // Pier columns for the camera (and the traffic checks): the square
+  // inscribed in the column, so it never shows the camera stopping short.
+  const pierSolid = (q: Vec2, ground: number, top: number) => {
+    const r = PIER_RADIUS * Math.SQRT1_2;
+    solid(
+      [q[0], (ground - 1 + top) / 2, q[1]],
+      [r, (top - ground + 1) / 2, r],
+      0,
+    );
+  };
   const along: number[] = [0];
   for (let i = 1; i < n; i++)
     along.push(along[i - 1] + dist2(pts[i - 1], pts[i]));
@@ -5667,9 +5861,20 @@ function expressway(
       c[2] + d[1] * inward * 1.6,
     ];
     m.box(a, [halfW * 0.35, 0.5, 1.2], packMat(CM.paint, 0x92), yaw);
+    // (A column on the pier median like the others, under a full-width
+    // cap: a wall across the middle lanes would block them.)
+    pierSolid(q, ground, hs[k] - 2);
+    m.cylinder(
+      [q[0], ground - 1, q[1]],
+      PIER_RADIUS,
+      hs[k] - 2 - ground + 1,
+      12,
+      packMat(CM.concrete),
+      false,
+    );
     m.box(
-      [c[0], (ground + hs[k] - 2) / 2, c[2]],
-      [halfW * 0.6, (hs[k] - 2 - ground) / 2 + 0.5, 1.0],
+      [c[0], hs[k] - 2.8, c[2]],
+      [halfW * 0.8, 0.8, 1.4],
       packMat(CM.concrete),
       yaw,
     );
@@ -5677,23 +5882,75 @@ function expressway(
   let lastPier = -100;
   let pierCount = 0;
   let lastLight = -100;
+  // Where a pier may stand (see elevatedStructures).
+  const okAt = pts.map((q, i) =>
+    hs[i] - 2 - hf.sample(q[0], q[1]) > 3 ? pierOk(q) : 0,
+  );
+  // Distance along to the next median pier spot.
+  const nextOk = new Float64Array(n + 1).fill(Infinity);
+  for (let i = n - 1; i >= 0; i--)
+    nextOk[i] = okAt[i] === 2 ? along[i] : nextOk[i + 1];
+  // Straddle bent legs: on the sidewalks, 1.3 m past the boulevard's kerbs.
+  const reach = ROAD_WIDTH[3] / 2 + 1.3;
+  const legsAt = (i: number) =>
+    [-1, 1].map(
+      s =>
+        [
+          pts[i][0] + fr[i].l[0] * reach * s,
+          pts[i][1] + fr[i].l[1] * reach * s,
+        ] as Vec2,
+    );
   for (let i = 0; i < n; i++) {
     const q = pts[i];
     const ground = hf.sample(q[0], q[1]);
     const top = hs[i] - 2;
-    if (along[i] - lastPier > 32 && top - ground > 3) {
-      lastPier = along[i];
+    // Every 32 m or more; also the last place before a stretch without
+    // (a junction), so the span over it is no longer than it must be; and
+    // on a crossing or beside another road only where the deck has gone
+    // 48 m without.
+    const gap = along[i] - lastPier;
+    const last = i + 1 < n && okAt[i + 1] < 2;
+    // Through a run of junctions (no median spot for 40 m and none within
+    // 12 m ahead): a straddle bent, its legs on the sidewalks either side
+    // and a cross-beam over the whole boulevard under the deck.
+    if (
+      okAt[i] === 0 &&
+      gap > 40 &&
+      nextOk[i] - along[i] > 12 &&
+      top - ground > 3 &&
+      legsAt(i).every(legOk)
+    ) {
+      const legs = legsAt(i);
+      const stood = pier(e, q, top, 1.5, () => {
+        const yaw = Math.atan2(fr[i].l[0], fr[i].l[1]);
+        for (const g of legs) {
+          const gy = hf.sample(g[0], g[1]);
+          m.box(
+            [g[0], (gy - 1 + top) / 2, g[1]],
+            [0.8, (top - gy + 1) / 2, 0.8],
+            packMat(CM.concrete),
+            yaw,
+          );
+        }
+        m.box(
+          [q[0], top - 0.8, q[1]],
+          [1.2, 0.8, reach + 0.9],
+          packMat(CM.concrete),
+          yaw,
+        );
+      });
+      if (stood) {
+        lastPier = along[i];
+        pierCount++;
+      }
+    } else if (
+      (okAt[i] === 2 && (gap > 32 || (gap > 12 && last))) ||
+      (okAt[i] === 1 && gap > 48)
+    ) {
       const yaw = Math.atan2(fr[i].d[0], fr[i].d[1]);
-      // Expansion joint across the deck over each pier.
-      m.beam(
-        P(i, -(halfW - 0.45), 0.012),
-        P(i, halfW - 0.45, 0.012),
-        0.12,
-        0.012,
-        packMat(CM.metal),
-      );
-      const pierNo = pierCount++;
-      pier(e, q, top, 1.5, () => {
+      const pierNo = pierCount;
+      // (No pier where it can't stand clear of the lanes: the next point.)
+      const stood = pier(e, q, top, 1.5, () => {
         if (pierNo % 2 === 0) {
           // Drainage downpipe hugging the column, from a deck drain just
           // past the pier cap down into the ground.
@@ -5711,9 +5968,10 @@ function expressway(
           for (let y = ground + 2.5; y < top - 1; y += 3)
             m.box([dp[0], y, dp[2]], [0.14, 0.04, 0.14], pipe, yaw);
         }
+        pierSolid(q, ground, top);
         m.cylinder(
           [q[0], ground - 1, q[1]],
-          1.5,
+          PIER_RADIUS,
           top - ground + 1,
           12,
           packMat(CM.concrete),
@@ -5726,6 +5984,18 @@ function expressway(
           yaw,
         );
       });
+      if (stood) {
+        lastPier = along[i];
+        pierCount++;
+        // Expansion joint across the deck over each pier.
+        m.beam(
+          P(i, -(halfW - 0.45), 0.012),
+          P(i, halfW - 0.45, 0.012),
+          0.12,
+          0.012,
+          packMat(CM.metal),
+        );
+      }
     }
     if (along[i] - lastLight > 40 && hs[i] - ground > 3) {
       lastLight = along[i];
@@ -6040,7 +6310,7 @@ export function buildBasePart(
     blocks(L, m, geom);
     part.band = bandTrisData(geom);
   } else {
-    elevatedStructures(L, mask, m, lights, (c, h, yaw) =>
+    elevatedStructures(L, geom, mask, m, lights, (c, h, yaw) =>
       solids.push(c[0], c[1], c[2], h[0], h[1], h[2], yaw),
     );
     const street = new LightList();

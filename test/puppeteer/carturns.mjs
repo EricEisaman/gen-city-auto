@@ -1,17 +1,28 @@
 // Traffic turn smoothness: steps the traffic simulation at a fixed 60 Hz in
 // the page and measures per-frame yaw changes of every car (max, p99, yaw
 // rate jumps), how often bodies stick out of the asphalt mid-turn and how
-// often two cars overlap. Writes a JSON summary, a yaw-vs-time plot of cars
-// turning at junctions and a top-down frame montage of a busy junction.
+// often two cars overlap, and how often a car body is inside a structure
+// standing on the road (the camera solids: viaduct piers and columns).
+// Writes a JSON summary, a yaw-vs-time plot of cars turning at junctions and
+// a top-down frame montage of a busy junction.
 //
-// node test/puppeteer/carturns.mjs [outDir] [seconds] [?query]
+// node test/puppeteer/carturns.mjs [outDir] [seconds] [?query] [focus]
+//
+// focus `piers`: run the traffic around the middle of the first expressway
+// (whose piers stand on the boulevard under it) instead of the player.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import puppeteer from 'puppeteer';
 import {withPage, withServer} from './harness.mjs';
 
-const [, , outDir = 'test/out/carturns', secs = '40', query = '?seed=1'] =
-  process.argv;
+const [
+  ,
+  ,
+  outDir = 'test/out/carturns',
+  secs = '40',
+  query = '?seed=1',
+  focusAt = '',
+] = process.argv;
 await fs.mkdir(outDir, {recursive: true});
 
 await withServer(async base => {
@@ -25,12 +36,69 @@ await withServer(async base => {
         g.frame = () => {};
       });
       const stats = await page.evaluate(
-        steps => {
+        (steps, focusAt) => {
           const g = window.__game;
           const tr = g.traffic;
           const net = tr.net;
           const dt = 1 / 60;
           const focus = [...g.player.pos];
+          const way = g.city.summary.layout.elevated.find(
+            e => e.kind === 'expressway',
+          );
+          if (focusAt === 'piers' && way) {
+            const q = way.pts[way.pts.length >> 1];
+            focus[0] = q[0];
+            focus[2] = q[1];
+          }
+          // Structure on the road: camera solid boxes (cx, cy, cz, hx, hy,
+          // hz, yaw; hz along (sin yaw, cos yaw)), in a 16 m grid.
+          const solids = g.city.summary.solids ?? [];
+          const sgrid = new Map();
+          const skey = (x, z) =>
+            Math.floor(x / 16) * 100000 + Math.floor(z / 16);
+          for (let i = 0; i + 6 < solids.length; i += 7) {
+            const b = solids.slice(i, i + 7);
+            const r = Math.hypot(b[3], b[5]);
+            for (
+              let x = Math.floor((b[0] - r) / 16);
+              x <= Math.floor((b[0] + r) / 16);
+              x++
+            )
+              for (
+                let z = Math.floor((b[2] - r) / 16);
+                z <= Math.floor((b[2] + r) / 16);
+                z++
+              ) {
+                const k = x * 100000 + z;
+                if (!sgrid.has(k)) sgrid.set(k, []);
+                sgrid.get(k).push(b);
+              }
+          }
+          let pierHits = 0;
+          let pierSamples = 0;
+          const inSolid = f => {
+            const [ux, uz] = f.dir;
+            for (const b of sgrid.get(skey(f.pos[0], f.pos[2])) ?? []) {
+              if (b[1] - b[4] > f.pos[1] + 1.5 || b[1] + b[4] < f.pos[1] + 0.3)
+                continue;
+              const d = [b[0] - f.pos[0], b[2] - f.pos[2]];
+              const A = {u: [ux, uz], v: [uz, -ux], e: [f.length / 2, 0.85]};
+              const su = [Math.sin(b[6]), Math.cos(b[6])];
+              const B = {u: su, v: [su[1], -su[0]], e: [b[5], b[3]]};
+              let sep = false;
+              for (const ax of [A.u, A.v, B.u, B.v]) {
+                const proj = X =>
+                  X.e[0] * Math.abs(X.u[0] * ax[0] + X.u[1] * ax[1]) +
+                  X.e[1] * Math.abs(X.v[0] * ax[0] + X.v[1] * ax[1]);
+                if (Math.abs(d[0] * ax[0] + d[1] * ax[1]) > proj(A) + proj(B)) {
+                  sep = true;
+                  break;
+                }
+              }
+              if (!sep) return true;
+            }
+            return false;
+          };
           const ids = new WeakMap();
           let nextId = 0;
           const series = new Map(); // id -> {t0, yaw[], turn[]}
@@ -113,6 +181,10 @@ await withServer(async base => {
                 if (p.rate !== undefined) drates.push(Math.abs(rate - p.rate));
                 prev.set(id, {yaw, rate});
               } else prev.set(id, {yaw});
+              if (k % 5 === 0) {
+                pierSamples++;
+                if (inSolid(f)) pierHits++;
+              }
               // Body corners off the asphalt (turning cars, every 5th frame).
               if (f.turn && k % 5 === 0) {
                 for (const q of corners(f)) {
@@ -214,10 +286,14 @@ await withServer(async base => {
             offRoadFrac: offRoad / Math.max(1, offSamples),
             overlapFrac: overlaps / Math.max(1, overlapSamples),
             overlaps,
+            pierHits,
+            pierSamples,
+            pierFrac: pierHits / Math.max(1, pierSamples),
             picks,
           };
         },
         Math.round(Number(secs) * 60),
+        focusAt,
       );
 
       // Top-down montage of the signalised 4+ arm junction nearest the

@@ -3027,7 +3027,8 @@ fn curtainWall(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf 
 
 // --- Roads, junction plates, sidewalks, curbs (agents/asset-direction-road.md)
 // Road strip uv: x = signed lateral metres (traffic toward the strip's end
-// drives on x < 0), y = metres along. aux = lanes | chainSeed << 8.
+// drives on x < 0), y = metres along. aux = lanes (4 bits) | pier median
+// half width in quarter metres (4 bits) << 4 | chainSeed << 8.
 
 // Per-chain hash: seed, an integer index and a salt.
 fn rdH(seed: u32, k: i32, salt: u32) -> f32 {
@@ -3468,21 +3469,27 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   let widths = array<f32, 4>(7.0, 10.0, 16.0, 24.0);
   let laneDef = array<u32, 4>(1u, 2u, 4u, 6u);
   let w = widths[kind];
-  let hw = w * 0.5;
-  var lanes = aux & 0xffu;
+  // Pier median (boulevards under an expressway): everything below is laid
+  // out in a lane frame that starts at its edge, so the centre lines, lanes,
+  // arrows and stop lines move out by `med` and the curb side stays put; ax
+  // < 0 is the median itself (hatched below).
+  let med = f32((aux >> 4u) & 0xfu) * 0.25;
+  let hw = w * 0.5 - med;
+  var lanes = aux & 0xfu;
   if (lanes == 0u) { lanes = laneDef[kind]; }
   var seed = aux >> 8u;
   // Until the chain seed is in the vertex: a stand-in from param (kind,
   // signal ends and length are constant along a chain).
   if (seed == 0u) { seed = hashu(param * 0x2c1b3c6du + 0x5eedu) | 1u; }
-  let x = uv.x;
-  let ax = abs(x);
+  let x0 = uv.x;
+  let ax = abs(x0) - med;
+  let x = select(ax, -ax, x0 < 0.0);
   let along = uv.y;
   let fromEnd = len - along;
-  let side = select(0, 1, x < 0.0);
+  let side = select(0, 1, x0 < 0.0);
   // Approach coordinate: each half carries traffic toward one end.
-  let a = select(along, fromEnd, x < 0.0);
-  let sig = select(crossStart, crossEnd, x < 0.0);
+  let a = select(along, fromEnd, x0 < 0.0);
+  let sig = select(crossStart, crossEnd, x0 < 0.0);
   let dist = distance(world, frame.camPos.xyz);
   let night = nightLight();
 
@@ -3507,7 +3514,7 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
   var dL = 1e3;
   if (rdH(seed, sk, 4) < 0.35) {
     // One direction resurfaced on its own: a seam down the centre line.
-    if (x < 0.0) { age = select(0.35 + 0.1 * rdH(seed, sk, 5), 0.75 + 0.25 * rdH(seed, sk, 5), odd); }
+    if (x0 < 0.0) { age = select(0.35 + 0.1 * rdH(seed, sk, 5), 0.75 + 0.25 * rdH(seed, sk, 5), odd); }
     dL = ax;
   }
   // Signalized mouths are their own contract, mid-aged grey (on near-black
@@ -3822,6 +3829,16 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     covY = c;
     if (c > covW) { bevDir = vec2f(sx * sign(axw - 0.155), 0.0); }
   }
+  // Pier median: diagonal hatching (chevrons pointing along the road, 0.45
+  // m bars every 3 m) inside the centre lines, yellow in New York, white
+  // elsewhere (zebra zone).
+  if (med > 0.0 && !inCross) {
+    let u = along + abs(x0) - 1.5;
+    let dh = abs(fract(u / 3.0 + 0.5) - 0.5) * 3.0 * 0.7071;
+    let c = paintLine(dh, 0.45, foot) * rdCov(ax + 0.12, 2.0 * med - 0.24, foot);
+    if (nycRoad) { covY = max(covY, c); }
+    else if (c > covW) { covW = c; bevDir = vec2f(0.0, 1.0); edgeD = 0.225 - dh; }
+  }
   // Lane lines: dashed, solid in the last 30 m before a signal.
   if (kind >= 2u && perDir > 1.0 && !inCross) {
     let kk = clamp(round(ax / laneW), 1.0, perDir - 1.0);
@@ -3843,20 +3860,20 @@ fn roadMat(world: vec3f, n: vec3f, uv: vec2f, param: u32, aux: u32) -> Surf {
     let cw = (crossStart && along < 5.0) || (crossEnd && fromEnd < 5.0);
     if (cw) {
       let ac = select(along, fromEnd, crossEnd && fromEnd < 5.0);
-      let bar = paintLine(abs(fract(x / 0.9 - 0.25 + 0.5) - 0.5) * 0.9, 0.45, foot);
+      let bar = paintLine(abs(fract(x0 / 0.9 - 0.25 + 0.5) - 0.5) * 0.9, 0.45, foot);
       let c = bar * rdCov(abs(ac - 2.55) - 1.95, 3.9, foot) * rdCov(ax - (gIn - 0.1), 1.0, foot);
       if (c > covW) {
         covW = c;
-        bevDir = vec2f(sign(fract(x / 0.9 - 0.25 + 0.5) - 0.5), 0.0);
-        edgeD = min(0.225 - abs(fract(x / 0.9 - 0.25 + 0.5) - 0.5) * 0.9, 1.95 - abs(ac - 2.55));
-        cwBar = floor(x / 0.9 - 0.25 + 0.5);
+        bevDir = vec2f(sign(fract(x0 / 0.9 - 0.25 + 0.5) - 0.5), 0.0);
+        edgeD = min(0.225 - abs(fract(x0 / 0.9 - 0.25 + 0.5) - 0.5) * 0.9, 1.95 - abs(ac - 2.55));
+        cwBar = floor(x0 / 0.9 - 0.25 + 0.5);
       }
     }
     if (sig && a < 7.0) {
       let c = paintLine(abs(a - 6.225), 0.45, foot) * rdCov(abs(ax - (inner + ec) * 0.5) - (ec - inner) * 0.5, 1.0, foot);
       if (c > covW) {
         covW = max(covW, c);
-        bevDir = vec2f(0.0, sign(a - 6.225) * select(-1.0, 1.0, x < 0.0));
+        bevDir = vec2f(0.0, sign(a - 6.225) * select(-1.0, 1.0, x0 < 0.0));
         edgeD = 0.225 - abs(a - 6.225);
       }
     }
