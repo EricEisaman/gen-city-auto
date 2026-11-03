@@ -581,7 +581,7 @@ export class Renderer {
    */
   ready!: Promise<void>;
   /** The first sign atlas and detail layers are uploaded. */
-  private texturesReady!: Promise<void>;
+  texturesReady!: Promise<void>;
 
   static create(gpu: Gpu, opts: RendererOptions = {}): Renderer {
     const r = timed('renderer resources', () => new Renderer(gpu, opts));

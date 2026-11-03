@@ -1,7 +1,7 @@
 // Game orchestration: city loading, simulation systems, cameras and the
 // render loop.
 
-import {lowMemory} from '../caps.ts';
+import {lowMemory, serialLoad} from '../caps.ts';
 import {
   PRESETS as PRESETS_CITY,
   type CityType,
@@ -155,6 +155,8 @@ export class Game {
   private gpu: Gpu;
   private opts: GameOptions;
   loading = false;
+  /** Settles once the vehicle meshes are made or failed (see loadCity). */
+  private vehiclesMade: Promise<unknown> = Promise.resolve();
   private frames = 0;
   /**
    * The loading screen waits for the first frame of a new world: hidden
@@ -375,6 +377,11 @@ export class Game {
       this.sprites.ready,
     ]);
     gpuReady.catch(() => {}); // (awaited below; no unhandled rejection meanwhile)
+    let failed!: () => void;
+    this.vehiclesMade = Promise.race([
+      this.vehicles.meshes,
+      new Promise<void>(res => (failed = res)),
+    ]);
     const city = timedAsync(
       'city load',
       this.loadCity(this.cityType, this.seed),
@@ -383,6 +390,7 @@ export class Game {
       'vehicles init',
       this.vehicles.init(GBUFFER_FORMATS, 'rgba16float'),
     );
+    vehicles.catch(failed);
     await Promise.all([city, vehicles]);
     loadScreen.phase('Compiling shaders', 'finish');
     await timedAsync('wait: pipelines + textures', gpuReady);
@@ -421,7 +429,12 @@ export class Game {
     const signs = this.renderer.setSignLocale(signLocaleOf(type));
     signs.catch(() => {}); // (awaited below)
     // The asset lab knows its focus as soon as the layout arrives.
-    await city.load(loadScreen, () => city.summary?.lab?.focus ?? focus);
+    // A serial load (low-memory devices): the base and tiles (the load's
+    // memory peak) wait for the vehicle meshes and the first textures.
+    const after = serialLoad()
+      ? Promise.all([this.vehiclesMade, this.renderer.texturesReady])
+      : undefined;
+    await city.load(loadScreen, () => city.summary?.lab?.focus ?? focus, after);
     await signs;
     // Focus streaming on the spawn point before revealing.
     focus = this.spawnPoint();

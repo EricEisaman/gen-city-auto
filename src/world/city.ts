@@ -12,7 +12,7 @@ import {Heightfield} from '../city/terrain.ts';
 import type {Vec3} from '../math/vec.ts';
 import {nearestFirst} from './nearest.ts';
 import {release} from '../mem.ts';
-import {cores, lowMemory} from '../caps.ts';
+import {cores, lowMemory, serialLoad} from '../caps.ts';
 import type {PoolHandle} from '../render/cluster-pool.ts';
 import type {Renderer} from '../render/renderer.ts';
 import type {LayoutSummary, WorkerRequest} from '../workers/city-worker.ts';
@@ -111,6 +111,8 @@ export class City {
   /** Until this time (ms) the shell band has no prefetch (pool was full). */
   private tightUntil = 0;
   private lab?: LabSpec;
+  /** Serial load: tile jobs wait for the base clusters (see load). */
+  private holdTiles = false;
 
   constructor(renderer: Renderer, type: CityType, seed: number, lab?: LabSpec) {
     this.renderer = renderer;
@@ -119,12 +121,26 @@ export class City {
     this.lab = lab;
   }
 
-  async load(progress: LoadListener, focus: () => Vec3) {
+  /**
+   * `after` (a serial load, see serialLoad): the primary waits for it (the
+   * vehicle and texture workers) before it sends the layout down and builds
+   * the base, so their memory peaks don't overlap.
+   */
+  async load(
+    progress: LoadListener,
+    focus: () => Vec3,
+    after?: Promise<unknown>,
+  ) {
     // One core is left to the main thread. Each worker keeps its own copy
-    // of the layout and tile context (~150 MB), so low-memory devices get at
-    // most 3; the output does not depend on the count (min 2: the primary
-    // and a helper building base parts).
-    const n = Math.max(2, Math.min(lowMemory() ? 3 : 6, cores() - 1));
+    // of the layout and tile context (~150 MB, more while it builds), so a
+    // serial load (low-memory devices) runs the fewest: the primary and one
+    // helper, the most streaming keeps; the output does not depend on the
+    // count (min 2: the primary and a helper building base parts).
+    const serial = serialLoad();
+    const n = serial ? 2 : Math.max(2, Math.min(6, cores() - 1));
+    // Serial load: no tile jobs before the base is clustered (the primary's
+    // peak, ~0.7 GB), so the helper's tile builds don't add to it.
+    this.holdTiles = serial;
     let resolveSummary!: () => void;
     let rejectAll!: (e: Error) => void;
     const summaryDone = new Promise<void>((res, rej) => {
@@ -190,6 +206,8 @@ export class City {
             break;
           case 'base':
             mark('base message received');
+            this.holdTiles = false;
+            this.pump();
             timed('upload base mesh', () => {
               for (const c of [m.base, m.piers] as ClusterData[]) {
                 const h = this.renderer.uploadClusters(c);
@@ -239,6 +257,7 @@ export class City {
         cityType: this.type,
         seed: this.seed,
         primary: i === 0,
+        hold: i === 0 && !!after,
         lab: this.lab,
         index: i,
         count: n,
@@ -249,6 +268,13 @@ export class City {
       w.postMessage(req, ports);
     }
     endSpawn();
+    if (after) {
+      const go = () => {
+        const req: WorkerRequest = {type: 'go'};
+        this.workers[0]?.postMessage(req);
+      };
+      after.then(go, go);
+    }
     let uploadMs = 0;
     let uploads = 0;
     await summaryDone;
@@ -451,7 +477,7 @@ export class City {
   }
 
   private pump() {
-    for (let i = 0; i < this.workers.length; i++) {
+    for (let i = 0; i < this.workers.length && !this.holdTiles; i++) {
       if (!this.ready[i]) continue;
       while (this.busy[i] < 2 && this.queue.length) {
         const job = this.queue.shift()!;

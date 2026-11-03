@@ -1,5 +1,5 @@
 // Device capabilities that size the worker pools and memory budgets, with URL
-// overrides for testing: ?cores=N (logical cores), ?lowmem=1|0.
+// overrides for testing: ?cores=N (logical cores), ?lowmem=1|0, ?serial=1|0.
 
 const params = new URLSearchParams(
   typeof location === 'undefined' ? '' : location.search,
@@ -28,4 +28,16 @@ export function lowMemory(): boolean {
     /iPhone|iPad|iPod|Android|Mobile/.test(ua) ||
     (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
   );
+}
+
+/**
+ * Load the city in memory-saving order (world/city.ts load): fewer city
+ * workers, and the base build and the tiles one after another instead of
+ * overlapping the vehicle and texture workers and each other. Slower to
+ * load; on with lowMemory(), or ?serial=1|0.
+ */
+export function serialLoad(): boolean {
+  const o = params.get('serial');
+  if (o !== null) return o === '1';
+  return lowMemory();
 }

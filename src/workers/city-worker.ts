@@ -55,6 +55,11 @@ export type WorkerRequest =
       cityType: CityType;
       seed: number;
       primary: boolean;
+      /**
+       * Primary: after the layout, wait for a 'go' before sending it down
+       * and building the base (low-memory devices; see City.load).
+       */
+      hold?: boolean;
       /** Asset lab: isolate one asset (see city/lab.ts). */
       lab?: LabSpec;
       /** This worker's index (0 = primary) and the worker count. */
@@ -66,6 +71,8 @@ export type WorkerRequest =
     }
   /** Non-primary workers: the primary's curb band (see tileGeom). */
   | {type: 'band'; band: Float64Array}
+  /** Primary: the base build may start (see hold). */
+  | {type: 'go'}
   | {type: 'tile'; tile: number; lod: number; id: number};
 
 /** Worker-to-worker messages, over the tree's ports. */
@@ -199,6 +206,11 @@ function start(req: Extract<WorkerRequest, {type: 'init'}>) {
   }
 }
 
+/** Primary: the 'go' arrived (see hold). */
+let go = false;
+/** Primary: the base build, waiting for the 'go'. */
+let held: (() => void) | null = null;
+
 /** Primary: a band arrived; with all of them, make the city. */
 function addBand(k: number, rows: Float32Array) {
   const b = bands!;
@@ -262,6 +274,21 @@ function makeCity(terrain: Terrain) {
   layout = timed('generateLayout', () =>
     generateLayout(params, req.seed, progress, terrain),
   );
+  if (req.hold && !go) {
+    const t = abs();
+    held = () => {
+      span('wait: vehicles + textures', t);
+      buildCity();
+    };
+    return;
+  }
+  buildCity();
+}
+
+/** Primary: the layout down the tree, then its part of the base. */
+function buildCity() {
+  const req = req0;
+  if (!layout) throw new Error('base before layout');
   if (req.children.length) {
     const m: PortMessage = {type: 'layout', layout, sent: abs()};
     timed('send layout', () => {
@@ -309,8 +336,7 @@ function finishCity(
   const base = timed('assembleBase', () =>
     assembleBase(lay, geom, undefined, parts),
   );
-  // (Free the parts' copies before clusterize allocates.)
-  for (const p of parts) release(p.words, p.idx, p.pierWords, p.pierIdx);
+  // (assembleBase freed the parts' meshes; the rest goes too.)
   parts.length = 0;
   ctx = timed('makeTileContext', () =>
     makeTileContext(lay, base.geom, base.roadMask),
@@ -369,6 +395,13 @@ function fail(err: unknown) {
 function handle(req: WorkerRequest) {
   if (req.type === 'init') {
     start(req);
+    return;
+  }
+  if (req.type === 'go') {
+    go = true;
+    const f = held;
+    held = null;
+    f?.();
     return;
   }
   if (!layout) {

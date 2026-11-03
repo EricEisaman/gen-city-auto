@@ -224,6 +224,9 @@ export class VehicleRenderer implements DrawHook {
   readonly name = 'vehicles';
   variants: VariantGpu[] = [];
   ready = false;
+  private meshesDone!: () => void;
+  /** Resolves once the meshes are made and uploaded (before the pipelines). */
+  readonly meshes = new Promise<void>(res => (this.meshesDone = res));
   errors: string[] = [];
   private renderer: Renderer;
   private device: GPUDevice;
@@ -465,6 +468,7 @@ export class VehicleRenderer implements DrawHook {
       })),
     }));
     endUpload();
+    this.meshesDone();
     [this.gbufferPipe, this.glassPipe, this.shadowPipe] = await pipes;
     this.ready = true;
   }
