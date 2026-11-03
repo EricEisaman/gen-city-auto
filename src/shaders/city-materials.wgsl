@@ -133,52 +133,51 @@ fn facadeCity() -> u32 { return min((frame.off.w >> 8u) & 0xffu, 3u); }
 
 // Facade body colours (albedo): muted, never saturated, from white render
 // to near-black panel. Picked per building by facadeColorIdx.
-const FACADE_COLS = array<vec3f, 15>(
-  vec3f(0.8, 0.79, 0.76),    // 0 white render / tile
-  vec3f(0.7, 0.68, 0.62),    // 1 off-white
-  vec3f(0.56, 0.5, 0.35),    // 2 cream, yellowish
-  vec3f(0.5, 0.43, 0.33),    // 3 beige tile
-  vec3f(0.36, 0.27, 0.19),   // 4 tan / brown tile
-  vec3f(0.47, 0.31, 0.245),  // 5 salmon brick
-  vec3f(0.27, 0.105, 0.075), // 6 dark red brick
-  vec3f(0.44, 0.44, 0.43),   // 7 light grey
-  vec3f(0.3, 0.3, 0.295),    // 8 mid grey
-  vec3f(0.15, 0.15, 0.155),  // 9 dark grey
-  vec3f(0.05, 0.05, 0.055),  // 10 near-black
-  vec3f(0.24, 0.32, 0.26),   // 11 muted green
-  vec3f(0.34, 0.36, 0.385),  // 12 blue-grey (only a hint: a blue sky's fill tints it more)
-  vec3f(0.55, 0.5, 0.41),    // 13 limestone
-  vec3f(0.25, 0.15, 0.11),   // 14 brownstone
-);
-// Weights (percent) of each colour per preset: x Tokyo (the photo: mostly
-// white / off-white / beige tile, some grey, a little brick, one green),
-// y New York (brick and limestone), z Hong Kong (white and pastel tile
-// slabs), w Chongqing (off-white and grey concrete).
-const FACADE_WEIGHTS = array<vec4u, 15>(
-  vec4u(18u, 5u, 18u, 10u),
-  vec4u(14u, 6u, 14u, 14u),
-  vec4u(6u, 5u, 10u, 8u),
-  vec4u(12u, 6u, 10u, 10u),
-  vec4u(6u, 5u, 5u, 8u),
-  vec4u(5u, 12u, 6u, 6u),
-  vec4u(4u, 14u, 2u, 5u),
-  vec4u(11u, 6u, 10u, 12u),
-  vec4u(7u, 6u, 6u, 10u),
-  vec4u(6u, 5u, 5u, 8u),
-  vec4u(3u, 3u, 2u, 2u),
-  vec4u(2u, 1u, 4u, 2u),
-  vec4u(3u, 2u, 6u, 3u),
-  vec4u(2u, 14u, 1u, 1u),
-  vec4u(1u, 10u, 1u, 1u),
-);
+// (A switch and packed words, not module-scope const arrays: WebKit's WGSL
+// compiler may build a const array afresh wherever a runtime index reads
+// it, here up to 15 copies of a 15-entry table per facade pixel.)
+fn facadeCol(i: u32) -> vec3f {
+  switch i {
+    case 0u: { return vec3f(0.8, 0.79, 0.76); }    // white render / tile
+    case 1u: { return vec3f(0.7, 0.68, 0.62); }    // off-white
+    case 2u: { return vec3f(0.56, 0.5, 0.35); }    // cream, yellowish
+    case 3u: { return vec3f(0.5, 0.43, 0.33); }    // beige tile
+    case 4u: { return vec3f(0.36, 0.27, 0.19); }   // tan / brown tile
+    case 5u: { return vec3f(0.47, 0.31, 0.245); }  // salmon brick
+    case 6u: { return vec3f(0.27, 0.105, 0.075); } // dark red brick
+    case 7u: { return vec3f(0.44, 0.44, 0.43); }   // light grey
+    case 8u: { return vec3f(0.3, 0.3, 0.295); }    // mid grey
+    case 9u: { return vec3f(0.15, 0.15, 0.155); }  // dark grey
+    case 10u: { return vec3f(0.05, 0.05, 0.055); } // near-black
+    case 11u: { return vec3f(0.24, 0.32, 0.26); }  // muted green
+    case 12u: { return vec3f(0.34, 0.36, 0.385); } // blue-grey (only a hint: a blue sky's fill tints it more)
+    case 13u: { return vec3f(0.55, 0.5, 0.41); }   // limestone
+    default: { return vec3f(0.25, 0.15, 0.11); }   // 14 brownstone
+  }
+}
+// Weights (percent) of each colour per preset, one byte per colour (colour
+// i in word i / 4, byte i % 4):
+//   colour     0  1  2  3  4  5  6  7  8  9 10 11 12 13 14
+//   Tokyo     18 14  6 12  6  5  4 11  7  6  3  2  3  2  1  (the photo: mostly white / off-white / beige tile, some grey, a little brick, one green)
+//   New York   5  6  5  6  5 12 14  6  6  5  3  1  2 14 10  (brick and limestone)
+//   Hong Kong 18 14 10 10  5  6  2 10  6  5  2  4  6  1  1  (white and pastel tile slabs)
+//   Chongqing 10 14  8 10  8  6  5 12 10  8  2  2  3  1  1  (off-white and grey concrete)
+fn facadeWeights(city: u32) -> vec4u {
+  switch city {
+    case 1u: { return vec4u(0x06050605u, 0x060e0c05u, 0x01030506u, 0x000a0e02u); }
+    case 2u: { return vec4u(0x0a0a0e12u, 0x0a020605u, 0x04020506u, 0x00010106u); }
+    case 3u: { return vec4u(0x0a080e0au, 0x0c050608u, 0x0202080au, 0x00010103u); }
+    default: { return vec4u(0x0c060e12u, 0x0b040506u, 0x02030607u, 0x00010203u); }
+  }
+}
 
 // Facade colour index for a uniform random r in [0, 1).
 fn facadeColorIdx(r: f32) -> u32 {
-  let city = facadeCity();
+  let w = facadeWeights(facadeCity());
   let t = u32(r * 100.0);
   var acc = 0u;
   for (var i = 0u; i < 14u; i++) {
-    acc += FACADE_WEIGHTS[i][city];
+    acc += (w[i >> 2u] >> ((i & 3u) * 8u)) & 0xffu;
     if (t < acc) { return i; }
   }
   return 14u;
@@ -843,7 +842,7 @@ fn facadeStyle(style: u32, kind: u32, podium: bool) -> FacadeStyle {
   // Weighted per-preset palette (facadeColorIdx), then a +-8 % value and
   // a slight warm / cool jitter so neighbours with one entry never match.
   let ci = facadeColorIdx(hashuf(h ^ 0x55u));
-  s.wall = FACADE_COLS[ci] * mix(0.92, 1.08, hashuf(h ^ 0x57u));
+  s.wall = facadeCol(ci) * mix(0.92, 1.08, hashuf(h ^ 0x57u));
   s.wall *= 1.0 + vec3f(0.04, 0.0, -0.04) * (hashuf(h ^ 0x56u) - 0.5) * 2.0;
   let fam = hashuf(h ^ 0x66u);
   s.family = select(select(select(select(0u, 1u, fam < 0.62), 2u, fam < 0.44), 3u, fam < 0.28), 4u, fam < 0.12);
