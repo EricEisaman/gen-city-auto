@@ -121,11 +121,20 @@ export const counters = {
   vehicles: {done: 0, total: 0},
 };
 
-/** Track a create*PipelineAsync promise: timeline span and counter. */
+/**
+ * Track a create*PipelineAsync promise: timeline span and counter. A
+ * failure (a shader one browser's compiler rejects) names the pipeline.
+ */
 export function pipeline<T>(name: string, p: Promise<T>): Promise<T> {
   counters.pipelines.total++;
-  return timedAsync(`pipeline ${name}`, p, 'gpu').then(r => {
-    counters.pipelines.done++;
-    return r;
-  });
+  return timedAsync(`pipeline ${name}`, p, 'gpu').then(
+    r => {
+      counters.pipelines.done++;
+      return r;
+    },
+    (e: unknown) => {
+      const why = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      throw new Error(`pipeline ${name} failed: ${why}`);
+    },
+  );
 }

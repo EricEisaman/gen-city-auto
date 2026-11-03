@@ -30,15 +30,53 @@ window.__errors = [];
 window.__ready = false;
 window.__stats = {};
 
+/** Times each distinct message was reported (repeats only count). */
+const seen = new Map<string, {n: number; line: HTMLDivElement | null}>();
+
+/**
+ * Show an error on screen (the #errors box: phones have no console) and in
+ * the console and window.__errors. A message seen before only bumps its
+ * count, so an error every frame doesn't bury the first one.
+ */
 export function reportError(msg: string) {
+  const key = msg.slice(0, 300);
+  const old = seen.get(key);
+  if (old) {
+    old.n++;
+    if (old.line) old.line.dataset.n = `×${old.n}`;
+    if (old.n === 2 || old.n % 100 === 0) console.error(`(×${old.n}) ${msg}`);
+    return;
+  }
   console.error(msg);
   window.__errors.push(msg);
   const el = document.getElementById('errors');
-  if (el) {
+  let line: HTMLDivElement | null = null;
+  if (el && seen.size < 40) {
     el.style.display = 'block';
-    el.textContent += msg + '\n';
+    line = document.createElement('div');
+    line.textContent = msg;
+    el.append(line);
   }
+  seen.set(key, {n: 1, line});
 }
+
+/** Uncaught exceptions and promise rejections anywhere on the page. */
+window.addEventListener('error', e => {
+  const err = e.error as unknown;
+  reportError(
+    `[uncaught] ${err instanceof Error ? (err.stack ?? err.message) : e.message}` +
+      (e.filename ? ` (${e.filename}:${e.lineno}:${e.colno})` : ''),
+  );
+});
+window.addEventListener('unhandledrejection', e => {
+  const r = e.reason as unknown;
+  reportError(
+    `[unhandled rejection] ${r instanceof Error ? (r.stack ?? r.message) : String(r)}`,
+  );
+});
+
+/** The device was lost (set once device.lost resolves). */
+export let deviceLost: GPUDeviceLostInfo | null = null;
 
 export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
   if (!navigator.gpu)
@@ -88,7 +126,13 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<Gpu> {
     reportError(`[WebGPU] ${err.constructor.name}: ${err.message}`);
   });
   void device.lost.then(info => {
-    reportError(`[WebGPU] device lost (${info.reason}): ${info.message}`);
+    deviceLost = info;
+    reportError(
+      `[WebGPU] device lost (reason: ${info.reason ?? 'unknown'}): ` +
+        `${info.message || '(no message)'} — the view stops drawing; ` +
+        'reload the page. (Often the GPU ran out of memory or a frame ' +
+        'took too long.)',
+    );
   });
 
   const context = canvas.getContext('webgpu');

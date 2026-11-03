@@ -1,7 +1,9 @@
 // Startup timeline: load the game and print window.__startup (every load
 // phase, see src/ui/timeline.ts) plus main-thread long tasks.
-//   node build.mjs && node test/puppeteer/startup.mjs [query] [--runs=N] [--shot=ms] [--size=WxH] [--json]
+//   node build.mjs && node test/puppeteer/startup.mjs [query] [--runs=N] [--shot=ms] [--size=WxH] [--throttle=X] [--json]
 // --shot=ms[,ms...] saves test/out/loading-<ms>.png that long after navigation.
+// --throttle=X slows the page and its workers X times (CDP CPU throttling;
+// phone conditions are about ?lowmem=1 --size=393x852 --throttle=5).
 import {ensureDir, sleep, withServer} from './harness.mjs';
 import puppeteer from 'puppeteer';
 
@@ -11,6 +13,24 @@ const query = args.find(a => !a.startsWith('--')) ?? '';
 const runs = Number(opt('runs') ?? 1);
 const shots = opt('shot') ? opt('shot').split(',').map(Number) : [];
 const json = args.includes('--json');
+const throttle = Number(opt('throttle') ?? 1);
+
+/** CPU-throttle the page and every worker it starts. */
+async function throttleAll(browser, page) {
+  const set = async session => {
+    try {
+      await session.send('Emulation.setCPUThrottlingRate', {rate: throttle});
+    } catch {
+      // (Targets without the Emulation domain.)
+    }
+  };
+  browser.on('targetcreated', async t => {
+    if (t.type() !== 'worker') return;
+    const s = await t.createCDPSession().catch(() => null);
+    if (s) await set(s);
+  });
+  await set(await page.createCDPSession());
+}
 
 await withServer(async base => {
   const totals = [];
@@ -20,6 +40,7 @@ await withServer(async base => {
       const page = await browser.newPage();
       const [vw, vh] = (opt('size') ?? '1280x720').split('x').map(Number);
       await page.setViewport({width: vw, height: vh});
+      if (throttle > 1) await throttleAll(browser, page);
       const errors = [];
       page.on('pageerror', e => errors.push(e.message));
       const t0 = Date.now();

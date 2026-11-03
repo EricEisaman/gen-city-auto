@@ -6,6 +6,7 @@ import {Game} from './game/game.ts';
 import type {WeatherKind} from './game/weather.ts';
 import {initGpu, reportError, resizeToCss} from './gpu/device.ts';
 import {parseOff} from './render/ablation.ts';
+import {diag} from './ui/diag.ts';
 import {loading, nextPaint} from './ui/loading.ts';
 import {urlOverrides} from './ui/settings.ts';
 
@@ -48,6 +49,7 @@ async function main() {
   await nextPaint();
   mark('loading screen painted');
   const gpu = await gpuP;
+  diag.setGpu(gpu.adapter, gpu.device);
   // lab=building|road|rail shows one asset alone (see city/lab.ts).
   const asset = params.get('lab');
   const kind = params.get('kind');
@@ -109,13 +111,16 @@ async function main() {
   const frame = (now: number) => {
     const dt = Math.min(0.1, Math.max(0.001, (now - last) / 1000));
     last = now;
+    // Next frame first: an exception (reported once, then counted) doesn't
+    // stop the loop and leave a frozen or black view with no message.
+    requestAnimationFrame(frame);
+    const t0 = performance.now();
     try {
       game.frame(dt);
     } catch (e) {
       reportError(`[frame] ${e instanceof Error ? e.stack : e}`);
-      return;
     }
-    requestAnimationFrame(frame);
+    diag.frame(performance.now() - t0);
   };
   requestAnimationFrame(frame);
   // probe=1: on-device performance probe (game/probe.ts).
