@@ -2,6 +2,7 @@
 // building specs, elevated rail lines and expressways.
 
 import {Noise2D} from '../math/noise.ts';
+import {release} from '../mem.ts';
 import {Rng, hash2} from '../math/random.ts';
 import {
   clamp,
@@ -2693,6 +2694,8 @@ function carveGraded(
     if (road[k] || wet(k) || far[k] >= BANK_REACH) continue;
     if (data[k] < env[k]) data[k] = lerp(data[k], env[k], fade(k));
   }
+  // (Grid scratch, ~10 MB a grid: freed now, not at the next GC.)
+  release(road, far, env);
   return flooded;
 }
 
@@ -2796,6 +2799,7 @@ function carveRoads(
       if (weight[k] === 1) under[k] = 1;
     }
   }
+  release(target, weight, dist, seedTarget);
   return flooded;
 }
 

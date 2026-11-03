@@ -726,7 +726,10 @@ export function triangulate(poly: Vec2[]): number[] {
 }
 
 export interface ClusterData {
-  /** Vertex words (VERTEX_WORDS per vertex). */
+  /**
+   * Vertex words (VERTEX_WORDS per vertex). clusterize's is a view into a
+   * larger buffer: pack it (packClusters) before transferring it.
+   */
   vertices: Uint32Array;
   /** Packed triangles (one u32 each). */
   tris: Uint32Array;
@@ -966,13 +969,17 @@ export function clusterize(
     clusters[nc + 7] = tile;
     nc += CLUSTER_WORDS;
   }
+  release(stamp, localOf, order, isAlpha, grp, far, cell);
   const out: ClusterData = {
-    vertices: verts.slice(0, nv),
+    // (A view, not a copy: the base mesh's vertices are ~190 MB, and a copy
+    // would sit beside the source mesh and the original. Its buffer runs
+    // past the view; packClusters reads the view.)
+    vertices: verts.subarray(0, nv),
     tris,
     clusters: clusters.slice(0, nc),
     clusterCount: nc / CLUSTER_WORDS,
     bounds: [lo, hi],
   };
-  release(verts, clusters, stamp, localOf, order, isAlpha, grp, far, cell);
+  release(clusters);
   return out;
 }

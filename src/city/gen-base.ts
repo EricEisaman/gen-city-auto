@@ -6058,7 +6058,8 @@ export function buildBasePart(
 
 /**
  * The base from its parts (one of each, any order) and the rest; `mask`
- * defaults to the one a part carries.
+ * defaults to the one a part carries. Frees the parts' meshes (words, idx,
+ * pierWords, pierIdx) as it copies them.
  */
 export function assembleBase(
   L: CityLayout,
@@ -6079,15 +6080,19 @@ export function assembleBase(
   const lights = new LightList();
   const solids: number[] = [];
   const of = (name: BasePartName) => parts.find(p => p.name === name)!;
+  // (Each part's mesh freed once copied: they add up to more than the
+  // assembled mesh, the largest buffer of the load.)
   for (const name of BASE_PARTS) {
     const p = of(name);
     m.append(p.words, p.idx);
+    release(p.words, p.idx);
     for (const v of p.lights) lights.data.push(v);
     for (const v of p.solids) solids.push(v);
   }
   for (const v of of('elevated').streetLights!) lights.data.push(v);
   const r = of('roads');
   piers.append(r.pierWords!, r.pierIdx!);
+  release(r.pierWords, r.pierIdx);
   if (!bandTrisOf.has(geom)) attachBand(geom, of('blocks').band!);
   // The asset lab shows its subject alone, without the distant skyline.
   if (!L.hidden) outskirts(L, m, r.settled!);

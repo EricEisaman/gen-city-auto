@@ -1,7 +1,10 @@
 // Memory budget: GPU bytes by category (src/gpu/memtrack.ts) at ready and at
 // the peak during load, JS heap of the page and of every worker (peak during
 // load and at ready), and the peak RSS of the renderer and GPU processes.
-//   node build.mjs && node test/puppeteer/mem.mjs [query] [--json out.json]
+//   node build.mjs && node test/puppeteer/mem.mjs [query] [--json out.json] [--timeline]
+// --timeline: every ~250 ms the renderer's RSS and footprint, the GPU
+// process's footprint, each context's JS heap + buffers and the loading
+// label, then what runs at the peaks.
 // e.g. node test/puppeteer/mem.mjs "city=neon&seed=1&cores=2"
 import puppeteer from 'puppeteer';
 import fs from 'node:fs';
@@ -112,39 +115,91 @@ await withServer(async base => {
     let done = false;
     const samples = [];
     let tStart = Date.now();
+    // Three independent loops (a busy worker answers CDP only between
+    // tasks, and top takes about a second): RSS and the loading label every
+    // 200 ms, physical footprint as fast as top allows, and heap queries
+    // (at most one in flight per context) whose last answer each row uses.
+    let lastFoot = {};
+    let pids = {};
+    const live = new Map(); // name -> last sample time (ms)
+    const inflight = new Set();
+    const names = new WeakMap();
+    const ask = async (key, fn) => {
+      if (inflight.has(key)) return;
+      inflight.add(key);
+      try {
+        await fn();
+      } catch {
+        /* navigating or worker gone */
+      } finally {
+        inflight.delete(key);
+      }
+    };
+    const heaps = () => {
+      void ask('main', async () => {
+        note('main', await mainCdp.send('Runtime.getHeapUsage'));
+        live.set('main', Date.now());
+      });
+      for (const w of page.workers())
+        void ask(w, async () => {
+          if (!names.has(w))
+            names.set(w, await w.evaluate(() => self.name || 'worker'));
+          const name = names.get(w);
+          note(name, await w.client.send('Runtime.getHeapUsage'));
+          live.set(name, Date.now());
+        });
+    };
+    const footLoop = (async () => {
+      while (!done) {
+        const f = await footprint(pids);
+        lastFoot = f;
+        for (const k of ['renderer', 'gpu'])
+          peakFoot[k] = Math.max(peakFoot[k], f[k] ?? 0);
+        await sleep(50);
+      }
+    })();
     const poll = (async () => {
       while (!done) {
         const r = await rssByType(pid);
+        pids = r.pids;
         peakRss.renderer = Math.max(peakRss.renderer, r.renderer);
         peakRss.gpu = Math.max(peakRss.gpu, r.gpu);
-        const f = await footprint(r.pids);
+        heaps();
         if (timeline) {
+          // Contexts heard from in the last 5 s (terminated workers drop).
           let sum = 0;
-          for (const h of heap.values()) sum += h.last;
-          samples.push(
-            `${((Date.now() - tStart) / 1000).toFixed(1)}s ${Math.round(f.renderer ?? 0)}/${Math.round(f.gpu ?? 0)}/${Math.round(sum / 1048576)}`,
-          );
+          const per = [];
+          for (const [name, h] of heap) {
+            if (Date.now() - (live.get(name) ?? 0) > 5000) continue;
+            sum += h.last;
+            per.push(
+              `${name.replace(/-worker-?/, '')}:${Math.round(h.last / 1048576)}`,
+            );
+          }
+          const label = await Promise.race([
+            page
+              .evaluate(() => {
+                const l = document.getElementById('loading');
+                return l && l.style.display !== 'none'
+                  ? (document.getElementById('loadmsg')?.textContent ?? '')
+                  : 'game';
+              })
+              .catch(() => ''),
+            sleep(150).then(() => '(main busy)'),
+          ]);
+          samples.push({
+            t: Date.now() - tStart,
+            rss: Math.round(r.renderer),
+            renderer: Math.round(lastFoot.renderer ?? 0),
+            gpu: Math.round(lastFoot.gpu ?? 0),
+            heap: Math.round(sum / 1048576),
+            label,
+            per: per.join(' '),
+          });
         }
-        for (const k of ['renderer', 'gpu'])
-          peakFoot[k] = Math.max(peakFoot[k], f[k] ?? 0);
-        try {
-          note('main', await mainCdp.send('Runtime.getHeapUsage'));
-        } catch {
-          /* navigating */
-        }
-        await Promise.all(
-          page.workers().map(async w => {
-            try {
-              const u = await w.client.send('Runtime.getHeapUsage');
-              const name = await w.evaluate(() => self.name || 'worker');
-              note(name, u);
-            } catch {
-              /* worker gone */
-            }
-          }),
-        );
-        await sleep(300);
+        await sleep(200);
       }
+      await footLoop;
     })();
     const t0 = Date.now();
     tStart = t0;
@@ -244,10 +299,45 @@ await withServer(async base => {
     console.log(
       `Peak RSS: renderer ${(peakRss.renderer / 1024).toFixed(2)} GB, GPU process ${(peakRss.gpu / 1024).toFixed(2)} GB; renderer after GC ${(rssAfterGc.renderer / 1024).toFixed(2)} GB`,
     );
-    if (timeline)
+    if (timeline) {
+      // Sample times on the page's clock, to match the startup spans.
+      const st = await page.evaluate(() => ({
+        origin: performance.timeOrigin,
+        spans: window.__startup?.spans ?? [],
+      }));
+      for (const r of samples) r.t = (tStart + r.t - st.origin) / 1000;
       console.log(
-        `\nTimeline (renderer / GPU process footprint, JS heap + buffers sum; MB):\n${samples.join('  ')}`,
+        '\nTimeline (MB): renderer RSS / renderer footprint / GPU process footprint, JS heap + buffers of the live contexts, loading label, per context',
       );
+      for (const r of samples)
+        console.log(
+          `${r.t.toFixed(1).padStart(5)}s ${String(r.rss).padStart(5)} ${String(r.renderer).padStart(5)} ${String(r.gpu).padStart(5)} ${String(r.heap).padStart(5)}  ${r.label.padEnd(30).slice(0, 30)} ${r.per}`,
+        );
+      // What runs at the peaks (startup spans >= 100 ms).
+      const at = (what, key) => {
+        const top = samples.reduce((a, b) => (b[key] > a[key] ? b : a));
+        const ms = top.t * 1000;
+        console.log(
+          `\nAt the ${what} peak (${top[key]} MB, ${top.t.toFixed(1)} s): ${top.per}`,
+        );
+        const seen = new Set();
+        for (const x of st.spans)
+          if (
+            x.start <= ms &&
+            x.end >= ms &&
+            x.end - x.start >= 100 &&
+            !seen.has(x.name + x.start) &&
+            seen.add(x.name + x.start)
+          )
+            console.log(
+              `  ${x.track.padEnd(10)} ${x.name}  (${(x.start / 1000).toFixed(1)}-${(x.end / 1000).toFixed(1)} s)`,
+            );
+      };
+      if (samples.length) {
+        at('renderer RSS', 'rss');
+        at('JS heap + buffers (sum of the contexts)', 'heap');
+      }
+    }
     if (jsonOut)
       fs.writeFileSync(
         jsonOut,
@@ -264,6 +354,7 @@ await withServer(async base => {
             peakFoot,
             footAfterGc,
             errors,
+            samples,
           },
           null,
           1,
