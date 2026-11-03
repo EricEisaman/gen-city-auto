@@ -8,6 +8,7 @@ import {
   type RoadChain,
   type Junction,
   type Building,
+  chainMedians,
 } from '../city/layout.ts';
 import {chainAt, type RoadGeom} from '../city/roadgeom.ts';
 import type {Heightfield} from '../city/terrain.ts';
@@ -70,6 +71,8 @@ export class RoadNet {
   /** Fillet half-length per chain vertex (lazily built). */
   private fillets = new Map<number, Float64Array>();
   private cornerList = new Map<number, Corner[]>();
+  /** Per chain: half width of the pier median (layout chainMedians). */
+  readonly medians: Float32Array;
 
   constructor(summary: LayoutSummary, hf: Heightfield) {
     const L = summary.layout;
@@ -80,6 +83,7 @@ export class RoadNet {
     this.hf = hf;
     this.size = L.params.size;
     this.side = keepLeft(L.params);
+    this.medians = chainMedians(L);
     L.junctions.forEach((j, ji) => {
       for (const a of j.arms) {
         const c = L.chains[a.chain];
@@ -194,8 +198,10 @@ export class RoadNet {
     const half = ROAD_WIDTH[c.kind] / 2;
     const n = this.lanesPerDir(chain);
     if (c.kind === Road.lane) return half * 0.35;
-    const w = (half - 0.4) / n;
-    return (lane + 0.5) * w + 0.2;
+    // Lanes start past the pier median (under an expressway), as painted.
+    const med = this.medians[chain];
+    const w = (half - med - 0.4) / n;
+    return med + (lane + 0.5) * w + 0.2;
   }
 
   /**

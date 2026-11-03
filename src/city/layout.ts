@@ -2124,6 +2124,73 @@ export function elevatedHalfWidth(e: Elevated) {
   return e.kind === 'rail' ? 5.2 : 9;
 }
 
+/** Radius of an expressway pier column (gen-base expressway). */
+export const PIER_RADIUS = 1.5;
+/**
+ * Half width of the pier median on a boulevard under an expressway: the
+ * pier plus 0.5 m of clearance each side. The lanes move out by it (same
+ * curb-to-curb width: three 3.17 m lanes a side instead of 3.83 m).
+ */
+export const PIER_MEDIAN = PIER_RADIUS + 0.5;
+
+const medianCache = new WeakMap<object, Float32Array>();
+
+/**
+ * Per chain: half width of the painted median down its middle (0 = none).
+ * Expressways run down the centerlines of boulevard strokes (expressways()
+ * builds them from the chains' own points) with their piers on the
+ * centerline, so every boulevard chain the deck runs along gets a median
+ * wide enough for the piers, and its lanes (RoadNet.laneOffset, the road
+ * shader, junction markings) are laid out either side of it. Derived from
+ * the chains and expressways alone: the layout itself is unchanged.
+ */
+export function chainMedians(
+  L: Pick<CityLayout, 'chains' | 'elevated'>,
+): Float32Array {
+  const hit = medianCache.get(L.chains);
+  if (hit) return hit;
+  const out = new Float32Array(L.chains.length);
+  const ways = L.elevated.filter(e => e.kind === 'expressway');
+  if (ways.length) {
+    const boxes = ways.map(e => {
+      let x0 = Infinity,
+        x1 = -Infinity,
+        z0 = Infinity,
+        z1 = -Infinity;
+      for (const q of e.pts) {
+        x0 = Math.min(x0, q[0]);
+        x1 = Math.max(x1, q[0]);
+        z0 = Math.min(z0, q[1]);
+        z1 = Math.max(z1, q[1]);
+      }
+      return [x0 - 2, x1 + 2, z0 - 2, z1 + 2];
+    });
+    L.chains.forEach((c, ci) => {
+      if (c.kind !== Road.boulevard) return;
+      // A segment midpoint on the deck's centerline: the chain runs along it
+      // (a chain crossing under it touches it at most at an end).
+      for (let i = 0; i + 1 < c.pts.length; i++) {
+        const q: Vec2 = [
+          (c.pts[i][0] + c.pts[i + 1][0]) / 2,
+          (c.pts[i][1] + c.pts[i + 1][1]) / 2,
+        ];
+        const on = ways.some((e, k) => {
+          const b = boxes[k];
+          if (q[0] < b[0] || q[0] > b[1] || q[1] < b[2] || q[1] > b[3])
+            return false;
+          return closestOnPolyline(e.pts, q).d < 1;
+        });
+        if (on) {
+          out[ci] = PIER_MEDIAN;
+          return;
+        }
+      }
+    });
+  }
+  medianCache.set(L.chains, out);
+  return out;
+}
+
 /** Closest point on an open polyline: segment index, parameter, distance. */
 export function closestOnPolyline(pts: Vec2[], q: Vec2) {
   let best = {i: 0, t: 0, d: Infinity};
