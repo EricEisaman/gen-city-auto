@@ -11,6 +11,7 @@
 import type {Vec3} from '../../math/vec.ts';
 import {
   emptyMesh,
+  getDetailScale,
   mergeMesh,
   mirrorMeshX,
   tessellate,
@@ -24,27 +25,9 @@ import {
   type NurbsSurface,
 } from '../../nurbs/nurbs.ts';
 
-/**
- * The global tessellation detail scale (set by the renderer for LODs), measured
- * by tessellating a probe patch: mesh.ts does not export it.
- */
+/** The global tessellation detail scale (set by the renderer for LODs). */
 export function detailScale(): number {
-  const m = emptyMesh();
-  const S = loftPoints(
-    [
-      [
-        [0, 0, 0],
-        [1, 0, 0],
-      ],
-      [
-        [0, 0, 1],
-        [1, 0, 1],
-      ],
-    ],
-    {degreeU: 1, degreeV: 1},
-  );
-  tessellate(m, S, 0, {segU: 1000, segV: 1});
-  return (m.positions.length / 3 / 2 - 1) / 1000;
+  return getDetailScale();
 }
 
 /**
@@ -189,7 +172,13 @@ export class Sheet {
 
   /** Visible-side unit normal (nudged away from degenerate points). */
   normal(u: number, v: number): Vec3 {
-    let [, Su, Sv] = surfaceEval(this.S, clamp(u, 0, 1), clamp(v, 0, 1));
+    return this.pointNormal(u, v)[1];
+  }
+
+  /** point() and normal() from one evaluation. */
+  pointNormal(u: number, v: number): [Vec3, Vec3] {
+    const [P, Su0, Sv0] = surfaceEval(this.S, clamp(u, 0, 1), clamp(v, 0, 1));
+    let [Su, Sv] = [Su0, Sv0];
     let n = cross(Su, Sv);
     if (Math.hypot(n[0], n[1], n[2]) < 1e-9) {
       [, Su, Sv] = surfaceEval(
@@ -199,7 +188,7 @@ export class Sheet {
       );
       n = cross(Su, Sv);
     }
-    return mul(norm(n), this.sign);
+    return [P, mul(norm(n), this.sign)];
   }
 
   /**
@@ -330,22 +319,29 @@ export class Kit {
     mat: number,
     o: DecalOpts = {},
   ) {
-    const S = decalSurface(sh, map, o);
-    if (!S) return;
-    const segU = o.segS ?? Math.max(1, (o.ns ?? 5) - 1);
-    const segV = o.segT ?? Math.max(1, (o.nt ?? 5) - 1);
-    this.surf(S, mat, {
-      segU,
-      segV,
-      mirror: o.mirror,
-      doubleSided: o.doubleSided,
-      leftOnly: o.leftOnly,
-    });
+    const m = decalMesh(sh, map, mat, o);
+    if (!m) return;
+    if (o.doubleSided) {
+      // Back side nudged 1.2 mm behind the front, as Kit.surf does.
+      const back = emptyMesh();
+      mergeMesh(back, m, undefined, n => mul(n, -1));
+      for (let i = 0; i < back.positions.length; i++)
+        back.positions[i] += back.normals[i] * 0.0012;
+      for (let i = 0; i < back.indices.length; i += 3) {
+        const t = back.indices[i + 1];
+        back.indices[i + 1] = back.indices[i + 2];
+        back.indices[i + 2] = t;
+      }
+      mergeMesh(m, back);
+    }
+    if (!o.leftOnly) mergeMesh(this.mesh, m);
+    if (o.mirror || o.leftOnly) mergeMesh(this.mesh, mirrorMeshX(m));
   }
 }
 
 export interface DecalOpts {
   leftOnly?: boolean;
+  /** Sample counts (default segment counts are ns - 1 and nt - 1). */
   ns?: number;
   nt?: number;
   segS?: number;
@@ -356,60 +352,153 @@ export interface DecalOpts {
   doubleSided?: boolean;
   /** Extra displacement along the normal as a function of (s, t) (embossing). */
   bump?: (s: number, t: number) => number;
+  /**
+   * Add rows/columns where the sheet curves (default: outer decals yes, inner
+   * skins no). Off for embossing in the sheet's own material, which blends
+   * into it anyway.
+   */
+  refine?: boolean;
 }
 
-/** Build the oriented NURBS patch for a decal (see Kit.decal). */
-export function decalSurface(
+/**
+ * Tessellate a decal (see Kit.decal). Every vertex lies exactly `offset` off
+ * the sheet (decals used to be re-lofted through a few samples, which bulged
+ * in and out between them), and rows/columns are added where the sheet curves
+ * until the flat triangles sag less than ~40% of the offset and half the 3 mm
+ * between stacked layers (car.ts GLASS_LAYER). A coarse grid on a tight corner
+ * sinks its chords into the sheet below or into another decal: z-fighting.
+ */
+export function decalMesh(
   sh: Sheet,
   map: (s: number, t: number) => [number, number],
+  mat: number,
   o: DecalOpts = {},
-): NurbsSurface | null {
-  const ns = o.ns ?? 5;
-  const nt = o.nt ?? 5;
+): Mesh | null {
   const off = o.offset ?? 0.004;
   const dir = o.inner ? -1 : 1;
-  const rows: Vec3[][] = [];
-  for (let j = 0; j < nt; j++) {
-    const row: Vec3[] = [];
-    for (let i = 0; i < ns; i++) {
-      const s = i / (ns - 1),
-        t = j / (nt - 1);
-      const [u, v] = map(s, t);
-      const n = sh.normal(u, v);
-      const d = (off + (o.bump ? o.bump(s, t) : 0)) * dir;
-      row.push(add(sh.point(u, v), mul(n, d)));
+  const ds = detailScale();
+  const scaleSeg = (n: number) =>
+    n <= 1 ? n : Math.max(2, Math.round(n * ds));
+  const seg0 = [
+    scaleSeg(o.segS ?? Math.max(1, (o.ns ?? 5) - 1)),
+    scaleSeg(o.segT ?? Math.max(1, (o.nt ?? 5) - 1)),
+  ];
+  // Sheet point and normal at (s, t), memoised (projected maps are solves).
+  const memo = new Map<string, [Vec3, Vec3]>();
+  const at = (s: number, t: number): [Vec3, Vec3] => {
+    const key = `${s},${t}`;
+    let r = memo.get(key);
+    if (!r) {
+      const [p, n0] = sh.pointNormal(...map(s, t));
+      const n = mul(n0, dir);
+      r = [add(p, mul(n, off)), n];
+      memo.set(key, r);
     }
-    rows.push(row);
-  }
-  if ((map as {failed?: boolean}).failed) {
+    return r;
+  };
+  const tol = clamp(0.4 * off, 0.0008, 0.0015) / Math.max(ds, 0.2);
+  const ss = Array.from({length: seg0[0] + 1}, (_, i) => i / seg0[0]);
+  const ts = Array.from({length: seg0[1] + 1}, (_, j) => j / seg0[1]);
+  // Split the intervals of `a` whose chord sags more than tol at any line of `b`.
+  const refine = (a: number[], b: number[], along: boolean) => {
+    const out = [a[0]];
+    let split = false;
+    for (let i = 0; i + 1 < a.length; i++) {
+      const am = (a[i] + a[i + 1]) / 2;
+      let worst = 0;
+      for (const bb of b) {
+        const pt = (x: number) => (along ? at(x, bb) : at(bb, x));
+        const [p0] = pt(a[i]),
+          [p1] = pt(a[i + 1]),
+          [pm, nm] = pt(am);
+        const d = Math.abs(dot(sub(pm, mul(add(p0, p1), 0.5)), nm));
+        worst = Math.max(worst, d);
+      }
+      if (worst > tol && a.length < 64) {
+        out.push(am);
+        split = true;
+      }
+      out.push(a[i + 1]);
+    }
+    return {out, split};
+  };
+  const flag = map as {failed?: boolean};
+  const gridOf = (S: number[], T: number[]): Vec3[][] =>
+    T.map(t =>
+      S.map(s => {
+        const [p, n] = at(s, t);
+        return o.bump ? add(p, mul(n, o.bump(s, t))) : p;
+      }),
+    );
+  // The requested grid first (row by row, so projections warm-start well).
+  let S = ss,
+    T = ts;
+  let grid = gridOf(S, T);
+  if (flag.failed) {
     decalWarnings.push(
-      `decal off-sheet near ${rows[0][0].map(v => v.toFixed(2)).join(',')}`,
+      `decal off-sheet near ${grid[0][0].map(v => v.toFixed(2)).join(',')}`,
     );
     return null;
   }
-  const S = loftPoints(rows, {
-    degreeU: Math.min(3, ns - 1),
-    degreeV: Math.min(3, nt - 1),
-  });
-  // Orient so the patch faces the same way as the sheet (or inward for inner).
-  const [u, v] = map(0.5, 0.5);
-  const want = mul(sh.normal(u, v), dir);
-  const [, Su, Sv] = surfaceEval(S, 0.5, 0.5);
-  let have = cross(Su, Sv);
-  if (Math.hypot(...have) < 1e-12) {
-    const [, a, b] = surfaceEval(S, 0.45, 0.55);
-    have = cross(a, b);
+  // Two passes (up to 4x the rows) at full detail; the distant LODs refine
+  // less (one pass) or not at all.
+  const passes = ds > 0.9 ? 2 : ds > 0.3 ? 1 : 0;
+  if ((o.refine ?? !o.inner) && passes > 0) {
+    let S2 = S,
+      T2 = T;
+    for (let it = 0; it < passes; it++) {
+      const rs = refine(S2, T2, true);
+      const rt = refine(T2, S2, false);
+      S2 = rs.out;
+      T2 = rt.out;
+      if (!rs.split && !rt.split) break;
+    }
+    flag.failed = false;
+    const g2 = S2 === S && T2 === T ? grid : gridOf(S2, T2);
+    // Keep the requested grid if added samples fall off the sheet.
+    if (flag.failed) flag.failed = false;
+    else [S, T, grid] = [S2, T2, g2];
   }
-  return dot(have, want) < 0 ? flipUV(S) : S;
-}
-
-function flipUV(S: NurbsSurface): NurbsSurface {
-  return {
-    ...S,
-    points: [...S.points].reverse(),
-    weights: [...S.weights].reverse(),
-    knotsU: S.knotsU.map(k => 1 - k).reverse(),
-  };
+  const nS = S.length,
+    nT = T.length;
+  const m = emptyMesh();
+  for (let j = 0; j < nT; j++)
+    for (let i = 0; i < nS; i++) {
+      let n = at(S[i], T[j])[1];
+      if (o.bump) {
+        // Normal of the embossed surface from its neighbours.
+        const g = (jj: number, ii: number) =>
+          grid[clamp(jj, 0, nT - 1)][clamp(ii, 0, nS - 1)];
+        const c = cross(
+          sub(g(j, i + 1), g(j, i - 1)),
+          sub(g(j + 1, i), g(j - 1, i)),
+        );
+        if (Math.hypot(c[0], c[1], c[2]) > 1e-12)
+          n = mul(norm(c), dot(c, n) < 0 ? -1 : 1);
+      }
+      m.positions.push(...grid[j][i]);
+      m.normals.push(...n);
+      m.materials.push(mat);
+    }
+  // Wind counter-clockwise seen from the decal's visible side.
+  const [, want] = at(0.5, 0.5);
+  const ci = Math.floor((nS - 1) / 2),
+    cj = Math.floor((nT - 1) / 2);
+  const have = cross(
+    sub(grid[cj][ci + 1], grid[cj][ci]),
+    sub(grid[cj + 1][ci], grid[cj][ci]),
+  );
+  const flip = dot(have, want) < 0;
+  for (let j = 0; j + 1 < nT; j++)
+    for (let i = 0; i + 1 < nS; i++) {
+      const a = j * nS + i,
+        b = a + 1,
+        c = a + nS,
+        d = c + 1;
+      if (flip) m.indices.push(a, c, b, b, c, d);
+      else m.indices.push(a, b, c, b, d, c);
+    }
+  return m;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,12 +523,20 @@ export function projected(
   prefer?: (p: Vec3) => number,
 ) {
   const cache = new Map<string, [number, number]>();
-  let last: [number, number] | undefined;
+  const solved: {s: number; t: number; uv: [number, number]}[] = [];
   const fn = (s: number, t: number): [number, number] => {
     const key = `${s},${t}`;
     const hit = cache.get(key);
     if (hit) return hit;
-    let uv = sh.solve(axes, shape(s, t), prefer, last);
+    // Warm start from the nearest point solved so far (decals sample in any
+    // order, and a far start can settle on the wrong part of the sheet).
+    let near: [number, number] | undefined;
+    let best = Infinity;
+    for (const e of solved) {
+      const d = (e.s - s) ** 2 + (e.t - t) ** 2;
+      if (d < best) [best, near] = [d, e.uv];
+    }
+    let uv = sh.solve(axes, shape(s, t), prefer, near);
     // Fall back to a global search if the warm start drifted off target.
     const A = axisVec(axes[0]),
       B = axisVec(axes[1]);
@@ -455,7 +552,7 @@ export function projected(
         );
       fn.failed = true;
     }
-    last = uv;
+    solved.push({s, t, uv});
     cache.set(key, uv);
     return uv;
   };
@@ -463,7 +560,7 @@ export function projected(
   return fn;
 }
 
-/** Set by decalSurface when a projected decal misses its sheet (for debugging). */
+/** Set by decalMesh when a projected decal misses its sheet (for debugging). */
 export const decalWarnings: string[] = [];
 
 /** Axis-aligned rectangle shape in world coordinates. */
