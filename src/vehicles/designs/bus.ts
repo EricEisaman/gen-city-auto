@@ -5,7 +5,7 @@
 import {Rng} from '../../math/random.ts';
 import type {Vec3} from '../../math/vec.ts';
 import {Mat, type VehicleDesign} from '../types.ts';
-import {buildCar} from './car.ts';
+import {buildCar, GLASS_LAYER} from './car.ts';
 import {
   blob,
   clamp,
@@ -153,7 +153,7 @@ export function bus(seed: number): VehicleDesign {
           {
             ns: 10,
             nt: 3,
-            offset: 0.014,
+            offset: GLASS_LAYER.innerSkin,
             inner: true,
             mirror: true,
             segS: 12,
@@ -161,8 +161,9 @@ export function bus(seed: number): VehicleDesign {
           },
         );
       };
-      band(winTop, null, Mat.paint, 0.011);
-      band(winTop, winTop + 0.08, Mat.paint2, 0.014);
+      // Over the drip rail (the panel hides it), the livery over the panel.
+      band(winTop, null, Mat.paint, GLASS_LAYER.trim + 0.003);
+      band(winTop, winTop + 0.08, Mat.paint2, GLASS_LAYER.trim + 0.006);
       // Livery band along the skirt.
       const archEdge = 0.48 + 0.55;
       for (const [z0, z1] of [
@@ -190,14 +191,14 @@ export function bus(seed: number): VehicleDesign {
       kit.decal(g, rearMap(0, 0.6), Mat.paint, {
         ns: 14,
         nt: 3,
-        offset: 0.006,
+        offset: GLASS_LAYER.panel,
         mirror: true,
         segS: 16,
       });
       kit.decal(g, rearMap(0, 0.6), Mat.interior, {
         ns: 14,
         nt: 3,
-        offset: 0.012,
+        offset: GLASS_LAYER.innerSkin,
         inner: true,
         mirror: true,
         segS: 16,
@@ -245,8 +246,9 @@ export function bus(seed: number): VehicleDesign {
               ctx.edgeY((z0 + z1) / 2) - 0.03,
             ),
           ),
+          // Over the skirt livery and the shoulder crease's rib.
           Mat.glass,
-          {ns: 3, nt: 3, offset: 0.004, leftOnly: true},
+          {ns: 3, nt: 3, offset: 0.011, leftOnly: true},
         );
         for (const z of [z0, (z0 + z1) / 2, z1]) {
           kit.decal(
@@ -260,7 +262,7 @@ export function bus(seed: number): VehicleDesign {
               ),
             ),
             Mat.rubber,
-            {ns: 2, nt: 4, offset: 0.006, leftOnly: true},
+            {ns: 2, nt: 4, offset: 0.014, leftOnly: true},
           );
           kit.decal(
             g,
