@@ -5,6 +5,9 @@
 // startup timeline as a 'stall' span, named after the loading-screen label
 // shown when it started, e.g. a sync GPU call waiting on shader compiles.
 //
+// Always on too: crash breadcrumbs (breadcrumbs.ts); the panel says when the
+// previous load ended unexpectedly, and where.
+//
 // ?diag=1 adds an on-screen panel to screenshot: the stalls, the GPU's
 // queue latency (submit -> done, sampled every second: seconds there mean
 // the GPU itself is stuck), frames drawn, device lost, errors, the device
@@ -13,6 +16,7 @@
 
 import {lowMemory, cores} from '../caps.ts';
 import {deviceLost} from '../gpu/device.ts';
+import {Breadcrumbs} from './breadcrumbs.ts';
 
 const params = new URLSearchParams(location.search);
 export const diagOn = params.get('diag') === '1';
@@ -45,6 +49,8 @@ class Diag {
   private gpuSince = 0;
   private panel: HTMLElement | null = null;
   private body: HTMLElement | null = null;
+  /** Crash breadcrumbs (and the note about a load that ended badly). */
+  private readonly crumbs = new Breadcrumbs(label);
 
   constructor() {
     setInterval(() => this.heartbeat(), 100);
@@ -112,6 +118,8 @@ class Diag {
           : '') +
         (st.done ? ` · ready at ${f1(st.total ?? 0)} s` : ''),
     );
+    const lost = this.crumbs.note();
+    if (lost) lines.push(lost.toUpperCase().slice(0, 1) + lost.slice(1));
     const s = window.__stats as {fps?: number; render?: string};
     const game = (window as unknown as {__game?: {renderer?: {gpuMs?: number}}})
       .__game;
