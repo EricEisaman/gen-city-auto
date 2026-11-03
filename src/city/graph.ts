@@ -147,13 +147,22 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
     a: Vec2;
     b: Vec2;
     kind: number;
-    cuts: number[];
+    /** Where it is cut (0..1), and the crossing there (-1: an end). */
+    cuts: {t: number; x: number}[];
   }
   const segs: Seg[] = [];
   for (const l of lines) {
     for (let i = 0; i + 1 < l.pts.length; i++) {
       if (dist2(l.pts[i], l.pts[i + 1]) < 0.01) continue;
-      segs.push({a: l.pts[i], b: l.pts[i + 1], kind: l.kind, cuts: [0, 1]});
+      segs.push({
+        a: l.pts[i],
+        b: l.pts[i + 1],
+        kind: l.kind,
+        cuts: [
+          {t: 0, x: -1},
+          {t: 1, x: -1},
+        ],
+      });
     }
   }
   // Spatial hash of segments for intersection tests.
@@ -173,6 +182,8 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
       }
     }
   });
+  let crossings = 0;
+  const crossingNode = new Map<number, number>();
   // For each segment, test the later segments sharing any of its cells.
   segs.forEach((A, si) => {
     const x0 = Math.floor(Math.min(A.a[0], A.b[0]) / cell);
@@ -188,8 +199,8 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
           const B = segs[sj];
           const r = segmentIntersect(A.a, A.b, B.a, B.b);
           if (r) {
-            A.cuts.push(r[0]);
-            B.cuts.push(r[1]);
+            A.cuts.push({t: r[0], x: crossings});
+            B.cuts.push({t: r[1], x: crossings++});
           }
         }
       }
@@ -206,16 +217,23 @@ export function planarize(lines: Polyline[], snap = 2): Graph {
     return n;
   };
   for (const s of segs) {
-    s.cuts.sort((x, y) => x - y);
+    s.cuts.sort((x, y) => x.t - y.t);
     let prev = nodeAt(s.a);
     for (let k = 1; k < s.cuts.length; k++) {
-      const t = s.cuts[k];
-      if (t - s.cuts[k - 1] < 1e-6 && k < s.cuts.length - 1) continue;
+      const {t, x} = s.cuts[k];
+      if (t - s.cuts[k - 1].t < 1e-6 && k < s.cuts.length - 1) continue;
       const p: Vec2 = [
         s.a[0] + (s.b[0] - s.a[0]) * t,
         s.a[1] + (s.b[1] - s.a[1]) * t,
       ];
-      const n = nodeAt(p);
+      // Both roads through a crossing share its node (snapping each to
+      // the nearest node could leave them on two, a crossing without a
+      // junction).
+      let n = x >= 0 ? (crossingNode.get(x) ?? -1) : -1;
+      if (n < 0) {
+        n = nodeAt(p);
+        if (x >= 0) crossingNode.set(x, n);
+      }
       if (n !== prev) g.addEdge(prev, n, s.kind);
       prev = n;
     }
@@ -242,6 +260,89 @@ export function mergeCloseNodes(g: Graph, dist: number): Graph {
     const s = sums.get(r) ?? [0, 0, 0];
     s[0] += n.p[0];
     s[1] += n.p[1];
+    s[2] += 1;
+    sums.set(r, s);
+  });
+  const id = (i: number) => {
+    const r = find(i);
+    let m = map.get(r);
+    if (m === undefined) {
+      const s = sums.get(r)!;
+      m = out.addNode([s[0] / s[2], s[1] / s[2]]);
+      map.set(r, m);
+    }
+    return m;
+  };
+  for (const e of g.edges) {
+    if (e.dead) continue;
+    const a = id(e.a);
+    const b = id(e.b);
+    if (a !== b) out.addEdge(a, b, e.kind);
+  }
+  return out;
+}
+
+/**
+ * Merge junctions (nodes of three or more edges, or of two kinds) closer
+ * along a road than their side roads need to clear one another: the
+ * farthest `reach[kind]` (half the carriageway and a sidewalk) of the other
+ * arms at each, plus `gap`. Two streets meeting a road a few meters apart
+ * become one crossing. Each group of junctions goes to their centroid, with
+ * the road between them.
+ */
+export function mergeJunctionClusters(g: Graph, reach: number[], gap: number) {
+  const maxW = 2 * Math.max(...reach);
+  const parent = g.nodes.map((_, i) => i);
+  const find = (i: number): number =>
+    parent[i] === i ? i : (parent[i] = find(parent[i]));
+  const deg = g.nodes.map((_, n) => g.degree(n));
+  // Junctions: three or more edges, or two of different kinds (where one
+  // road ends and another goes on).
+  const isJ = g.nodes.map((_, n) => {
+    if (deg[n] !== 2) return deg[n] >= 3;
+    const [e0, e1] = g.liveEdges(n);
+    return g.edges[e0].kind !== g.edges[e1].kind;
+  });
+  const len = (e: number) =>
+    dist2(g.nodes[g.edges[e].a].p, g.nodes[g.edges[e].b].p);
+  const widest = (n: number, skip: number) => {
+    let w = 0;
+    for (const e of g.liveEdges(n))
+      if (e !== skip) w = Math.max(w, reach[g.edges[e].kind]);
+    return w;
+  };
+  for (let a = 0; a < g.nodes.length; a++) {
+    if (!isJ[a]) continue;
+    for (const first of g.liveEdges(a)) {
+      // Walk the road through nodes of two edges to the next junction.
+      const path = [a];
+      let e = first;
+      let n = a;
+      let l = 0;
+      for (;;) {
+        l += len(e);
+        n = g.other(e, n);
+        path.push(n);
+        if (isJ[n] || deg[n] !== 2 || l > maxW + gap || n === a) break;
+        const next = g.liveEdges(n).find(x => x !== e);
+        if (next === undefined) break;
+        e = next;
+      }
+      if (n <= a || !isJ[n]) continue;
+      if (l >= widest(a, first) + widest(n, e) + gap) continue;
+      for (const m of path) parent[find(m)] = find(a);
+    }
+  }
+  const out = new Graph();
+  const map = new Map<number, number>();
+  const sums = new Map<number, [number, number, number]>();
+  g.nodes.forEach((nd, i) => {
+    const r = find(i);
+    // Path nodes between junctions follow them (they add no weight).
+    if (r !== i && !isJ[i]) return;
+    const s = sums.get(r) ?? [0, 0, 0];
+    s[0] += nd.p[0];
+    s[1] += nd.p[1];
     s[2] += 1;
     sums.set(r, s);
   });

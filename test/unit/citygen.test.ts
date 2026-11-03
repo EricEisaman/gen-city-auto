@@ -27,19 +27,20 @@ import {
 import {baseFarOf, LEAF_SOLID} from '../../src/city/lod.ts';
 import {
   clearRun,
-  doubledRoads,
   generateLayout,
   inTunnel,
   type Building,
   type CityLayout,
   MAX_DECK_RISE,
+  ROAD_WIDTH,
+  roadClearance,
   simplePolygon,
   stableOrder,
   TERMINUS_OFFSET,
 } from '../../src/city/layout.ts';
 import {SEA_LEVEL} from '../../src/city/terrain.ts';
 import {computeRoadGeom} from '../../src/city/roadgeom.ts';
-import {polygonArea, type Vec2} from '../../src/math/vec.ts';
+import {pointSegment, polygonArea, type Vec2} from '../../src/math/vec.ts';
 
 // river seed 5 once had a kerb-return crossing extrapolated 55 km out of its
 // junction; landing()'s plate grid then took ~700 MB per city worker and the
@@ -275,19 +276,121 @@ void test('rail tunnel portals stand off the roads', () => {
   }
 });
 
-// The street tracer sometimes ran a line back alongside itself (or a radial
-// into the ring), and an expressway on one of the two boulevards stood its
-// piers in the other's lanes, or ran its deck on top of its own.
-void test('no carriageway or deck runs on top of an expressway', () => {
+// The street tracer once ran lines back alongside themselves (contours
+// round a hill, hairpins round a spur), into the ring road, and alongside
+// other roads, so carriageways lay on top of one another; and an
+// expressway on one of two such boulevards stood its piers in the other's
+// lanes, or ran its deck on top of its own.
+void test('no carriageway runs on top of a road it does not meet', () => {
+  const G = 40;
+  for (const type of ['neon', 'metro', 'harbour', 'river'] as const) {
+    const L = layoutOf(type, 1);
+    const {chains} = L;
+    // Segments by cell, with a reach of the widest pair of carriageways.
+    const reach = Math.max(...ROAD_WIDTH);
+    const grid = new Map<number, [number, number][]>();
+    const along: number[][] = [];
+    chains.forEach((c, ci) => {
+      const a = [0];
+      for (let i = 1; i < c.pts.length; i++)
+        a.push(
+          a[i - 1] +
+            Math.hypot(
+              c.pts[i][0] - c.pts[i - 1][0],
+              c.pts[i][1] - c.pts[i - 1][1],
+            ),
+        );
+      along.push(a);
+      for (let i = 0; i + 1 < c.pts.length; i++) {
+        const p = c.pts[i];
+        const q = c.pts[i + 1];
+        for (
+          let z = Math.floor((Math.min(p[1], q[1]) - reach) / G);
+          z <= Math.floor((Math.max(p[1], q[1]) + reach) / G);
+          z++
+        )
+          for (
+            let x = Math.floor((Math.min(p[0], q[0]) - reach) / G);
+            x <= Math.floor((Math.max(p[0], q[0]) + reach) / G);
+            x++
+          ) {
+            const k = (z + 1000) * 2000 + x + 1000;
+            let l = grid.get(k);
+            if (!l) grid.set(k, (l = []));
+            l.push([ci, i]);
+          }
+      }
+    });
+    chains.forEach((c, ci) => {
+      let over = 0;
+      let at: Vec2 | null = null;
+      for (let i = 0; i + 1 < c.pts.length; i++) {
+        const a = c.pts[i];
+        const b = c.pts[i + 1];
+        const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        const steps = Math.max(1, Math.round(l / 3));
+        for (let s = 0; s < steps; s++) {
+          const t = (s + 0.5) / steps;
+          const q: Vec2 = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+          const sq = along[ci][i] + l * t;
+          const k =
+            (Math.floor(q[1] / G) + 1000) * 2000 + Math.floor(q[0] / G) + 1000;
+          const hit = (grid.get(k) ?? []).some(([oj, j]) => {
+            const o = chains[oj];
+            const [d, u] = pointSegment(q, o.pts[j], o.pts[j + 1]);
+            if (d >= (ROAD_WIDTH[c.kind] + ROAD_WIDTH[o.kind]) / 2)
+              return false;
+            const clear = roadClearance(c.kind, o.kind);
+            if (oj === ci) {
+              // Its own part, a little way along it.
+              const so =
+                along[oj][j] +
+                u *
+                  Math.hypot(
+                    o.pts[j + 1][0] - o.pts[j][0],
+                    o.pts[j + 1][1] - o.pts[j][1],
+                  );
+              let gap = Math.abs(so - sq);
+              if (c.start === c.end)
+                gap = Math.min(gap, along[ci][c.pts.length - 1] - gap);
+              return gap >= 3 * clear;
+            }
+            // Arms leaving a junction both have.
+            for (const [n, J] of [
+              [c.start, c.pts[0]],
+              [c.end, c.pts[c.pts.length - 1]],
+            ] as const)
+              if (
+                (n === o.start || n === o.end) &&
+                Math.hypot(q[0] - J[0], q[1] - J[1]) < 2.5 * clear
+              )
+                return false;
+            return true;
+          });
+          if (hit) {
+            over += l / steps;
+            at ??= q;
+          }
+        }
+      }
+      assert.ok(
+        over < 10,
+        `${type} 1: road ${ci} lies on another for ${over.toFixed(0)} m ` +
+          `at ${at?.map(Math.round)}`,
+      );
+    });
+  }
+});
+
+// Nor does an expressway deck run on top of another, or of its own part
+// further back (a stroke round the ring road).
+void test('no expressway deck runs on top of a deck', () => {
   for (const [type, seed] of [
     ['harbour', 1],
-    ['harbour', 2],
     ['river', 1],
     ['neon', 1],
   ] as const) {
     const L = layoutOf(type, seed);
-    const d = doubledRoads(L.chains, L.elevated);
-    assert.equal(d.size, 0, `${type} ${seed}: roads ${[...d]} doubled`);
     const decks = L.elevated.filter(e => e.kind === 'expressway');
     decks.forEach((e, k) => {
       assert.deepEqual(

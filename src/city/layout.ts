@@ -24,6 +24,7 @@ import {
   extractFaces,
   insetPolygon,
   mergeCloseNodes,
+  mergeJunctionClusters,
   planarize,
   pruneDeadEnds,
   removeSlivers,
@@ -47,6 +48,21 @@ export const Road = {lane: 0, street: 1, avenue: 2, boulevard: 3} as const;
 export const ROAD_WIDTH = [7, 10, 16, 24];
 export const SIDEWALK = [1.6, 2.5, 3.5, 4.5];
 export const LANES = [1, 2, 4, 6];
+/**
+ * Least length of road between two junctions beyond what their side roads
+ * take up along it (half a carriageway and a sidewalk each:
+ * mergeJunctionClusters).
+ */
+const JUNCTION_GAP = 1;
+
+/**
+ * Least distance between the centrelines of roads of kinds a and b that run
+ * alongside each other without meeting: both carriageways and sidewalks,
+ * and a little more.
+ */
+export function roadClearance(a: number, b: number) {
+  return (ROAD_WIDTH[a] + ROAD_WIDTH[b]) / 2 + SIDEWALK[a] + SIDEWALK[b] + 3;
+}
 
 export interface Hub {
   p: Vec2;
@@ -117,12 +133,6 @@ export interface Block {
   late?: boolean;
   /** Open ground between buildings given a use (lawn or surface car park). */
   fill?: BlockFill[];
-  /**
-   * What its props are hashed from where that is not its index: the index
-   * it had before doubledRoads dropped blocks ahead of it (and a fresh
-   * number for a block it opened up).
-   */
-  hash?: number;
 }
 
 /**
@@ -702,226 +712,6 @@ export function stableOrder<T>(
 }
 
 // ---------------------------------------------------------------------------
-// Doubled roads
-
-/**
- * Least share of a road's length along which its carriageway lies on top of
- * an expressway's boulevard for doubledRoads to drop it.
- */
-const DOUBLED_SHARE = 0.7;
-/**
- * Or this long a stretch of it (m): longer than an expressway goes between
- * piers, so one would stand in its lanes.
- */
-const DOUBLED_RUN = 48;
-
-/**
- * Roads (chain indices) whose carriageway runs on top of a boulevard an
- * expressway follows for most of their length (DOUBLED_SHARE, at least
- * 20 m) or for longer than a span (DOUBLED_RUN), so the expressway's piers
- * would stand in their lanes: a street line the tracer ran back alongside
- * itself (its own earlier points never stop it), or the ring and a radial
- * merging into it. With them, the dead ends dropping them leaves (but not
- * the expressway's own boulevards).
- */
-export function doubledRoads(
-  chains: RoadChain[],
-  elevated: Elevated[],
-): Set<number> {
-  const drop = new Set<number>();
-  const decks = elevated.filter(e => e.kind === 'expressway');
-  if (!decks.length) return drop;
-  const G = 48;
-  const key = (x: number, z: number) =>
-    (Math.floor(z / G) + 4096) * 8192 + Math.floor(x / G) + 4096;
-  const bin = <T>(
-    grid: Map<number, T[]>,
-    a: Vec2,
-    b: Vec2,
-    r: number,
-    v: T,
-  ) => {
-    for (
-      let z = Math.floor((Math.min(a[1], b[1]) - r) / G);
-      z <= Math.floor((Math.max(a[1], b[1]) + r) / G);
-      z++
-    )
-      for (
-        let x = Math.floor((Math.min(a[0], b[0]) - r) / G);
-        x <= Math.floor((Math.max(a[0], b[0]) + r) / G);
-        x++
-      ) {
-        const k = (z + 4096) * 8192 + x + 4096;
-        let l = grid.get(k);
-        if (!l) grid.set(k, (l = []));
-        l.push(v);
-      }
-  };
-  // The boulevards the decks run along (on their centrelines).
-  const deckGrid = new Map<number, [Vec2, Vec2][]>();
-  for (const e of decks)
-    for (let i = 0; i + 1 < e.pts.length; i++)
-      bin(deckGrid, e.pts[i], e.pts[i + 1], 2, [e.pts[i], e.pts[i + 1]]);
-  const onDeck = (q: Vec2) =>
-    (deckGrid.get(key(q[0], q[1])) ?? []).some(
-      ([a, b]) => pointSegment(q, a, b)[0] < 2,
-    );
-  const hosts = new Set<number>();
-  chains.forEach((c, ci) => {
-    if (c.kind !== Road.boulevard) return;
-    if (c.pts.filter(onDeck).length * 2 >= c.pts.length) hosts.add(ci);
-  });
-  if (!hosts.size) return drop;
-  const reach = ROAD_WIDTH[Road.boulevard];
-  const hostGrid = new Map<number, [number, number][]>();
-  for (const hi of hosts) {
-    const p = chains[hi].pts;
-    for (let i = 0; i + 1 < p.length; i++)
-      bin(hostGrid, p[i], p[i + 1], reach, [hi, i]);
-  }
-  const cos30 = Math.cos(Math.PI / 6);
-  chains.forEach((c, ci) => {
-    if (hosts.has(ci)) return;
-    let len = 0;
-    let on = 0;
-    let run = 0;
-    let longest = 0;
-    for (let i = 0; i + 1 < c.pts.length; i++) {
-      const a = c.pts[i];
-      const b = c.pts[i + 1];
-      const l = dist2(a, b);
-      if (l < 1e-6) continue;
-      const d: Vec2 = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
-      const steps = Math.max(1, Math.round(l / 3));
-      for (let s = 0; s < steps; s++) {
-        const t = (s + 0.5) / steps;
-        const q: Vec2 = [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
-        len += l / steps;
-        const hit = (hostGrid.get(key(q[0], q[1])) ?? []).some(([hi, j]) => {
-          const h = chains[hi];
-          const p0 = h.pts[j];
-          const p1 = h.pts[j + 1];
-          const hl = dist2(p0, p1);
-          if (hl < 1e-6) return false;
-          const along =
-            Math.abs((p1[0] - p0[0]) * d[0] + (p1[1] - p0[1]) * d[1]) / hl;
-          if (along < cos30) return false;
-          const [dd, u] = pointSegment(q, p0, p1);
-          // Not round the host's end (a junction the two may share).
-          if ((j === 0 && u === 0) || (j === h.pts.length - 2 && u === 1))
-            return false;
-          return dd < (ROAD_WIDTH[c.kind] + ROAD_WIDTH[h.kind]) / 2 - 1;
-        });
-        if (hit) on += l / steps;
-        run = hit ? run + l / steps : 0;
-        longest = Math.max(longest, run);
-      }
-    }
-    if ((on >= 20 && on >= DOUBLED_SHARE * len) || longest >= DOUBLED_RUN)
-      drop.add(ci);
-  });
-  if (!drop.size) return drop;
-  // Roads left ending at nothing go too (as pruneDeadEnds would).
-  const arms = new Map<number, number[]>();
-  chains.forEach((c, ci) => {
-    for (const n of [c.start, c.end]) {
-      let l = arms.get(n);
-      if (!l) arms.set(n, (l = []));
-      l.push(ci);
-    }
-  });
-  const live = (n: number) => (arms.get(n) ?? []).filter(ci => !drop.has(ci));
-  let todo = [...drop];
-  while (todo.length) {
-    const next: number[] = [];
-    for (const ci of todo)
-      for (const n of [chains[ci].start, chains[ci].end]) {
-        const l = live(n);
-        if (l.length !== 1 || hosts.has(l[0])) continue;
-        if (chains[l[0]].start !== chains[l[0]].end) {
-          drop.add(l[0]);
-          next.push(l[0]);
-        }
-      }
-    todo = next;
-  }
-  return drop;
-}
-
-function reverseChain(c: RoadChain): RoadChain {
-  return {
-    pts: c.pts.slice().reverse(),
-    heights: c.heights.slice().reverse(),
-    kind: c.kind,
-    start: c.end,
-    end: c.start,
-    bridge: c.bridge.slice().reverse(),
-  };
-}
-
-/**
- * `chains` (with `edges`, their graph edges) without those in `drop`, the
- * rest joined end to end through every junction dropping them leaves with
- * two arms of one kind (as buildChains would have built them).
- */
-function dropChains(
-  chains: RoadChain[],
-  edges: number[][],
-  drop: Set<number>,
-): {chains: RoadChain[]; edges: number[][]} {
-  const live: (RoadChain | null)[] = chains.map((c, i) =>
-    drop.has(i) ? null : c,
-  );
-  const ed = edges.map(e => e.slice());
-  const at = new Map<number, number[]>();
-  live.forEach((c, i) => {
-    if (!c) return;
-    for (const n of [c.start, c.end]) {
-      let l = at.get(n);
-      if (!l) at.set(n, (l = []));
-      l.push(i);
-    }
-  });
-  const touched = new Set<number>();
-  for (const ci of drop) {
-    touched.add(chains[ci].start);
-    touched.add(chains[ci].end);
-  }
-  for (const n of [...touched].sort((a, b) => a - b)) {
-    const l = at.get(n) ?? [];
-    if (l.length !== 2 || l[0] === l[1]) continue;
-    const [i, j] = l[0] < l[1] ? l : [l[1], l[0]];
-    const A = live[i]!;
-    const B = live[j]!;
-    if (A.kind !== B.kind) continue;
-    const a = A.end === n ? A : reverseChain(A);
-    const ea = A.end === n ? ed[i] : ed[i].slice().reverse();
-    const b = B.start === n ? B : reverseChain(B);
-    const eb = B.start === n ? ed[j] : ed[j].slice().reverse();
-    live[i] = {
-      pts: [...a.pts, ...b.pts.slice(1)],
-      heights: [...a.heights, ...b.heights.slice(1)],
-      kind: a.kind,
-      start: a.start,
-      end: b.end,
-      bridge: [...a.bridge, ...b.bridge.slice(1)],
-    };
-    ed[i] = [...ea, ...eb];
-    live[j] = null;
-    at.delete(n);
-    const far = at.get(b.end)!;
-    far[far.indexOf(j)] = i;
-  }
-  const out: {chains: RoadChain[]; edges: number[][]} = {chains: [], edges: []};
-  live.forEach((c, i) => {
-    if (!c) return;
-    out.chains.push(c);
-    out.edges.push(ed[i]);
-  });
-  return out;
-}
-
-// ---------------------------------------------------------------------------
 // Elevated lines
 
 /**
@@ -1298,6 +1088,16 @@ export function generateLayout(
     }
   }
   const [sepLo, sepHi] = params.blockSize;
+  // Ring road around the central park (the streets keep clear of it).
+  let ring: Polyline | undefined;
+  if (params.arterials !== 'grid') {
+    const pts: Vec2[] = [];
+    for (let i = 0; i <= 64; i++) {
+      const a = (i / 64) * Math.PI * 2;
+      pts.push([center[0] + Math.cos(a) * 236, center[1] + Math.sin(a) * 236]);
+    }
+    ring = {pts, kind: Road.boulevard};
+  }
   const allLines: Polyline[] = traceStreets(
     {
       size: params.size,
@@ -1311,22 +1111,21 @@ export function generateLayout(
       majorKind: i => (i % 3 === 0 ? Road.boulevard : Road.avenue),
       minorKind: (d, r) => (r.chance(0.2 + d * 0.35) ? Road.street : Road.lane),
       holes: params.arterials === 'grid' ? [] : [{c: center, r: 230}],
+      clearance: roadClearance,
+      fixed: ring ? [ring] : [],
     },
     hf,
     seed,
   );
-  if (params.arterials !== 'grid') {
-    // Ring road around the central park.
-    const ring: Vec2[] = [];
-    for (let i = 0; i <= 64; i++) {
-      const a = (i / 64) * Math.PI * 2;
-      ring.push([center[0] + Math.cos(a) * 236, center[1] + Math.sin(a) * 236]);
-    }
-    allLines.push({pts: ring, kind: Road.boulevard});
-  }
+  if (ring) allLines.push(ring);
   progress?.('Connecting streets', 0.25, {streets: allLines});
   let g: Graph = planarize(allLines, 2.5);
   g = mergeCloseNodes(g, 5);
+  g = mergeJunctionClusters(
+    g,
+    ROAD_WIDTH.map((w, k) => w / 2 + SIDEWALK[k]),
+    JUNCTION_GAP,
+  );
   removeSlivers(g, 0.35);
   // Drop edges that cross open water for long stretches unless they are arterials.
   for (const e of g.edges) {
@@ -1443,34 +1242,6 @@ export function generateLayout(
     stations: candidates[i],
   }));
   elevated.push(...expressways(params, rng, chains, hf));
-  // Roads on top of an expressway's boulevard (doubledRoads) go, after every
-  // random choice they could change and without compacting the graph:
-  // chains and junctions they leave alone keep their indices (street
-  // furniture is hashed from them), and so do the blocks, lots and
-  // buildings clear of them (the faces below). The ground stays as carved.
-  const chainsPre = chains.slice();
-  let facesBefore: Face[] | null = null;
-  const dropped = doubledRoads(chains, elevated);
-  if (dropped.size) {
-    facesBefore = extractFaces(g, 400000);
-    const edgesOf = chainsG.map(c => c.edges);
-    const keysBefore = edgesOf.map(e => e.join(','));
-    for (const ci of dropped) for (const e of edgesOf[ci]) g.removeEdge(e);
-    const kept = dropChains(chains, edgesOf, dropped);
-    const order = stableOrder(
-      kept.chains.map((_, i) => i),
-      i => kept.edges[i].join(','),
-      keysBefore,
-    );
-    chains.splice(0, chains.length, ...order.map(i => kept.chains[i]));
-    const before = junctions.map(j => String(nodeOf.get(j)));
-    const now = makeJunctions();
-    junctions.splice(
-      0,
-      junctions.length,
-      ...stableOrder(now, j => String(nodeOf.get(j)), before),
-    );
-  }
   separateCrossings(elevated);
   for (const e of elevated) e.stations = clearStations(e, hf);
 
@@ -1544,19 +1315,12 @@ export function generateLayout(
       return false;
     };
   };
-  // Faces as they were before doubledRoads test against the roads as they
-  // were (so they come out as they did); those it opened up, as they are.
-  const overlapsRoad = roadOverlap(chainsPre);
-  const overlapsRoadNow = facesBefore ? roadOverlap(chains) : overlapsRoad;
+  const overlapsRoad = roadOverlap(chains);
   /**
    * A face's block (or sliver: between converging roads too thin for a
-   * sidewalk ring and lots, a pocket park) and lots, drawing on `rng`.
+   * sidewalk ring and lots, a pocket park) and lots.
    */
-  const faceBlock = (
-    f: Face,
-    rng: Rng,
-    overlapsRoad: (poly: Vec2[]) => boolean,
-  ): {block?: Block; sliver?: Block; lots: Lot[]} => {
+  const faceBlock = (f: Face): {block?: Block; sliver?: Block; lots: Lot[]} => {
     const none = {lots: []};
     const kinds = f.edges.map(e => g.edges[e].kind);
     const poly = f.nodes.map(n => g.nodes[n].p);
@@ -1660,69 +1424,17 @@ export function generateLayout(
     }
     return {block, lots: lotsHere};
   };
-  type FaceOut = ReturnType<typeof faceBlock> & {
-    stale?: boolean;
-    fresh?: boolean;
-  };
-  const outs: FaceOut[] = [];
-  if (!facesBefore) {
-    for (const f of faces) outs.push(faceBlock(f, rng, overlapsRoad));
-  } else {
-    // Every face as it was, so the shared random stream runs as it did;
-    // those doubledRoads did away with (stale) are then left out. The faces
-    // it opened up after them, each on a stream of its own.
-    const fkey = (f: Face) =>
-      f.edges
-        .slice()
-        .sort((a, b) => a - b)
-        .join(',');
-    const now = new Set(faces.map(fkey));
-    const was = new Set(facesBefore.map(fkey));
-    for (const f of facesBefore)
-      outs.push({...faceBlock(f, rng, overlapsRoad), stale: !now.has(fkey(f))});
-    for (const f of faces) {
-      if (was.has(fkey(f))) continue;
-      let cx = 0,
-        cz = 0;
-      for (const n of f.nodes) {
-        cx += g.nodes[n].p[0];
-        cz += g.nodes[n].p[1];
-      }
-      const r = new Rng(
-        hash2(
-          Math.round(cx / f.nodes.length),
-          Math.round(cz / f.nodes.length),
-        ) ^
-          seed ^
-          0x2d0b1e,
-      );
-      outs.push({...faceBlock(f, r, overlapsRoadNow), fresh: true});
-    }
-  }
   const blocks: Block[] = [];
   // Slivers become pocket parks appended after the real blocks.
   const slivers: Block[] = [];
-  // Block -1: on a stale face (its buildings are designed, for their ids,
-  // and left out).
   const lots: {lot: Lot; block: number}[] = [];
-  const realBlocks = outs.filter(o => o.block && !o.fresh).length;
-  let nb = 0;
-  let ns = 0;
-  let nf = 0;
-  for (const o of outs) {
+  for (const f of faces) {
+    const o = faceBlock(f);
     if (o.block) {
-      const hash = o.fresh ? 0x40000 + nf++ : nb++;
-      if (facesBefore) o.block.hash = hash;
-      if (o.fresh && o.block.park) o.block.late = true;
-      if (!o.stale) blocks.push(o.block);
-      for (const lot of o.lots)
-        lots.push({lot, block: o.stale ? -1 : blocks.length - 1});
+      blocks.push(o.block);
+      for (const lot of o.lots) lots.push({lot, block: blocks.length - 1});
     }
-    if (o.sliver) {
-      const hash = o.fresh ? 0x40000 + nf++ : realBlocks + ns++;
-      if (facesBefore) o.sliver.hash = hash;
-      if (!o.stale) slivers.push(o.sliver);
-    }
+    if (o.sliver) slivers.push(o.sliver);
   }
 
   progress?.('Grading blocks', 0.55);
@@ -1766,7 +1478,6 @@ export function generateLayout(
   const buildings: Building[] = [];
   // Buildings standing on each block, for the open-ground pass.
   const onBlock: number[][] = blocks.map(() => []);
-  let nextId = 0;
   for (const {lot, block} of lots) {
     let fp = cleanPolygon(lot.poly, 1.2);
     if (fp.length < 3) continue;
@@ -1860,13 +1571,9 @@ export function generateLayout(
         front = i;
       }
     });
-    // Ids run on through the buildings on stale faces (doubledRoads),
-    // which are left out.
-    const id = nextId++;
-    if (block < 0) continue;
     onBlock[block].push(buildings.length);
     buildings.push({
-      id,
+      id: buildings.length,
       kind,
       footprint: fp,
       // Ground floor at the street frontage; downhill sides show lower floors.
@@ -3324,10 +3031,32 @@ function expressways(
     pts.reverse();
     hs.reverse();
     extend(pts, hs, c.start);
-    let len = 0;
-    for (let k = 1; k < pts.length; k++)
-      len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
-    strokes.push({pts, hs, len});
+    // A deck takes no sharp corner (a boulevard joined into another end
+    // on): the stroke is cut there, its piers would stand in the lanes.
+    let from = 0;
+    const cut = (to: number) => {
+      let len = 0;
+      for (let k = from + 1; k < to; k++)
+        len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+      if (to - from >= 2)
+        strokes.push({pts: pts.slice(from, to), hs: hs.slice(from, to), len});
+    };
+    for (let k = 2; k + 2 < pts.length; k++) {
+      const a = pts[k - 2];
+      const b = pts[k];
+      const d = pts[k + 2];
+      const ux = b[0] - a[0];
+      const uz = b[1] - a[1];
+      const vx = d[0] - b[0];
+      const vz = d[1] - b[1];
+      const cos =
+        (ux * vx + uz * vz) / (Math.hypot(ux, uz) * Math.hypot(vx, vz) || 1);
+      if (cos < DECK_CORNER) {
+        cut(k);
+        from = k + 1;
+      }
+    }
+    cut(pts.length);
   }
   strokes.sort((a, b) => b.len - a.len);
   for (const st of strokes) {
@@ -3352,9 +3081,9 @@ function expressways(
       return near > pts.length / 5 / 4;
     });
     if (tooClose) continue;
-    // Nor on top of one another, or of its own earlier part (a stroke along
-    // a street line the tracer ran back alongside itself): the longest run
-    // clear of both is kept.
+    // Nor on top of one another, or of its own earlier part (a stroke right
+    // round the ring road and on along it): the longest run clear of both
+    // is kept.
     const [k0, k1] = clearRun(
       pts,
       out.map(e => e.pts),
@@ -3375,6 +3104,12 @@ function expressways(
   void rng;
   return out;
 }
+
+/**
+ * Cosine of the sharpest turn an expressway stroke takes over 16 m either
+ * side of a point (60 degrees).
+ */
+const DECK_CORNER = Math.cos((60 * Math.PI) / 180);
 
 /** How far along a deck its own earlier part counts as another deck (m). */
 const DECK_SELF_GAP = 300;

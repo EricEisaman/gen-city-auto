@@ -10936,7 +10936,7 @@ export function buildTile(
   const prng = new Rng(hash2(tile, 4242));
   for (const bi of ctx.tileParks[tile] ?? []) {
     const b = L.blocks[bi];
-    const r = b.late ? new Rng(hash2(tile, (b.hash ?? bi) ^ 0x1a7e)) : prng;
+    const r = b.late ? new Rng(hash2(tile, bi ^ 0x1a7e)) : prng;
     // Parks hidden by the asset lab still draw their trees from the shared
     // stream (into a discarded mesh) so the visible parks keep theirs.
     const pm = L.hidden?.blocks[bi] ? new CMesh(1 << 10, 1 << 11) : m;
@@ -10962,7 +10962,7 @@ export function buildTile(
   // Lawns (trees) and car parks (parked cars) on blocks' open ground.
   for (const bi of ctx.tileBlocks[tile] ?? []) {
     L.blocks[bi].fill?.forEach((f, fi) =>
-      fillProps(ctx, m, f, hash2(L.blocks[bi].hash ?? bi, fi), lod, inTile),
+      fillProps(ctx, m, f, hash2(bi, fi), lod, inTile),
     );
   }
 

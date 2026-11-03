@@ -37,7 +37,34 @@ export interface StreetParams {
   minorKind: (density: number, rng: Rng) => number;
   /** Areas streets may not enter (e.g. a central park at a radial center). */
   holes: {c: Vec2; r: number}[];
+  /**
+   * Least distance between the centrelines of two roads of these kinds
+   * running alongside each other (carriageways, sidewalks and a margin).
+   */
+  clearance: (a: number, b: number) => number;
+  /** Roads laid out before (the ring road), which every line keeps clear of. */
+  fixed?: Polyline[];
 }
+
+/** Highest road kind (boulevard). */
+const MAX_KIND = 3;
+/**
+ * A road within this angle of another (either way) runs alongside it, or
+ * merges into it, rather than crossing it.
+ */
+const PARALLEL = (35 * Math.PI) / 180;
+/**
+ * A line that turns back by more than acos(-HAIRPIN_TURN) within
+ * HAIRPIN_RUN clearances of road, coming within HAIRPIN_GAP clearances of
+ * itself, is a hairpin: it stops where the turn began.
+ */
+const HAIRPIN_RUN = 3;
+const HAIRPIN_TURN = -0.5;
+const HAIRPIN_GAP = 1.5;
+/** Candidate road points a loose end tries to join, nearest first. */
+const JOIN_TRIES = 6;
+/** Least angle at which a loose end is joined into another road. */
+const JOIN_ANGLE = (40 * Math.PI) / 180;
 
 type Field = (p: Vec2) => [number, number];
 
@@ -88,8 +115,16 @@ function eigen(field: Field, p: Vec2, family: number): Vec2 | null {
   return [Math.cos(th), Math.sin(th)];
 }
 
+interface GridPoint {
+  p: Vec2;
+  line: number;
+  /** Unit direction of the road through p. */
+  d: Vec2;
+  kind: number;
+}
+
 class PointGrid {
-  private cells = new Map<number, {p: Vec2; line: number}[]>();
+  private cells = new Map<number, GridPoint[]>();
   private cell: number;
 
   constructor(cell: number) {
@@ -104,23 +139,47 @@ class PointGrid {
     );
   }
 
-  add(p: Vec2, line: number) {
-    const k = this.key(p[0], p[1]);
+  add(q: GridPoint) {
+    const k = this.key(q.p[0], q.p[1]);
     let l = this.cells.get(k);
     if (!l) this.cells.set(k, (l = []));
-    l.push({p, line});
+    l.push(q);
   }
 
   /** Nearest point within r, optionally ignoring one line. */
-  nearest(
-    p: Vec2,
-    r: number,
-    ignore = -1,
-  ): {p: Vec2; line: number; d: number} | null {
+  nearest(p: Vec2, r: number, ignore = -1): (GridPoint & {d2: number}) | null {
+    return this.find(p, r, q => q.line !== ignore);
+  }
+
+  /** Every point within r that passes `ok`, nearest first. */
+  within(p: Vec2, r: number, ok: (q: GridPoint) => boolean): GridPoint[] {
     const n = Math.ceil(r / this.cell);
     const cx = Math.floor(p[0] / this.cell);
     const cz = Math.floor(p[1] / this.cell);
-    let best: {p: Vec2; line: number} | null = null;
+    const out: {q: GridPoint; d: number}[] = [];
+    for (let dz = -n; dz <= n; dz++)
+      for (let dx = -n; dx <= n; dx++)
+        for (const q of this.cells.get(
+          (cz + dz + 2000) * 4096 + cx + dx + 2000,
+        ) ?? []) {
+          const d = Math.hypot(q.p[0] - p[0], q.p[1] - p[1]);
+          if (d < r && ok(q)) out.push({q, d});
+        }
+    // Ties by position, so the order does not depend on the grid's.
+    out.sort((a, b) => a.d - b.d || a.q.p[0] - b.q.p[0] || a.q.p[1] - b.q.p[1]);
+    return out.map(o => o.q);
+  }
+
+  /** Nearest point within r that passes `ok` (d2: its distance). */
+  find(
+    p: Vec2,
+    r: number,
+    ok: (q: GridPoint, dist: number) => boolean,
+  ): (GridPoint & {d2: number}) | null {
+    const n = Math.ceil(r / this.cell);
+    const cx = Math.floor(p[0] / this.cell);
+    const cz = Math.floor(p[1] / this.cell);
+    let best: GridPoint | null = null;
     let bd = r;
     // Squared distance clearly beyond bd: skip the exact distance.
     let far2 = r * r * (1 + 1e-9);
@@ -129,12 +188,11 @@ class PointGrid {
         for (const q of this.cells.get(
           (cz + dz + 2000) * 4096 + cx + dx + 2000,
         ) ?? []) {
-          if (q.line === ignore) continue;
           const ex = q.p[0] - p[0];
           const ez = q.p[1] - p[1];
           if (ex * ex + ez * ez > far2) continue;
           const d = Math.hypot(ex, ez);
-          if (d < bd) {
+          if (d < bd && ok(q, d)) {
             best = q;
             bd = d;
             far2 = d * d * (1 + 1e-9);
@@ -142,7 +200,7 @@ class PointGrid {
         }
       }
     }
-    return best && {p: best.p, line: best.line, d: bd};
+    return best && {...best, d2: bd};
   }
 }
 
@@ -196,6 +254,40 @@ export function traceStreets(
   const out: Polyline[] = [];
   let lineId = 0;
 
+  const unit = (v: Vec2): Vec2 => {
+    const l = Math.hypot(v[0], v[1]) || 1;
+    return [v[0] / l, v[1] / l];
+  };
+  /** Roads already laid out (the ring road): every line keeps clear. */
+  for (const f of sp.fixed ?? []) {
+    const id = lineId++;
+    f.pts.forEach((q, i) => {
+      const a = f.pts[Math.max(0, i - 1)];
+      const b = f.pts[Math.min(f.pts.length - 1, i + 1)];
+      allGrid.add({
+        p: q,
+        line: id,
+        d: unit([b[0] - a[0], b[1] - a[1]]),
+        kind: f.kind,
+      });
+    });
+  }
+  const cosParallel = Math.cos(PARALLEL);
+  /**
+   * The nearest road point (not of line `id`) within the clearance of a
+   * road of `kind` at p running within PARALLEL of `d`: one this road would
+   * run alongside or merge into.
+   */
+  const alongside = (p: Vec2, d: Vec2, kind: number, id: number) =>
+    allGrid.find(
+      p,
+      sp.clearance(kind, MAX_KIND),
+      (q, dist) =>
+        q.line !== id &&
+        dist < sp.clearance(kind, q.kind) &&
+        Math.abs(q.d[0] * d[0] + q.d[1] * d[1]) > cosParallel,
+    );
+
   const trace = (
     start: Vec2,
     family: number,
@@ -206,14 +298,37 @@ export function traceStreets(
     const id = lineId++;
     const step = major ? 12 : 8;
     const halves: Vec2[][] = [];
-    const ends: {p: Vec2; d: Vec2; stoppedByRoad: boolean}[] = [];
+    const ends: {p: Vec2; d: Vec2; s: number}[] = [];
+    // This line's own points so far, by distance along it from the start
+    // (`line`: negative on the second half).
+    const own = new PointGrid(40);
+    const selfClear = sp.clearance(kind, kind);
+    // How far each half reaches (a hairpin cut off shortens it): own points
+    // beyond are gone.
+    const reach = [Infinity, Infinity];
+    const live = (o: GridPoint) =>
+      o.line >= 0 ? o.line <= reach[0] : -o.line <= reach[1];
     for (const sign of [1, -1]) {
       const pts: Vec2[] = [];
       let p = start;
       const d0 = eigen(field, p, family);
       if (!d0) return false;
-      let dir: Vec2 = [d0[0] * sign, d0[1] * sign];
-      let stoppedByRoad = false;
+      const d1: Vec2 = [d0[0] * sign, d0[1] * sign];
+      let dir = d1;
+      if (sign > 0) own.add({p: start, line: 0, d: dir, kind});
+      let s = 0;
+      // Distance along and direction at each of pts.
+      const at: number[] = [];
+      const dirs: Vec2[] = [];
+      const push = (q: Vec2, d: Vec2) => {
+        s += Math.hypot(q[0] - p[0], q[1] - p[1]);
+        pts.push(q);
+        at.push(s);
+        dirs.push(d);
+        own.add({p: q, line: s * sign, d, kind});
+        p = q;
+        dir = d;
+      };
       const maxSteps = Math.ceil((sp.size * 1.5) / step);
       for (let i = 0; i < maxSteps; i++) {
         // RK2 integration with eigenvector sign kept consistent.
@@ -241,31 +356,59 @@ export function traceStreets(
             }
           }
           if (landAt < 0) break;
+          const p0 = p;
           for (let k = 1; k <= landAt; k++)
-            pts.push([p[0] + k2[0] * step * k, p[1] + k2[1] * step * k]);
-          p = pts[pts.length - 1];
-          dir = k2;
+            push([p0[0] + k2[0] * step * k, p0[1] + k2[1] * step * k], k2);
           continue;
         }
         // Too close to a parallel road of the same family: stop (and join).
-        const s = sep(np);
-        const near = famGrid[family].nearest(np, s * 0.5, id);
-        if (near && i > 0) {
-          stoppedByRoad = true;
+        const sp0 = sep(np);
+        if (i > 0 && famGrid[family].nearest(np, sp0 * 0.5, id)) break;
+        // A hairpin round a spur (turned back within HAIRPIN_RUN
+        // clearances, its legs closer than HAIRPIN_GAP) goes, from where it
+        // began to turn.
+        const sNew = s + step;
+        let m = pts.length - 1;
+        while (m >= 0 && at[m] > sNew - HAIRPIN_RUN * selfClear) m--;
+        const pm = m >= 0 ? pts[m] : start;
+        const dm = m >= 0 ? dirs[m] : d1;
+        if (
+          (m >= 0 || sNew >= HAIRPIN_RUN * selfClear) &&
+          dm[0] * k2[0] + dm[1] * k2[1] < HAIRPIN_TURN &&
+          Math.hypot(np[0] - pm[0], np[1] - pm[1]) < HAIRPIN_GAP * selfClear
+        ) {
+          pts.length = at.length = dirs.length = m + 1;
+          s = m >= 0 ? at[m] : 0;
+          p = pm;
+          dir = dm;
+          reach[sign > 0 ? 0 : 1] = s;
           break;
         }
+        // Nor does it come back alongside its own earlier part (a contour
+        // round a hill): any point closer than a third of the way back along
+        // the line, within the family spacing.
+        if (
+          own.find(
+            np,
+            sp0 * 0.5,
+            (q, dist) =>
+              live(q) &&
+              Math.abs(q.line - sNew * sign) > 3 * Math.max(dist, selfClear),
+          )
+        )
+          break;
+        // Or running alongside (or merging into) any other road.
+        if (alongside(np, k2, kind, id)) break;
         // Self-intersection / loop guard.
         if (
           i > 20 &&
           Math.hypot(np[0] - start[0], np[1] - start[1]) < step * 1.5
         )
           break;
-        pts.push(np);
-        p = np;
-        dir = k2;
+        push(np, k2);
       }
       halves.push(pts);
-      ends.push({p, d: dir, stoppedByRoad});
+      ends.push({p, d: dir, s: s * sign});
     }
     const line: Vec2[] = [...halves[1].slice().reverse(), start, ...halves[0]];
     let len = 0;
@@ -275,35 +418,85 @@ export function traceStreets(
         line[i][1] - line[i - 1][1],
       );
     if (len < (major ? 200 : 40)) return false;
-    // Join loose ends to the nearest road ahead so streets don't dead-end.
+    // Join loose ends to the nearest road ahead so streets don't dead-end:
+    // at a junction (not a shallow merge, JOIN_ANGLE or more off the other
+    // road), along a link that runs alongside no other road.
     const joinR = major ? sp.majorSep * 0.6 : 60;
-    const tryJoin = (end: {p: Vec2; d: Vec2}, atStart: boolean) => {
-      const cand = allGrid.nearest(
-        [end.p[0] + end.d[0] * joinR * 0.5, end.p[1] + end.d[1] * joinR * 0.5],
-        joinR,
-        id,
-      );
-      if (!cand) return;
-      const v: Vec2 = [cand.p[0] - end.p[0], cand.p[1] - end.p[1]];
-      const vl = Math.hypot(v[0], v[1]) || 1;
-      if ((v[0] * end.d[0] + v[1] * end.d[1]) / vl < 0.3) return;
-      // Don't join across water.
-      for (let t = 0.25; t < 1; t += 0.25)
-        if (!isLand([end.p[0] + v[0] * t, end.p[1] + v[1] * t])) return;
-      // Overshoot a little so the joint is an actual crossing for planarize.
-      const tip: Vec2 = [
-        cand.p[0] + (v[0] / vl) * 2,
-        cand.p[1] + (v[1] / vl) * 2,
+    const cosJoin = Math.cos(JOIN_ANGLE);
+    const tryJoin = (end: {p: Vec2; d: Vec2; s: number}, atStart: boolean) => {
+      const probe: Vec2 = [
+        end.p[0] + end.d[0] * joinR * 0.5,
+        end.p[1] + end.d[1] * joinR * 0.5,
       ];
-      if (atStart) line.unshift(tip);
-      else line.push(tip);
+      const cands = allGrid.within(probe, joinR, q => {
+        if (q.line === id) return false;
+        const v = unit([q.p[0] - end.p[0], q.p[1] - end.p[1]]);
+        return (
+          v[0] * end.d[0] + v[1] * end.d[1] >= 0.3 &&
+          Math.abs(v[0] * q.d[0] + v[1] * q.d[1]) < cosJoin
+        );
+      });
+      const ok = (cand: Vec2) => {
+        const v: Vec2 = [cand[0] - end.p[0], cand[1] - end.p[1]];
+        const vl = Math.hypot(v[0], v[1]) || 1;
+        const vd: Vec2 = [v[0] / vl, v[1] / vl];
+        // Don't join across water.
+        for (let t = 0.25; t < 1; t += 0.25)
+          if (!isLand([end.p[0] + v[0] * t, end.p[1] + v[1] * t])) return false;
+        for (let t = 0; t < vl; t += step) {
+          const q: Vec2 = [end.p[0] + vd[0] * t, end.p[1] + vd[1] * t];
+          if (alongside(q, vd, kind, id)) return false;
+          // Nor back alongside this line.
+          if (
+            own.find(
+              q,
+              selfClear,
+              o =>
+                live(o) &&
+                Math.abs(o.line - end.s) > 3 * selfClear &&
+                Math.abs(o.d[0] * vd[0] + o.d[1] * vd[1]) > cosParallel,
+            )
+          )
+            return false;
+        }
+        return true;
+      };
+      // The nearest few (some way apart) in turn.
+      const tried: Vec2[] = [];
+      for (const c of cands) {
+        if (tried.length >= JOIN_TRIES) return;
+        if (
+          tried.some(t => Math.hypot(t[0] - c.p[0], t[1] - c.p[1]) < step * 2)
+        )
+          continue;
+        tried.push(c.p);
+        if (!ok(c.p)) continue;
+        const v: Vec2 = [c.p[0] - end.p[0], c.p[1] - end.p[1]];
+        const vl = Math.hypot(v[0], v[1]) || 1;
+        const vd: Vec2 = [v[0] / vl, v[1] / vl];
+        // Overshoot a little so the joint is an actual crossing for
+        // planarize. Points every step along the link, so later lines keep
+        // clear of it.
+        const link: Vec2[] = [];
+        const n = Math.ceil((vl + 2) / step);
+        for (let k = 1; k <= n; k++) {
+          const t = ((vl + 2) * k) / n;
+          link.push([end.p[0] + vd[0] * t, end.p[1] + vd[1] * t]);
+        }
+        if (atStart) line.unshift(...link.reverse());
+        else line.push(...link);
+        return;
+      }
     };
     tryJoin(ends[0], false);
     tryJoin(ends[1], true);
-    for (const q of line) {
-      famGrid[family].add(q, id);
-      allGrid.add(q, id);
-    }
+    line.forEach((q, i) => {
+      const a = line[Math.max(0, i - 1)];
+      const b = line[Math.min(line.length - 1, i + 1)];
+      const g = {p: q, line: id, d: unit([b[0] - a[0], b[1] - a[1]]), kind};
+      famGrid[family].add(g);
+      allGrid.add(g);
+    });
     out.push({
       pts: simplify(line, 0.4),
       kind,
