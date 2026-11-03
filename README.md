@@ -45,7 +45,9 @@ URL parameters: `city=neon|metro|harbour|river`, `seed`, `time` (hours),
 `timespeed` (hours per second), `weather=sunny|cloudy|rain|storm`,
 `vehicle=<design>|heli`, `cam=chase|first|hood|orbit`, `director=0`,
 `shot=<director shot>`, `spawn=x,z`, `freecam=x,y,z,yaw,pitch`, `quality=low`,
-`debug=1..8` (G-buffer and lighting views).
+`debug=1..8` (G-buffer and lighting views), `diag=1` (on-screen diagnostics
+for devices without a console: main-thread stalls, GPU queue latency, errors,
+the adapter and the startup timeline, with a Copy button), `lowmem=0|1`.
 
 Graphics settings live in the menu (M, under GRAPHICS) and persist in
 localStorage. URL parameters override them for that page load without being
