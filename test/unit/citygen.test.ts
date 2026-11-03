@@ -26,6 +26,8 @@ import {
 } from '../../src/city/gen-tile.ts';
 import {baseFarOf, LEAF_SOLID} from '../../src/city/lod.ts';
 import {
+  clearRun,
+  doubledRoads,
   generateLayout,
   inTunnel,
   type Building,
@@ -270,6 +272,33 @@ void test('rail tunnel portals stand off the roads', () => {
         }
       }
     }
+  }
+});
+
+// The street tracer sometimes ran a line back alongside itself (or a radial
+// into the ring), and an expressway on one of the two boulevards stood its
+// piers in the other's lanes, or ran its deck on top of its own.
+void test('no carriageway or deck runs on top of an expressway', () => {
+  for (const [type, seed] of [
+    ['harbour', 1],
+    ['harbour', 2],
+    ['river', 1],
+    ['neon', 1],
+  ] as const) {
+    const L = layoutOf(type, seed);
+    const d = doubledRoads(L.chains, L.elevated);
+    assert.equal(d.size, 0, `${type} ${seed}: roads ${[...d]} doubled`);
+    const decks = L.elevated.filter(e => e.kind === 'expressway');
+    decks.forEach((e, k) => {
+      assert.deepEqual(
+        clearRun(
+          e.pts,
+          decks.slice(0, k).map(o => o.pts),
+        ),
+        [0, e.pts.length],
+        `${type} ${seed}: deck ${k} runs on top of a deck`,
+      );
+    });
   }
 });
 

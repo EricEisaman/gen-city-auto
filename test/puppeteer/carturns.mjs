@@ -9,7 +9,8 @@
 // node test/puppeteer/carturns.mjs [outDir] [seconds] [?query] [focus]
 //
 // focus `piers`: run the traffic around the middle of the first expressway
-// (whose piers stand on the boulevard under it) instead of the player.
+// (whose piers stand on the boulevard under it) instead of the player;
+// `x,z`: around that point.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import puppeteer from 'puppeteer';
@@ -49,6 +50,10 @@ await withServer(async base => {
             const q = way.pts[way.pts.length >> 1];
             focus[0] = q[0];
             focus[2] = q[1];
+          } else if (/^-?[\d.]+,-?[\d.]+$/.test(focusAt)) {
+            const [x, z] = focusAt.split(',').map(Number);
+            focus[0] = x;
+            focus[2] = z;
           }
           // Structure on the road: camera solid boxes (cx, cy, cz, hx, hy,
           // hz, yaw; hz along (sin yaw, cos yaw)), in a 16 m grid.
